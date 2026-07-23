@@ -2008,10 +2008,14 @@ function isSafeBookId(value) {
 }
 
 function sanitizeFileStem(value, fallback = 'book') {
+  // Bound the input before the regexes and split the anchored trims so no
+  // step backtracks polynomially on adversarial strings.
   const stem = String(value || fallback)
+    .slice(0, 300)
     .replace(/\.[^.]+$/i, '')
     .replace(/[^A-Za-z0-9_-]+/g, '_')
-    .replace(/^_+|_+$/g, '')
+    .replace(/^_+/, '')
+    .replace(/_+$/, '')
     .slice(0, 120);
   return stem || fallback;
 }
