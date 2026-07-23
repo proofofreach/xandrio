@@ -11,7 +11,7 @@
   <title>Xandrio - Audiobook Library</title>
   <link rel="preload" href="/fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin>
   <!-- ?v= values must match ASSET_VERSIONS in sw.js (single source of truth) -->
-  <link rel="stylesheet" href="style-v3.css?v=74">
+  <link rel="stylesheet" href="style-v3.css?v=75">
   <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=2">
 </head>
 <body>
@@ -359,6 +359,27 @@
               </div>
             </div>
             <p id="account-error" class="settings-error" style="display:none"></p>
+
+            <!-- Admin-only account management -->
+            <div id="admin-accounts" style="display:none">
+              <div class="settings-row">
+                <div class="settings-label">
+                  <span class="settings-label-text">Accounts</span>
+                  <span class="settings-label-hint">Manage who can sign in to this server</span>
+                </div>
+                <span class="settings-status">Admin</span>
+              </div>
+              <div id="admin-account-list" class="sync-device-list"></div>
+              <div id="admin-account-form" class="settings-form">
+                <input type="text" id="admin-new-username" placeholder="Username (a-z, 0-9, _ or -)" autocomplete="off" autocapitalize="none" spellcheck="false" />
+                <input type="password" id="admin-new-password" placeholder="Password (min 8 characters)" autocomplete="new-password" />
+                <label class="admin-role-check"><input type="checkbox" id="admin-new-is-admin" /> Admin account</label>
+                <div class="settings-form-buttons">
+                  <button id="admin-add-account-btn" class="btn-primary btn-sm">Add Account</button>
+                </div>
+              </div>
+              <p id="admin-accounts-error" class="settings-error" style="display:none"></p>
+            </div>
           </div>
         </details>
 

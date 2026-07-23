@@ -52,6 +52,7 @@ const { computeListeningStats } = require('./lib/listening-stats');
 const { createAuthMiddleware, createAuthRoutes, createSessionStore, requireAdmin, DEFAULT_SESSION_TTL_MS } = require('./lib/auth');
 const { createAccountsStore } = require('./lib/accounts');
 const shelves = require('./lib/shelves');
+const { registerAccountRoutes } = require('./lib/routes/accounts-routes');
 const { createRateLimitMiddleware, positiveInteger } = require('./lib/rate-limit');
 const { createGracefulShutdown } = require('./lib/graceful-shutdown');
 const {
@@ -238,6 +239,7 @@ app.post('/api/auth/logout', authRoutes.logout);
 app.get('/api/auth/status', authRoutes.status);
 app.use(createAuthMiddleware({ token: XANDRIO_TOKEN, accounts: accountsStore, sessionStore: accountSessionStore }));
 app.post('/api/auth/change-password', authRoutes.changePassword);
+registerAccountRoutes(app, { accounts: accountsStore, sessionStore: accountSessionStore, requireAdmin });
 
 // Instance-wide configuration stays admin-only once accounts exist; in
 // trusted-LAN and shared-token modes every caller resolves as admin, so

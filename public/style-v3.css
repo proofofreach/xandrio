@@ -4933,3 +4933,16 @@ body.login-gate-open { overflow: hidden; }
   background: var(--accent-dim);
   border-color: var(--accent-border-soft);
 }
+
+/* ─── Admin account management ─────────────────────────────────────────── */
+.admin-account-row { align-items: center; }
+.admin-account-row small { display: block; color: var(--text-muted); }
+.admin-account-actions { display: flex; gap: 6px; flex-shrink: 0; }
+.admin-role-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+.admin-reset-form { margin: 4px 0 10px; }

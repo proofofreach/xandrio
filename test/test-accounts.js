@@ -336,6 +336,94 @@ test('changePassword verifies the current password and revokes other sessions', 
   assert.strictEqual(legacy.statusCode, 400);
 });
 
+// ─── Admin account-management routes ───────────────────────────────────────
+
+const { registerAccountRoutes } = require('../lib/routes/accounts-routes');
+
+function routerStub() {
+  const routes = {};
+  const record = method => (path, ...handlers) => { routes[`${method} ${path}`] = handlers; };
+  return { routes, get: record('GET'), post: record('POST'), put: record('PUT'), delete: record('DELETE') };
+}
+
+async function invoke(handlers, req) {
+  const res = response();
+  let index = 0;
+  const next = async () => {
+    const handler = handlers[index++];
+    if (handler) await handler(req, res, next);
+  };
+  await next();
+  return res;
+}
+
+async function adminRoutesFixture() {
+  const fixture = await accountModeFixture();
+  const app = routerStub();
+  registerAccountRoutes(app, { accounts: fixture.accounts, sessionStore: fixture.sessionStore, requireAdmin });
+  return { ...fixture, routes: { ...fixture.routes, ...app.routes }, adminRoutes: app.routes };
+}
+
+test('account routes are admin-gated', async () => {
+  const { adminRoutes, member } = await adminRoutesFixture();
+  const asMember = await invoke(adminRoutes['GET /api/accounts'], { user: { id: member.id, role: 'member' }, headers: {} });
+  assert.strictEqual(asMember.statusCode, 403);
+  const asAdmin = await invoke(adminRoutes['GET /api/accounts'], { user: { role: 'admin' }, headers: {} });
+  assert.strictEqual(asAdmin.body.accounts.length, 2);
+  assert(!asAdmin.body.accounts.some(account => 'password' in account), 'listing must not expose hashes');
+});
+
+test('admin can create accounts; duplicates and short passwords rejected', async () => {
+  const { adminRoutes, accounts } = await adminRoutesFixture();
+  const adminReq = body => ({ user: { role: 'admin' }, body, headers: {} });
+  const created = await invoke(adminRoutes['POST /api/accounts'], adminReq({ username: 'newbie', password: 'long-enough-1', role: 'member' }));
+  assert.strictEqual(created.body.account.username, 'newbie');
+  assert((await accounts.verifyLogin('newbie', 'long-enough-1')));
+  const short = await invoke(adminRoutes['POST /api/accounts'], adminReq({ username: 'x2', password: 'short' }));
+  assert.strictEqual(short.statusCode, 400);
+  const duplicate = await invoke(adminRoutes['POST /api/accounts'], adminReq({ username: 'newbie', password: 'long-enough-1' }));
+  assert.strictEqual(duplicate.statusCode, 400);
+});
+
+test('admin password reset revokes the target sessions', async () => {
+  const { adminRoutes, accounts, sessionStore, member } = await adminRoutesFixture();
+  const session = await sessionStore.create(member.id);
+  const reset = await invoke(adminRoutes['POST /api/accounts/:id/password'], {
+    user: { role: 'admin' }, params: { id: member.id }, body: { newPassword: 'fresh-password-1' }, headers: {}
+  });
+  assert.strictEqual(reset.body.success, true);
+  assert.strictEqual(await sessionStore.resolve(session.token), null);
+  assert((await accounts.verifyLogin('member', 'fresh-password-1')));
+  const missing = await invoke(adminRoutes['POST /api/accounts/:id/password'], {
+    user: { role: 'admin' }, params: { id: 'usr_missing' }, body: { newPassword: 'fresh-password-1' }, headers: {}
+  });
+  assert.strictEqual(missing.statusCode, 404);
+});
+
+test('disable guards: not yourself, never the last admin', async () => {
+  const { adminRoutes, accounts, sessionStore, admin, member } = await adminRoutesFixture();
+  const self = await invoke(adminRoutes['POST /api/accounts/:id/disabled'], {
+    user: { id: admin.id, role: 'admin' }, params: { id: admin.id }, body: { disabled: true }, headers: {}
+  });
+  assert.strictEqual(self.statusCode, 400);
+  const lastAdmin = await invoke(adminRoutes['POST /api/accounts/:id/disabled'], {
+    user: { id: 'usr_other', role: 'admin' }, params: { id: admin.id }, body: { disabled: true }, headers: {}
+  });
+  assert.strictEqual(lastAdmin.statusCode, 400);
+  const memberSession = await sessionStore.create(member.id);
+  const ok = await invoke(adminRoutes['POST /api/accounts/:id/disabled'], {
+    user: { id: admin.id, role: 'admin' }, params: { id: member.id }, body: { disabled: true }, headers: {}
+  });
+  assert.strictEqual(ok.body.success, true);
+  assert.strictEqual((await accounts.findById(member.id)).disabled, true);
+  assert.strictEqual(await sessionStore.resolve(memberSession.token), null);
+  const reEnable = await invoke(adminRoutes['POST /api/accounts/:id/disabled'], {
+    user: { id: admin.id, role: 'admin' }, params: { id: member.id }, body: { disabled: false }, headers: {}
+  });
+  assert.strictEqual(reEnable.body.success, true);
+  assert.strictEqual((await accounts.findById(member.id)).disabled, false);
+});
+
 // ─── Runner ────────────────────────────────────────────────────────────────
 
 (async () => {
