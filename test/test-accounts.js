@@ -296,7 +296,12 @@ test('status reports authentication state and the current user', async () => {
   const { routes, sessionStore, admin } = await accountModeFixture();
   const anonymous = response();
   await routes.status({ headers: {} }, anonymous);
-  assert.deepStrictEqual(anonymous.body, { authenticationRequired: true, authenticated: false, user: null });
+  assert.deepStrictEqual(anonymous.body, {
+    authenticationRequired: true,
+    accountsConfigured: true,
+    authenticated: false,
+    user: null
+  });
   const { token } = await sessionStore.create(admin.id);
   const authed = response();
   await routes.status({ headers: { cookie: `${SESSION_COOKIE}=${token}` } }, authed);
