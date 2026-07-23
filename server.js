@@ -51,6 +51,7 @@ const jsonStore = require('./lib/json-store');
 const { computeListeningStats } = require('./lib/listening-stats');
 const { createAuthMiddleware, createAuthRoutes, createSessionStore, requireAdmin, DEFAULT_SESSION_TTL_MS } = require('./lib/auth');
 const { createAccountsStore } = require('./lib/accounts');
+const shelves = require('./lib/shelves');
 const { createRateLimitMiddleware, positiveInteger } = require('./lib/rate-limit');
 const { createGracefulShutdown } = require('./lib/graceful-shutdown');
 const {
@@ -304,6 +305,7 @@ const SETTINGS_FILE = path.join(DATA_DIR, 'settings.json');
 const ANNAS_AUTH_FILE = path.join(DATA_DIR, 'annas-auth.json');
 const USERS_FILE = path.join(DATA_DIR, 'users.json');
 const BOOKMARKS_FILE = path.join(DATA_DIR, 'bookmarks.json');
+const SHELVES_FILE = path.join(DATA_DIR, 'shelves.json');
 const CLIENT_SETTINGS_FILE = path.join(DATA_DIR, 'client-settings.json');
 const CUSTOM_VOICES_FILE = path.join(DATA_DIR, 'custom-voices.json');
 const PRONUNCIATIONS_FILE = path.join(DATA_DIR, 'pronunciations.json');
@@ -2299,10 +2301,24 @@ function downloadImportCommand(body, { download = searchProviders.download.bind(
   };
 }
 
-async function importDownloadedBook(body, progress) {
+async function importDownloadedBook(body, progress, { addedBy = null } = {}) {
   const command = downloadImportCommand(body);
+  if (addedBy) command.addedBy = addedBy;
   deletedBookIds.delete(command.id);
-  return bookImporter.import(command, progress);
+  const result = await bookImporter.import(command, progress);
+  if (addedBy && result?.bookId) await addBookToShelf(addedBy, result.bookId);
+  return result;
+}
+
+// Imports land on the importer's personal shelf automatically.
+async function addBookToShelf(userId, bookId) {
+  try {
+    await updateJSON(SHELVES_FILE, (data) => {
+      shelves.addToShelf(data, userId, bookId);
+    });
+  } catch (err) {
+    console.warn(`Failed to add ${bookId} to ${userId}'s shelf:`, err);
+  }
 }
 
 function downloadImportFailureResponse(error, body) {
@@ -2330,7 +2346,7 @@ function downloadImportFailureResponse(error, body) {
 async function handleDownloadRequest(req, res) {
   const progress = req.importProgress || (() => {});
   try {
-    const result = await importDownloadedBook(req.body, progress);
+    const result = await importDownloadedBook(req.body, progress, { addedBy: positionUserId(req) });
     return res.json({
       success: true,
       bookId: result.bookId,
@@ -2380,9 +2396,10 @@ app.post('/api/download', async (req, res) => {
   const progress = progressForImportJob(job);
   progress(1, 'Queued import');
 
+  const importUserId = positionUserId(req);
   setImmediate(async () => {
     try {
-      const result = await importDownloadedBook(req.body, progress);
+      const result = await importDownloadedBook(req.body, progress, { addedBy: importUserId });
       const payload = {
         success: true,
         bookId: result.bookId,
@@ -2438,6 +2455,7 @@ async function handleUploadImport(req, res) {
   const bookId = crypto.createHash('md5')
     .update(originalName + Date.now())
     .digest('hex');
+  const uploadUserId = positionUserId(req);
   try {
     const result = await bookImporter.import({
       kind: 'upload',
@@ -2445,8 +2463,10 @@ async function handleUploadImport(req, res) {
       originalName,
       sourcePath: req.file.path,
       selected: { language: 'en' },
-      downloadSource: 'upload'
+      downloadSource: 'upload',
+      addedBy: uploadUserId
     });
+    if (result?.bookId) await addBookToShelf(uploadUserId, result.bookId);
     return res.json({
       success: true,
       bookId: result.bookId,
@@ -2510,10 +2530,51 @@ app.get('/health', (req, res) => {
 
 app.get('/api/library', async (req, res) => {
   try {
-    const books = await loadJSON(BOOKS_FILE, {});
-    res.json({ books: await Promise.all(Object.values(books).map(book => publicBookRecordWithCoverArtifact(book))) });
+    const userId = positionUserId(req);
+    const [books, shelvesStore] = await Promise.all([
+      loadJSON(BOOKS_FILE, {}),
+      loadJSON(SHELVES_FILE, {})
+    ]);
+    const shelf = new Set(shelves.shelfForUser(shelvesStore, userId));
+    res.json({
+      userId,
+      shelf: [...shelf].filter(bookId => books[bookId]),
+      books: await Promise.all(Object.values(books).map(book => publicBookRecordWithCoverArtifact(book)))
+    });
   } catch (err) {
     sendServerError(res, err, "Failed to load library");
+  }
+});
+
+app.post('/api/shelf/:bookId', async (req, res) => {
+  try {
+    const { bookId } = req.params;
+    if (!isSafeBookId(bookId)) return res.status(400).json({ error: 'Invalid book identifier' });
+    const books = await loadJSON(BOOKS_FILE, {});
+    if (!books[bookId]) return res.status(404).json({ error: 'Book not found' });
+    const userId = positionUserId(req);
+    await updateJSON(SHELVES_FILE, (data) => {
+      shelves.addToShelf(data, userId, bookId);
+    });
+    res.json({ success: true });
+  } catch (err) {
+    sendServerError(res, err, "Failed to update shelf");
+  }
+});
+
+app.delete('/api/shelf/:bookId', async (req, res) => {
+  try {
+    const { bookId } = req.params;
+    if (!isSafeBookId(bookId)) return res.status(400).json({ error: 'Invalid book identifier' });
+    const userId = positionUserId(req);
+    const removed = await updateJSON(SHELVES_FILE, (data) => {
+      const found = shelves.removeFromShelf(data, userId, bookId);
+      return found || jsonStore.SKIP_SAVE;
+    });
+    if (removed === jsonStore.SKIP_SAVE) return res.status(404).json({ error: 'Book is not on your shelf' });
+    res.json({ success: true });
+  } catch (err) {
+    sendServerError(res, err, "Failed to update shelf");
   }
 });
 
@@ -2565,6 +2626,10 @@ app.delete('/api/book/:bookId', async (req, res) => {
     // Remove saved bookmarks for this book across all sync users.
     await updateJSON(BOOKMARKS_FILE, (bookmarks) => {
       removeBookBookmarks(bookmarks, bookId);
+    });
+    // Remove the book from every user's shelf.
+    await updateJSON(SHELVES_FILE, (data) => {
+      shelves.removeBookFromAllShelves(data, bookId);
     });
     res.json({
       success: true,

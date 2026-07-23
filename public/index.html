@@ -11,7 +11,7 @@
   <title>Xandrio - Audiobook Library</title>
   <link rel="preload" href="/fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin>
   <!-- ?v= values must match ASSET_VERSIONS in sw.js (single source of truth) -->
-  <link rel="stylesheet" href="style-v3.css?v=73">
+  <link rel="stylesheet" href="style-v3.css?v=74">
   <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=2">
 </head>
 <body>
@@ -67,6 +67,11 @@
         <button id="library-search-close" class="library-search-close" aria-label="Close search"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="icon"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg></button>
       </div>
 
+      <div id="library-tabs" class="library-tabs" role="tablist" aria-label="Library scope">
+        <button data-library-tab="shelf" class="library-tab active" role="tab">My Shelf</button>
+        <button data-library-tab="all" class="library-tab" role="tab">All Books</button>
+      </div>
+
       <div class="library-controls">
         <div class="control-row">
           <select id="sort-select" aria-label="Sort books">
@@ -84,6 +89,8 @@
       </div>
 
       <div id="continue-rail" class="continue-rail" hidden></div>
+
+      <p id="shelf-empty-hint" class="shelf-empty-hint" hidden>Your shelf is empty — browse All Books and tap “+ Shelf” to add some.</p>
 
       <div id="library-list" class="book-list">
         <div class="empty-state-modern">

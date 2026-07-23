@@ -4887,3 +4887,49 @@ body.login-gate-open { overflow: hidden; }
 }
 .login-card input:focus { outline: none; border-color: var(--accent-border-strong); }
 .login-card .btn-primary { margin-top: 4px; }
+
+/* ─── Library tabs + shelf ─────────────────────────────────────────────── */
+.library-tabs {
+  display: flex;
+  gap: 6px;
+  padding: 0 16px;
+  margin: 4px 0 8px;
+}
+.library-tab {
+  padding: 6px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  background: var(--surface);
+  border: 1px solid transparent;
+  border-radius: 999px;
+  cursor: pointer;
+}
+.library-tab.active {
+  color: var(--accent-strong);
+  background: var(--accent-dim);
+  border-color: var(--accent-border-soft);
+}
+.shelf-empty-hint {
+  padding: 20px 16px;
+  color: var(--text-muted);
+  font-size: 13px;
+  text-align: center;
+}
+.shelf-toggle {
+  align-self: flex-start;
+  margin-top: 4px;
+  padding: 2px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  background: var(--surface-inset);
+  border: 1px solid var(--surface-hover);
+  border-radius: 999px;
+  cursor: pointer;
+}
+.shelf-toggle.on-shelf {
+  color: var(--accent-strong);
+  background: var(--accent-dim);
+  border-color: var(--accent-border-soft);
+}

@@ -23,6 +23,7 @@ const jsonStore = require('../lib/json-store');
 const { createAccountsStore, normalizeUsername } = require('../lib/accounts');
 const { createSessionStore } = require('../lib/auth');
 const { createUserLibraryState } = require('../lib/user-library-state');
+const shelves = require('../lib/shelves');
 
 const DATA_DIR = path.resolve(process.env.DATA_DIR || path.join(__dirname, '..', 'data'));
 const ACCOUNTS_FILE = path.join(DATA_DIR, 'accounts.json');
@@ -125,6 +126,18 @@ async function cmdAdd(username, flags) {
   });
   console.log(`Created ${account.role} account "${account.username}" (${account.id}).`);
   if (flags.absorbDefault) await absorbDefaultInto(account.id);
+  await seedShelf(account.id);
+}
+
+// Start the shelf with every book the user already has progress in.
+async function seedShelf(userId) {
+  const positions = userLibraryState.positionsForUser(await jsonStore.load(POSITIONS_FILE, {}), userId);
+  const bookIds = Object.keys(positions);
+  if (!bookIds.length) return;
+  await jsonStore.update(SHELVES_FILE, (data) => {
+    shelves.seedShelfFromPositions(data, userId, positions);
+  });
+  console.log(`Seeded shelf with ${bookIds.length} book(s) from existing reading progress.`);
 }
 
 async function cmdPasswd(username) {
