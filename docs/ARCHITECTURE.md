@@ -73,7 +73,7 @@ The project does not receive instance data. Operators should protect `data/`, `c
 
 ## Deployment boundary
 
-Supported operator modes are localhost/native Node.js, Docker or Docker Compose, Umbrel, and a private remote path such as Tailscale or a TLS reverse proxy. Local engines require a separately managed local model/runtime in the standard container path. Read [SELF_HOSTING.md](SELF_HOSTING.md) before exposing an instance to a network.
+Supported operator modes are localhost/native Node.js, Docker or Docker Compose, Umbrel, and a private remote path such as Tailscale or a TLS reverse proxy. Local engines require a separately managed local model/runtime in the standard container path. Read [SELF_HOSTING.md](SELF_HOSTING.md) before exposing an instance to a network, and [DEPLOYMENT_TOPOLOGY.md](DEPLOYMENT_TOPOLOGY.md) for the reference split between a public web instance (accounts, Edge TTS) and a local engine host (Kokoro/Chatterbox).
 
 ## Design constraints
 
