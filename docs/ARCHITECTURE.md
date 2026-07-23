@@ -35,6 +35,32 @@ Provider result labels communicate whether a result is an operator upload, carri
 
 Edge sends narration text to Microsoft through an unofficial consumer-endpoint integration. Kokoro and Chatterbox send narration to the local host chosen by the operator. Chatterbox can read an operator-supplied voice reference. See [PRIVACY.md](PRIVACY.md) for the outbound-data table.
 
+## Accounts and authentication
+
+Three modes share one auth stack (`lib/auth.js`, `lib/accounts.js`):
+
+- **Trusted-LAN** — no `XANDRIO_TOKEN` and no accounts: every caller is an
+  implicit admin, and per-device sync profiles (self-asserted
+  `X-Xandrio-User-Id` header) namespace positions and bookmarks.
+- **Shared token** — `XANDRIO_TOKEN` set, no accounts: the historical
+  single-credential mode; browsers exchange the token for a session cookie.
+- **Accounts** — one or more username/password accounts exist
+  (`data/accounts.json`, scrypt-hashed; managed by
+  `scripts/manage-accounts.js`): browsers sign in with credentials and get an
+  opaque, revocable server-side session (`data/sessions.json` stores only the
+  token's sha256). The session — never a client header — determines whose
+  positions, bookmarks, settings, and shelf a request touches. Roles: admins
+  manage instance settings, provider credentials, and any book; members keep
+  full library powers (import, TTS, downloads) and can delete only books they
+  added. A still-configured `XANDRIO_TOKEN` stays valid as an
+  admin-equivalent `Authorization: Bearer` credential for scripts.
+
+Account ids share the `usr_*` space with the older sync profiles, so binding
+an account to an existing profile id (`manage-accounts.js add --profile`)
+adopts its data with no migration. Every user sees the shared library
+(`books.json`); `data/shelves.json` holds each user's personal shelf, and the
+TTS cache stays shared because it is keyed by book and voice, not user.
+
 ## Storage boundary
 
 The project does not receive instance data. Operators should protect `data/`, `cache/`, `.env`, backups, and browser site storage as private data. `data/` can include provider configuration, sessions, sync state, and voice metadata; `cache/` can include books, extracted text artifacts, audio, and voice samples. The default container mounts `data/` and `cache/` as persistent volumes.
