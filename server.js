@@ -366,6 +366,7 @@ async function downloadFromAnnasDirect(hash, outputPath) {
   const apiRemote = await requestRemote(apiUrl, {
     timeoutMs: 30000,
     maxRedirects: 3,
+    proxyUrl: process.env.BOOK_PROXY_URL || undefined,
     headersForUrl: () => headers
   });
   let data;
@@ -386,6 +387,7 @@ async function downloadFromAnnasDirect(hash, outputPath) {
   const downloadRemote = await requestRemote(data.download_url, {
     timeoutMs: 120000,
     maxRedirects: 3,
+    proxyUrl: process.env.BOOK_PROXY_URL || undefined,
     headersForUrl: () => ({ 'User-Agent': headers['User-Agent'] })
   });
   try {
