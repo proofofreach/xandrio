@@ -265,11 +265,11 @@ export function initSettings(options = {}) {
           annasKeyUpdated.textContent = detail;
         }
         const environmentManaged = data.keySource === 'environment';
-        annasEditBtn.disabled = environmentManaged;
+        annasEditBtn.disabled = false;
         annasDisconnectBtn.disabled = environmentManaged;
-        annasEditBtn.textContent = environmentManaged ? 'Managed by environment' : 'Replace local key';
-        annasEditBtn.title = environmentManaged ? 'Update ANNAS_SECRET_KEY in the server environment and restart Xandrio.' : '';
-        annasDisconnectBtn.title = environmentManaged ? 'Remove ANNAS_SECRET_KEY from the server environment and restart Xandrio.' : '';
+        annasEditBtn.textContent = environmentManaged ? 'Override environment key' : 'Replace local key';
+        annasEditBtn.title = environmentManaged ? 'A key saved here takes precedence over ANNAS_SECRET_KEY; no restart needed.' : '';
+        annasDisconnectBtn.title = environmentManaged ? 'The active key comes from ANNAS_SECRET_KEY; there is no Settings key to remove.' : '';
         annasSavedBaseUrl = data.baseUrl;
         annasForm.style.display = 'none';
         annasCancelEditBtn.style.display = 'none';
@@ -329,7 +329,7 @@ export function initSettings(options = {}) {
       const result = await apiSend('DELETE', '/api/annas/configure');
       await checkAnnasStatus();
       if (result.configured && result.keySource === 'environment') {
-        annasError.textContent = 'Local settings were removed, but ANNAS_SECRET_KEY is still active. Replace or remove it in the server environment and restart Xandrio.';
+        annasError.textContent = 'Settings key removed; the environment key (ANNAS_SECRET_KEY) is active again. Save a key here to override it.';
         annasError.style.display = 'block';
       }
     } catch (err) {
