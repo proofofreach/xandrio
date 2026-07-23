@@ -1,4 +1,4 @@
-import { apiGet, apiSend, getCurrentUserId, setCurrentUserId, getCurrentDeviceId, getCurrentDeviceName, resetSyncUser, isDefaultSyncUser } from '../api.js';
+import { apiGet, apiSend, getCurrentUser, logout, getCurrentUserId, setCurrentUserId, getCurrentDeviceId, getCurrentDeviceName, resetSyncUser, isDefaultSyncUser } from '../api.js';
 import { navigateTo } from '../router.js';
 import { loadClientSettings, getClientSettings, getSkipInterval, getProgressDisplayMode, getDefaultSearchSources, setClientSetting } from '../client-settings.js';
 import { loadLibrary } from './library.js';
@@ -6,6 +6,7 @@ import { initVoices, loadVoices, stopVoiceSample } from './voices.js';
 import { readText, writeText } from '../util/storage.js';
 import { escapeHTML, relativeTime } from '../util/format.js';
 import { confirmSheet } from '../ui/confirm.js';
+import { showToast } from '../ui/toast.js';
 import { renderSegmentedControl } from '../ui/segmented.js';
 
 let deps = {};
@@ -52,12 +53,31 @@ export function initSettings(options = {}) {
   const syncForm = document.getElementById('sync-form');
   const syncProfileInput = document.getElementById('sync-profile-input');
   const syncStartBtn = document.getElementById('sync-start-btn');
-  const syncCodeBtn = document.getElementById('sync-code-btn');
   const syncForgetBtn = document.getElementById('sync-forget-btn');
-  const syncCodeOutput = document.getElementById('sync-code-output');
-  const syncCodeInput = document.getElementById('sync-code-input');
-  const syncClaimBtn = document.getElementById('sync-claim-btn');
   const syncError = document.getElementById('sync-error');
+  const syncSection = document.getElementById('sync-section');
+
+  // Account elements (signed-in username/password sessions)
+  const accountSection = document.getElementById('account-section');
+  const accountDisplayName = document.getElementById('account-display-name');
+  const accountUsernameHint = document.getElementById('account-username-hint');
+  const accountRole = document.getElementById('account-role');
+  const accountDeviceList = document.getElementById('account-device-list');
+  const accountChangePasswordBtn = document.getElementById('account-change-password-btn');
+  const accountLogoutBtn = document.getElementById('account-logout-btn');
+  const accountPasswordForm = document.getElementById('account-password-form');
+  const accountCurrentPassword = document.getElementById('account-current-password');
+  const accountNewPassword = document.getElementById('account-new-password');
+  const accountPasswordSaveBtn = document.getElementById('account-password-save-btn');
+  const accountPasswordCancelBtn = document.getElementById('account-password-cancel-btn');
+  const accountError = document.getElementById('account-error');
+  const adminAccounts = document.getElementById('admin-accounts');
+  const adminAccountList = document.getElementById('admin-account-list');
+  const adminNewUsername = document.getElementById('admin-new-username');
+  const adminNewPassword = document.getElementById('admin-new-password');
+  const adminNewIsAdmin = document.getElementById('admin-new-is-admin');
+  const adminAddAccountBtn = document.getElementById('admin-add-account-btn');
+  const adminAccountsError = document.getElementById('admin-accounts-error');
 
   // Playback settings
   const skipIntervalControl = document.getElementById('skip-interval-control');
@@ -89,7 +109,7 @@ export function initSettings(options = {}) {
     checkAnnasStatus();
     checkZlibStatus();
     loadProviderStatus();
-    loadSyncStatus();
+    loadAccountOrSync();
     renderClientSettings();
     loadPremiumPrepSetting();
     loadVoices();
@@ -166,7 +186,7 @@ export function initSettings(options = {}) {
     annas: { detail: 'Optional key and upstream access; review provider terms before enabling.' },
     zlibrary: { detail: 'Search is available without an account; downloads require a connected account.' },
     internetarchive: { detail: 'Availability does not determine reuse or narration rights.' },
-    opds: { detail: 'The operator selects the catalog and its access controls.' }
+    opds: { detail: 'Connect your own OPDS catalog (Calibre-Web, Kavita, COPS). The operator selects the catalog and its access controls.' }
   };
 
   function providerEnablement(provider = {}) {
@@ -517,7 +537,6 @@ export function initSettings(options = {}) {
         </div>
       `).join('');
     }
-    if (syncCodeOutput) syncCodeOutput.style.display = 'none';
   }
 
   async function loadSyncStatus() {
@@ -559,46 +578,220 @@ export function initSettings(options = {}) {
     }
   });
 
-  syncCodeBtn?.addEventListener('click', async () => {
-    syncCodeBtn.disabled = true;
-    syncCodeBtn.textContent = 'Creating...';
-    setSyncError('');
+  // ---- Account section (username/password sessions) ----
+
+  function setAccountError(message) {
+    if (!accountError) return;
+    accountError.textContent = message || '';
+    accountError.style.display = message ? 'block' : 'none';
+  }
+
+  async function loadAccountSection() {
+    const user = getCurrentUser();
+    if (!user) return;
+    if (accountDisplayName) accountDisplayName.textContent = user.displayName || user.username;
+    if (accountUsernameHint) accountUsernameHint.textContent = `@${user.username}`;
+    if (accountRole) accountRole.textContent = user.role;
+    setAccountError('');
+    // Registering this device also returns the account's device list.
     try {
-      const data = await apiSend('POST', '/api/sync/pairing-code', { deviceId: getCurrentDeviceId(), deviceName: getCurrentDeviceName() });
-      if (!data.success) throw new Error(data.error || 'Could not create pairing code');
-      syncCodeOutput.textContent = `Enter ${data.formattedCode || data.code} on the other device. Expires in 10 minutes.`;
-      syncCodeOutput.style.display = 'block';
+      const data = await apiSend('POST', '/api/sync/device', {
+        deviceId: getCurrentDeviceId(),
+        deviceName: getCurrentDeviceName()
+      });
+      const devices = data.profile?.devices || [];
+      if (accountDeviceList) {
+        accountDeviceList.innerHTML = devices.map(device => `
+          <div class="sync-device-row">
+            <span>${escapeHTML(device.name || 'Device')}${device.id === getCurrentDeviceId() ? ' · this device' : ''}</span>
+            <small>${escapeHTML(device.lastSeenAt ? relativeTime(device.lastSeenAt) : 'not seen yet')}</small>
+          </div>
+        `).join('');
+      }
     } catch (err) {
-      setSyncError(err.message);
+      console.warn('Device registration failed:', err);
+    }
+    if (adminAccounts) adminAccounts.style.display = user.role === 'admin' ? 'block' : 'none';
+    if (user.role === 'admin') loadAdminAccounts();
+  }
+
+  // ---- Admin: manage accounts ----
+
+  let adminResetTargetId = null;
+
+  function setAdminAccountsError(message) {
+    if (!adminAccountsError) return;
+    adminAccountsError.textContent = message || '';
+    adminAccountsError.style.display = message ? 'block' : 'none';
+  }
+
+  function adminAccountRowHTML(account) {
+    const self = account.id === getCurrentUser()?.id;
+    const label = `${escapeHTML(account.displayName || account.username)} <small>@${escapeHTML(account.username)} · ${escapeHTML(account.role)}${account.disabled ? ' · disabled' : ''}${self ? ' · you' : ''}</small>`;
+    const actions = adminResetTargetId === account.id ? '' : `
+      <span class="admin-account-actions">
+        <button class="btn-ghost btn-sm" data-admin-reset="${escapeHTML(account.id)}">Reset password</button>
+        ${self ? '' : `<button class="btn-ghost btn-sm${account.disabled ? '' : ' btn-ghost-danger'}" data-admin-toggle="${escapeHTML(account.id)}" data-admin-disabled="${account.disabled ? '0' : '1'}">${account.disabled ? 'Enable' : 'Disable'}</button>`}
+      </span>`;
+    const resetForm = adminResetTargetId === account.id ? `
+      <div class="settings-form admin-reset-form">
+        <input type="password" data-admin-reset-input="${escapeHTML(account.id)}" placeholder="New password (min 8 characters)" autocomplete="new-password" />
+        <div class="settings-form-buttons">
+          <button class="btn-primary btn-sm" data-admin-reset-save="${escapeHTML(account.id)}">Save</button>
+          <button class="btn-ghost btn-sm" data-admin-reset-cancel>Cancel</button>
+        </div>
+      </div>` : '';
+    return `
+      <div class="sync-device-row admin-account-row">
+        <span>${label}</span>
+        ${actions}
+      </div>
+      ${resetForm}`;
+  }
+
+  let adminAccountsCache = [];
+
+  async function loadAdminAccounts() {
+    if (!adminAccountList) return;
+    setAdminAccountsError('');
+    try {
+      const data = await apiGet('/api/accounts');
+      adminAccountsCache = data.accounts || [];
+      renderAdminAccounts();
+    } catch (err) {
+      setAdminAccountsError(err.message || 'Failed to load accounts');
+    }
+  }
+
+  function renderAdminAccounts() {
+    if (!adminAccountList) return;
+    adminAccountList.innerHTML = adminAccountsCache.map(adminAccountRowHTML).join('');
+  }
+
+  adminAddAccountBtn?.addEventListener('click', async (e) => {
+    e.preventDefault();
+    setAdminAccountsError('');
+    adminAddAccountBtn.disabled = true;
+    try {
+      await apiSend('POST', '/api/accounts', {
+        username: adminNewUsername?.value.trim() || '',
+        password: adminNewPassword?.value || '',
+        role: adminNewIsAdmin?.checked ? 'admin' : 'member'
+      });
+      if (adminNewUsername) adminNewUsername.value = '';
+      if (adminNewPassword) adminNewPassword.value = '';
+      if (adminNewIsAdmin) adminNewIsAdmin.checked = false;
+      showToast('Account created');
+      await loadAdminAccounts();
+    } catch (err) {
+      setAdminAccountsError(err.message || 'Failed to create account');
     } finally {
-      syncCodeBtn.disabled = false;
-      syncCodeBtn.textContent = 'Show Join Code';
+      adminAddAccountBtn.disabled = false;
     }
   });
 
-  syncClaimBtn?.addEventListener('click', async () => {
-    const code = syncCodeInput?.value.trim();
-    if (!code) {
-      setSyncError('Enter the pairing code from your other device');
+  adminAccountList?.addEventListener('click', async (e) => {
+    const resetBtn = e.target.closest('[data-admin-reset]');
+    if (resetBtn) {
+      adminResetTargetId = resetBtn.dataset.adminReset;
+      renderAdminAccounts();
+      adminAccountList.querySelector(`[data-admin-reset-input="${CSS.escape(adminResetTargetId)}"]`)?.focus();
       return;
     }
-    syncClaimBtn.disabled = true;
-    syncClaimBtn.textContent = 'Pairing...';
-    setSyncError('');
-    try {
-      const data = await apiSend('POST', '/api/sync/claim-code', { code, deviceId: getCurrentDeviceId(), deviceName: getCurrentDeviceName() });
-      if (!data.success) throw new Error(data.error || 'Could not pair device');
-      setCurrentUserId(data.userId);
-      await reloadClientSettingsForSyncUser();
-      syncCodeInput.value = '';
-      renderSyncProfile(data.profile);
-      loadLibrary();
-    } catch (err) {
-      setSyncError(err.message);
-    } finally {
-      syncClaimBtn.disabled = false;
-      syncClaimBtn.textContent = 'Link Device';
+    if (e.target.closest('[data-admin-reset-cancel]')) {
+      adminResetTargetId = null;
+      renderAdminAccounts();
+      return;
     }
+    const saveBtn = e.target.closest('[data-admin-reset-save]');
+    if (saveBtn) {
+      const id = saveBtn.dataset.adminResetSave;
+      const input = adminAccountList.querySelector(`[data-admin-reset-input="${CSS.escape(id)}"]`);
+      setAdminAccountsError('');
+      try {
+        await apiSend('POST', `/api/accounts/${encodeURIComponent(id)}/password`, { newPassword: input?.value || '' });
+        adminResetTargetId = null;
+        renderAdminAccounts();
+        showToast('Password reset. That account was signed out everywhere.');
+      } catch (err) {
+        setAdminAccountsError(err.message || 'Failed to reset password');
+      }
+      return;
+    }
+    const toggleBtn = e.target.closest('[data-admin-toggle]');
+    if (toggleBtn) {
+      const id = toggleBtn.dataset.adminToggle;
+      const disabled = toggleBtn.dataset.adminDisabled === '1';
+      if (disabled) {
+        const account = adminAccountsCache.find(item => item.id === id);
+        const ok = await confirmSheet({
+          title: 'Disable account',
+          message: `Disable "${account?.username || id}"? They will be signed out everywhere and cannot sign in until re-enabled.`,
+          confirmLabel: 'Disable'
+        });
+        if (!ok) return;
+      }
+      setAdminAccountsError('');
+      try {
+        await apiSend('POST', `/api/accounts/${encodeURIComponent(id)}/disabled`, { disabled });
+        await loadAdminAccounts();
+      } catch (err) {
+        setAdminAccountsError(err.message || 'Failed to update account');
+      }
+    }
+  });
+
+  // Shows the account section for signed-in users, the legacy sync-profile
+  // section for trusted-LAN instances without accounts.
+  function loadAccountOrSync() {
+    const user = getCurrentUser();
+    if (accountSection) accountSection.style.display = user ? 'block' : 'none';
+    if (syncSection) syncSection.style.display = user ? 'none' : 'block';
+    if (user) loadAccountSection();
+    else loadSyncStatus();
+  }
+
+  function toggleAccountPasswordForm(visible) {
+    if (!accountPasswordForm) return;
+    accountPasswordForm.style.display = visible ? 'flex' : 'none';
+    setAccountError('');
+    if (visible) accountCurrentPassword?.focus();
+    else {
+      if (accountCurrentPassword) accountCurrentPassword.value = '';
+      if (accountNewPassword) accountNewPassword.value = '';
+    }
+  }
+
+  accountChangePasswordBtn?.addEventListener('click', () => {
+    toggleAccountPasswordForm(accountPasswordForm?.style.display === 'none');
+  });
+  accountPasswordCancelBtn?.addEventListener('click', () => toggleAccountPasswordForm(false));
+
+  accountPasswordSaveBtn?.addEventListener('click', async (e) => {
+    e.preventDefault();
+    setAccountError('');
+    accountPasswordSaveBtn.disabled = true;
+    try {
+      await apiSend('POST', '/api/auth/change-password', {
+        currentPassword: accountCurrentPassword?.value || '',
+        newPassword: accountNewPassword?.value || ''
+      });
+      toggleAccountPasswordForm(false);
+      showToast('Password updated. Other devices were signed out.');
+    } catch (err) {
+      setAccountError(err.message || 'Failed to change password');
+    } finally {
+      accountPasswordSaveBtn.disabled = false;
+    }
+  });
+
+  accountLogoutBtn?.addEventListener('click', async () => {
+    try {
+      await logout();
+    } catch (err) {
+      console.warn('Logout request failed:', err);
+    }
+    window.location.reload();
   });
 
   syncForgetBtn?.addEventListener('click', async () => {

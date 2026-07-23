@@ -79,6 +79,8 @@ section('2. canonical sync profile state');
   const profile = state.publicProfile(user, 'dev_phone');
   assertEqual(state.userIdFromRequest({ headers: { 'x-xandrio-user-id': 'usr_alice' }, query: {}, body: {} }), 'usr_alice', 'Uses a valid sync user header');
   assertEqual(state.userIdFromRequest({ headers: { 'x-xandrio-user-id': 'bad/user' }, query: {}, body: {} }), 'default', 'Rejects unsafe sync user identifiers');
+  assertEqual(state.userIdFromRequest({ user: { id: 'usr_account' }, headers: { 'x-xandrio-user-id': 'usr_alice' }, query: {}, body: {} }), 'usr_account', 'An authenticated account overrides self-asserted headers');
+  assertEqual(state.userIdFromRequest({ user: { id: null, lan: true }, headers: { 'x-xandrio-user-id': 'usr_alice' }, query: {}, body: {} }), 'usr_alice', 'Trusted-LAN callers keep header-based sync identity');
   assertEqual(profile.deviceId, 'dev_phone', 'Includes the active device in public profile state');
   assertEqual(profile.devices[0].name, 'Alice Phone', 'Normalizes display names before publishing devices');
 })();

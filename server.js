@@ -49,7 +49,10 @@ const { registerBookmarksRoutes, removeBookBookmarks } = require('./lib/routes/b
 const { registerOperatorPolicyRoutes } = require('./lib/routes/operator-policy-routes');
 const jsonStore = require('./lib/json-store');
 const { computeListeningStats } = require('./lib/listening-stats');
-const { createAuthMiddleware, createAuthRoutes, DEFAULT_SESSION_TTL_MS } = require('./lib/auth');
+const { createAuthMiddleware, createAuthRoutes, createSessionStore, requireAdmin, DEFAULT_SESSION_TTL_MS } = require('./lib/auth');
+const { createAccountsStore } = require('./lib/accounts');
+const shelves = require('./lib/shelves');
+const { registerAccountRoutes } = require('./lib/routes/accounts-routes');
 const { createRateLimitMiddleware, positiveInteger } = require('./lib/rate-limit');
 const { createGracefulShutdown } = require('./lib/graceful-shutdown');
 const {
@@ -216,7 +219,16 @@ const CONCURRENCY_LIMITS = Object.freeze({
 });
 const SESSION_TTL_HOURS = positiveInteger(process.env.XANDRIO_SESSION_TTL_HOURS, 30 * 24);
 const SESSION_TTL_MS = Math.min(SESSION_TTL_HOURS * 60 * 60 * 1000, 90 * 24 * 60 * 60 * 1000, DEFAULT_SESSION_TTL_MS * 3);
-const authRoutes = createAuthRoutes({ token: XANDRIO_TOKEN, sessionTtlMs: SESSION_TTL_MS });
+const ACCOUNTS_FILE = path.join(DATA_DIR, 'accounts.json');
+const SESSIONS_FILE = path.join(DATA_DIR, 'sessions.json');
+const accountsStore = createAccountsStore({ filePath: ACCOUNTS_FILE, jsonStore });
+const accountSessionStore = createSessionStore({ filePath: SESSIONS_FILE, jsonStore, ttlMs: SESSION_TTL_MS });
+const authRoutes = createAuthRoutes({
+  token: XANDRIO_TOKEN,
+  sessionTtlMs: SESSION_TTL_MS,
+  accounts: accountsStore,
+  sessionStore: accountSessionStore
+});
 app.use(createRateLimitMiddleware({ windowMs: RATE_LIMIT_WINDOW, max: RATE_LIMIT_MAX }));
 const requestConcurrencyLimiter = createConcurrencyLimitMiddleware({
   groups: defaultConcurrencyGroups(CONCURRENCY_LIMITS)
@@ -225,7 +237,28 @@ app.use(requestConcurrencyLimiter);
 app.post('/api/auth/login', authRoutes.login);
 app.post('/api/auth/logout', authRoutes.logout);
 app.get('/api/auth/status', authRoutes.status);
-app.use(createAuthMiddleware({ token: XANDRIO_TOKEN }));
+app.use(createAuthMiddleware({ token: XANDRIO_TOKEN, accounts: accountsStore, sessionStore: accountSessionStore, sessionTtlMs: SESSION_TTL_MS }));
+app.post('/api/auth/change-password', authRoutes.changePassword);
+registerAccountRoutes(app, { accounts: accountsStore, sessionStore: accountSessionStore, requireAdmin });
+
+// Instance-wide configuration stays admin-only once accounts exist; in
+// trusted-LAN and shared-token modes every caller resolves as admin, so
+// these guards are inert until the first account is created. The guard
+// layers run before the matching handlers registered further down and fall
+// through via next() when the caller is an admin.
+const ADMIN_ONLY_ROUTES = [
+  ['post', '/api/voice'],
+  ['post', '/api/premium-prep/settings'],
+  ['put', '/api/legal/operator-policy'],
+  ['post', '/api/annas/configure'],
+  ['delete', '/api/annas/configure'],
+  ['post', '/api/zlibrary/configure'],
+  ['delete', '/api/zlibrary/configure'],
+  ['post', '/api/gutenberg/configure']
+];
+for (const [method, route] of ADMIN_ONLY_ROUTES) {
+  app[method](route, requireAdmin);
+}
 app.get('/sw.js', (req, res, next) => {
   res.setHeader('Cache-Control', 'no-store');
   res.setHeader('Service-Worker-Allowed', '/');
@@ -273,8 +306,8 @@ const POSITIONS_FILE = path.join(DATA_DIR, 'positions.json');
 const SETTINGS_FILE = path.join(DATA_DIR, 'settings.json');
 const ANNAS_AUTH_FILE = path.join(DATA_DIR, 'annas-auth.json');
 const USERS_FILE = path.join(DATA_DIR, 'users.json');
-const PAIRING_CODES_FILE = path.join(DATA_DIR, 'pairing-codes.json');
 const BOOKMARKS_FILE = path.join(DATA_DIR, 'bookmarks.json');
+const SHELVES_FILE = path.join(DATA_DIR, 'shelves.json');
 const CLIENT_SETTINGS_FILE = path.join(DATA_DIR, 'client-settings.json');
 const CUSTOM_VOICES_FILE = path.join(DATA_DIR, 'custom-voices.json');
 const PRONUNCIATIONS_FILE = path.join(DATA_DIR, 'pronunciations.json');
@@ -366,6 +399,7 @@ async function downloadFromAnnasDirect(hash, outputPath) {
   const apiRemote = await requestRemote(apiUrl, {
     timeoutMs: 30000,
     maxRedirects: 3,
+    proxyUrl: process.env.BOOK_PROXY_URL || undefined,
     headersForUrl: () => headers
   });
   let data;
@@ -386,6 +420,7 @@ async function downloadFromAnnasDirect(hash, outputPath) {
   const downloadRemote = await requestRemote(data.download_url, {
     timeoutMs: 120000,
     maxRedirects: 3,
+    proxyUrl: process.env.BOOK_PROXY_URL || undefined,
     headersForUrl: () => ({ 'User-Agent': headers['User-Agent'] })
   });
   try {
@@ -2268,10 +2303,24 @@ function downloadImportCommand(body, { download = searchProviders.download.bind(
   };
 }
 
-async function importDownloadedBook(body, progress) {
+async function importDownloadedBook(body, progress, { addedBy = null } = {}) {
   const command = downloadImportCommand(body);
+  if (addedBy) command.addedBy = addedBy;
   deletedBookIds.delete(command.id);
-  return bookImporter.import(command, progress);
+  const result = await bookImporter.import(command, progress);
+  if (addedBy && result?.bookId) await addBookToShelf(addedBy, result.bookId);
+  return result;
+}
+
+// Imports land on the importer's personal shelf automatically.
+async function addBookToShelf(userId, bookId) {
+  try {
+    await updateJSON(SHELVES_FILE, (data) => {
+      shelves.addToShelf(data, userId, bookId);
+    });
+  } catch (err) {
+    console.warn(`Failed to add ${bookId} to ${userId}'s shelf:`, err);
+  }
 }
 
 function downloadImportFailureResponse(error, body) {
@@ -2299,7 +2348,7 @@ function downloadImportFailureResponse(error, body) {
 async function handleDownloadRequest(req, res) {
   const progress = req.importProgress || (() => {});
   try {
-    const result = await importDownloadedBook(req.body, progress);
+    const result = await importDownloadedBook(req.body, progress, { addedBy: positionUserId(req) });
     return res.json({
       success: true,
       bookId: result.bookId,
@@ -2349,9 +2398,10 @@ app.post('/api/download', async (req, res) => {
   const progress = progressForImportJob(job);
   progress(1, 'Queued import');
 
+  const importUserId = positionUserId(req);
   setImmediate(async () => {
     try {
-      const result = await importDownloadedBook(req.body, progress);
+      const result = await importDownloadedBook(req.body, progress, { addedBy: importUserId });
       const payload = {
         success: true,
         bookId: result.bookId,
@@ -2407,6 +2457,7 @@ async function handleUploadImport(req, res) {
   const bookId = crypto.createHash('md5')
     .update(originalName + Date.now())
     .digest('hex');
+  const uploadUserId = positionUserId(req);
   try {
     const result = await bookImporter.import({
       kind: 'upload',
@@ -2414,8 +2465,10 @@ async function handleUploadImport(req, res) {
       originalName,
       sourcePath: req.file.path,
       selected: { language: 'en' },
-      downloadSource: 'upload'
+      downloadSource: 'upload',
+      addedBy: uploadUserId
     });
+    if (result?.bookId) await addBookToShelf(uploadUserId, result.bookId);
     return res.json({
       success: true,
       bookId: result.bookId,
@@ -2479,10 +2532,51 @@ app.get('/health', (req, res) => {
 
 app.get('/api/library', async (req, res) => {
   try {
-    const books = await loadJSON(BOOKS_FILE, {});
-    res.json({ books: await Promise.all(Object.values(books).map(book => publicBookRecordWithCoverArtifact(book))) });
+    const userId = positionUserId(req);
+    const [books, shelvesStore] = await Promise.all([
+      loadJSON(BOOKS_FILE, {}),
+      loadJSON(SHELVES_FILE, {})
+    ]);
+    const shelf = new Set(shelves.shelfForUser(shelvesStore, userId));
+    res.json({
+      userId,
+      shelf: [...shelf].filter(bookId => books[bookId]),
+      books: await Promise.all(Object.values(books).map(book => publicBookRecordWithCoverArtifact(book)))
+    });
   } catch (err) {
     sendServerError(res, err, "Failed to load library");
+  }
+});
+
+app.post('/api/shelf/:bookId', async (req, res) => {
+  try {
+    const { bookId } = req.params;
+    if (!isSafeBookId(bookId)) return res.status(400).json({ error: 'Invalid book identifier' });
+    const books = await loadJSON(BOOKS_FILE, {});
+    if (!books[bookId]) return res.status(404).json({ error: 'Book not found' });
+    const userId = positionUserId(req);
+    await updateJSON(SHELVES_FILE, (data) => {
+      shelves.addToShelf(data, userId, bookId);
+    });
+    res.json({ success: true });
+  } catch (err) {
+    sendServerError(res, err, "Failed to update shelf");
+  }
+});
+
+app.delete('/api/shelf/:bookId', async (req, res) => {
+  try {
+    const { bookId } = req.params;
+    if (!isSafeBookId(bookId)) return res.status(400).json({ error: 'Invalid book identifier' });
+    const userId = positionUserId(req);
+    const removed = await updateJSON(SHELVES_FILE, (data) => {
+      const found = shelves.removeFromShelf(data, userId, bookId);
+      return found || jsonStore.SKIP_SAVE;
+    });
+    if (removed === jsonStore.SKIP_SAVE) return res.status(404).json({ error: 'Book is not on your shelf' });
+    res.json({ success: true });
+  } catch (err) {
+    sendServerError(res, err, "Failed to update shelf");
   }
 });
 
@@ -2493,9 +2587,17 @@ app.delete('/api/book/:bookId', async (req, res) => {
     if (!isSafeBookId(bookId)) {
       return res.status(400).json({ error: 'Invalid book identifier' });
     }
+    let forbidden = false;
     const deletion = await updateJSON(BOOKS_FILE, async (books) => {
       const book = books[bookId];
       if (!book) return jsonStore.SKIP_SAVE;
+
+      // Members may delete only books they added; shared books (no addedBy)
+      // and other users' books are admin-only deletions.
+      if (req.user?.role === 'member' && book.addedBy !== req.user.id) {
+        forbidden = true;
+        return jsonStore.SKIP_SAVE;
+      }
 
       rememberDeletedBookId(bookId);
 
@@ -2511,6 +2613,9 @@ app.delete('/api/book/:bookId', async (req, res) => {
       return { cancelledJobs, artifactCleanup };
     });
 
+    if (forbidden) {
+      return res.status(403).json({ error: 'Only the book owner or an admin can delete this book' });
+    }
     if (deletion === jsonStore.SKIP_SAVE) {
       return res.status(404).json({ error: 'Book not found' });
     }
@@ -2523,6 +2628,10 @@ app.delete('/api/book/:bookId', async (req, res) => {
     // Remove saved bookmarks for this book across all sync users.
     await updateJSON(BOOKMARKS_FILE, (bookmarks) => {
       removeBookBookmarks(bookmarks, bookId);
+    });
+    // Remove the book from every user's shelf.
+    await updateJSON(SHELVES_FILE, (data) => {
+      shelves.removeBookFromAllShelves(data, bookId);
     });
     res.json({
       success: true,
@@ -3274,8 +3383,11 @@ app.get('/api/sync/profile', async (req, res) => {
 app.post('/api/sync/profile', async (req, res) => {
   try {
     const now = new Date().toISOString();
+    // Account sessions always operate on their own profile; only trusted-LAN
+    // and legacy shared-token callers may still self-assert a profile id.
     const requestedUserId = sanitizeSyncId(req.body?.userId, '');
-    const userId = requestedUserId && requestedUserId !== DEFAULT_USER_ID ? requestedUserId : newUserId();
+    const userId = req.user?.id
+      || (requestedUserId && requestedUserId !== DEFAULT_USER_ID ? requestedUserId : newUserId());
     const deviceId = syncDeviceId(req);
     const deviceName = req.body?.deviceName || req.headers['x-xandrio-device-name'];
     const profileName = syncDisplayName(req.body?.name, 'My Library', 80);
@@ -3293,7 +3405,10 @@ app.post('/api/sync/profile', async (req, res) => {
       return record;
     });
 
-    const migrateFromUserId = sanitizeSyncId(req.body?.migrateFromUserId, '');
+    let migrateFromUserId = sanitizeSyncId(req.body?.migrateFromUserId, '');
+    // Account sessions may only absorb the shared legacy "default" data;
+    // merging from another account would expose that user's positions.
+    if (req.user?.id && migrateFromUserId !== DEFAULT_USER_ID) migrateFromUserId = '';
     if (migrateFromUserId && migrateFromUserId !== userId) {
       await updateJSON(POSITIONS_FILE, (data) => {
         migratePositions(data, migrateFromUserId, userId);
@@ -3326,81 +3441,6 @@ app.post('/api/sync/device', async (req, res) => {
     res.json({ success: true, userId, deviceId, profile: publicSyncProfile(user, deviceId) });
   } catch (err) {
     sendServerError(res, err, "Failed to register device");
-  }
-});
-
-app.post('/api/sync/pairing-code', async (req, res) => {
-  try {
-    const userId = positionUserId(req);
-    if (userId === DEFAULT_USER_ID) {
-      return res.status(400).json({ error: 'Create a sync profile before pairing another device' });
-    }
-    const deviceId = syncDeviceId(req);
-    const found = await updateJSON(USERS_FILE, (data) => {
-      const users = normalizeUsersStore(data);
-      const user = users.users[userId];
-      if (!user) return jsonStore.SKIP_SAVE;
-      upsertDevice(user, deviceId, req.body?.deviceName || req.headers['x-xandrio-device-name']);
-      return true;
-    });
-    if (found === jsonStore.SKIP_SAVE) {
-      return res.status(404).json({ error: 'Sync profile not found' });
-    }
-
-    let issued;
-    await updateJSON(PAIRING_CODES_FILE, (pairings) => {
-      issued = userLibraryState.issuePairingCode(pairings, userId);
-    }, { codes: [] });
-    res.json({
-      success: true,
-      code: issued.code,
-      formattedCode: `${issued.code.slice(0, 3)}-${issued.code.slice(3)}`,
-      expiresInSeconds: issued.expiresInSeconds
-    });
-  } catch (err) {
-    sendServerError(res, err, "Failed to create pairing code");
-  }
-});
-
-app.post('/api/sync/claim-code', async (req, res) => {
-  try {
-    const code = normalizePairingCode(req.body?.code);
-    if (code.length !== 6) {
-      return res.status(400).json({ error: 'Invalid pairing code' });
-    }
-    const deviceId = syncDeviceId(req);
-    let claim = null;
-    // Nested locks: pairings → users (the only nesting; pairing-code
-    // acquires them sequentially, so the order can't deadlock).
-    await updateJSON(PAIRING_CODES_FILE, async (pairings) => {
-      const entry = userLibraryState.findPairingClaim(pairings, code);
-      if (!entry) {
-        claim = { status: 404, error: 'Pairing code expired or not found' };
-        return; // still save the pruned list
-      }
-
-      const user = await updateJSON(USERS_FILE, (data) => {
-        const users = normalizeUsersStore(data);
-        const record = users.users[entry.userId];
-        if (!record) return jsonStore.SKIP_SAVE;
-        upsertDevice(record, deviceId, req.body?.deviceName || req.headers['x-xandrio-device-name']);
-        return record;
-      });
-      if (user === jsonStore.SKIP_SAVE) {
-        claim = { status: 404, error: 'Sync profile not found' };
-        return jsonStore.SKIP_SAVE;
-      }
-
-      userLibraryState.consumePairingClaim(entry);
-      claim = { status: 200, userId: entry.userId, user };
-    }, { codes: [] });
-
-    if (claim.status !== 200) {
-      return res.status(claim.status).json({ error: claim.error });
-    }
-    res.json({ success: true, userId: claim.userId, deviceId, profile: publicSyncProfile(claim.user, deviceId) });
-  } catch (err) {
-    sendServerError(res, err, "Failed to claim pairing code");
   }
 });
 

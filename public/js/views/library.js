@@ -1,6 +1,6 @@
 import { apiGet, apiSend } from '../api.js';
 import { formatDuration, escapeHTML, safeAttr, relativeTime, coverImageHTML, cssEscape } from '../util/format.js';
-import { readJSON, writeJSON } from '../util/storage.js';
+import { readJSON, writeJSON, readText, writeText } from '../util/storage.js';
 import { confirmSheet } from '../ui/confirm.js';
 import { showToast, showUndoToast } from '../ui/toast.js';
 import { onActivate } from '../ui/keys.js';
@@ -16,7 +16,11 @@ const RAIL_PLAY_GLYPH = `
   </svg>
 `;
 
+const LIBRARY_TAB_KEY = 'xandrio_library_tab';
+
 let deps = {};
+let currentShelf = new Set();
+let currentTab = 'shelf';
 let librarySearch = null;
 let sortSelect = null;
 let viewToggleIcon = null;
@@ -99,7 +103,15 @@ function progressMetaLine(progress) {
   return parts.join(' · ');
 }
 
-function renderBookCard(book, position) {
+function shelfToggleHTML(id, title, onShelf) {
+  return `
+    <button class="shelf-toggle${onShelf ? ' on-shelf' : ''}" data-shelf-toggle="${safeAttr(id)}"
+            aria-label="${onShelf ? `Remove ${safeAttr(title)} from my shelf` : `Add ${safeAttr(title)} to my shelf`}">
+      ${onShelf ? '✓ On shelf' : '+ Shelf'}
+    </button>`;
+}
+
+function renderBookCard(book, position, onShelf = false) {
   const progress = bookProgressInfo(book, position);
   const id = String(book.id || '');
   const title = book.title || 'Untitled';
@@ -116,6 +128,7 @@ function renderBookCard(book, position) {
   return `
     <div class="book-item${progress?.finished ? ' finished' : ''}"
          data-book-id="${safeAttr(id)}"
+         data-on-shelf="${onShelf ? '1' : '0'}"
          data-added="${safeAttr(book.addedAt || '')}"
          data-last-read="${safeAttr(position?.updatedAt || book.addedAt || '')}"
          data-finished="${progress?.finished ? '1' : '0'}"
@@ -131,6 +144,7 @@ function renderBookCard(book, position) {
           <p>${escapeHTML(author)}</p>
           ${metaLine}
           ${finishedBadge}
+          ${shelfToggleHTML(id, title, onShelf)}
         </div>
         ${progressBar}
       </div>
@@ -258,7 +272,13 @@ export async function loadLibrary() {
   }
 
   if ('ontouchstart' in window || navigator.maxTouchPoints > 0) document.body.classList.add('touch-device');
-  libraryList.innerHTML = data.books.map(book => renderBookCard(book, positions[book.id] || null)).join('');
+  currentShelf = new Set(Array.isArray(data.shelf) ? data.shelf : []);
+  // Default to "My shelf" per stored preference, but never open on an empty
+  // shelf — fall back to the shared pool.
+  const storedTab = readText(LIBRARY_TAB_KEY, 'shelf');
+  currentTab = (storedTab === 'shelf' && currentShelf.size === 0) ? 'all' : storedTab;
+  syncLibraryTabs();
+  libraryList.innerHTML = data.books.map(book => renderBookCard(book, positions[book.id] || null, currentShelf.has(book.id))).join('');
   const continueEntries = data.books
     .map(book => ({ book, progress: bookProgressInfo(book, positions[book.id]) }))
     .filter(entry => entry.progress && !entry.progress.finished)
@@ -268,17 +288,65 @@ export async function loadLibrary() {
   renderContinueRail(continueEntries);
   if (continueRail && librarySearch?.value.trim()) continueRail.hidden = true;
   sortLibrary();
+  filterLibrary();
   setupSwipeDelete();
 }
 
+function syncLibraryTabs() {
+  document.querySelectorAll('[data-library-tab]').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.libraryTab === currentTab);
+  });
+}
+
+// A card is visible when it matches the search query AND the active tab
+// ("My shelf" vs "All books"). Both paths funnel through here so the two
+// filters can't fight over the hidden class.
 function filterLibrary() {
-  const query = librarySearch.value.toLowerCase().trim();
-  document.querySelectorAll('.book-item').forEach(item => {
+  const query = librarySearch?.value.toLowerCase().trim() || '';
+  let visibleCount = 0;
+  document.querySelectorAll('.book-item:not(.skeleton)').forEach(item => {
     const title = item.querySelector('h3')?.textContent.toLowerCase() || '';
     const author = item.querySelector('p')?.textContent.toLowerCase() || '';
-    item.classList.toggle('hidden', !(title.includes(query) || author.includes(query)));
+    const matchesQuery = !query || title.includes(query) || author.includes(query);
+    const matchesTab = currentTab === 'all' || item.dataset.onShelf === '1';
+    const visible = matchesQuery && matchesTab;
+    item.classList.toggle('hidden', !visible);
+    if (visible) visibleCount++;
   });
   if (continueRail) continueRail.hidden = query.length > 0 || !continueRailHasEntries;
+  const emptyShelfHint = document.getElementById('shelf-empty-hint');
+  if (emptyShelfHint) emptyShelfHint.hidden = !(currentTab === 'shelf' && visibleCount === 0 && !query);
+}
+
+function setLibraryTab(tab) {
+  currentTab = tab === 'all' ? 'all' : 'shelf';
+  writeText(LIBRARY_TAB_KEY, currentTab);
+  syncLibraryTabs();
+  filterLibrary();
+}
+
+async function toggleShelfMembership(bookId, button) {
+  const onShelf = currentShelf.has(bookId);
+  button.disabled = true;
+  try {
+    if (onShelf) {
+      await apiSend('DELETE', `/api/shelf/${encodeURIComponent(bookId)}`);
+      currentShelf.delete(bookId);
+    } else {
+      await apiSend('POST', `/api/shelf/${encodeURIComponent(bookId)}`);
+      currentShelf.add(bookId);
+    }
+    const card = button.closest('.book-item');
+    if (card) card.dataset.onShelf = currentShelf.has(bookId) ? '1' : '0';
+    button.classList.toggle('on-shelf', currentShelf.has(bookId));
+    button.textContent = currentShelf.has(bookId) ? '✓ On shelf' : '+ Shelf';
+    filterLibrary();
+  } catch (err) {
+    console.error('Shelf update failed:', err);
+    showToast('Could not update your shelf', 'error');
+  } finally {
+    button.disabled = false;
+  }
 }
 
 function sortLibrary() {
@@ -478,6 +546,10 @@ export function initLibrary(options = {}) {
   });
   librarySearch?.addEventListener('input', filterLibrary);
   sortSelect?.addEventListener('change', sortLibrary);
+  document.getElementById('library-tabs')?.addEventListener('click', (e) => {
+    const tabBtn = e.target.closest('[data-library-tab]');
+    if (tabBtn) setLibraryTab(tabBtn.dataset.libraryTab);
+  });
   document.getElementById('view-toggle-btn')?.addEventListener('click', toggleView);
 
   const libraryList = document.getElementById('library-list');
@@ -492,6 +564,12 @@ export function initLibrary(options = {}) {
     if (deleteBtn) {
       e.stopPropagation();
       showDeleteModal(deleteBtn.dataset.deleteBookId, deleteBtn.dataset.deleteBookTitle, deleteBtn.dataset.deleteBookAuthor);
+      return;
+    }
+    const shelfBtn = e.target.closest('[data-shelf-toggle]');
+    if (shelfBtn) {
+      e.stopPropagation();
+      toggleShelfMembership(shelfBtn.dataset.shelfToggle, shelfBtn);
       return;
     }
     const bookItem = e.target.closest('.book-item');

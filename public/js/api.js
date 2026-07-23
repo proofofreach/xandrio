@@ -14,37 +14,79 @@ export const API_BASE = window.location.origin;
 localStorage.removeItem('xandrioToken'); // Remove the legacy script-readable token.
 document.cookie = 'xandrio_token=; path=/; max-age=0; SameSite=Lax';
 
-let promptingForToken = false;
-async function handleUnauthorized() {
-  if (promptingForToken) return;
-  promptingForToken = true;
-  const token = window.prompt('This server requires an access token (XANDRIO_TOKEN). Enter it to continue:');
-  if (token && token.trim()) {
-    try {
-      const response = await __originalFetch(`${API_BASE}/api/auth/login`, {
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ token: token.trim() })
-      });
-      if (response.ok) {
-        window.location.reload();
-        return;
-      }
-      window.alert('The access token was not accepted.');
-    } catch {
-      window.alert('Could not contact the server to start a session.');
-    }
-  }
-  promptingForToken = false;
+// ---- Authenticated account ----
+// Populated from /api/auth/status during boot and after login. When an
+// account session exists the server derives identity from the session
+// cookie; the legacy X-Xandrio-User-Id sync header is then omitted.
+let currentUser = null;
+
+export function getCurrentUser() {
+  return currentUser;
+}
+
+export function setCurrentUser(user) {
+  currentUser = user && user.id ? user : null;
+}
+
+export async function fetchAuthStatus() {
+  const response = await window.fetch(`${API_BASE}/api/auth/status`, { credentials: 'same-origin' });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  const status = await response.json();
+  setCurrentUser(status.user);
+  return status;
+}
+
+// A 401 anywhere means the session expired or was revoked. The login view
+// listens for this event and raises the sign-in gate; the flag keeps a burst
+// of failing requests from dispatching a storm of events.
+let unauthorizedSignaled = false;
+function handleUnauthorized() {
+  if (unauthorizedSignaled) return;
+  unauthorizedSignaled = true;
+  document.dispatchEvent(new CustomEvent('xandrio:unauthorized'));
+}
+
+export function resetUnauthorizedSignal() {
+  unauthorizedSignaled = false;
 }
 
 const __originalFetch = window.fetch.bind(window);
 window.fetch = async (input, init) => {
   const response = await __originalFetch(input, init);
-  if (response.status === 401) void handleUnauthorized();
+  if (response.status === 401) handleUnauthorized();
   return response;
 };
+
+export async function login(username, password) {
+  const response = await __originalFetch(`${API_BASE}/api/auth/login`, {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password })
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || 'Sign-in failed');
+  setCurrentUser(data.user);
+  resetUnauthorizedSignal();
+  return data.user || null;
+}
+
+// Bootstrap-mode login (no accounts yet, XANDRIO_TOKEN still the credential).
+export async function loginWithToken(token) {
+  const response = await __originalFetch(`${API_BASE}/api/auth/login`, {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token })
+  });
+  if (!response.ok) throw new Error('The access token was not accepted.');
+  resetUnauthorizedSignal();
+}
+
+export async function logout() {
+  await __originalFetch(`${API_BASE}/api/auth/logout`, { method: 'POST', credentials: 'same-origin' });
+  setCurrentUser(null);
+}
 
 // ---- Sync identity (user/device headers on every position/sync call) ----
 
@@ -64,6 +106,7 @@ function createLocalSyncId(prefix) {
 }
 
 export function getCurrentUserId() {
+  if (currentUser?.id) return currentUser.id;
   const stored = localStorage.getItem(SYNC_USER_KEY);
   if (stored && /^[A-Za-z0-9_-]{1,64}$/.test(stored)) return stored;
   localStorage.setItem(SYNC_USER_KEY, DEFAULT_SYNC_USER_ID);
@@ -104,12 +147,15 @@ export function getCurrentDeviceName() {
 }
 
 export function syncHeaders(extra = {}) {
-  return {
-    'X-Xandrio-User-Id': getCurrentUserId(),
+  const headers = {
     'X-Xandrio-Device-Id': getCurrentDeviceId(),
     'X-Xandrio-Device-Name': getCurrentDeviceName(),
     ...extra
   };
+  // Account sessions carry identity in the cookie; the self-asserted user
+  // header remains only for trusted-LAN instances without accounts.
+  if (!currentUser) headers['X-Xandrio-User-Id'] = getCurrentUserId();
+  return headers;
 }
 
 export async function apiSend(method, path, body = null, options = {}) {

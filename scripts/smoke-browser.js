@@ -590,7 +590,9 @@ async function verifySearchWorkspace(page, fixtureState) {
     const languageLabel = document.querySelector('.search-language-filter > span')?.getBoundingClientRect();
     const sourceLabel = document.querySelector('.search-source-shelf-header')?.getBoundingClientRect();
     const languageControl = document.getElementById('language-filter')?.getBoundingClientRect();
-    const sourceControl = document.querySelector('[data-search-source]')?.getBoundingClientRect();
+    // Pills sit below their group's overline label, so the column alignment
+    // guard measures the group cluster, not the first pill.
+    const sourceControl = document.querySelector('.search-source-group')?.getBoundingClientRect();
     return {
       labelOffset: Math.abs((languageLabel?.top || 0) - (sourceLabel?.top || 0)),
       controlOffset: Math.abs((languageControl?.top || 0) - (sourceControl?.top || 0))
