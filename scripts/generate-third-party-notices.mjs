@@ -9,13 +9,20 @@ const rows = [];
 
 for (const [location, entry] of Object.entries(lock.packages || {})) {
   if (!location.startsWith('node_modules/') || !entry.version) continue;
+  const lockName = location.slice(location.lastIndexOf('node_modules/') + 'node_modules/'.length);
+  // Platform-restricted optional packages (e.g. fsevents) are absent from
+  // installs on other platforms, so their metadata must come from the lock —
+  // otherwise the generated file differs between macOS and Linux.
+  const platformRestricted = Boolean(entry.optional) && Array.isArray(entry.os);
   const manifest = resolve(root, location, 'package.json');
-  if (!existsSync(manifest)) continue;
-  const pkg = JSON.parse(readFileSync(manifest, 'utf8'));
-  const license = typeof pkg.license === 'string'
-    ? pkg.license
-    : Array.isArray(pkg.licenses) ? pkg.licenses.map(item => item.type || item).join(' OR ') : 'UNKNOWN';
-  rows.push({ name: pkg.name || location.slice('node_modules/'.length), version: entry.version, license, repository: pkg.repository });
+  const pkg = !platformRestricted && existsSync(manifest) ? JSON.parse(readFileSync(manifest, 'utf8')) : null;
+  const license = pkg
+    ? (typeof pkg.license === 'string'
+      ? pkg.license
+      : Array.isArray(pkg.licenses) ? pkg.licenses.map(item => item.type || item).join(' OR ') : 'UNKNOWN')
+    : (typeof entry.license === 'string' ? entry.license : 'UNKNOWN');
+  const repository = pkg ? pkg.repository : `https://www.npmjs.com/package/${lockName}`;
+  rows.push({ name: pkg?.name || lockName, version: entry.version, license, repository });
 }
 
 rows.sort((a, b) => a.name.localeCompare(b.name) || a.version.localeCompare(b.version));

@@ -1,14 +1,14 @@
 const APP_RELEASE = '1.1.0';
-const CACHE_VERSION = 'xandrio-v73';
+const CACHE_VERSION = 'xandrio-v77';
 const OFFLINE_AUDIO_CACHE = 'xandrio-offline-audio';
 // Single source of truth for the versioned shell assets. The <link>/<script>
 // tags in index.html must carry the SAME ?v= values — update both together,
 // and bump CACHE_VERSION whenever any APP_SHELL entry changes (including the
 // un-versioned js/ modules below, which only invalidate via CACHE_VERSION).
 const ASSET_VERSIONS = {
-  '/style-v3.css': 71,
+  '/style-v3.css': 75,
   '/js/chunk-player.js': 17,
-  '/app.js': 86
+  '/app.js': 87
 };
 const versionedAsset = (path) => `${path}?v=${ASSET_VERSIONS[path]}`;
 const APP_SHELL = [
@@ -34,6 +34,7 @@ const APP_SHELL = [
   '/js/views/library.js',
   '/js/views/search.js',
   '/js/views/settings.js',
+  '/js/views/login.js',
   '/js/views/stats.js',
   '/js/views/voices.js',
   '/js/views/player-ui.js',

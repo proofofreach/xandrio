@@ -11,7 +11,7 @@
   <title>Xandrio - Audiobook Library</title>
   <link rel="preload" href="/fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin>
   <!-- ?v= values must match ASSET_VERSIONS in sw.js (single source of truth) -->
-  <link rel="stylesheet" href="style-v3.css?v=71">
+  <link rel="stylesheet" href="style-v3.css?v=75">
   <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=2">
 </head>
 <body>
@@ -21,6 +21,22 @@
     <span>You're offline. Downloaded books are still available.</span>
   </div>
   <div id="queue-status" class="queue-status" role="status" aria-live="polite" hidden></div>
+
+  <!-- Sign-in gate: covers the app until a session exists -->
+  <div id="login-view" class="login-gate" role="dialog" aria-modal="true" aria-labelledby="login-title">
+    <form id="login-form" class="login-card">
+      <img src="icon-xandrio-ankh.png" alt="" class="login-logo">
+      <h1 id="login-title">Xandrio</h1>
+      <p id="login-hint" class="login-hint">Sign in with your Xandrio account.</p>
+      <div id="login-username-row">
+        <input type="text" id="login-username" placeholder="Username" autocomplete="username" autocapitalize="none" spellcheck="false" />
+      </div>
+      <input type="password" id="login-password" placeholder="Password" autocomplete="current-password" />
+      <p id="login-error" class="settings-error" style="display:none"></p>
+      <button type="submit" id="login-submit" class="btn-primary">Sign In</button>
+    </form>
+  </div>
+
   <div id="app">
     <!-- Library View -->
     <div id="library-view" class="view active">
@@ -51,6 +67,11 @@
         <button id="library-search-close" class="library-search-close" aria-label="Close search"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="icon"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg></button>
       </div>
 
+      <div id="library-tabs" class="library-tabs" role="tablist" aria-label="Library scope">
+        <button data-library-tab="shelf" class="library-tab active" role="tab">My Shelf</button>
+        <button data-library-tab="all" class="library-tab" role="tab">All Books</button>
+      </div>
+
       <div class="library-controls">
         <div class="control-row">
           <select id="sort-select" aria-label="Sort books">
@@ -68,6 +89,8 @@
       </div>
 
       <div id="continue-rail" class="continue-rail" hidden></div>
+
+      <p id="shelf-empty-hint" class="shelf-empty-hint" hidden>Your shelf is empty — browse All Books and tap “+ Shelf” to add some.</p>
 
       <div id="library-list" class="book-list">
         <div class="empty-state-modern">
@@ -218,12 +241,21 @@
                 </div>
                 <fieldset id="default-search-sources" class="source-default-list">
                   <legend class="sr-only">Default search sources</legend>
-                  <label><input type="checkbox" value="standardebooks" /> <span>Standard Ebooks</span></label>
-                  <label><input type="checkbox" value="gutenberg" /> <span>Project Gutenberg</span></label>
-                  <label><input type="checkbox" value="annas" /> <span>Anna's Archive</span></label>
-                  <label><input type="checkbox" value="zlibrary" /> <span>Z-Library</span></label>
-                  <label><input type="checkbox" value="internetarchive" /> <span>Internet Archive</span></label>
-                  <label><input type="checkbox" value="opds" /> <span>OPDS catalog</span></label>
+                  <div class="source-default-group">
+                    <span class="source-default-group-label">Public domain</span>
+                    <label><input type="checkbox" value="standardebooks" /> <span class="source-default-copy"><span>Standard Ebooks</span><small>Carefully formatted public-domain EPUBs</small></span></label>
+                    <label><input type="checkbox" value="gutenberg" /> <span class="source-default-copy"><span>Project Gutenberg</span><small>Large public-domain library</small></span></label>
+                  </div>
+                  <div class="source-default-group">
+                    <span class="source-default-group-label">Libraries</span>
+                    <label><input type="checkbox" value="annas" /> <span class="source-default-copy"><span>Anna's Archive</span><small>Broad coverage; rights unverified</small></span></label>
+                    <label><input type="checkbox" value="zlibrary" /> <span class="source-default-copy"><span>Z-Library</span><small>Broad coverage; downloads need an account</small></span></label>
+                    <label><input type="checkbox" value="internetarchive" /> <span class="source-default-copy"><span>Internet Archive</span><small>Scanned and digitized texts; rights unverified</small></span></label>
+                  </div>
+                  <div class="source-default-group">
+                    <span class="source-default-group-label">Your catalogs</span>
+                    <label><input type="checkbox" value="opds" /> <span class="source-default-copy"><span>My catalog (OPDS)</span><small>Your own OPDS server — Calibre-Web, Kavita, COPS</small></span></label>
+                  </div>
                 </fieldset>
                 <p id="default-search-sources-error" class="settings-error" aria-live="polite"></p>
               </div>
@@ -299,8 +331,60 @@
           </div>
         </details>
 
-        <!-- Sync -->
-        <details class="settings-section">
+        <!-- Account (shown when signed in with a username/password account) -->
+        <details class="settings-section" id="account-section" style="display:none" open>
+          <summary class="settings-section-header">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="width:18px;height:18px"><path stroke-linecap="round" stroke-linejoin="round" d="M17.982 18.725A7.488 7.488 0 0012 15.75a7.488 7.488 0 00-5.982 2.975m11.963 0a9 9 0 10-11.963 0m11.963 0A8.966 8.966 0 0112 21a8.966 8.966 0 01-5.982-2.275M15 9.75a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+            Account
+          </summary>
+          <div class="settings-section-body">
+            <div class="settings-row">
+              <div class="settings-label">
+                <span class="settings-label-text" id="account-display-name">Signed in</span>
+                <span id="account-username-hint" class="settings-label-hint"></span>
+              </div>
+              <span id="account-role" class="settings-status settings-status-ok">member</span>
+            </div>
+            <div id="account-device-list" class="sync-device-list"></div>
+            <div class="settings-actions">
+              <button id="account-change-password-btn" class="btn-ghost btn-sm">Change Password</button>
+              <button id="account-logout-btn" class="btn-ghost btn-ghost-danger btn-sm">Sign Out</button>
+            </div>
+            <div id="account-password-form" class="settings-form" style="display:none">
+              <input type="password" id="account-current-password" placeholder="Current password" autocomplete="current-password" />
+              <input type="password" id="account-new-password" placeholder="New password (min 8 characters)" autocomplete="new-password" />
+              <div class="settings-form-buttons">
+                <button id="account-password-save-btn" class="btn-primary btn-sm">Update Password</button>
+                <button id="account-password-cancel-btn" class="btn-ghost btn-sm">Cancel</button>
+              </div>
+            </div>
+            <p id="account-error" class="settings-error" style="display:none"></p>
+
+            <!-- Admin-only account management -->
+            <div id="admin-accounts" style="display:none">
+              <div class="settings-row">
+                <div class="settings-label">
+                  <span class="settings-label-text">Accounts</span>
+                  <span class="settings-label-hint">Manage who can sign in to this server</span>
+                </div>
+                <span class="settings-status">Admin</span>
+              </div>
+              <div id="admin-account-list" class="sync-device-list"></div>
+              <div id="admin-account-form" class="settings-form">
+                <input type="text" id="admin-new-username" placeholder="Username (a-z, 0-9, _ or -)" autocomplete="off" autocapitalize="none" spellcheck="false" />
+                <input type="password" id="admin-new-password" placeholder="Password (min 8 characters)" autocomplete="new-password" />
+                <label class="admin-role-check"><input type="checkbox" id="admin-new-is-admin" /> Admin account</label>
+                <div class="settings-form-buttons">
+                  <button id="admin-add-account-btn" class="btn-primary btn-sm">Add Account</button>
+                </div>
+              </div>
+              <p id="admin-accounts-error" class="settings-error" style="display:none"></p>
+            </div>
+          </div>
+        </details>
+
+        <!-- Sync (legacy trusted-LAN profiles; hidden when signed in) -->
+        <details class="settings-section" id="sync-section">
           <summary class="settings-section-header">
             <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="width:18px;height:18px"><path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001m-4.992.001a8.25 8.25 0 00-13.07 2.577m13.07-2.577L18.75 6.62M7.977 14.652H2.985v.001m4.992-.001a8.25 8.25 0 0013.07-2.577m-13.07 2.577L5.25 17.38"/></svg>
             Sync
@@ -316,22 +400,14 @@
               <div id="sync-connected-info" class="settings-info" style="display:none">
                 <span id="sync-profile-name" class="settings-info-text"></span>
                 <div class="settings-actions">
-                  <button id="sync-code-btn" class="btn-ghost btn-sm">Show Join Code</button>
                   <button id="sync-forget-btn" class="btn-ghost btn-ghost-danger btn-sm">Forget This Device</button>
                 </div>
-                <p id="sync-code-output" class="settings-hint" style="display:none"></p>
                 <div id="sync-device-list" class="sync-device-list"></div>
               </div>
             <div id="sync-form" class="settings-form">
               <input type="text" id="sync-profile-input" placeholder="Profile name" autocomplete="off" />
               <div class="settings-form-buttons">
                 <button id="sync-start-btn" class="btn-primary btn-sm">Create Profile</button>
-              </div>
-            </div>
-            <div class="settings-form">
-              <input type="text" id="sync-code-input" placeholder="Pairing code" inputmode="numeric" autocomplete="one-time-code" />
-              <div class="settings-form-buttons">
-                <button id="sync-claim-btn" class="btn-ghost btn-sm">Link Device</button>
               </div>
             </div>
             <p id="sync-error" class="settings-error" style="display:none"></p>
@@ -857,6 +933,6 @@
   </div>
 
   <script src="/js/chunk-player.js?v=17"></script>
-  <script type="module" src="app.js?v=86"></script>
+  <script type="module" src="app.js?v=87"></script>
 </body>
 </html>

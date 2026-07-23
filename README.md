@@ -67,6 +67,8 @@ Copy [`.env.template`](.env.template) to `.env` and set only the features you us
 
 Common controls include `PORT`, `HOST`, `XANDRIO_TOKEN`, provider timeouts, upload/OCR limits, and local-engine URLs. The template is the current configuration reference.
 
+Multiple people can share one instance: create username/password accounts with `node --env-file-if-exists=.env scripts/manage-accounts.js add <username> [--admin]`. Each account gets its own reading progress, bookmarks, settings, and shelf over the shared library; sessions are per-device and revocable (sign-out, password change). See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the auth modes and role split.
+
 ## Project docs
 
 - [Self-hosting](docs/SELF_HOSTING.md)

@@ -1,6 +1,7 @@
 // api.js must be first: importing it installs the 401 token interceptor
 // before anything else can fetch.
-import { API_BASE, apiGet, apiSend, getCurrentUserId, getCurrentDeviceId, getCurrentDeviceName } from './js/api.js';
+import { API_BASE, apiGet, apiSend, fetchAuthStatus, getCurrentUserId, getCurrentDeviceId, getCurrentDeviceName } from './js/api.js';
+import { initLogin, showLoginGate } from './js/views/login.js';
 import { initRouter, navigateTo, syncPlayerHash, clearSheetStack } from './js/router.js';
 import { formatDuration, escapeHTML, cleanDisplayText, isIOSLike, coverPlaceholderSrc } from './js/util/format.js';
 import { showToast } from './js/ui/toast.js';
@@ -369,6 +370,32 @@ function maybePrepareUpcomingReliableAudio() {
 // Initialize when DOM is ready
 document.addEventListener('DOMContentLoaded', async () => {
   console.log('Xandrio initialized');
+
+  // Sign-in gate. When a session later expires mid-playback (any 401), pause
+  // so the local checkpoint survives, then the gate rises over the app.
+  initLogin({
+    onSessionExpired: () => {
+      if (chunkPlayer?.isPlaying) {
+        chunkPlayer.pause();
+        updatePlaybackUI(false);
+      }
+      checkpointPlayback();
+    }
+  });
+  let authStatus = null;
+  try {
+    authStatus = await fetchAuthStatus();
+  } catch (err) {
+    // Offline or server unreachable: continue booting so downloaded books
+    // stay playable; API calls will surface their own errors.
+    console.warn('Auth status unavailable:', err);
+  }
+  if (authStatus?.authenticationRequired && !authStatus.authenticated) {
+    // Halt boot behind the gate; a successful sign-in reloads the app.
+    showLoginGate({ tokenMode: !authStatus.accountsConfigured });
+    return;
+  }
+
   initializeDOMElements();  // Initialize DOM elements first
   await loadClientSettings();
   initPlayerUI({

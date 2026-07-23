@@ -52,6 +52,7 @@
     "cors": "^2.8.5",
     "epub": "2.1.1",
     "express": "5.2.1",
+    "https-proxy-agent": "^7.0.6",
     "multer": "2.2.0",
     "node-edge-tts": "1.2.10",
     "pdf-parse": "^2.4.5",
@@ -67,7 +68,7 @@
   "overrides": {
     "ws": "8.21.0",
     "qs": "6.15.3",
-    "brace-expansion": "1.1.13",
+    "brace-expansion": "1.1.16",
     "minimatch": "3.1.4",
     "tar": "7.5.16"
   }

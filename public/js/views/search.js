@@ -52,14 +52,41 @@ let searchRequestVersion = 0;
 const SEARCH_COVER_RETRY_DELAY_MS = 3000;
 const MOBILE_SEARCH_MEDIA = '(max-width: 759px)';
 
-const SEARCH_SOURCES = [
-  { id: 'standardebooks', label: 'Standard' },
-  { id: 'gutenberg', label: 'Gutenberg' },
-  { id: 'annas', label: "Anna's" },
-  { id: 'zlibrary', label: 'Z-Lib' },
-  { id: 'internetarchive', label: 'Archive' },
-  { id: 'opds', label: 'OPDS' }
+const SOURCE_GROUPS = [
+  { id: 'open', label: 'Public domain' },
+  { id: 'libraries', label: 'Libraries' },
+  { id: 'catalogs', label: 'Your catalogs' }
 ];
+
+// Fallback grouping when /api/search/sources has not loaded; otherwise the
+// server-reported rightsStatus decides the group.
+const RIGHTS_STATUS_GROUPS = {
+  'provider-metadata': 'open',
+  unverified: 'libraries',
+  'operator-configured': 'catalogs'
+};
+
+const SEARCH_SOURCES = [
+  { id: 'standardebooks', label: 'Standard', group: 'open' },
+  { id: 'gutenberg', label: 'Gutenberg', group: 'open' },
+  { id: 'annas', label: "Anna's", group: 'libraries' },
+  { id: 'zlibrary', label: 'Z-Lib', group: 'libraries' },
+  { id: 'internetarchive', label: 'Archive', group: 'libraries' },
+  { id: 'opds', label: 'My catalog', group: 'catalogs' }
+];
+
+function sourceGroupId(source) {
+  const rights = sourceAvailability.get(source.id)?.rightsStatus;
+  return RIGHTS_STATUS_GROUPS[rights] || source.group;
+}
+
+// The operator can name their OPDS catalog via OPDS_LABEL; show that name on
+// the pill. 'OPDS' is the server default, i.e. no name was configured.
+function sourcePillLabel(source) {
+  if (source.id !== 'opds') return source.label;
+  const serverLabel = sourceAvailability.get('opds')?.label;
+  return serverLabel && serverLabel !== 'OPDS' ? serverLabel : source.label;
+}
 
 // Search Functions
 // Helper: Convert quality score to star display
@@ -477,45 +504,54 @@ function renderSourceFailure(sourceIds) {
   return true;
 }
 
+function sourcePillHTML(source) {
+  const availability = sourceAvailability.get(source.id);
+  const configured = sourceSearchAvailable(source.id);
+  const selected = configured && selectedSources.has(source.id);
+  const status = latestSourceStatus[source.id];
+  const value = sourceValue(source, selected, configured);
+  const classes = [
+    'search-source-pill',
+    selected ? 'is-selected' : '',
+    !configured ? 'is-off' : '',
+    status && selected && !status.ok ? 'is-issue' : '',
+    searchInProgress && selected ? 'is-searching' : ''
+  ].filter(Boolean).join(' ');
+  const title = !configured
+    ? (source.id === 'opds' && availability?.configured === false
+      ? 'Connect your own OPDS catalog (Calibre-Web, Kavita, COPS) by setting OPDS_FEED_URL on this instance'
+      : `${availability?.label || source.label} requires configuration or acknowledgement on this instance`)
+    : (status && !status.ok
+      ? sourceIssueLabel(status)
+      : `${selected ? 'Exclude' : 'Include'} ${availability?.label || source.label}`);
+  return `
+    <button type="button" class="${classes}" data-search-source="${source.id}"
+      aria-pressed="${selected}" ${configured ? '' : 'disabled'} title="${safeAttr(title)}">
+      <span>${escapeHTML(sourcePillLabel(source))}</span>
+      ${value ? `<span class="search-source-value">${value}</span>` : ''}
+    </button>`;
+}
+
 function renderSourceShelf() {
   if (!sourceControls) return;
-  const orderedSources = SEARCH_SOURCES
-    .map((source, index) => ({ source, index }))
-    .sort((a, b) => {
-      const rank = item => {
-        const configured = sourceSearchAvailable(item.source.id);
-        if (!configured) return 2;
-        return selectedSources.has(item.source.id) ? 0 : 1;
-      };
-      return rank(a) - rank(b) || a.index - b.index;
-    })
-    .map(item => item.source);
+  const rank = source => {
+    if (!sourceSearchAvailable(source.id)) return 2;
+    return selectedSources.has(source.id) ? 0 : 1;
+  };
+  const groups = SOURCE_GROUPS.map(group => ({
+    group,
+    sources: SEARCH_SOURCES
+      .map((source, index) => ({ source, index }))
+      .filter(item => sourceGroupId(item.source) === group.id)
+      .sort((a, b) => rank(a.source) - rank(b.source) || a.index - b.index)
+      .map(item => item.source)
+  })).filter(entry => entry.sources.length);
 
-  sourceControls.innerHTML = orderedSources.map(source => {
-    const availability = sourceAvailability.get(source.id);
-    const configured = sourceSearchAvailable(source.id);
-    const selected = configured && selectedSources.has(source.id);
-    const status = latestSourceStatus[source.id];
-    const value = sourceValue(source, selected, configured);
-    const classes = [
-      'search-source-pill',
-      selected ? 'is-selected' : '',
-      !configured ? 'is-off' : '',
-      status && selected && !status.ok ? 'is-issue' : '',
-      searchInProgress && selected ? 'is-searching' : ''
-    ].filter(Boolean).join(' ');
-    const title = !configured
-      ? `${availability?.label || source.label} requires configuration or acknowledgement on this instance`
-      : (status && !status.ok
-        ? sourceIssueLabel(status)
-        : `${selected ? 'Exclude' : 'Include'} ${availability?.label || source.label}`);
-    return `
-      <button type="button" class="${classes}" data-search-source="${source.id}"
-        aria-pressed="${selected}" ${configured ? '' : 'disabled'} title="${safeAttr(title)}">
-        <span>${escapeHTML(source.label)}</span>
-        ${value ? `<span class="search-source-value">${value}</span>` : ''}
-      </button>`;
-  }).join('');
+  sourceControls.innerHTML = groups.map(({ group, sources }) => `
+    <div class="search-source-group" role="group" aria-label="${safeAttr(group.label)}">
+      <span class="search-source-group-label" aria-hidden="true">${escapeHTML(group.label)}</span>
+      <div class="search-source-group-pills">${sources.map(sourcePillHTML).join('')}</div>
+    </div>`).join('');
 
   const defaults = effectiveDefaultSources();
   const current = configuredSourceIds();
@@ -1172,7 +1208,10 @@ function getSourceLabel(source) {
   if (source === 'gutenberg') return 'Project Gutenberg';
   if (source === 'internetarchive') return 'Internet Archive';
   if (source === 'standardebooks') return 'Standard Ebooks';
-  if (source === 'opds') return 'OPDS catalog';
+  if (source === 'opds') {
+    const serverLabel = sourceAvailability.get('opds')?.label;
+    return serverLabel && serverLabel !== 'OPDS' ? serverLabel : 'My catalog';
+  }
   return 'Book source';
 }
 
