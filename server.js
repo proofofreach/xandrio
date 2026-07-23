@@ -49,7 +49,8 @@ const { registerBookmarksRoutes, removeBookBookmarks } = require('./lib/routes/b
 const { registerOperatorPolicyRoutes } = require('./lib/routes/operator-policy-routes');
 const jsonStore = require('./lib/json-store');
 const { computeListeningStats } = require('./lib/listening-stats');
-const { createAuthMiddleware, createAuthRoutes, DEFAULT_SESSION_TTL_MS } = require('./lib/auth');
+const { createAuthMiddleware, createAuthRoutes, createSessionStore, requireAdmin, DEFAULT_SESSION_TTL_MS } = require('./lib/auth');
+const { createAccountsStore } = require('./lib/accounts');
 const { createRateLimitMiddleware, positiveInteger } = require('./lib/rate-limit');
 const { createGracefulShutdown } = require('./lib/graceful-shutdown');
 const {
@@ -216,7 +217,16 @@ const CONCURRENCY_LIMITS = Object.freeze({
 });
 const SESSION_TTL_HOURS = positiveInteger(process.env.XANDRIO_SESSION_TTL_HOURS, 30 * 24);
 const SESSION_TTL_MS = Math.min(SESSION_TTL_HOURS * 60 * 60 * 1000, 90 * 24 * 60 * 60 * 1000, DEFAULT_SESSION_TTL_MS * 3);
-const authRoutes = createAuthRoutes({ token: XANDRIO_TOKEN, sessionTtlMs: SESSION_TTL_MS });
+const ACCOUNTS_FILE = path.join(DATA_DIR, 'accounts.json');
+const SESSIONS_FILE = path.join(DATA_DIR, 'sessions.json');
+const accountsStore = createAccountsStore({ filePath: ACCOUNTS_FILE, jsonStore });
+const accountSessionStore = createSessionStore({ filePath: SESSIONS_FILE, jsonStore, ttlMs: SESSION_TTL_MS });
+const authRoutes = createAuthRoutes({
+  token: XANDRIO_TOKEN,
+  sessionTtlMs: SESSION_TTL_MS,
+  accounts: accountsStore,
+  sessionStore: accountSessionStore
+});
 app.use(createRateLimitMiddleware({ windowMs: RATE_LIMIT_WINDOW, max: RATE_LIMIT_MAX }));
 const requestConcurrencyLimiter = createConcurrencyLimitMiddleware({
   groups: defaultConcurrencyGroups(CONCURRENCY_LIMITS)
@@ -225,7 +235,27 @@ app.use(requestConcurrencyLimiter);
 app.post('/api/auth/login', authRoutes.login);
 app.post('/api/auth/logout', authRoutes.logout);
 app.get('/api/auth/status', authRoutes.status);
-app.use(createAuthMiddleware({ token: XANDRIO_TOKEN }));
+app.use(createAuthMiddleware({ token: XANDRIO_TOKEN, accounts: accountsStore, sessionStore: accountSessionStore }));
+app.post('/api/auth/change-password', authRoutes.changePassword);
+
+// Instance-wide configuration stays admin-only once accounts exist; in
+// trusted-LAN and shared-token modes every caller resolves as admin, so
+// these guards are inert until the first account is created. The guard
+// layers run before the matching handlers registered further down and fall
+// through via next() when the caller is an admin.
+const ADMIN_ONLY_ROUTES = [
+  ['post', '/api/voice'],
+  ['post', '/api/premium-prep/settings'],
+  ['put', '/api/legal/operator-policy'],
+  ['post', '/api/annas/configure'],
+  ['delete', '/api/annas/configure'],
+  ['post', '/api/zlibrary/configure'],
+  ['delete', '/api/zlibrary/configure'],
+  ['post', '/api/gutenberg/configure']
+];
+for (const [method, route] of ADMIN_ONLY_ROUTES) {
+  app[method](route, requireAdmin);
+}
 app.get('/sw.js', (req, res, next) => {
   res.setHeader('Cache-Control', 'no-store');
   res.setHeader('Service-Worker-Allowed', '/');
@@ -2495,9 +2525,17 @@ app.delete('/api/book/:bookId', async (req, res) => {
     if (!isSafeBookId(bookId)) {
       return res.status(400).json({ error: 'Invalid book identifier' });
     }
+    let forbidden = false;
     const deletion = await updateJSON(BOOKS_FILE, async (books) => {
       const book = books[bookId];
       if (!book) return jsonStore.SKIP_SAVE;
+
+      // Members may delete only books they added; shared books (no addedBy)
+      // and other users' books are admin-only deletions.
+      if (req.user?.role === 'member' && book.addedBy !== req.user.id) {
+        forbidden = true;
+        return jsonStore.SKIP_SAVE;
+      }
 
       rememberDeletedBookId(bookId);
 
@@ -2513,6 +2551,9 @@ app.delete('/api/book/:bookId', async (req, res) => {
       return { cancelledJobs, artifactCleanup };
     });
 
+    if (forbidden) {
+      return res.status(403).json({ error: 'Only the book owner or an admin can delete this book' });
+    }
     if (deletion === jsonStore.SKIP_SAVE) {
       return res.status(404).json({ error: 'Book not found' });
     }
