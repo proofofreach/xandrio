@@ -303,7 +303,6 @@ const POSITIONS_FILE = path.join(DATA_DIR, 'positions.json');
 const SETTINGS_FILE = path.join(DATA_DIR, 'settings.json');
 const ANNAS_AUTH_FILE = path.join(DATA_DIR, 'annas-auth.json');
 const USERS_FILE = path.join(DATA_DIR, 'users.json');
-const PAIRING_CODES_FILE = path.join(DATA_DIR, 'pairing-codes.json');
 const BOOKMARKS_FILE = path.join(DATA_DIR, 'bookmarks.json');
 const CLIENT_SETTINGS_FILE = path.join(DATA_DIR, 'client-settings.json');
 const CUSTOM_VOICES_FILE = path.join(DATA_DIR, 'custom-voices.json');
@@ -3317,8 +3316,11 @@ app.get('/api/sync/profile', async (req, res) => {
 app.post('/api/sync/profile', async (req, res) => {
   try {
     const now = new Date().toISOString();
+    // Account sessions always operate on their own profile; only trusted-LAN
+    // and legacy shared-token callers may still self-assert a profile id.
     const requestedUserId = sanitizeSyncId(req.body?.userId, '');
-    const userId = requestedUserId && requestedUserId !== DEFAULT_USER_ID ? requestedUserId : newUserId();
+    const userId = req.user?.id
+      || (requestedUserId && requestedUserId !== DEFAULT_USER_ID ? requestedUserId : newUserId());
     const deviceId = syncDeviceId(req);
     const deviceName = req.body?.deviceName || req.headers['x-xandrio-device-name'];
     const profileName = syncDisplayName(req.body?.name, 'My Library', 80);
@@ -3336,7 +3338,10 @@ app.post('/api/sync/profile', async (req, res) => {
       return record;
     });
 
-    const migrateFromUserId = sanitizeSyncId(req.body?.migrateFromUserId, '');
+    let migrateFromUserId = sanitizeSyncId(req.body?.migrateFromUserId, '');
+    // Account sessions may only absorb the shared legacy "default" data;
+    // merging from another account would expose that user's positions.
+    if (req.user?.id && migrateFromUserId !== DEFAULT_USER_ID) migrateFromUserId = '';
     if (migrateFromUserId && migrateFromUserId !== userId) {
       await updateJSON(POSITIONS_FILE, (data) => {
         migratePositions(data, migrateFromUserId, userId);
@@ -3369,81 +3374,6 @@ app.post('/api/sync/device', async (req, res) => {
     res.json({ success: true, userId, deviceId, profile: publicSyncProfile(user, deviceId) });
   } catch (err) {
     sendServerError(res, err, "Failed to register device");
-  }
-});
-
-app.post('/api/sync/pairing-code', async (req, res) => {
-  try {
-    const userId = positionUserId(req);
-    if (userId === DEFAULT_USER_ID) {
-      return res.status(400).json({ error: 'Create a sync profile before pairing another device' });
-    }
-    const deviceId = syncDeviceId(req);
-    const found = await updateJSON(USERS_FILE, (data) => {
-      const users = normalizeUsersStore(data);
-      const user = users.users[userId];
-      if (!user) return jsonStore.SKIP_SAVE;
-      upsertDevice(user, deviceId, req.body?.deviceName || req.headers['x-xandrio-device-name']);
-      return true;
-    });
-    if (found === jsonStore.SKIP_SAVE) {
-      return res.status(404).json({ error: 'Sync profile not found' });
-    }
-
-    let issued;
-    await updateJSON(PAIRING_CODES_FILE, (pairings) => {
-      issued = userLibraryState.issuePairingCode(pairings, userId);
-    }, { codes: [] });
-    res.json({
-      success: true,
-      code: issued.code,
-      formattedCode: `${issued.code.slice(0, 3)}-${issued.code.slice(3)}`,
-      expiresInSeconds: issued.expiresInSeconds
-    });
-  } catch (err) {
-    sendServerError(res, err, "Failed to create pairing code");
-  }
-});
-
-app.post('/api/sync/claim-code', async (req, res) => {
-  try {
-    const code = normalizePairingCode(req.body?.code);
-    if (code.length !== 6) {
-      return res.status(400).json({ error: 'Invalid pairing code' });
-    }
-    const deviceId = syncDeviceId(req);
-    let claim = null;
-    // Nested locks: pairings → users (the only nesting; pairing-code
-    // acquires them sequentially, so the order can't deadlock).
-    await updateJSON(PAIRING_CODES_FILE, async (pairings) => {
-      const entry = userLibraryState.findPairingClaim(pairings, code);
-      if (!entry) {
-        claim = { status: 404, error: 'Pairing code expired or not found' };
-        return; // still save the pruned list
-      }
-
-      const user = await updateJSON(USERS_FILE, (data) => {
-        const users = normalizeUsersStore(data);
-        const record = users.users[entry.userId];
-        if (!record) return jsonStore.SKIP_SAVE;
-        upsertDevice(record, deviceId, req.body?.deviceName || req.headers['x-xandrio-device-name']);
-        return record;
-      });
-      if (user === jsonStore.SKIP_SAVE) {
-        claim = { status: 404, error: 'Sync profile not found' };
-        return jsonStore.SKIP_SAVE;
-      }
-
-      userLibraryState.consumePairingClaim(entry);
-      claim = { status: 200, userId: entry.userId, user };
-    }, { codes: [] });
-
-    if (claim.status !== 200) {
-      return res.status(claim.status).json({ error: claim.error });
-    }
-    res.json({ success: true, userId: claim.userId, deviceId, profile: publicSyncProfile(claim.user, deviceId) });
-  } catch (err) {
-    sendServerError(res, err, "Failed to claim pairing code");
   }
 });
 
