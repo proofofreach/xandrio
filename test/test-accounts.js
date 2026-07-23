@@ -237,6 +237,46 @@ test('disabled accounts lose their sessions', async () => {
   assert.strictEqual(result.res.statusCode, 401);
 });
 
+// ─── Sliding session renewal ───────────────────────────────────────────────
+
+test('touch extends a live session and reports the new expiry', async () => {
+  let clock = 1_000_000;
+  const jsonStore = memoryJsonStore();
+  const sessionStore = createSessionStore({ filePath: 'sessions.json', jsonStore, ttlMs: 60_000, now: () => clock });
+  const { token } = await sessionStore.create('usr_1');
+  clock += 50_000;
+  const renewed = await sessionStore.touch(token);
+  assert.strictEqual(renewed, clock + 60_000);
+  clock += 55_000; // Past the original expiry, inside the renewed one.
+  assert.strictEqual((await sessionStore.resolve(token)).userId, 'usr_1');
+  assert.strictEqual(await sessionStore.touch('missing-token'), null);
+});
+
+test('an aged account session slides: store extended and cookie re-issued', async () => {
+  const DAY = 24 * 60 * 60 * 1000;
+  let clock = 1_000_000;
+  const jsonStore = memoryJsonStore();
+  const accounts = createAccountsStore({ filePath: 'accounts.json', jsonStore });
+  const sessionStore = createSessionStore({ filePath: 'sessions.json', jsonStore, ttlMs: 30 * DAY, now: () => clock });
+  const member = await accounts.createAccount({ username: 'member', password: 'password123' });
+  const middleware = createAuthMiddleware({ token: 'legacy-token', accounts, sessionStore, sessionTtlMs: 30 * DAY, now: () => clock });
+  const { token } = await sessionStore.create(member.id);
+
+  // Within the renewal window: no store write, no Set-Cookie.
+  const fresh = await runMiddleware(middleware, { headers: { cookie: `${SESSION_COOKIE}=${token}` } });
+  assert(fresh.nextCalled);
+  assert.strictEqual(fresh.res.cookies.length, 0);
+
+  // Past the window: expiry slides to a full TTL and the cookie is refreshed.
+  clock += 2 * DAY;
+  const aged = await runMiddleware(middleware, { headers: { cookie: `${SESSION_COOKIE}=${token}` } });
+  assert(aged.nextCalled);
+  assert.strictEqual(aged.res.cookies.length, 1);
+  assert.strictEqual(aged.res.cookies[0].name, SESSION_COOKIE);
+  assert.strictEqual(aged.res.cookies[0].value, token);
+  assert.strictEqual((await sessionStore.resolve(token)).expiresAtMs, clock + 30 * DAY);
+});
+
 test('requireAdmin gates on role', () => {
   const allowed = response();
   let nextCalled = false;

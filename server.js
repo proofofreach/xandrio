@@ -237,7 +237,7 @@ app.use(requestConcurrencyLimiter);
 app.post('/api/auth/login', authRoutes.login);
 app.post('/api/auth/logout', authRoutes.logout);
 app.get('/api/auth/status', authRoutes.status);
-app.use(createAuthMiddleware({ token: XANDRIO_TOKEN, accounts: accountsStore, sessionStore: accountSessionStore }));
+app.use(createAuthMiddleware({ token: XANDRIO_TOKEN, accounts: accountsStore, sessionStore: accountSessionStore, sessionTtlMs: SESSION_TTL_MS }));
 app.post('/api/auth/change-password', authRoutes.changePassword);
 registerAccountRoutes(app, { accounts: accountsStore, sessionStore: accountSessionStore, requireAdmin });
 

@@ -55,6 +55,12 @@ Three modes share one auth stack (`lib/auth.js`, `lib/accounts.js`):
   added. A still-configured `XANDRIO_TOKEN` stays valid as an
   admin-equivalent `Authorization: Bearer` credential for scripts.
 
+Sessions slide: any authenticated request past 24 hours since the session was
+issued (or last renewed) extends it to a full TTL again — 30 days by default,
+`XANDRIO_SESSION_TTL_HOURS` to change, 90-day cap. A device in regular use
+therefore never re-prompts; only devices idle past the full TTL sign in again.
+Renewal applies to both account sessions and shared-token session cookies.
+
 Account ids share the `usr_*` space with the older sync profiles, so binding
 an account to an existing profile id (`manage-accounts.js add --profile`)
 adopts its data with no migration. Every user sees the shared library

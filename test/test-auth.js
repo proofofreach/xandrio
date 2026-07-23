@@ -97,6 +97,27 @@ test('signed session grants private route access without storing the shared toke
   assert.strictEqual(requestToken({ headers: { cookie: `${SESSION_COOKIE}=${session}` } }, 'secret-token'), 'secret-token');
 });
 
+test('an aged shared-token session cookie is re-signed with a fresh TTL', () => {
+  const DAY = 24 * 60 * 60 * 1000;
+  const middleware = createAuthMiddleware({ token: 'secret-token', sessionTtlMs: 30 * DAY });
+  // One hour of life left — well past the renewal window.
+  const aged = createSession('secret-token', { ttlMs: 60 * 60 * 1000 });
+  const renewed = run(middleware, { headers: { cookie: `${SESSION_COOKIE}=${aged}` } });
+  assert(renewed.nextCalled);
+  assert.strictEqual(renewed.res.cookies.length, 1);
+  assert.strictEqual(renewed.res.cookies[0].name, SESSION_COOKIE);
+  assert(verifySession(renewed.res.cookies[0].value, 'secret-token'));
+  // A fresh session is left untouched.
+  const fresh = createSession('secret-token', { ttlMs: 30 * DAY });
+  const kept = run(middleware, { headers: { cookie: `${SESSION_COOKIE}=${fresh}` } });
+  assert(kept.nextCalled);
+  assert.strictEqual(kept.res.cookies.length, 0);
+  // Bearer clients hold no cookie and never receive one.
+  const bearer = run(middleware, { headers: { authorization: 'Bearer secret-token' } });
+  assert(bearer.nextCalled);
+  assert.strictEqual(bearer.res.cookies.length, 0);
+});
+
 test('expired or malformed sessions are rejected', () => {
   const expired = createSession('secret-token', { now: 1_000, ttlMs: 1 });
   assert(!verifySession(expired, 'secret-token', { now: 1_001 }));
