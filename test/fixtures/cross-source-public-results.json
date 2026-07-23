@@ -1,0 +1,46 @@
+[
+  {
+    "hash": "standard-pride-prejudice",
+    "source": "standardebooks",
+    "title": "Pride and Prejudice",
+    "author": "Jane Austen",
+    "format": "EPUB",
+    "language": "en",
+    "openLibraryWorkKey": "/works/OL66554W",
+    "metadataConfidence": { "source": "openlibrary", "score": 0.98, "level": "high" },
+    "qualityScore": 5,
+    "relevanceScore": 200
+  },
+  {
+    "hash": "gutenberg-pride-prejudice",
+    "source": "gutenberg",
+    "title": "Pride and Prejudice",
+    "author": "Austen, Jane",
+    "format": "EPUB",
+    "language": "English",
+    "openLibraryWorkKey": "/works/OL66554W",
+    "metadataConfidence": { "source": "openlibrary", "score": 0.98, "level": "high" },
+    "qualityScore": 5,
+    "relevanceScore": 190
+  },
+  {
+    "hash": "archive-frankenstein",
+    "source": "internetarchive",
+    "title": "Frankenstein",
+    "author": "Mary Shelley",
+    "format": "EPUB",
+    "language": "en",
+    "qualityScore": 4,
+    "relevanceScore": 180
+  },
+  {
+    "hash": "opds-frankenstein",
+    "source": "opds",
+    "title": "Frankenstein",
+    "author": "Shelley, Mary",
+    "format": "MOBI",
+    "language": "English",
+    "qualityScore": 4,
+    "relevanceScore": 175
+  }
+]

@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "policy": "lib/audio-quality.js MASTERING_POLICY",
+  "fixtures": [
+    {
+      "engine": "edge",
+      "voice": "en-US-AndrewMultilingualNeural",
+      "source": "tts-benchmark-samples/edge-andrew-reference.mp3",
+      "inputFormat": "mp3",
+      "sha256": "65cf286c7464874478afaf9d3428a9b1a767da7637d5edd41eb0d03a51ba4867",
+      "gainDb": 3,
+      "text": "The morning sun cast golden light through the library windows. “Wait—don’t go,” Doctor Rivera said. At three fourteen, the door closed, and the room became quiet."
+    },
+    {
+      "engine": "kokoro",
+      "voice": "af_heart",
+      "source": "tts-benchmark-samples/kokoro-af-heart.wav",
+      "inputFormat": "wav",
+      "sha256": "45ee4dcd8afe983f01fae05837fff675ff13970489296e3a3210b38739940471",
+      "gainDb": 9.5
+    },
+    {
+      "engine": "chatterbox",
+      "voice": "original",
+      "source": "tts-benchmark-samples/chatterbox-original.wav",
+      "inputFormat": "wav",
+      "sha256": "b3601b0a522769b65cbb93901d8efb6b4a9a010e71a8dcf3899d0fa0db693b42",
+      "gainDb": 2.5
+    }
+  ]
+}

@@ -1,0 +1,67 @@
+name: Test and supply-chain checks
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install system media tools
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg poppler-utils
+      - run: npm ci
+      - name: Release declaration consistency
+        run: npm run release:verify -- --tag "v$(node -p "require('./package.json').version")"
+      - name: Static checks
+        run: |
+          node --check server.js
+          find lib scripts test -type f \( -name '*.js' -o -name '*.mjs' \) -print0 | xargs -0 -n1 node --check
+      - run: npm run audit:release
+      - run: npm run check:docker-context
+      - name: Validate standard and optional-engine Compose models
+        run: |
+          docker compose -f docker-compose.yml config --quiet
+          docker compose -f docker-compose.yml -f docker-compose.local-engines.yml --profile local-engines config --quiet
+      - run: npm run sbom:npm
+      - name: Generate optional Python-engine declared-dependency inventories
+        run: |
+          python3 -m venv /tmp/xandrio-sbom
+          /tmp/xandrio-sbom/bin/python -m pip install cyclonedx-bom==7.3.0
+          PATH="/tmp/xandrio-sbom/bin:$PATH" npm run sbom:python
+      - run: npm run notices
+      - name: Verify generated notices are current
+        run: git diff --exit-code -- THIRD_PARTY_NOTICES.md
+      - run: npm test
+      - name: Verify calibrated audio fixtures
+        run: npm run verify:audio:ci
+      - name: Install browser
+        run: npx playwright install --with-deps chromium
+      - run: npm run test:browser
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: source-dependency-inventories
+          path: |
+            artifacts/xandrio-npm.cdx.json
+            artifacts/xandrio-*-declared.cdx.json
+          if-no-files-found: error
+
+  dependency-review:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 # v4.9.0

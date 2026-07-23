@@ -1,0 +1,28 @@
+manifestVersion: 1
+id: alexandrio-xandrio
+category: media
+name: Xandrio
+version: "1.1.0"
+tagline: Self-hosted personal reading server with on-demand TTS
+icon: icon.png
+description: >-
+  Xandrio is a self-hosted personal reading server for EPUB, MOBI, Kindle, and PDF
+  books. Upload books or search supported sources, then generate playable audio
+  with Microsoft Edge TTS from a mobile-friendly web interface.
+
+  Library metadata, playback positions, source credentials, generated audio,
+  uploaded books, extracted text artifacts, and cover images are stored in the
+  app's persistent Umbrel data directory.
+releaseNotes: ""
+developer: Xandrio
+website: https://github.com/ProofOfReach/alexandrio
+dependencies: []
+repo: https://github.com/ProofOfReach/alexandrio
+support: https://github.com/ProofOfReach/alexandrio/issues
+port: 8181
+gallery: []
+path: ""
+defaultUsername: ""
+defaultPassword: ""
+submitter: ProofOfReach
+submission: ""

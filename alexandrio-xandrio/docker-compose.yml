@@ -1,0 +1,44 @@
+services:
+  app_proxy:
+    environment:
+      APP_HOST: alexandrio-xandrio_web_1
+      APP_PORT: 8181
+
+  volume-init:
+    # Use the exact release image as a one-shot ownership initializer so a
+    # fresh Umbrel host path is writable by the non-root application process.
+    image: ghcr.io/proofofreach/alexandrio:${XANDRIO_IMAGE_TAG:-1.1.0}@${XANDRIO_IMAGE_DIGEST:?Set the tested multi-architecture image digest}
+    user: "0:0"
+    restart: "no"
+    network_mode: none
+    command: ["sh", "-c", "mkdir -p /app/data /app/cache && chown -R 1000:1000 /app/data /app/cache && chmod 0750 /app/data /app/cache"]
+    volumes:
+      - ${APP_DATA_DIR}/data/library:/app/data
+      - ${APP_DATA_DIR}/data/cache:/app/cache
+
+  web:
+    # The release workflow renders this template only after testing this exact
+    # multi-architecture digest. An unset digest fails closed rather than
+    # installing an unreviewed mutable tag.
+    image: ghcr.io/proofofreach/alexandrio:${XANDRIO_IMAGE_TAG:-1.1.0}@${XANDRIO_IMAGE_DIGEST:?Set the tested multi-architecture image digest}
+    restart: on-failure
+    stop_grace_period: 1m
+    init: true
+    user: "1000:1000"
+    depends_on:
+      volume-init:
+        condition: service_completed_successfully
+    volumes:
+      - ${APP_DATA_DIR}/data/library:/app/data
+      - ${APP_DATA_DIR}/data/cache:/app/cache
+    environment:
+      NODE_ENV: production
+      PORT: 8181
+      KOKORO_AUTO_START: "false"
+      XBOOK_DELETE_SOURCE_AFTER_EXTRACT: "true"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8181/health').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s

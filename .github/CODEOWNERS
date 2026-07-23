@@ -1,0 +1,28 @@
+# Replace this handle if repository ownership changes.
+* @ProofOfReach
+
+# Release and packaging
+/.github/workflows/ @ProofOfReach
+/Dockerfile @ProofOfReach
+/alexandrio-xandrio/ @ProofOfReach
+/docs/UMBREL.md @ProofOfReach
+
+# Security and operator data
+/server.js @ProofOfReach
+/lib/request-guards.js @ProofOfReach
+/lib/routes/ @ProofOfReach
+/SECURITY.md @ProofOfReach
+
+# Providers and narration
+/lib/search-providers/ @ProofOfReach
+/lib/annas-scraper.js @ProofOfReach
+/lib/zlibrary.js @ProofOfReach
+/lib/*tts* @ProofOfReach
+/m4-server/ @ProofOfReach
+
+# Legal and governance
+/LEGAL-NOTICE.md @ProofOfReach
+/docs/PRIVACY.md @ProofOfReach
+/GOVERNANCE.md @ProofOfReach
+/CONTRIBUTING.md @ProofOfReach
+/CODE_OF_CONDUCT.md @ProofOfReach

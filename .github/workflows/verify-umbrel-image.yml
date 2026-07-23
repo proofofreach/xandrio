@@ -1,0 +1,36 @@
+name: Verify rendered Umbrel image
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_digest:
+        description: Tested GHCR image digest
+        required: true
+        type: string
+      version:
+        description: Matching release version without v (for example 1.1.0)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Render and verify anonymous GHCR pull
+        env:
+          IMAGE_DIGEST: ${{ inputs.image_digest }}
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          [[ "$RELEASE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ "$IMAGE_DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]
+          node scripts/release/render-umbrel-release.mjs --tag "v${RELEASE_VERSION}" --digest "$IMAGE_DIGEST"
+          docker logout ghcr.io || true
+          image=$(sed -n 's/^    image: //p' release/umbrel/docker-compose.yml)
+          docker pull "$image"
+          docker buildx imagetools inspect "$image" --raw > manifest.json
+          grep --quiet '"architecture":"amd64"' manifest.json
+          grep --quiet '"architecture":"arm64"' manifest.json

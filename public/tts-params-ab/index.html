@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chatterbox parameter A/B</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: -apple-system, system-ui, sans-serif; max-width: 720px; margin: 2rem auto; padding: 0 1rem; line-height: 1.5; }
+  h1 { font-size: 1.3rem; }
+  .passage { margin: 2rem 0; padding: 1rem; border: 1px solid color-mix(in srgb, currentColor 25%, transparent); border-radius: 10px; }
+  .passage p.text { font-style: italic; opacity: .8; font-size: .9rem; }
+  .sample { display: flex; align-items: center; gap: .75rem; margin: .6rem 0; }
+  .sample b { width: 5.5rem; }
+  audio { flex: 1; }
+  details { margin-top: 2rem; opacity: .7; }
+  code { font-size: .85em; }
+</style>
+</head>
+<body>
+<h1>Chatterbox MLX — generation parameter comparison</h1>
+<p>Same voice, same text, three parameter sets. Listen blind, pick the sample number you prefer per passage, then open the key at the bottom. Listen for: rushed or garbled words, unnatural emphasis, breathiness, overall steadiness.</p>
+
+<div class="passage">
+  <h2>Passage 1</h2>
+  <p class="text" id="p1-text"></p>
+  <div class="sample"><b>Sample 1</b><audio controls preload="none" src="p1_B.mp3"></audio></div>
+  <div class="sample"><b>Sample 2</b><audio controls preload="none" src="p1_A.mp3"></audio></div>
+  <div class="sample"><b>Sample 3</b><audio controls preload="none" src="p1_C.mp3"></audio></div>
+</div>
+
+<div class="passage">
+  <h2>Passage 2</h2>
+  <p class="text" id="p2-text"></p>
+  <div class="sample"><b>Sample 1</b><audio controls preload="none" src="p2_C.mp3"></audio></div>
+  <div class="sample"><b>Sample 2</b><audio controls preload="none" src="p2_B.mp3"></audio></div>
+  <div class="sample"><b>Sample 3</b><audio controls preload="none" src="p2_A.mp3"></audio></div>
+</div>
+
+<details>
+  <summary>Answer key (open after listening)</summary>
+  <ul>
+    <li><b>A</b> — current defaults: temp 0.8, top_p 1.0, cfg 0.5 → Passage 1: Sample 2 · Passage 2: Sample 3</li>
+    <li><b>B</b> — temp 0.65, top_p 0.95, cfg 0.5 → Passage 1: Sample 1 · Passage 2: Sample 2</li>
+    <li><b>C</b> — temp 0.7, top_p 0.95, cfg 0.6 → Passage 1: Sample 3 · Passage 2: Sample 1</li>
+  </ul>
+</details>
+
+<script src="/tts-params-ab/app.js"></script>
+</body>
+</html>

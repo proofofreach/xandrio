@@ -1,0 +1,74 @@
+{
+  "name": "xandrio",
+  "version": "1.1.0",
+  "description": "Self-hosted personal reading server with EPUB, PDF, Kindle, and text-to-speech playback",
+  "main": "server.js",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ProofOfReach/alexandrio.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ProofOfReach/alexandrio/issues"
+  },
+  "homepage": "https://github.com/ProofOfReach/alexandrio#readme",
+  "engines": {
+    "node": ">=24 <25",
+    "npm": ">=11"
+  },
+  "packageManager": "npm@11.14.1",
+  "scripts": {
+    "prestart": "node --env-file-if-exists=.env scripts/ensure-tailscale-serve.js",
+    "start": "node --env-file-if-exists=.env server.js",
+    "predev": "node --env-file-if-exists=.env scripts/ensure-tailscale-serve.js",
+    "dev": "node --env-file-if-exists=.env node_modules/nodemon/bin/nodemon.js server.js",
+    "benchmark:pipeline": "node scripts/benchmark-pipeline.js",
+    "benchmark:kokoro": "node scripts/benchmark-kokoro-quality.js",
+    "benchmark:pdf": "node scripts/benchmark-pdf-extraction.js",
+    "benchmark:kindle": "node scripts/benchmark-kindle-extraction.js",
+    "benchmark:tts": "node scripts/benchmark-tts.js",
+    "verify:audio": "node scripts/verify-audio-quality.js",
+    "verify:audio:ci": "node scripts/verify-audio-quality.js --calibration-fixtures",
+    "audit:production": "npm audit --omit=dev",
+    "audit:release": "npm audit --omit=dev --audit-level=high",
+    "sbom:npm": "npx @cyclonedx/cyclonedx-npm --omit dev --output-format JSON --output-file artifacts/xandrio-npm.cdx.json",
+    "sbom:python": "node scripts/release/generate-python-sboms.mjs",
+    "notices": "node scripts/generate-third-party-notices.mjs",
+    "check:docker-context": "node scripts/release/check-docker-context.mjs",
+    "check:release-assets": "node scripts/release/check-release-assets.mjs",
+    "check:release-approvals": "node scripts/release/check-release-approvals.mjs",
+    "check:release-contacts": "node scripts/release/check-release-contacts.mjs",
+    "check:public-repository": "node scripts/release/check-public-repository.mjs",
+    "scan:history": "node scripts/release/scan-git-history.mjs",
+    "release:prepare-public-root": "node scripts/release/prepare-public-root.mjs",
+    "release:verify": "node scripts/release/verify-release-consistency.mjs",
+    "backfill:metadata": "node scripts/backfill-book-metadata.js",
+    "test": "node test/run-all.js",
+    "test:browser": "node scripts/smoke-browser.js"
+  },
+  "dependencies": {
+    "@lingo-reader/mobi-parser": "^0.4.6",
+    "body-parser": "2.3.0",
+    "cors": "^2.8.5",
+    "epub": "2.1.1",
+    "express": "5.2.1",
+    "multer": "2.2.0",
+    "node-edge-tts": "1.2.10",
+    "pdf-parse": "^2.4.5",
+    "playwright": "1.61.1",
+    "playwright-extra": "^4.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2"
+  },
+  "devDependencies": {
+    "@cyclonedx/cyclonedx-npm": "6.0.0",
+    "axios": "1.18.1",
+    "nodemon": "^3.0.1"
+  },
+  "overrides": {
+    "ws": "8.21.0",
+    "qs": "6.15.3",
+    "brace-expansion": "1.1.13",
+    "minimatch": "3.1.4",
+    "tar": "7.5.16"
+  }
+}

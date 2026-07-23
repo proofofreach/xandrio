@@ -1,0 +1,104 @@
+# Optional local TTS engines. Start only with this supplemental file and the
+# local-engines profile; docker-compose.yml alone remains the small Edge setup.
+services:
+  xandrio:
+    profiles: [local-engines]
+    environment:
+      KOKORO_AUTO_START: "false"
+      KOKORO_TTS_URL: http://kokoro:8766
+      CHATTERBOX_AUTO_START: "false"
+      CHATTERBOX_TTS_URL: http://chatterbox:8767
+    depends_on:
+      xandrio-volume-init:
+        condition: service_completed_successfully
+      kokoro:
+        condition: service_healthy
+      chatterbox:
+        condition: service_healthy
+    networks:
+      - default
+      - local-engines
+
+  kokoro:
+    profiles: [local-engines]
+    build:
+      context: .
+      dockerfile: python/Dockerfile.kokoro
+    image: xandrio-kokoro:${XANDRIO_VERSION:-1.1.0}
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 30s
+    user: "1000:1000"
+    environment:
+      KOKORO_HOST: 0.0.0.0
+      KOKORO_PORT: 8766
+    volumes:
+      - kokoro-model-cache:/models
+    networks:
+      - local-engines
+      - model-download
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys, urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8766/health', timeout=5).status == 200 else 1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5m
+
+  chatterbox:
+    profiles: [local-engines]
+    build:
+      context: .
+      dockerfile: python/Dockerfile.chatterbox
+    image: xandrio-chatterbox:${XANDRIO_VERSION:-1.1.0}
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 30s
+    # Xandrio writes cloned references as 0600. The matching UID can read them
+    # through this read-only mount without granting the engine write access.
+    user: "1000:1000"
+    environment:
+      CHATTERBOX_HOST: 0.0.0.0
+      CHATTERBOX_PORT: 8767
+      CHATTERBOX_VOICE_DIR: /app/data/voice-references
+    volumes:
+      - chatterbox-model-cache:/models
+      - type: volume
+        source: xandrio-data
+        target: /app/data
+        read_only: true
+        volume:
+          nocopy: true
+    depends_on:
+      xandrio-volume-init:
+        condition: service_completed_successfully
+    networks:
+      - local-engines
+      - model-download
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys, urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8767/health', timeout=5).status == 200 else 1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10m
+
+  xandrio-volume-init:
+    profiles: [local-engines]
+    image: xandrio:${XANDRIO_VERSION:-1.1.0}
+    user: "0:0"
+    restart: "no"
+    network_mode: none
+    command: ["sh", "-c", "mkdir -p /app/data/voice-references /app/cache && chown -R 1000:1000 /app/data /app/cache && chmod 0750 /app/data/voice-references"]
+    volumes:
+      - xandrio-data:/app/data
+      - xandrio-cache:/app/cache
+
+networks:
+  local-engines:
+    internal: true
+  model-download:
+    # Egress is required for the engines' first-run model downloads. No engine
+    # ports are published, and Xandrio reaches them only on local-engines.
+
+volumes:
+  kokoro-model-cache:
+  chatterbox-model-cache:

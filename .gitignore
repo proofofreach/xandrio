@@ -1,0 +1,107 @@
+# Dependencies
+node_modules/
+kokoro-venv/
+__pycache__/
+*.pyc
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Data and cache
+data/
+cache/
+
+# Archive (old backups, not needed in repo)
+_archive/
+
+# SSL certificates
+certs/
+*.pem
+
+# Systemd service files (may contain secrets)
+*.service
+
+# JSON data files (but keep package manifests)
+*.json
+!package.json
+!package-lock.json
+!scripts/audio-calibration-fixtures.json
+
+# Logs
+logs/
+*.log
+
+# Tool metadata
+.clawpatch/
+.codex/
+.claude/
+.playwright-cli/
+
+# Python virtualenvs
+chatterbox-venv/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Test files (root level only)
+test-*.js
+test-*.html
+# Keep the test/ directory
+!test/
+!test/**
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+
+# Audio and book files
+*.mp3
+*.epub
+*.pdf
+*.mobi
+*.azw3
+*.jpg
+*.jpeg
+*.png
+tts-benchmark-samples/*
+!tts-benchmark-samples/edge-andrew-reference.mp3
+!tts-benchmark-samples/kokoro-af-heart.wav
+!tts-benchmark-samples/chatterbox-original.wav
+# Keep public assets
+!public/icon.png
+!public/favicon.ico
+!public/apple-touch-icon.png
+!public/icon-192.png
+!public/icon-512.png
+!public/icon-xandrio-ankh.png
+!alexandrio-xandrio/icon.png
+
+# Build output
+dist/
+build/
+/release/
+
+# Local model weights and scratch output
+/models/
+/tmp/
+/public/comparisons/
+
+# Local one-off utility scripts (not part of the product)
+/scripts/benchmark-qwen3-voice-clone.py
+/scripts/build_income_tax_epub.py
+
+# APK / binary artifacts
+*.apk

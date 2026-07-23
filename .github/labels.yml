@@ -1,0 +1,51 @@
+# GitHub label manifest. Create or reconcile these labels with a repository
+# label-sync tool or `gh label create`; this file does not alter GitHub by itself.
+labels:
+  - name: bug
+    color: d73a4a
+    description: Reproducible defect
+  - name: documentation
+    color: 0075ca
+    description: Documentation change or gap
+  - name: enhancement
+    color: a2eeef
+    description: New capability or improvement
+  - name: security
+    color: b60205
+    description: Security-sensitive issue
+  - name: provider
+    color: 5319e7
+    description: Acquisition or metadata provider integration
+  - name: tts
+    color: 1d76db
+    description: Narration engine, voice, or audio behavior
+  - name: packaging
+    color: 0e8a16
+    description: Docker, Compose, image, or Umbrel work
+  - name: release
+    color: fbca04
+    description: Release evidence, promotion, or versioning
+  - name: release-blocker
+    color: b60205
+    description: Must be resolved before the next public release
+  - name: licensing
+    color: d4c5f9
+    description: Licence, redistribution, or provenance review
+  - name: legal-review
+    color: e99695
+    description: Requires licence, terms, or legal review
+  - name: blocked-external
+    color: 000000
+    description: Waiting for an external provider, reviewer, or platform
+  - name: needs-reproduction
+    color: fef2c0
+    description: Needs a minimal reproducible case
+  - name: breaking-change
+    color: b60205
+    description: Changes documented behavior or compatibility
+  - name: good-first-issue
+    color: 7057ff
+    description: Bounded entry-level contribution
+  - name: help-wanted
+    color: 008672
+    description: Maintainer requests contribution help
