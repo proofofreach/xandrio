@@ -138,7 +138,6 @@ This file is generated from the locked installed Node dependency tree by `npm ru
 | fs-constants | 1.0.0 | MIT | https://github.com/mafintosh/fs-constants.git |
 | fs-extra | 10.1.0 | MIT | https://github.com/jprichardson/node-fs-extra |
 | fs-minipass | 3.0.3 | ISC | https://github.com/npm/fs-minipass.git |
-| fs.realpath | 1.0.0 | ISC | https://github.com/isaacs/fs.realpath.git |
 | fsevents | 2.3.2 | MIT | https://www.npmjs.com/package/fsevents |
 | fsevents | 2.3.3 | MIT | https://www.npmjs.com/package/fsevents |
 | function-bind | 1.1.2 | MIT | https://github.com/Raynos/function-bind.git |
@@ -147,7 +146,6 @@ This file is generated from the locked installed Node dependency tree by `npm ru
 | get-proto | 1.0.1 | MIT | https://github.com/ljharb/get-proto.git |
 | github-from-package | 0.0.0 | MIT | git://github.com/substack/github-from-package.git |
 | glob | 10.5.0 | ISC | git://github.com/isaacs/node-glob.git |
-| glob | 7.2.3 | ISC | git://github.com/isaacs/node-glob.git |
 | glob-parent | 5.1.2 | ISC | gulpjs/glob-parent |
 | gopd | 1.2.0 | MIT | https://github.com/ljharb/gopd.git |
 | graceful-fs | 4.2.11 | ISC | https://github.com/isaacs/node-graceful-fs |
@@ -169,7 +167,6 @@ This file is generated from the locked installed Node dependency tree by `npm ru
 | ignore-by-default | 1.0.1 | ISC | https://github.com/novemberborn/ignore-by-default.git |
 | immediate | 3.0.6 | MIT | git://github.com/calvinmetcalf/immediate.git |
 | imurmurhash | 0.1.4 | MIT | https://github.com/jensyt/imurmurhash-js |
-| inflight | 1.0.6 | ISC | https://github.com/npm/inflight.git |
 | inherits | 2.0.4 | ISC | git://github.com/isaacs/inherits |
 | ini | 1.3.8 | ISC | git://github.com/isaacs/ini.git |
 | ip-address | 10.2.0 | MIT | git://github.com/beaugunderson/ip-address.git |
@@ -258,7 +255,6 @@ This file is generated from the locked installed Node dependency tree by `npm ru
 | parseurl | 1.3.3 | MIT | pillarjs/parseurl |
 | path-browserify | 1.0.1 | MIT | git://github.com/browserify/path-browserify.git |
 | path-expression-matcher | 1.6.2 | MIT | https://github.com/NaturalIntelligence/path-expression-matcher |
-| path-is-absolute | 1.0.1 | MIT | sindresorhus/path-is-absolute |
 | path-key | 3.1.1 | MIT | sindresorhus/path-key |
 | path-scurry | 1.11.1 | BlueOak-1.0.0 | https://github.com/isaacs/path-scurry |
 | path-to-regexp | 8.4.2 | MIT | https://github.com/pillarjs/path-to-regexp.git |
@@ -280,8 +276,8 @@ This file is generated from the locked installed Node dependency tree by `npm ru
 | punycode | 2.3.1 | MIT | https://github.com/mathiasbynens/punycode.js.git |
 | puppeteer-extra-plugin | 3.2.3 | MIT | berstend/puppeteer-extra |
 | puppeteer-extra-plugin-stealth | 2.11.2 | MIT | berstend/puppeteer-extra |
-| puppeteer-extra-plugin-user-data-dir | 2.4.1 | MIT | berstend/puppeteer-extra |
-| puppeteer-extra-plugin-user-preferences | 2.4.1 | MIT | berstend/puppeteer-extra |
+| puppeteer-extra-plugin-user-data-dir | 2.3.3 | MIT | berstend/puppeteer-extra |
+| puppeteer-extra-plugin-user-preferences | 2.3.3 | MIT | berstend/puppeteer-extra |
 | qs | 6.15.3 | BSD-3-Clause | https://github.com/ljharb/qs.git |
 | railroad-diagrams | 1.0.0 | CC0-1.0 | https://github.com/tabatkins/railroad-diagrams.git |
 | randexp | 0.4.6 | MIT | git://github.com/fent/randexp.js.git |
@@ -297,7 +293,6 @@ This file is generated from the locked installed Node dependency tree by `npm ru
 | require-from-string | 2.0.2 | MIT | floatdrop/require-from-string |
 | ret | 0.1.15 | MIT | git://github.com/fent/ret.js.git |
 | retry | 0.12.0 | MIT | git://github.com/tim-kos/node-retry.git |
-| rimraf | 3.0.2 | ISC | git://github.com/isaacs/rimraf.git |
 | router | 2.2.0 | MIT | pillarjs/router |
 | safe-buffer | 5.1.2 | MIT | git://github.com/feross/safe-buffer.git |
 | safe-buffer | 5.1.2 | MIT | git://github.com/feross/safe-buffer.git |
