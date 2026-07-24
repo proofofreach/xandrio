@@ -29,7 +29,7 @@ async function test(name, fn) {
       baseUrl: 'https://z-library.sk',
       verifiedAt: '2026-07-12T00:00:00.000Z'
     }));
-    await fsp.writeFile(path.join(dataDir, 'settings.json'), JSON.stringify({ voice: 'en-GB-RyanNeural' }));
+    await fsp.writeFile(path.join(dataDir, 'settings.json'), JSON.stringify({ voice: 'en-AU-WilliamMultilingualNeural' }));
 
     const zlibrary = require('../lib/zlibrary');
     const gutenberg = require('../lib/gutenberg');
@@ -44,7 +44,7 @@ async function test(name, fn) {
       assert.strictEqual(stored.enabled, false);
     });
     await test('TTS voice settings are read from DATA_DIR', async () => {
-      assert.strictEqual(TTSQueue.__test.getSettings().voice, 'en-GB-RyanNeural');
+      assert.strictEqual(TTSQueue.__test.getSettings().voice, 'en-AU-WilliamMultilingualNeural');
     });
   } finally {
     await fsp.rm(dataDir, { recursive: true, force: true });
