@@ -29,6 +29,7 @@ const tests = [
   'test-auth.js',
   'test-accounts.js',
   'test-shelves.js',
+  'test-voice-catalog.js',
   'test-rate-limit.js',
   'test-concurrency-limit.js',
   'test-graceful-shutdown.js',

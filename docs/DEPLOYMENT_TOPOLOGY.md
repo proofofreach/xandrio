@@ -16,11 +16,12 @@ Enabled:
 - Edge TTS (network engine; no local model runtime needed).
 
 Disabled (must stay off in production `.env`):
-- `KOKORO_AUTO_START=false`, `CHATTERBOX_AUTO_START=false` — the local model
-  engines never run on the web host. The `m4-server/` and `python/` trees ship
-  with the code but are inert without these flags and a local runtime.
-- Premium/local narration voices are not selectable in production unless an
-  engine URL is deliberately pointed at a reachable engine host.
+- `XANDRIO_VOICE_PROVIDERS=edge,kokoro` — the voice catalog (picker, voice
+  selection, voice cloning) only offers providers listed here; Chatterbox
+  voices and the cloning UI never appear on the web host.
+- `CHATTERBOX_AUTO_START=false` (and `KOKORO_AUTO_START` as appropriate) —
+  disabled model engines never spawn. The `m4-server/` and `python/` trees
+  ship with the code but are inert without these flags and a local runtime.
 
 ## Local (Apple-Silicon M4 — launchd `com.xandrio.server`, port 8181, trusted LAN)
 

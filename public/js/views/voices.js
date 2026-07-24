@@ -329,6 +329,9 @@ function renderVoiceSheetSections(listId) {
 }
 
 function renderCloneVoicePanel() {
+  // No Chatterbox voices in this instance's catalog means the provider is
+  // disabled here (XANDRIO_VOICE_PROVIDERS) — hide cloning entirely.
+  if (!voices.some(v => String(v.provider).toLowerCase() === 'chatterbox')) return '';
   const chatterbox = engineStatus?.engines?.chatterbox;
   const engineDown = Boolean(chatterbox && !chatterbox.up && chatterbox.status !== 'starting');
   // First run (no cloned voices yet): lead with an inviting CTA so voice
