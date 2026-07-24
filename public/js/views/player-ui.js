@@ -1,5 +1,5 @@
 import { API_BASE, apiGet } from '../api.js';
-import { formatDuration, formatTime, escapeHTML, isIOSLike } from '../util/format.js';
+import { formatDuration, formatTime, escapeHTML, isIOSLike, needsReliablePlayback } from '../util/format.js';
 import { getProgressDisplayMode, setClientSetting } from '../client-settings.js';
 import { bookProgressInfo, normalizedChapterDurations } from './library.js';
 import { registerSheet } from '../ui/sheets.js';
@@ -216,7 +216,7 @@ export function syncTimeDisplayModeFromClientSettings() {
 
 export function setPlaybackReliabilityState(state, text) {
   if (!playbackReliability || !playbackReliabilityText) return;
-  const shouldShow = isIOSLike() && state && state !== 'hidden';
+  const shouldShow = needsReliablePlayback() && state && state !== 'hidden';
   playbackReliability.hidden = !shouldShow;
   if (!shouldShow) return;
   playbackReliability.dataset.state = state;
@@ -226,7 +226,7 @@ export function setPlaybackReliabilityState(state, text) {
 
 export function setResumePromptVisible(visible) {
   if (!playbackResumePrompt) return;
-  playbackResumePrompt.hidden = !(visible && isIOSLike());
+  playbackResumePrompt.hidden = !(visible && needsReliablePlayback());
   if (visible) setPlaybackReliabilityState('resume', 'Tap to resume');
 }
 
@@ -729,9 +729,9 @@ export function syncMiniPlayerInfo() {
   const coverEl = document.getElementById('mini-player-cover');
   if (titleEl) titleEl.textContent = deps.getCurrentBook().title;
   if (chapterEl && deps.getChapters()[deps.getCurrentChapter()]) {
-    const reliability = isIOSLike() && deps.getPlaybackBackend() === 'single-file'
+    const reliability = needsReliablePlayback() && deps.getPlaybackBackend() === 'single-file'
       ? ' · Best for lock screen'
-      : (isIOSLike() ? ' · Preparing lock-screen playback' : '');
+      : (needsReliablePlayback() ? ' · Preparing lock-screen playback' : '');
     chapterEl.textContent = `${displayChapterTitle(deps.getChapters()[deps.getCurrentChapter()], deps.getCurrentChapter())}${reliability}`;
   }
   if (coverEl) {

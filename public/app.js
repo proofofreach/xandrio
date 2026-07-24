@@ -3,7 +3,7 @@
 import { API_BASE, apiGet, apiSend, fetchAuthStatus, getCurrentUserId, getCurrentDeviceId, getCurrentDeviceName } from './js/api.js';
 import { initLogin, showLoginGate } from './js/views/login.js';
 import { initRouter, navigateTo, syncPlayerHash, clearSheetStack } from './js/router.js';
-import { formatDuration, escapeHTML, cleanDisplayText, isIOSLike, coverPlaceholderSrc } from './js/util/format.js';
+import { formatDuration, escapeHTML, cleanDisplayText, isIOSLike, needsReliablePlayback, coverPlaceholderSrc } from './js/util/format.js';
 import { showToast } from './js/ui/toast.js';
 import { initKeys, onActivate } from './js/ui/keys.js';
 import { registerSheet } from './js/ui/sheets.js';
@@ -165,7 +165,7 @@ function stopReliableAudioStatusPolling() {
 }
 
 function startReliableAudioStatusPolling(bookId, chapterIndex) {
-  if (!isIOSLike()) return;
+  if (!needsReliablePlayback()) return;
   stopReliableAudioStatusPolling();
   const check = async () => {
     if (!currentBook || currentBook.id !== bookId || currentChapter !== chapterIndex) {
@@ -196,7 +196,7 @@ function handleChunkError(error) {
     setResumePromptVisible(true);
     return;
   }
-  if (isIOSLike()) {
+  if (needsReliablePlayback()) {
     hideAudioLoading();
     setPlaybackReliabilityState('resume', 'Audio needs attention');
     return;
@@ -228,7 +228,7 @@ function handleChunkReady() {
   hideAudioLoading();
   updatePlaybackUI();
   updateMediaSessionPosition();
-  if (isIOSLike() && playbackBackend === 'single-file') setPlaybackReliabilityState('active', 'Best for lock screen');
+  if (needsReliablePlayback() && playbackBackend === 'single-file') setPlaybackReliabilityState('active', 'Best for lock screen');
 }
 
 // Engine messages are paint-only input here — we relabel specific known
@@ -297,7 +297,7 @@ async function selectPlaybackEngineForChapter(bookId, chapterIndex) {
       stopPolling: true
     };
   }
-  if (!isIOSLike()) {
+  if (!needsReliablePlayback()) {
     return { engine: chunkedPlayer, backend: 'chunked' };
   }
   const status = await getChapterAudioStatus(bookId, chapterIndex);
@@ -326,7 +326,7 @@ function applyPlaybackSelection(selection, bookId, chapterIndex) {
 
 
 async function handoffToReliablePlayback(options = {}) {
-  if (!isIOSLike() || playbackBackend === 'single-file' || reliableHandoffInProgress || !currentBook || !chunkPlayer) return;
+  if (!needsReliablePlayback() || playbackBackend === 'single-file' || reliableHandoffInProgress || !currentBook || !chunkPlayer) return;
   reliableHandoffInProgress = true;
   const oldPlayer = chunkPlayer;
   try {
@@ -354,7 +354,7 @@ async function handoffToReliablePlayback(options = {}) {
 
 
 async function switchToReliableIfReadyForPause() {
-  if (!isIOSLike() || playbackBackend === 'single-file' || !currentBook || !chunkPlayer) return false;
+  if (!needsReliablePlayback() || playbackBackend === 'single-file' || !currentBook || !chunkPlayer) return false;
   const status = await getChapterAudioStatus(currentBook.id, currentChapter);
   if (!status || !status.ready) return false;
   await handoffToReliablePlayback({ play: false });
@@ -362,7 +362,7 @@ async function switchToReliableIfReadyForPause() {
 }
 
 function maybePrepareUpcomingReliableAudio() {
-  if (!currentBook || !isIOSLike()) return;
+  if (!currentBook || !needsReliablePlayback()) return;
   prepareReliableChapterAudio(currentBook.id, currentChapter);
   if (currentChapter + 1 < chapters.length) prepareReliableChapterAudio(currentBook.id, currentChapter + 1);
 }
@@ -557,6 +557,7 @@ function playbackReport() {
     userAgent: navigator.userAgent,
     platform: navigator.platform,
     isIOSLike: isIOSLike(),
+    needsReliablePlayback: needsReliablePlayback(),
     standalone: window.navigator.standalone === true || window.matchMedia?.('(display-mode: standalone)')?.matches,
     backend: playbackBackend,
     currentBook: currentBook ? { id: currentBook.id, title: currentBook.title, author: currentBook.author } : null,
@@ -1095,7 +1096,7 @@ async function togglePlayPause(forcePlay = false) {
   } catch (err) {
     console.error('Playback error:', err);
     updatePlaybackUI(false);
-    if (isIOSLike() && (err.name === 'NotAllowedError' || err.name === 'AbortError')) {
+    if (needsReliablePlayback() && (err.name === 'NotAllowedError' || err.name === 'AbortError')) {
       setResumePromptVisible(true);
     } else {
       setPlaybackReliabilityState('resume', 'Audio needs attention');
@@ -1106,7 +1107,7 @@ async function togglePlayPause(forcePlay = false) {
 
 function updatePlaybackUI(forcePlaying = null) {
   let isPlaying = forcePlaying !== null ? forcePlaying : Boolean(chunkPlayer && chunkPlayer.isPlaying);
-  if (isIOSLike() && playbackBackend === 'single-file' && audioPlayer) {
+  if (needsReliablePlayback() && playbackBackend === 'single-file' && audioPlayer) {
     isPlaying = forcePlaying !== null ? forcePlaying : !audioPlayer.paused;
   }
   if (playPauseBtn) playPauseBtn.innerHTML = isPlaying ? ICON_PAUSE : ICON_PLAY;
@@ -1212,11 +1213,11 @@ function updateMediaSessionPosition(data = null) {
       navigator.mediaSession.setPositionState({ duration, playbackRate: getCurrentPlaybackSpeed(), position: Math.min(position, duration) });
     } catch {}
   }
-  if (isIOSLike() && duration > 0 && position / duration > 0.7) maybePrepareUpcomingReliableAudio();
+  if (needsReliablePlayback() && duration > 0 && position / duration > 0.7) maybePrepareUpcomingReliableAudio();
 }
 
 function isNativeSingleFileReady() {
-  return isIOSLike() &&
+  return needsReliablePlayback() &&
     playbackBackend === 'single-file' &&
     audioPlayer &&
     audioPlayer.src &&

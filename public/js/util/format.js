@@ -88,6 +88,18 @@ export function isIOSLike() {
     (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 }
 
+export function isAndroid() {
+  return /Android/i.test(navigator.userAgent);
+}
+
+// Mobile browsers throttle background timers and media-element play() hard
+// enough that the double-buffered chunk engine stalls at chunk boundaries
+// once the screen locks. These platforms prefer handoff to the native
+// single-file chapter engine as soon as the concatenated audio is ready.
+export function needsReliablePlayback() {
+  return isIOSLike() || isAndroid();
+}
+
 // Base64-encode an arbitrary JSON-serializable value for safe embedding in an
 // HTML attribute (e.g., data-result) — avoids quoting/escaping issues that
 // come from putting raw JSON directly into markup. decodeState is the exact

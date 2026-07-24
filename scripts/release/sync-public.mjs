@@ -8,9 +8,13 @@
  * Gitleaks wrapper, then pushes it, opens a PR, and arms auto-merge so it
  * lands once the required status checks pass.
  *
+ * Only `main` may publish: features are proven on the trunk before they
+ * reach the public repository (see docs/DEPLOYMENT_TOPOLOGY.md). Passing
+ * a different --source requires the explicit --allow-source override.
+ *
  * Usage:
  *   node scripts/release/sync-public.mjs [--source <branch>] [--remote public]
- *     [--target main] [--dry-run] [--no-merge]
+ *     [--target main] [--dry-run] [--no-merge] [--allow-source]
  */
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -53,6 +57,13 @@ export function scrubMessage(message) {
 
 const startBranch = git('rev-parse', '--abbrev-ref', 'HEAD');
 const source = opt('--source', startBranch);
+
+// Publishing bypassing the trunk is how the public repo once drifted ahead
+// of main; only proven (merged-to-main) work may sync out.
+if (source !== 'main' && !has('--allow-source')) {
+  fail(`source branch is '${source}' but only 'main' may publish; ` +
+    'merge to main first, or pass --allow-source for a deliberate exception');
+}
 
 if (git('status', '--porcelain')) fail('working tree is not clean; commit or stash first');
 git('fetch', REMOTE, TARGET);

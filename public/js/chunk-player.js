@@ -304,11 +304,14 @@ class ChunkPlayer {
         }
       };
 
-      // First check immediately (manifest may already be fresh)
+      // First check immediately (manifest may already be fresh). When it
+      // isn't, run a refresh right away instead of waiting a timer tick —
+      // background tabs throttle timers to a minute or more, but fetches
+      // run unthrottled, so a stale manifest must not cost a timer cycle.
       if (this._isChunkReady(chunkIndex)) {
         resolve();
       } else {
-        this._pollTimer = setTimeout(check, 2000);
+        check();
       }
     });
   }
@@ -484,6 +487,7 @@ class ChunkPlayer {
       this._transitionToNextChunk(nextChunk);
     } else {
       // Next chunk not ready — pause and wait
+      this._prioritizeChunk(nextChunk);
       this._emitWaiting('Preparing upcoming audio…');
       this._emitPreparing('Preparing upcoming audio…', nextChunk);
       try {

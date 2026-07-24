@@ -38,6 +38,7 @@ const tests = [
   'test-docker-context.js',
   'test-release-public-root.js',
   'test-release-repository-controls.js',
+  'test-sync-public-guard.js',
   'test-data-dir.js',
   'test-book-document.js',
   'test-book-importer.js',
