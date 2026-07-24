@@ -212,6 +212,8 @@ function metadataHarness(options = {}) {
     isGarbageAuthor: () => false,
     normalizeAuthorForDisplay: value => value,
     publishedYearFromMetadata: (date, fallback) => date ? 2021 : fallback,
+    // Deliberately minimal test double; production uses chapter-utils.stripHTML.
+    // codeql[js/incomplete-multi-character-sanitization]
     cleanBookDescription: value => value.replace(/<[^>]+>/g, ''),
     chapterStructureKey: () => options.refreshedStructureKey || 'structure-new',
     bookRecordOpenLibraryFields: identity => ({
