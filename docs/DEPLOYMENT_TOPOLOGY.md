@@ -31,11 +31,36 @@ Disabled (must stay off in production `.env`):
 - Runs in trusted-LAN mode (no token, no accounts) unless accounts are created
   here too; accounts are per-instance (`data/` is not shared between instances).
 
+## Promotion — when a feature is "proven"
+
+Local is the proving ground; production only runs promoted work. A feature is
+promoted, in order:
+
+1. Developed on a short-lived branch off `main`; merged back to `main` with the
+   full `npm test` suite and `npm run test:browser` green. `main` is the only
+   branch `sync:public` will publish (`--allow-source` exists for deliberate
+   exceptions only).
+2. Any new runtime/engine capability is gated behind an env flag that defaults
+   **off** and is documented in `.env.template`, so shipping the code is
+   harmless before the flag is enabled anywhere.
+3. The feature runs enabled on the local M4 instance for a soak period of real
+   use (3–7 days as a default; longer for playback/audio-path changes) with no
+   regressions.
+4. Only then: `npm run sync:public` from `main`, deploy on the web host with
+   `scripts/deploy-prod.sh`, and — if flag-gated — enable the flag in the
+   production `.env`.
+
+"Local has more than production" therefore means more *enabled flags*, never
+more *code*: both instances run the same lineage, and divergence lives in
+`.env` alone.
+
 ## Rules
 
 - New user-facing features (like accounts) go to production through the normal
   release export; nothing is cherry-picked or hot-edited on the server —
-  server-local edits get lost on the next deploy.
+  server-local edits get lost on the next deploy. Deploys on the web host use
+  `scripts/deploy-prod.sh` (health-checked, with a printed rollback path; see
+  docs/SELF_HOSTING.md).
 - New engine/runtime features stay local-only by default: gate them behind an
   explicit env flag that defaults to off, so shipping the code to production is
   harmless.

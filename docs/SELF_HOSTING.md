@@ -214,6 +214,8 @@ After restoring, verify `/health`, the library, one book, and one audio Range re
 
 To upgrade a source checkout, fetch and check out the signed release tag, run `npm ci` for a native installation, or rebuild the Compose service with `docker compose build --pull && docker compose up -d`. Confirm `/health`, library access, one book, and one audio Range request before deleting the backup.
 
+For a systemd-managed source checkout, `scripts/deploy-prod.sh [ref]` performs those steps repeatably: it records the current revision as the rollback point, fetches and checks out the requested ref (a signed tag, or `origin/main` by default), runs `npm ci --omit=dev`, restarts the service, and polls `/health` for up to a minute. If the health check fails it prints the exact rollback invocation (`scripts/deploy-prod.sh --rollback <previous-ref>`) and exits non-zero. `--dry-run` prints the plan without changing anything; the script refuses to run over server-local edits.
+
 To roll back, stop Xandrio, check out the previous signed tag or select the previous image digest, restore the matching native directories or named-volume archive, and start the service. Do not run two versions against the same writable storage. The release workflow tests candidate restart persistence on both OCI architectures and, when a prior `stable` image exists, starts the prior image, candidate, and prior image again against the same disposable volumes.
 
 Browser offline data is separate from the server backup. Clear it through the browser's site-data controls when removing an instance. To remove local material, delete the book in Xandrio, clear browser site data, remove associated cached files and voice references, then remove backups under the operator's retention policy.
