@@ -80,6 +80,8 @@ function fakeAudio() {
 }
 
 (async () => {
+  const lifecycleSource = fs.readFileSync(path.join(__dirname, '..', 'public', 'js', 'lifecycle.js'), 'utf8');
+  Function(lifecycleSource)();
   const source = fs.readFileSync(path.join(__dirname, '..', 'public', 'js', 'playback-session.js'), 'utf8');
   const moduleUrl = `data:text/javascript;base64,${Buffer.from(source).toString('base64')}`;
   const { createPlaybackSession } = await import(moduleUrl);
@@ -422,6 +424,37 @@ function fakeAudio() {
     assert.strictEqual(result.stale, true);
     assert.strictEqual(session.snapshot.engine, null);
     assert(late.calls.some(call => call[0] === 'dispose'));
+  });
+
+  await test('dispose cancels an incoming engine stalled during chapter load', async () => {
+    let rejectLoad;
+    const incoming = engine('incoming', {
+      load: () => new Promise((_, reject) => { rejectLoad = reject; }),
+      cancelPendingLoad: () => {
+        const error = new Error('load cancelled');
+        error.cancelled = true;
+        rejectLoad(error);
+      }
+    });
+    const session = createPlaybackSession();
+    const transition = session.transitionTo({
+      book: { id: 'book-a' },
+      chapterIndex: 1,
+      createEngine: async () => incoming
+    });
+    await new Promise(resolve => setImmediate(resolve));
+    assert(incoming.calls.some(call => call[0] === 'load'));
+
+    const disposing = session.dispose();
+    await Promise.race([
+      disposing,
+      new Promise((_, reject) => setTimeout(() => reject(new Error('session disposal remained blocked')), 100))
+    ]);
+    const result = await transition;
+
+    assert.strictEqual(result.stale, true);
+    assert.strictEqual(incoming.calls.filter(call => call[0] === 'cancelPendingLoad').length, 1);
+    assert.strictEqual(incoming.calls.filter(call => call[0] === 'dispose').length, 1);
   });
 
   await test('disposes an active engine shared by queued work only once during cleanup', async () => {

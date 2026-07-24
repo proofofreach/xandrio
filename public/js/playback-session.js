@@ -207,6 +207,12 @@ export function createPlaybackSession(options = {}) {
       activeTransition = transition;
       try {
         return await commitTransition(transition);
+      } catch (error) {
+        // A replacement transition deliberately cancels the older media
+        // wait. Its caller gets a normal stale result rather than an error
+        // notification for a chapter that is no longer being opened.
+        if (!isCurrent(id) && error?.cancelled) return { stale: true, snapshot: snapshot() };
+        throw error;
       } finally {
         if (activeTransition === transition) activeTransition = null;
       }
@@ -232,6 +238,11 @@ export function createPlaybackSession(options = {}) {
     disposed = true;
     revision += 1;
     clearProvisionalForward();
+    // Unblock a transition stalled in media loading before waiting for the
+    // serialized queue. finishTransition() owns release of an incoming
+    // engine; releasedEngines prevents a shared active engine being disposed
+    // twice below and again when the transition unwinds.
+    try { activeTransition?.engine?.cancelPendingLoad?.(); } catch {}
     const engine = state.engine;
     state.engine = null;
     state.backend = null;

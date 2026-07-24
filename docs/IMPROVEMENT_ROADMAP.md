@@ -3,6 +3,20 @@
 Updated 2026-07-24. This replaces the completed parts of
 `HANDOFF-STRUCTURAL-DEBT.md` as the next engineering sequence.
 
+## Implementation status
+
+Items 1–6 were completed on 2026-07-24:
+
+- Book deletion and metadata refresh now use tested domain services.
+- Critical JSON stores have validation, bounded backups, durable writes, and a
+  guarded recovery command.
+- Browser media, timer, polling, and transition lifecycles share cancellable
+  teardown primitives.
+- Administrators have redacted operational diagnostics and recovery guidance.
+- Offline audio uses verified per-chapter manifests and targeted repair.
+- Deterministic fault, cancellation, recovery, authorization, and browser smoke
+  coverage protects the new boundaries.
+
 ## Current baseline
 
 - `public/app.js` is 1,442 lines; the earlier frontend extraction target is
@@ -10,7 +24,8 @@ Updated 2026-07-24. This replaces the completed parts of
 - `server.js` is 3,785 lines and still owns several domain-heavy handlers.
 - Playback routes have been extracted, and the application shell test derives
   the frontend import graph.
-- The full suite passes: 1,830 tests in 68 suites.
+- The full suite passes: 1,884 tests in 74 suites, plus the real-browser smoke
+  suite.
 
 The next work should reduce failure coupling and improve recovery. Line-count
 reduction is a consequence, not the goal.

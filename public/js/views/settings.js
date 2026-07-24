@@ -79,6 +79,16 @@ export function initSettings(options = {}) {
   const adminAddAccountBtn = document.getElementById('admin-add-account-btn');
   const adminAccountsError = document.getElementById('admin-accounts-error');
 
+  // Admin-only operational diagnostics
+  const operatorDiagnosticsSection = document.getElementById('operator-diagnostics-section');
+  const operatorDiagnosticsStatus = document.getElementById('operator-diagnostics-status');
+  const operatorDiagnosticsUpdated = document.getElementById('operator-diagnostics-updated');
+  const operatorDiagnosticsSummary = document.getElementById('operator-diagnostics-summary');
+  const operatorDiagnosticsIssues = document.getElementById('operator-diagnostics-issues');
+  const operatorDiagnosticsError = document.getElementById('operator-diagnostics-error');
+  const operatorDiagnosticsRefresh = document.getElementById('operator-diagnostics-refresh');
+  const operatorDiagnosticsCopy = document.getElementById('operator-diagnostics-copy');
+
   // Playback settings
   const skipIntervalControl = document.getElementById('skip-interval-control');
   const defaultSpeedLabel = document.getElementById('default-speed-label');
@@ -110,6 +120,7 @@ export function initSettings(options = {}) {
     checkZlibStatus();
     loadProviderStatus();
     loadAccountOrSync();
+    loadOperatorDiagnostics();
     renderClientSettings();
     loadPremiumPrepSetting();
     loadVoices();
@@ -750,6 +761,155 @@ export function initSettings(options = {}) {
     if (user) loadAccountSection();
     else loadSyncStatus();
   }
+
+  // ---- Admin: operational diagnostics ----
+
+  let operatorDiagnosticsReport = null;
+
+  function formatStorageBytes(value) {
+    if (!Number.isFinite(value)) return 'Unknown';
+    if (value >= 1024 ** 3) return `${(value / 1024 ** 3).toFixed(1)} GB`;
+    if (value >= 1024 ** 2) return `${Math.round(value / 1024 ** 2)} MB`;
+    return `${Math.round(value / 1024)} KB`;
+  }
+
+  function diagnosticsLabel(value) {
+    if (value === 'ok' || value === 'online') return 'OK';
+    if (value === 'warning') return 'Needs attention';
+    if (value === 'starting') return 'Starting';
+    if (value === 'offline') return 'Offline';
+    return 'Unavailable';
+  }
+
+  function diagnosticsBadgeClass(value) {
+    if (value === 'ok' || value === 'online') return 'settings-status-ok';
+    if (value === 'warning' || value === 'starting') return 'settings-status-warning';
+    return 'settings-status-error';
+  }
+
+  function renderOperatorDiagnostics(report) {
+    operatorDiagnosticsReport = report;
+    if (operatorDiagnosticsStatus) {
+      operatorDiagnosticsStatus.textContent = diagnosticsLabel(report.status);
+      operatorDiagnosticsStatus.className = `settings-status ${diagnosticsBadgeClass(report.status)}`;
+    }
+    if (operatorDiagnosticsUpdated) {
+      operatorDiagnosticsUpdated.textContent = `Checked ${relativeTime(report.generatedAt)}`;
+    }
+    if (operatorDiagnosticsCopy) operatorDiagnosticsCopy.disabled = false;
+
+    const dataStorage = report.storage?.data || {};
+    const cacheStorage = report.storage?.cache || {};
+    const cacheSpace = cacheStorage.space || {};
+    const queue = report.queue || {};
+    const engines = report.engines || {};
+    const engineRows = Object.entries(engines).map(([name, engine]) => `
+      <span class="operator-diagnostic-engine">
+        ${escapeHTML(name === 'edge' ? 'Edge' : name[0].toUpperCase() + name.slice(1))}
+        <span class="settings-status ${diagnosticsBadgeClass(engine.status)}">${escapeHTML(diagnosticsLabel(engine.status))}</span>
+      </span>
+    `).join('');
+
+    if (operatorDiagnosticsSummary) {
+      operatorDiagnosticsSummary.innerHTML = `
+        <div class="operator-diagnostic-row">
+          <span>Application data</span>
+          <span class="settings-status ${diagnosticsBadgeClass(dataStorage.status)}">${escapeHTML(diagnosticsLabel(dataStorage.status))}</span>
+        </div>
+        <div class="operator-diagnostic-row">
+          <span>Audio cache</span>
+          <span class="settings-status ${diagnosticsBadgeClass(cacheStorage.status)}">${escapeHTML(diagnosticsLabel(cacheStorage.status))}</span>
+        </div>
+        <div class="operator-diagnostic-row">
+          <span>Cache space</span>
+          <span>${escapeHTML(cacheSpace.freeBytes == null ? 'Unknown' : `${formatStorageBytes(cacheSpace.freeBytes)} free`)}</span>
+        </div>
+        <div class="operator-diagnostic-row">
+          <span>Quarantined JSON stores</span>
+          <span>${report.quarantinedStoreCount == null ? 'Unknown' : escapeHTML(String(report.quarantinedStoreCount))}</span>
+        </div>
+        <div class="operator-diagnostic-row">
+          <span>Narration queue</span>
+          <span>${escapeHTML(String(queue.active || 0))} active · ${escapeHTML(String(queue.queued || 0))} queued</span>
+        </div>
+        <div class="operator-diagnostic-row operator-diagnostic-row-stacked">
+          <span>Narration engines</span>
+          <span class="operator-diagnostic-engines">${engineRows}</span>
+        </div>
+      `;
+    }
+
+    if (operatorDiagnosticsIssues) {
+      const issues = Array.isArray(report.issues) ? report.issues : [];
+      operatorDiagnosticsIssues.innerHTML = issues.length
+        ? issues.map(issue => `
+            <div class="operator-diagnostic-issue operator-diagnostic-issue-${escapeHTML(issue.severity || 'warning')}">
+              <strong>${escapeHTML(issue.message || 'A server component needs attention.')}</strong>
+              <span>${escapeHTML(issue.action || 'Refresh diagnostics after correcting the problem.')}</span>
+              ${issue.documentation === 'docs/JSON_STORE_RECOVERY.md'
+                ? '<code>docs/JSON_STORE_RECOVERY.md</code>'
+                : ''}
+            </div>
+          `).join('')
+        : '<p class="operator-diagnostic-clear">No operational problems detected.</p>';
+    }
+  }
+
+  async function loadOperatorDiagnostics({ refresh = false } = {}) {
+    if (!operatorDiagnosticsSection) return;
+    const user = getCurrentUser();
+    if (user && user.role !== 'admin') {
+      operatorDiagnosticsSection.style.display = 'none';
+      return;
+    }
+    if (operatorDiagnosticsError) {
+      operatorDiagnosticsError.textContent = '';
+      operatorDiagnosticsError.style.display = 'none';
+    }
+    if (operatorDiagnosticsRefresh) operatorDiagnosticsRefresh.disabled = true;
+    if (operatorDiagnosticsStatus) {
+      operatorDiagnosticsStatus.textContent = 'Checking…';
+      operatorDiagnosticsStatus.className = 'settings-status';
+    }
+    try {
+      const report = await apiGet(`/api/admin/diagnostics${refresh ? '?refresh=1' : ''}`);
+      operatorDiagnosticsSection.style.display = 'block';
+      renderOperatorDiagnostics(report);
+    } catch (err) {
+      if (err.status === 403) {
+        operatorDiagnosticsSection.style.display = 'none';
+        return;
+      }
+      operatorDiagnosticsSection.style.display = 'block';
+      if (operatorDiagnosticsStatus) {
+        operatorDiagnosticsStatus.textContent = 'Unavailable';
+        operatorDiagnosticsStatus.className = 'settings-status settings-status-error';
+      }
+      if (operatorDiagnosticsError) {
+        operatorDiagnosticsError.textContent = err.message || 'Failed to load diagnostics';
+        operatorDiagnosticsError.style.display = 'block';
+      }
+    } finally {
+      if (operatorDiagnosticsRefresh) operatorDiagnosticsRefresh.disabled = false;
+    }
+  }
+
+  operatorDiagnosticsRefresh?.addEventListener('click', () => {
+    loadOperatorDiagnostics({ refresh: true });
+  });
+
+  operatorDiagnosticsCopy?.addEventListener('click', async () => {
+    if (!operatorDiagnosticsReport) return;
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(operatorDiagnosticsReport, null, 2));
+      showToast('Redacted diagnostics copied');
+    } catch {
+      if (operatorDiagnosticsError) {
+        operatorDiagnosticsError.textContent = 'The browser could not copy the report. Allow clipboard access and try again.';
+        operatorDiagnosticsError.style.display = 'block';
+      }
+    }
+  });
 
   function toggleAccountPasswordForm(visible) {
     if (!accountPasswordForm) return;

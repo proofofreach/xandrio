@@ -975,7 +975,10 @@ async function verifyRealServiceWorkerOffline(browser) {
     await page.evaluate(() => document.getElementById('download-book-btn').click());
     await page.waitForFunction(() => {
       const manifest = JSON.parse(localStorage.getItem('xandrio_offline_books') || '{}');
-      return manifest['smoke-offline']?.chapters === 1;
+      const entry = manifest['smoke-offline'];
+      return entry?.state === 'ready' &&
+        entry?.chapters === 1 &&
+        entry?.chapterEntries?.length === 1;
     });
     const cachedBytes = await page.evaluate(async () => {
       const cache = await caches.open('xandrio-offline-audio');

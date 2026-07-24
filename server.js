@@ -33,6 +33,15 @@ const { createPronunciationService, createCacheInvalidator } = require('./lib/pr
 const { registerPronunciationRoutes } = require('./lib/routes/pronunciation-routes');
 const { createXBookStore } = require('./lib/xbook-store');
 const { createBookDocument } = require('./lib/book-document');
+const {
+  DELETE_BOOK_RESULT,
+  createBookArtifactCleaner,
+  createBookDeletionService
+} = require('./lib/book-deletion');
+const {
+  REFRESH_BOOK_RESULT,
+  createBookMetadataRefreshService
+} = require('./lib/book-metadata-refresh');
 const { chapterStructureKey, positionMatchesChapterStructure } = require('./lib/chapter-structure');
 const { parseEpub } = require('./lib/epub-parser');
 const { BookImportError, createBookImporter } = require('./lib/book-importer');
@@ -46,9 +55,12 @@ const internetArchive = require('./lib/search-providers/internet-archive');
 const { createStandardEbooksProvider } = require('./lib/search-providers/standard-ebooks');
 const { createOpdsProvider } = require('./lib/search-providers/opds');
 const { registerPreferencesRoutes } = require('./lib/routes/preferences-routes');
+const { registerDiagnosticsRoutes } = require('./lib/routes/diagnostics-routes');
+const { createOperatorDiagnostics } = require('./lib/operator-diagnostics');
 const { registerBookmarksRoutes, removeBookBookmarks } = require('./lib/routes/bookmarks-routes');
 const { registerOperatorPolicyRoutes } = require('./lib/routes/operator-policy-routes');
 const jsonStore = require('./lib/json-store');
+const { createBooksStore } = require('./lib/books-store');
 const { computeListeningStats } = require('./lib/listening-stats');
 const { createAuthMiddleware, createAuthRoutes, createSessionStore, requireAdmin, DEFAULT_SESSION_TTL_MS } = require('./lib/auth');
 const { createAccountsStore } = require('./lib/accounts');
@@ -304,6 +316,7 @@ app.use(express.static('public', {
 // Data directories
 const RUNTIME_DIR = path.join(DATA_DIR, 'runtime');
 const BOOKS_FILE = path.join(DATA_DIR, 'books.json');
+const booksStore = createBooksStore({ filePath: BOOKS_FILE, jsonStore, maxBackups: 5 });
 const POSITIONS_FILE = path.join(DATA_DIR, 'positions.json');
 const SETTINGS_FILE = path.join(DATA_DIR, 'settings.json');
 const ANNAS_AUTH_FILE = path.join(DATA_DIR, 'annas-auth.json');
@@ -340,6 +353,13 @@ function rememberDeletedBookId(bookId) {
     deletedBookIds.delete(oldest);
   }
 }
+
+const bookArtifactCleaner = createBookArtifactCleaner({
+  cacheDir: CACHE_DIR,
+  fs,
+  invalidateChapterCache,
+  isBookDeleted: bookId => deletedBookIds.has(bookId)
+});
 
 // Unified 500 response: log the full error server-side, return a generic public
 // message with no raw err.message so internal details are not leaked to clients.
@@ -510,59 +530,6 @@ async function searchAnnasProvider(query) {
   } catch {
     console.error('Anna browser fallback unavailable');
     return [];
-  }
-}
-
-async function cleanupBookArtifacts(bookId, book = {}) {
-  const deleted = [];
-  const failed = [];
-  const paths = new Set();
-
-  const addPath = (candidate) => {
-    if (!candidate || typeof candidate !== 'string') return;
-    const resolved = path.resolve(candidate);
-    const cacheRoot = path.resolve(CACHE_DIR);
-    if (resolved === cacheRoot || !resolved.startsWith(`${cacheRoot}${path.sep}`)) return;
-    paths.add(resolved);
-  };
-
-  addPath(book.path);
-  addPath(book.sourcePath);
-  addPath(book.extractedArtifact);
-  addPath(book.coverPath);
-
-  const cacheFiles = await fs.readdir(CACHE_DIR).catch(() => []);
-  for (const file of cacheFiles) {
-    if (file === bookId || file.startsWith(`${bookId}.`) || file.startsWith(`${bookId}_`)) {
-      addPath(path.join(CACHE_DIR, file));
-    }
-  }
-
-  for (const target of paths) {
-    try {
-      await fs.rm(target, { force: true, recursive: true });
-      deleted.push(target);
-      invalidateChapterCache(target);
-    } catch (err) {
-      failed.push({ path: target, error: err.message });
-    }
-  }
-
-  return { deleted, failed };
-}
-
-function scheduleDeletedBookArtifactSweeps(bookId, book = {}) {
-  for (const delay of [2000, 10000, 30000]) {
-    setTimeout(() => {
-      if (!deletedBookIds.has(bookId)) return;
-      cleanupBookArtifacts(bookId, book)
-        .then(result => {
-          if (result.deleted.length > 0 || result.failed.length > 0) {
-            console.log(`Post-delete sweep for ${bookId}: removed ${result.deleted.length}, failed ${result.failed.length}`);
-          }
-        })
-        .catch(err => console.error(`Post-delete sweep failed for ${bookId}:`, err));
-    }, delay);
   }
 }
 
@@ -2005,14 +1972,22 @@ async function ensureDirectories() {
 // holds the file's lock; loadJSON/saveJSON remain for reads and
 // whole-value replacement.
 async function loadJSON(filePath, defaultValue = {}) {
+  if (path.resolve(filePath) === path.resolve(BOOKS_FILE)) return booksStore.load();
   return jsonStore.load(filePath, defaultValue);
 }
 
 async function saveJSON(filePath, data) {
+  if (path.resolve(filePath) === path.resolve(BOOKS_FILE)) {
+    await booksStore.save(data);
+    return;
+  }
   await jsonStore.save(filePath, data);
 }
 
-const updateJSON = jsonStore.update;
+function updateJSON(filePath, mutator, defaultValue = {}) {
+  if (path.resolve(filePath) === path.resolve(BOOKS_FILE)) return booksStore.update(mutator);
+  return jsonStore.update(filePath, mutator, defaultValue);
+}
 const downloadImportGate = new ConcurrencyGate(CONCURRENCY_LIMITS.download, { name: 'download' });
 
 function isSafeBookId(value) {
@@ -2512,7 +2487,15 @@ app.post('/api/upload', uploadSingleEpub, handleUploadImport);
 // book records before they leave the API.
 function publicBookRecord(book) {
   if (!book || typeof book !== 'object') return book;
-  const { path: _path, coverPath, extractedArtifact, sourceHash, importValidation, ...pub } = book;
+  const {
+    path: _path,
+    coverPath,
+    extractedArtifact,
+    sourceHash,
+    importValidation,
+    metadataRefreshReconciliation,
+    ...pub
+  } = book;
   pub.hasCover = Boolean(coverPath);
   return pub;
 }
@@ -2596,6 +2579,53 @@ app.delete('/api/shelf/:bookId', async (req, res) => {
   }
 });
 
+const bookDeletionService = createBookDeletionService({
+  booksFile: BOOKS_FILE,
+  positionsFile: POSITIONS_FILE,
+  bookmarksFile: BOOKMARKS_FILE,
+  shelvesFile: SHELVES_FILE,
+  updateJSON,
+  skipSave: jsonStore.SKIP_SAVE,
+  rememberDeletedBookId,
+  cancelBookJobs: bookId => chunkedTTS.cancelBook(bookId) + instantChunkedTTS.cancelBook(bookId),
+  stopPremiumPrep: bookId => premiumPrep.stopBook(bookId),
+  cleanupBookArtifacts: bookArtifactCleaner.cleanup,
+  scheduleArtifactSweeps: bookArtifactCleaner.scheduleSweeps,
+  removeBookPositions: (positions, bookId) => removeBookPositions(positions, bookId),
+  removeBookBookmarks,
+  removeBookFromAllShelves: (shelvesStore, bookId) => shelves.removeBookFromAllShelves(shelvesStore, bookId)
+});
+
+const bookMetadataRefreshService = createBookMetadataRefreshService({
+  booksFile: BOOKS_FILE,
+  positionsFile: POSITIONS_FILE,
+  cacheDir: CACHE_DIR,
+  path,
+  loadJSON,
+  updateJSON,
+  skipSave: jsonStore.SKIP_SAVE,
+  isXBookPath,
+  invalidateXBookArtifactCache,
+  extractBookMetadata,
+  getChaptersCached,
+  resolveMetadataSeed,
+  enrichBookMetadata,
+  trustedEnrichedTitle,
+  resolveOpenLibraryIdentity,
+  isGarbageTitle,
+  isGarbageAuthor,
+  normalizeAuthorForDisplay,
+  publishedYearFromMetadata,
+  cleanBookDescription,
+  chapterStructureKey,
+  bookRecordOpenLibraryFields,
+  canonicalWorkKey,
+  removeFileIfExists,
+  removeBookPositions: (positions, bookId) => removeBookPositions(positions, bookId),
+  setBookPositionsStructureKey: (positions, bookId, structureKey) =>
+    setBookPositionsStructureKey(positions, bookId, structureKey)
+});
+
 // API: Delete book
 app.delete('/api/book/:bookId', async (req, res) => {
   try {
@@ -2603,58 +2633,19 @@ app.delete('/api/book/:bookId', async (req, res) => {
     if (!isSafeBookId(bookId)) {
       return res.status(400).json({ error: 'Invalid book identifier' });
     }
-    let forbidden = false;
-    const deletion = await updateJSON(BOOKS_FILE, async (books) => {
-      const book = books[bookId];
-      if (!book) return jsonStore.SKIP_SAVE;
-
-      // Members may delete only books they added; shared books (no addedBy)
-      // and other users' books are admin-only deletions.
-      if (req.user?.role === 'member' && book.addedBy !== req.user.id) {
-        forbidden = true;
-        return jsonStore.SKIP_SAVE;
-      }
-
-      rememberDeletedBookId(bookId);
-
-      const cancelledJobs = chunkedTTS.cancelBook(bookId) + instantChunkedTTS.cancelBook(bookId);
-      premiumPrep.stopBook(bookId);
-      const artifactCleanup = await cleanupBookArtifacts(bookId, book);
-      scheduleDeletedBookArtifactSweeps(bookId, book);
-      if (artifactCleanup.failed.length > 0) {
-        console.warn(`Book deletion left ${artifactCleanup.failed.length} artifact(s):`, artifactCleanup.failed);
-      }
-
-      delete books[bookId];
-      return { cancelledJobs, artifactCleanup };
-    });
-
-    if (forbidden) {
+    const deletion = await bookDeletionService.deleteBook({ bookId, actor: req.user });
+    if (deletion.status === DELETE_BOOK_RESULT.FORBIDDEN) {
       return res.status(403).json({ error: 'Only the book owner or an admin can delete this book' });
     }
-    if (deletion === jsonStore.SKIP_SAVE) {
+    if (deletion.status === DELETE_BOOK_RESULT.NOT_FOUND) {
       return res.status(404).json({ error: 'Book not found' });
     }
-    const { cancelledJobs, artifactCleanup } = deletion;
-
-    // Remove saved positions for this book across all sync users.
-    await updateJSON(POSITIONS_FILE, (positions) => {
-      removeBookPositions(positions, bookId);
-    });
-    // Remove saved bookmarks for this book across all sync users.
-    await updateJSON(BOOKMARKS_FILE, (bookmarks) => {
-      removeBookBookmarks(bookmarks, bookId);
-    });
-    // Remove the book from every user's shelf.
-    await updateJSON(SHELVES_FILE, (data) => {
-      shelves.removeBookFromAllShelves(data, bookId);
-    });
     res.json({
       success: true,
       message: 'Book deleted successfully',
-      deletedArtifacts: artifactCleanup.deleted.length,
-      failedArtifacts: artifactCleanup.failed,
-      cancelledJobs
+      deletedArtifacts: deletion.artifactCleanup.deleted.length,
+      failedArtifacts: deletion.artifactCleanup.failed,
+      cancelledJobs: deletion.cancelledJobs
     });
   } catch (err) {
     console.error('Delete book error:', err);
@@ -2669,94 +2660,11 @@ app.post('/api/refresh-metadata/:bookId', async (req, res) => {
     if (!isSafeBookId(bookId)) {
       return res.status(400).json({ error: 'Invalid book identifier' });
     }
-    const books = await loadJSON(BOOKS_FILE, {});
-    const book = books[bookId];
-    
-    if (!book) {
+    const refresh = await bookMetadataRefreshService.refreshBook(bookId);
+    if (refresh.status === REFRESH_BOOK_RESULT.NOT_FOUND) {
       return res.status(404).json({ error: 'Book not found' });
     }
-
-    // Extract fresh metadata from the stored book file
-    if (isXBookPath(book.path)) {
-      invalidateXBookArtifactCache(book.path);
-    }
-    const metadata = await extractBookMetadata(book.path);
-    
-    // Clean and enrich
-    const metadataSeed = resolveMetadataSeed(
-      metadata,
-      book.title,
-      book.author,
-      book.originalFilename || book.uploadedFile || book.filename
-    );
-    const cleanTitle = metadataSeed.title;
-    const cleanAuthor = metadataSeed.author;
-    const enrichedMetadata = await enrichBookMetadata(cleanTitle, cleanAuthor);
-    const enrichedTitle = trustedEnrichedTitle(enrichedMetadata.title, cleanTitle, metadataSeed);
-    const openLibraryIdentity = await resolveOpenLibraryIdentity({
-      title: cleanTitle,
-      author: cleanAuthor,
-      language: metadata.language || book.language,
-      isbn: metadata.isbn
-    }, { timeoutMs: 5000 });
-    
-    const epubTitleIsGarbage = isGarbageTitle(metadata.title) || metadataSeed.embeddedLooksWrong;
-    const epubAuthorIsGarbage = isGarbageAuthor(metadata.author);
-    const refreshedChapters = await getChaptersCached(book.path);
-
-    // Refreshed fields (prefer Open Library when EPUB data is garbage) —
-    // applied under the library lock so a concurrent writer isn't clobbered.
-    const refreshedAuthorCandidate = epubAuthorIsGarbage
-      ? (enrichedMetadata.author || cleanAuthor || book.author)
-      : (metadata.author || enrichedMetadata.author || book.author);
-    const refreshedStructureKey = chapterStructureKey(refreshedChapters);
-    const structureIntroduced = Boolean(refreshedStructureKey) && !book.chapterStructureKey;
-    const structureChanged = Boolean(refreshedStructureKey && book.chapterStructureKey) &&
-      refreshedStructureKey !== book.chapterStructureKey;
-    const refreshedFields = {
-      title: epubTitleIsGarbage
-        ? (enrichedTitle || cleanTitle || book.title)
-        : (metadata.title || enrichedTitle || book.title),
-      author: normalizeAuthorForDisplay(refreshedAuthorCandidate),
-      publisher: metadata.publisher || enrichedMetadata.publisher,
-      publishedDate: publishedYearFromMetadata(metadata.date, enrichedMetadata.publishedDate),
-      description: cleanBookDescription(metadata.description || enrichedMetadata.description),
-      subjects: enrichedMetadata.subjects || [],
-      language: metadata.language || book.language || 'en',
-      chapterCount: refreshedChapters.length,
-      chapterStructureKey: refreshedStructureKey || book.chapterStructureKey,
-      // A refresh may repair chapter ordering/types. Any preload indices from
-      // the previous structure are no longer trustworthy.
-      chapter1Ready: false,
-      preloadedThrough: null,
-      ...bookRecordOpenLibraryFields(openLibraryIdentity),
-      metadataRefreshed: new Date().toISOString()
-    };
-    refreshedFields.workKey = canonicalWorkKey(refreshedFields.title, refreshedFields.author) || book.workKey;
-
-    const updatedBook = await updateJSON(BOOKS_FILE, (books) => {
-      const current = books[bookId];
-      if (!current) return jsonStore.SKIP_SAVE;
-      books[bookId] = { ...current, ...refreshedFields };
-      return books[bookId];
-    });
-
-    if (updatedBook === jsonStore.SKIP_SAVE) {
-      return res.status(404).json({ error: 'Book not found' });
-    }
-
-    const titleChanged = updatedBook.title !== book.title || updatedBook.author !== book.author;
-    if (titleChanged) {
-      await removeFileIfExists(path.join(CACHE_DIR, `${bookId}_cover.jpg`));
-    }
-    if (structureChanged) {
-      await updateJSON(POSITIONS_FILE, positions => removeBookPositions(positions, bookId));
-    } else if (structureIntroduced) {
-      await updateJSON(POSITIONS_FILE, positions =>
-        setBookPositionsStructureKey(positions, bookId, refreshedStructureKey));
-    }
-
-    res.json({ success: true, book: publicBookRecord(updatedBook) });
+    res.json({ success: true, book: publicBookRecord(refresh.book) });
   } catch (err) {
     console.error('Metadata refresh error:', err);
     sendServerError(res, err, "Failed to refresh metadata");
@@ -3511,7 +3419,7 @@ async function backfillChapterDurations() {
   }
 }
 
-registerPreferencesRoutes(app, {
+const preferencesRoutes = registerPreferencesRoutes(app, {
   annasAuthFile: ANNAS_AUTH_FILE,
   chatterboxVoicesEnabled: !ALLOWED_VOICE_PROVIDERS || ALLOWED_VOICE_PROVIDERS.has('chatterbox'),
   availableVoices: AVAILABLE_VOICES,
@@ -3538,6 +3446,16 @@ registerPreferencesRoutes(app, {
   updateSettingsCache,
   voiceSamplesDir: VOICE_SAMPLES_DIR,
   zlibrary
+});
+
+registerDiagnosticsRoutes(app, {
+  requireAdmin,
+  collectDiagnostics: createOperatorDiagnostics({
+    dataDir: DATA_DIR,
+    cacheDir: CACHE_DIR,
+    getQueueStatus: () => ttsQueue.getQueueStatus(),
+    getEngineStatus: preferencesRoutes.getEngineStatus
+  })
 });
 
 registerBookmarksRoutes(app, {

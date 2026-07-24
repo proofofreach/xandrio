@@ -11,7 +11,7 @@
   <title>Xandrio - Audiobook Library</title>
   <link rel="preload" href="/fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin>
   <!-- ?v= values must match ASSET_VERSIONS in sw.js (single source of truth) -->
-  <link rel="stylesheet" href="style-v3.css?v=76">
+  <link rel="stylesheet" href="style-v3.css?v=77">
   <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=2">
 </head>
 <body>
@@ -411,6 +411,31 @@
               </div>
             </div>
             <p id="sync-error" class="settings-error" style="display:none"></p>
+          </div>
+        </details>
+
+        <!-- Operator diagnostics (admin and trusted-LAN operators only) -->
+        <details class="settings-section" id="operator-diagnostics-section" style="display:none">
+          <summary class="settings-section-header">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="width:18px;height:18px"><path stroke-linecap="round" stroke-linejoin="round" d="M11.42 15.17l-5.66 5.66a2.12 2.12 0 01-3-3l5.66-5.66m3-3l2.83-2.83m0 0l-1.42-1.41 2.12-2.12 4.24 4.24-2.12 2.12-1.41-1.42-2.83 2.83m1.41 1.42l5.66 5.66a2.12 2.12 0 01-3 3l-5.66-5.66"/></svg>
+            System diagnostics
+          </summary>
+          <div class="settings-section-body">
+            <div class="settings-row">
+              <div class="settings-label">
+                <span class="settings-label-text">Server health</span>
+                <span id="operator-diagnostics-updated" class="settings-label-hint">Not checked yet</span>
+              </div>
+              <span id="operator-diagnostics-status" class="settings-status">Checking…</span>
+            </div>
+            <div id="operator-diagnostics-summary" class="operator-diagnostics-summary" aria-live="polite"></div>
+            <div id="operator-diagnostics-issues" class="operator-diagnostics-issues"></div>
+            <p id="operator-diagnostics-error" class="settings-error" style="display:none"></p>
+            <div class="settings-actions">
+              <button id="operator-diagnostics-refresh" class="btn-primary btn-sm">Refresh diagnostics</button>
+              <button id="operator-diagnostics-copy" class="btn-ghost btn-sm" disabled>Copy redacted report</button>
+            </div>
+            <p class="settings-hint operator-diagnostics-note">Reports contain counts and component states only. They exclude credentials, account details, book data, custom voice names, and filesystem paths.</p>
           </div>
         </details>
 
@@ -932,6 +957,7 @@
     </section>
   </div>
 
+  <script src="/js/lifecycle.js?v=1"></script>
   <script src="/js/chunk-player.js?v=20"></script>
   <script type="module" src="app.js?v=88"></script>
 </body>

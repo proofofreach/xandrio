@@ -53,6 +53,12 @@ for (const [assetPath, version] of assetVersions) {
   assert(fs.existsSync(path.join(publicDir, assetPath.slice(1))), `${assetPath} exists in public/`);
 }
 
+assert(
+  indexSource.indexOf('/js/lifecycle.js') !== -1 &&
+    indexSource.indexOf('/js/lifecycle.js') < indexSource.indexOf('/js/chunk-player.js'),
+  'index.html loads lifecycle helpers before the classic chunk player'
+);
+
 // APP_SHELL entries must exist on disk, or cache.addAll() rejects and the new
 // service worker never installs (clients then stay pinned to the old shell).
 const appShellMatch = swSource.match(/const APP_SHELL = \[([\s\S]*?)\];/);

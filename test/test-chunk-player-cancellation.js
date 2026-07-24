@@ -53,6 +53,11 @@ class FakeAudio {
 
 (async () => {
   global.window = {};
+  const lifecycleSource = fs.readFileSync(
+    path.join(__dirname, '..', 'public', 'js', 'lifecycle.js'),
+    'utf8'
+  );
+  Function(lifecycleSource)();
   global.Audio = FakeAudio;
   const source = fs.readFileSync(
     path.join(__dirname, '..', 'public', 'js', 'chunk-player.js'),
@@ -61,7 +66,7 @@ class FakeAudio {
   Function(source)();
   const ChunkPlayer = global.window.ChunkPlayer;
 
-  await test('cancelling a manifest fetch suppresses stale readiness and state', async () => {
+  await test('cancelling a manifest fetch rejects promptly and suppresses stale state', async () => {
     const manifestResponse = deferred();
     global.fetch = () => manifestResponse.promise;
     let ready = 0;
@@ -73,14 +78,14 @@ class FakeAudio {
       ok: true,
       async json() { return { totalChunks: 0, chunks: [], servedTier: 'instant' }; }
     });
-    await load;
+    await assert.rejects(load, error => error?.cancelled === true);
 
     assert.strictEqual(ready, 0);
     assert.strictEqual(player.manifest, null);
     assert.strictEqual(player.servedTier, null);
   });
 
-  await test('cancelling a chunk poll settles immediately and ignores its late response', async () => {
+  await test('cancelling a chunk poll rejects immediately and ignores its late response', async () => {
     const refreshResponse = deferred();
     let fetchCount = 0;
     global.fetch = async () => {
@@ -101,10 +106,13 @@ class FakeAudio {
     const load = player.loadChapter('book-a', 1);
     await new Promise(resolve => setImmediate(resolve));
     player.cancelPendingLoad();
-    await Promise.race([
-      load,
-      new Promise((_, reject) => setTimeout(() => reject(new Error('cancelled poll did not settle')), 100))
-    ]);
+    await assert.rejects(
+      Promise.race([
+        load,
+        new Promise((_, reject) => setTimeout(() => reject(new Error('cancelled poll did not settle')), 100))
+      ]),
+      error => error?.cancelled === true
+    );
 
     refreshResponse.resolve({
       ok: true,
@@ -115,6 +123,41 @@ class FakeAudio {
     assert.strictEqual(ready, 0);
     assert.strictEqual(player.manifest.chunks[0].status, 'queued');
     assert.strictEqual(player.servedTier, 'instant');
+  });
+
+  await test('a new chapter load cancels an older poll wait without an explicit cancel call', async () => {
+    let fetchCount = 0;
+    global.fetch = async () => {
+      fetchCount += 1;
+      if (fetchCount <= 2) {
+        return {
+          ok: true,
+          async json() {
+            return { totalChunks: 1, chunks: [{ status: 'queued' }], servedTier: 'instant' };
+          }
+        };
+      }
+      return {
+        ok: true,
+        async json() { return { totalChunks: 0, chunks: [], servedTier: 'instant' }; }
+      };
+    };
+    const ready = [];
+    const player = new ChunkPlayer({ onReady: () => ready.push(player.chapterIndex) });
+
+    const first = player.loadChapter('book-a', 1);
+    await new Promise(resolve => setImmediate(resolve));
+    await new Promise(resolve => setImmediate(resolve));
+    assert(player._pollTimer, 'the first chapter should be sleeping between manifest polls');
+
+    const second = player.loadChapter('book-a', 2);
+    const firstCancelled = assert.rejects(first, error => error?.cancelled === true);
+    await Promise.race([
+      Promise.all([firstCancelled, second]),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('superseded load did not settle')), 100))
+    ]);
+
+    assert.deepStrictEqual(ready, [2]);
   });
 
   await test('a failed manifest rejects instead of committing a broken engine', async () => {

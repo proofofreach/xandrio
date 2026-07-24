@@ -54,6 +54,11 @@ function fakeAudio() {
 }
 
 (async () => {
+  const lifecycleSource = fs.readFileSync(
+    path.join(__dirname, '..', 'public', 'js', 'lifecycle.js'),
+    'utf8'
+  );
+  Function(lifecycleSource)();
   const source = fs.readFileSync(
     path.join(__dirname, '..', 'public', 'js', 'single-file-chapter-player.js'),
     'utf8'
@@ -71,14 +76,15 @@ function fakeAudio() {
     return { player, ready };
   }
 
-  await test('a superseded load never fires onReady', async () => {
+  await test('a superseded load rejects promptly and never fires onReady', async () => {
     const audio = fakeAudio();
     const { player, ready } = makePlayer(audio);
 
     const first = player.loadChapter('book1', 0);
     const second = player.loadChapter('book1', 1);
+    const firstCancelled = assert.rejects(first, error => error?.cancelled === true);
     audio.emit('loadedmetadata');
-    await Promise.all([first, second]);
+    await Promise.all([firstCancelled, second]);
 
     assert.deepStrictEqual(ready, [1], 'only the current chapter reports ready');
   });
@@ -90,24 +96,29 @@ function fakeAudio() {
     const first = player.loadChapter('book1', 0);
     // The first load's listeners must be gone before the second one arms its own.
     const second = player.loadChapter('book1', 1);
+    const firstCancelled = assert.rejects(first, error => error?.cancelled === true);
     assert.strictEqual(audio.countFor('loadedmetadata'), 1, 'stale listener was left attached');
     assert.strictEqual(audio.countFor('canplay'), 1, 'stale listener was left attached');
 
     audio.emit('canplay');
-    await Promise.all([first, second]);
+    await Promise.all([firstCancelled, second]);
     assert.deepStrictEqual(ready, [1]);
   });
 
-  await test('a superseded load settles instead of hanging forever', async () => {
+  await test('a superseded load rejects instead of hanging forever', async () => {
     const audio = fakeAudio();
     const { player } = makePlayer(audio);
 
     const first = player.loadChapter('book1', 0);
     const second = player.loadChapter('book1', 1);
+    const firstCancelled = assert.rejects(first, error => error?.cancelled === true);
     audio.emit('loadedmetadata');
 
     // Neither promise may outlive the test; a hung first load would time out here.
-    await assert.doesNotReject(Promise.all([first, second]));
+    await Promise.race([
+      Promise.all([firstCancelled, second]),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('superseded load did not settle')), 100))
+    ]);
   });
 
   await test('a stalled media element rejects instead of hanging', async () => {
@@ -148,6 +159,37 @@ function fakeAudio() {
     assert.strictEqual(audio.countFor('error'), 1, 'only the engine-level error listener should remain');
   });
 
+  await test('a rejected native play does not leave an unhandled media wait rejection', async () => {
+    const audio = fakeAudio();
+    const { player } = makePlayer(audio);
+    const load = player.loadChapter('book1', 0);
+    audio.emit('loadedmetadata');
+    await load;
+    audio.play = async () => { throw new Error('autoplay denied'); };
+    const unhandled = [];
+    const onUnhandled = reason => unhandled.push(reason);
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      await assert.rejects(player.play(), /autoplay denied/);
+      await new Promise(resolve => setImmediate(resolve));
+      assert.deepStrictEqual(unhandled, []);
+    } finally {
+      process.removeListener('unhandledRejection', onUnhandled);
+    }
+  });
+
+  await test('a media error during load notifies onError exactly once', async () => {
+    const audio = fakeAudio();
+    const errors = [];
+    const { player } = makePlayer(audio, { onError: error => errors.push(error) });
+    const load = player.loadChapter('book1', 0);
+    audio.error = { message: 'decode failed' };
+    audio.emit('error');
+
+    await assert.rejects(load, /decode failed/);
+    assert.strictEqual(errors.length, 1);
+  });
+
   await test('dispose during a load suppresses onReady', async () => {
     const audio = fakeAudio();
     const { player, ready } = makePlayer(audio);
@@ -155,7 +197,7 @@ function fakeAudio() {
     const load = player.loadChapter('book1', 0);
     player.dispose();
     audio.emit('loadedmetadata');
-    await load;
+    await assert.rejects(load, error => error?.cancelled === true);
 
     assert.deepStrictEqual(ready, [], 'a disposed engine must not report ready');
   });

@@ -46,6 +46,11 @@ async function test(name, fn) {
       timers.delete(id);
     }
   };
+  const lifecycleSource = fs.readFileSync(
+    path.join(__dirname, '..', 'public', 'js', 'lifecycle.js'),
+    'utf8'
+  );
+  Function(lifecycleSource)();
   global.__queueTestApiGet = async () => ({ active: 0, queued: 0 });
 
   const source = fs.readFileSync(
