@@ -413,6 +413,38 @@ summary:focus-visible,
   background: rgba(148, 163, 184, 0.12);
   color: var(--text-secondary);
 }
+.library-offline-badge {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  margin-top: 5px;
+  margin-right: 6px;
+  padding: 2px 7px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: oklch(94% 0.012 82 / 0.04);
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.3;
+  white-space: nowrap;
+}
+.library-offline-badge--downloaded {
+  border-color: color-mix(in oklch, var(--success), transparent 70%);
+  background: color-mix(in oklch, var(--success), transparent 88%);
+  color: var(--success);
+}
+.library-offline-badge--downloading,
+.library-offline-badge--partial {
+  border-color: var(--accent-border-soft);
+  background: oklch(74% 0.13 82 / 0.1);
+  color: var(--accent);
+}
+.library-offline-badge--repair-needed {
+  border-color: color-mix(in oklch, var(--danger), transparent 70%);
+  background: color-mix(in oklch, var(--danger), transparent 90%);
+  color: var(--danger);
+}
 
 /* Desktop delete button — hidden by default, shown by media query */
 .delete-btn-desktop { display: none; }
@@ -473,6 +505,11 @@ summary:focus-visible,
 .book-list.grid-view .book-item p { font-size: 11px; }
 .book-list.grid-view .delete-btn-reveal { display: none; }
 .book-list.grid-view .duration-badge { font-size: 9px; padding: 1px 6px; }
+.book-list.grid-view .library-offline-badge {
+  margin: 3px auto 0;
+  font-size: 9px;
+  padding: 1px 6px;
+}
 .book-item.hidden { display: none !important; }
 
 /* Empty State */

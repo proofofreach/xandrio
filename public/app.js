@@ -8,7 +8,7 @@ import { showToast } from './js/ui/toast.js';
 import { initKeys, onActivate } from './js/ui/keys.js';
 import { registerSheet } from './js/ui/sheets.js';
 import { initBookmarks, renderBookmarksSection, addBookmarkAtCurrentPosition } from './js/features/bookmarks.js';
-import { initOffline, renderOfflineState, queuePendingPosition, isChapterAvailableOffline, ensureRollingOfflineWindow } from './js/features/offline.js';
+import { initOffline, renderOfflineState, queuePendingPosition, isChapterAvailableOffline, ensureRollingOfflineWindow, getOfflineBookData } from './js/features/offline.js';
 import { initPronunciationRepair } from './js/features/pronunciations.js';
 import { initQueueStatus } from './js/features/queue-status.js';
 import { loadClientSettings, getSkipInterval, isSmartRewindEnabled, isRollingOfflineEnabled } from './js/client-settings.js';
@@ -40,6 +40,7 @@ function haptic(ms = 10) {
 let currentBook = null;
 let currentChapter = 0;
 let chapters = [];
+let currentBookOfflineFallback = false;
 let currentBookFinished = false;
 let chunkPlayer = null; // Active playback engine — ChunkPlayer or SingleFileChapterPlayer
 let chunkedPlayer = null; // Chunked fallback/first-load engine
@@ -298,7 +299,7 @@ function prepareReliableChapterAudio(bookId, chapterIndex) {
 }
 
 async function selectPlaybackEngineForChapter(bookId, chapterIndex, options = {}) {
-  if (!navigator.onLine && options.offlineChapterAvailable) {
+  if (options.offlineMode && options.offlineChapterAvailable) {
     return {
       engine: createSingleFileChapterEngine({ preferStandardAudio: true }),
       backend: 'single-file',
@@ -437,7 +438,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
   applySkipIntervalLabels();
   
-  initLibrary({ openBook, navigateTo, addToListeningQueue });
+  initLibrary({ openBook, navigateTo, addToListeningQueue, onBookDeleted: clearDeletedBookFromPlayer });
   initListeningQueue({ openBook });
   initSearch({ openBook, navigateTo });
   initSleepTimer({
@@ -813,16 +814,67 @@ function closeTransientSheets() {
   clearSheetStack();
 }
 
+async function clearDeletedBookFromPlayer(bookId) {
+  if (!currentBook || String(currentBook.id) !== String(bookId)) return;
+  loadChapterToken++;
+  clearTimeout(pendingServerPositionTimer);
+  pendingServerPositionTimer = null;
+  stopReliableAudioStatusPolling();
+  reliableHandoffInProgress = false;
+
+  const retiredEngines = new Set([chunkPlayer, chunkedPlayer].filter(Boolean));
+  for (const engine of retiredEngines) {
+    try { engine.cancelPendingLoad?.(); } catch {}
+    try { engine.pause?.(); } catch {}
+    try { engine.dispose?.(); } catch {}
+  }
+
+  chunkedPlayer = adaptChunkedEngine(new ChunkPlayer(makePlaybackCallbacks()));
+  playbackSession.setBook(null);
+  playbackSession.adoptEngine(chunkedPlayer, 'chunked');
+  chapters = [];
+  currentBookPlaybackSettings = {};
+  currentBookOfflineFallback = false;
+  currentBookFinished = false;
+  if ('mediaSession' in navigator) {
+    try { navigator.mediaSession.metadata = null; } catch {}
+    try { navigator.mediaSession.playbackState = 'none'; } catch {}
+  }
+  updateMiniPlayer('library');
+  updatePlaybackUI(false);
+}
+
 // Player Functions
 async function openBook(bookId) {
   // Keep the address bar/history in sync no matter who called us (router,
   // library tap, post-download/upload flow).
   syncPlayerHash(bookId);
   try {
-    const data = await apiGet(`/api/book/${encodeURIComponent(bookId)}`);
+    let data;
+    let usedOfflineFallback = false;
+    try {
+      data = await apiGet(`/api/book/${encodeURIComponent(bookId)}`);
+    } catch (error) {
+      // A full offline download includes the title/chapter snapshot needed to
+      // rebuild the player after a cold launch. Do not mask authoritative
+      // server errors (404/401) while online with an obsolete local copy.
+      const localData = (!navigator.onLine || !error?.status)
+        ? getOfflineBookData(bookId)
+        : null;
+      if (!localData) throw error;
+      data = localData;
+      usedOfflineFallback = true;
+    }
 
     currentBook = data.book;
     chapters = data.chapters;
+    currentBookOfflineFallback = usedOfflineFallback;
+    if (usedOfflineFallback && !navigator.onLine) {
+      const fallbackBookId = String(currentBook.id);
+      window.addEventListener('online', () => {
+        if (String(currentBook?.id || '') === fallbackBookId) currentBookOfflineFallback = false;
+      }, { once: true });
+    }
     currentBookFinished = false;
     currentBookPlaybackSettings = await getBookPlaybackSettings(bookId);
 
@@ -1006,24 +1058,36 @@ async function loadChapter(index, options = {}) {
   // Offline + not downloaded: skip the doomed network fetch and surface a
   // calm situational state. No retry button — retrying can't succeed without a
   // connection, so the chapter reloads itself the moment the network returns.
-  const offlineChapterAvailable = !navigator.onLine
+  let offlineMode = !navigator.onLine || currentBookOfflineFallback;
+  const offlineChapterAvailable = offlineMode
     ? await isChapterAvailableOffline(currentBook.id, index)
     : false;
   if (token !== loadChapterToken) return;
-  if (!navigator.onLine && !offlineChapterAvailable) {
+  // navigator.onLine can remain true through a transient metadata failure. If
+  // that local snapshot points at an evicted chapter, let normal network
+  // playback recover instead of pinning the player to an offline error.
+  if (offlineMode && !offlineChapterAvailable && navigator.onLine) {
+    currentBookOfflineFallback = false;
+    offlineMode = false;
+  }
+  if (offlineMode && !offlineChapterAvailable) {
     setChunkOverlayState('offline', {
       message: "You're offline",
       detail: 'This book isn’t downloaded. It will start when you’re back online.'
     });
     updatePlaybackUI(false);
     const resumeWhenOnline = () => {
+      currentBookOfflineFallback = false;
       if (currentBook?.id && currentChapter === index) loadChapter(index);
     };
     window.addEventListener('online', resumeWhenOnline, { once: true });
     return;
   }
 
-  const selection = await selectPlaybackEngineForChapter(currentBook.id, index, { offlineChapterAvailable });
+  const selection = await selectPlaybackEngineForChapter(currentBook.id, index, {
+    offlineChapterAvailable,
+    offlineMode
+  });
   if (token !== loadChapterToken) return;
   const transition = await playbackSession.transitionTo({
     book: currentBook,
@@ -1043,10 +1107,12 @@ async function loadChapter(index, options = {}) {
     await chunkPlayer.seek(Math.max(0, options.seekToSeconds));
     if (token !== loadChapterToken) return;
   }
-  maybePrepareUpcomingReliableAudio();
-  void ensureRollingOfflineWindow(currentBook, chapters, currentChapter, {
-    enabled: currentBookPlaybackSettings.rollingOfflineEnabled ?? isRollingOfflineEnabled()
-  }).catch(error => console.warn('Automatic chapter cache unavailable:', error));
+  if (!offlineMode) {
+    maybePrepareUpcomingReliableAudio();
+    void ensureRollingOfflineWindow(currentBook, chapters, currentChapter, {
+      enabled: currentBookPlaybackSettings.rollingOfflineEnabled ?? isRollingOfflineEnabled()
+    }).catch(error => console.warn('Automatic chapter cache unavailable:', error));
+  }
   checkpointPlayback();
   // ChunkPlayer will call onReady/onWaiting callbacks
 
@@ -1143,7 +1209,7 @@ async function applySmartRewindBeforeResume() {
 
 async function togglePlayPause(forcePlay = false) {
   forcePlay = forcePlay === true;
-  if (!chunkPlayer) return;
+  if (!currentBook || !chunkPlayer) return;
   try {
     if (forcePlay || !chunkPlayer.isPlaying) {
       await applySmartRewindBeforeResume();

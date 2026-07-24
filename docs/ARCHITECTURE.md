@@ -31,7 +31,14 @@ Provider result labels communicate whether a result is an operator upload, carri
 1. Xandrio extracts book text and splits it into chapter chunks.
 2. The TTS queue chooses the selected engine and generates audio.
 3. The server stores generated chunks in `cache/` under a voice/variant-specific key.
-4. The player streams chunks, supports Range requests, and reuses cached audio for later and offline playback.
+4. The player streams chunks, supports Range requests, and can create a verified
+   full-title browser download containing every chapter plus a compact
+   title/chapter snapshot and cover.
+5. The service worker serves downloaded chapter audio and covers when the
+   network is unavailable. The local snapshot rebuilds the library and player
+   after a cold offline launch.
+6. Title deletion removes server artifacts first, then the initiating browser
+   clears its audio, cover, manifest, checkpoint, and pending position records.
 
 Edge sends narration text to Microsoft through an unofficial consumer-endpoint integration. Kokoro and Chatterbox send narration to the local host chosen by the operator. Chatterbox can read an operator-supplied voice reference. See [PRIVACY.md](PRIVACY.md) for the outbound-data table.
 
