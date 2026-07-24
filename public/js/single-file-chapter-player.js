@@ -2,6 +2,12 @@
  * Native-audio chapter engine used for reliable iOS and downloaded playback.
  * It implements the same playback adapter contract used by ChunkPlayer.
  */
+
+// A media element that neither fires `canplay`/`loadedmetadata` nor `error`
+// (backgrounded iOS tab, silently stalled response) would otherwise leave
+// loadChapter() pending forever with the loading overlay stuck up.
+const LOAD_TIMEOUT_MS = 30000;
+
 export class SingleFileChapterPlayer {
   constructor(audio, options = {}) {
     this.audio = audio;
@@ -15,6 +21,7 @@ export class SingleFileChapterPlayer {
     this.onPlaybackChange = options.onPlaybackChange || null;
     this.isIOSLike = options.isIOSLike || (() => false);
     this.preferStandardAudio = Boolean(options.preferStandardAudio);
+    this.loadTimeoutMs = Number(options.loadTimeoutMs) > 0 ? Number(options.loadTimeoutMs) : LOAD_TIMEOUT_MS;
     this.backend = 'single-file';
     this.supportsNativeMediaSession = true;
     this.bookId = null;
@@ -24,6 +31,13 @@ export class SingleFileChapterPlayer {
     this._isPlaying = false;
     this._volume = 1;
     this.playbackRate = 1;
+    // Incremented on every loadChapter()/dispose(). Async chains capture it
+    // on entry and bail after each await if a newer chapter has taken over,
+    // so an in-flight load can't fire onReady for a superseded chapter.
+    // Mirrors the same guard in ChunkPlayer.
+    this._generation = 0;
+    // Tears down the in-flight loadChapter() wait, if any.
+    this._loadCleanup = null;
     this._boundTimeUpdate = this._handleTimeUpdate.bind(this);
     this._boundEnded = this._handleEnded.bind(this);
     this._boundError = this._handleError.bind(this);
@@ -32,6 +46,7 @@ export class SingleFileChapterPlayer {
   }
 
   async loadChapter(bookId, chapterIndex) {
+    const gen = ++this._generation;
     this.pause();
     this.bookId = bookId;
     this.chapterIndex = chapterIndex;
@@ -49,16 +64,25 @@ export class SingleFileChapterPlayer {
     await new Promise((resolve, reject) => {
       const done = () => { cleanup(); resolve(); };
       const fail = () => { cleanup(); reject(this._audioError()); };
+      const timer = setTimeout(fail, this.loadTimeoutMs);
       const cleanup = () => {
+        clearTimeout(timer);
+        this._loadCleanup = null;
         this.audio.removeEventListener('loadedmetadata', done);
         this.audio.removeEventListener('canplay', done);
         this.audio.removeEventListener('error', fail);
       };
+      // A newer loadChapter() (or dispose()) settles this wait through
+      // _detach() so it can never linger on the shared audio element and
+      // resolve off the *next* chapter's events. The generation check below
+      // turns the superseded resolution into a silent no-op.
+      this._loadCleanup = () => { cleanup(); resolve(); };
       this.audio.addEventListener('loadedmetadata', done, { once: true });
       this.audio.addEventListener('canplay', done, { once: true });
       this.audio.addEventListener('error', fail, { once: true });
       this.audio.load();
     });
+    if (gen !== this._generation) return;
     this.onReady?.();
     this._handleTimeUpdate();
   }
@@ -74,6 +98,9 @@ export class SingleFileChapterPlayer {
   }
 
   _detach() {
+    const settleLoad = this._loadCleanup;
+    this._loadCleanup = null;
+    settleLoad?.();
     this.audio.removeEventListener('timeupdate', this._boundTimeUpdate);
     this.audio.removeEventListener('ended', this._boundEnded);
     this.audio.removeEventListener('error', this._boundError);
@@ -131,13 +158,14 @@ export class SingleFileChapterPlayer {
       const playing = new Promise((resolve, reject) => {
         const done = () => { cleanup(); resolve(); };
         const fail = () => { cleanup(); reject(this._audioError()); };
+        const timer = setTimeout(done, 1500);
         const cleanup = () => {
+          clearTimeout(timer);
           this.audio.removeEventListener('playing', done);
           this.audio.removeEventListener('error', fail);
         };
         this.audio.addEventListener('playing', done, { once: true });
         this.audio.addEventListener('error', fail, { once: true });
-        setTimeout(done, 1500);
       });
       await this.audio.play();
       await playing;
@@ -182,6 +210,7 @@ export class SingleFileChapterPlayer {
     };
   }
   dispose() {
+    this._generation++;
     this.pause();
     this._detach();
     this.audio.removeAttribute('src');
