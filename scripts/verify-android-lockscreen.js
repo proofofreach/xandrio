@@ -125,7 +125,7 @@ async function startFixtureServer() {
     if (/^\/api\/chunks\/lockscreen\/\d+\/\d+$/.test(pathname)) {
       return audioFor(state.longChunks ? longChunkWav : chunkWav);
     }
-    if (/^\/api\/audio\/lockscreen\/\d+$/.test(pathname)) return audioFor(chapterWav);
+    if (/^\/api\/(audio|audio-ios)\/lockscreen\/\d+$/.test(pathname)) return audioFor(chapterWav);
     if (pathname.startsWith('/api/cover/')) { res.writeHead(404); return res.end(); }
     if (pathname.startsWith('/api/')) return jsonResponse(res, {});
 

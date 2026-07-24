@@ -96,6 +96,7 @@ summary:focus-visible,
 #library-view {
   padding: 16px;
   padding-top: max(16px, env(safe-area-inset-top));
+  padding-bottom: max(16px, env(safe-area-inset-bottom));
 }
 
 .library-header {
@@ -485,7 +486,11 @@ summary:focus-visible,
 
 /* ==================== SEARCH VIEW ==================== */
 
-#search-view { padding: 16px; }
+#search-view {
+  padding: 16px;
+  padding-top: max(16px, env(safe-area-inset-top));
+  padding-bottom: max(16px, env(safe-area-inset-bottom));
+}
 
 .btn-back {
   background: transparent;
@@ -1240,7 +1245,11 @@ summary:focus-visible,
 .download-error-notification { margin: 16px 0; }
 
 /* Settings View */
-#settings-view { padding: 16px; }
+#settings-view {
+  padding: 16px;
+  padding-top: max(16px, env(safe-area-inset-top));
+  padding-bottom: max(16px, env(safe-area-inset-bottom));
+}
 #settings-view header { margin-bottom: 16px; }
 #settings-view header h2 { font-size: 22px; font-weight: 600; margin-top: 4px; }
 
@@ -2763,6 +2772,15 @@ button, a, .book-item, .timer-option, select, input[type="range"] {
     display: none;
   }
 
+  /* Phone topbar carries only back + pronunciation buttons — keep it slim
+     so the notch inset is the only real header cost. */
+  .player-topbar {
+    padding: 8px 12px 4px;
+    padding-top: max(8px, env(safe-area-inset-top));
+  }
+
+  .player-controls { padding: 10px 0 12px; }
+
   .player-utility-row {
     display: grid;
     grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -2771,7 +2789,7 @@ button, a, .book-item, .timer-option, select, input[type="range"] {
   }
   .player-utility-btn {
     min-width: 0;
-    min-height: 64px;
+    min-height: 60px;
     padding: 6px 2px;
     border: 0;
     border-radius: 10px;
@@ -2810,29 +2828,44 @@ button, a, .book-item, .timer-option, select, input[type="range"] {
   }
 }
 
+/* Short phones (iPhone SE class): every step of the primary stack gives a
+   little back so cover → controls → utility row all fit above the fold. */
 @media (max-width: 759px) and (max-height: 740px) {
-  .player-topbar {
-    padding-bottom: 4px;
-  }
   .player-cover-wrap {
-    padding-bottom: 8px;
+    padding-bottom: 6px;
   }
   .player-cover {
-    max-height: 30dvh;
+    max-height: 25dvh;
   }
   .player-book-title {
-    font-size: 18px;
+    font-size: 17px;
+    margin-bottom: 2px;
     -webkit-line-clamp: 1;
   }
   .player-chapter-info {
     padding-top: 8px;
   }
+  .player-secondary {
+    padding: 4px 24px 6px;
+  }
+  .player-chapter-trigger {
+    min-height: 48px;
+    padding-top: 6px;
+    padding-bottom: 6px;
+  }
   .player-progress {
-    padding-top: 8px;
+    padding-top: 6px;
   }
   .player-controls {
-    padding: 10px 0 max(12px, env(safe-area-inset-bottom));
+    padding: 6px 0 8px;
   }
+  .player-controls .ctrl-btn-play { width: 60px; height: 60px; }
+  .player-controls .ctrl-btn-play svg { width: 26px; height: 26px; }
+  .player-utility-btn { min-height: 54px; padding-top: 4px; }
+  .player-utility-icon,
+  .player-utility-speed { height: 26px; margin-bottom: 2px; }
+  .player-utility-icon svg { width: 22px; height: 22px; }
+  .player-utility-speed { font-size: 15px; }
 }
 
 /* ==================== RESPONSIVE ==================== */
@@ -2937,12 +2970,10 @@ button, a, .book-item, .timer-option, select, input[type="range"] {
   .player-cover { width: 320px; }
 }
 
-@media (display-mode: standalone) {
-  body {
-    padding-top: env(safe-area-inset-top);
-    padding-bottom: env(safe-area-inset-bottom);
-  }
-}
+/* Installed-PWA safe areas are handled per surface (each view header,
+   .player-topbar, sheets, and fixed elements apply env() themselves).
+   A body-level inset here would double-count on notched iPhones — it
+   once produced a ~120px header and forced page scroll in standalone. */
 
 @media (hover: hover) and (pointer: fine) {
   .book-item-inner { transition: background 200ms ease, border-color 200ms ease; }
@@ -3234,7 +3265,7 @@ body.sheet-open { overflow: hidden; }
 body.has-mini-player #library-view,
 body.has-mini-player #search-view,
 body.has-mini-player #settings-view {
-  padding-bottom: 80px;
+  padding-bottom: calc(80px + env(safe-area-inset-bottom));
 }
 
 @media (min-width: 760px) {
@@ -4195,10 +4226,14 @@ body.has-mini-player #settings-view {
 }
 
 /* ==================== STATS / LISTENING HISTORY ==================== */
-#stats-view { padding: 16px; }
+#stats-view {
+  padding: 16px;
+  padding-top: max(16px, env(safe-area-inset-top));
+  padding-bottom: max(16px, env(safe-area-inset-bottom));
+}
 #stats-view header { margin-bottom: 16px; }
 #stats-view header h2 { font-size: 22px; font-weight: 600; margin-top: 4px; }
-body.has-mini-player #stats-view { padding-bottom: 80px; }
+body.has-mini-player #stats-view { padding-bottom: calc(80px + env(safe-area-inset-bottom)); }
 
 .stats-body { padding-bottom: 24px; }
 
