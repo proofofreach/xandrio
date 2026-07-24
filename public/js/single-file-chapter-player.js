@@ -160,6 +160,7 @@ export class SingleFileChapterPlayer {
 
   async play() {
     this._isPlaying = true;
+    let cleanupPlaying = () => {};
     try {
       const playing = new Promise((resolve, reject) => {
         const done = () => { cleanup(); resolve(); };
@@ -170,12 +171,14 @@ export class SingleFileChapterPlayer {
           this.audio.removeEventListener('playing', done);
           this.audio.removeEventListener('error', fail);
         };
+        cleanupPlaying = cleanup;
         this.audio.addEventListener('playing', done, { once: true });
         this.audio.addEventListener('error', fail, { once: true });
       });
       await this.audio.play();
       await playing;
     } catch (error) {
+      cleanupPlaying();
       this._isPlaying = false;
       throw error;
     }

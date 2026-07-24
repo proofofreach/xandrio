@@ -57,6 +57,33 @@ async function main() {
     assert(!entries.some(e => e.includes('.tmp')), `found temp files: ${entries}`);
   });
 
+  await test('a failed atomic save removes its temporary file', async () => {
+    const target = file('rename-blocked');
+    await fsp.mkdir(target);
+    await assert.rejects(jsonStore.save(target, { will: 'fail' }));
+    const entries = await fsp.readdir(dir);
+    assert(
+      !entries.some(name => name.startsWith('rename-blocked.') && name.endsWith('.tmp')),
+      `failed save leaked a temp file: ${entries}`
+    );
+  });
+
+  await test('an unreadable store aborts update instead of replacing it with defaults', async () => {
+    const target = file('unreadable.json');
+    const original = '{"accounts":{"owner":true}}';
+    await fsp.writeFile(target, original);
+    await fsp.chmod(target, 0o000);
+    try {
+      await assert.rejects(
+        jsonStore.update(target, data => { data.accounts = {}; }, {}),
+        error => error.code === 'EACCES'
+      );
+    } finally {
+      await fsp.chmod(target, 0o600).catch(() => {});
+    }
+    assert.strictEqual(await fsp.readFile(target, 'utf8'), original);
+  });
+
   await test('load returns default for corrupt JSON', async () => {
     await fsp.writeFile(file('corrupt.json'), '{ not json');
     const data = await jsonStore.load(file('corrupt.json'), { fallback: 1 });

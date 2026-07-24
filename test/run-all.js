@@ -68,6 +68,7 @@ const tests = [
   'test-single-file-player.js',
   'test-chunk-player-cancellation.js',
   'test-queue-status.js',
+  'test-toast-actions.js',
   'test-audio-streaming.js',
   'test-chapter-navigation.js',
   'test-chapter-structure.js',

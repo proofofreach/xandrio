@@ -56,10 +56,12 @@ class ChunkPlayer {
     this._maxChunkLoadRetries = Number.isInteger(options.maxChunkLoadRetries) ? options.maxChunkLoadRetries : 2;
     this._maxPlayRetries = Number.isInteger(options.maxPlayRetries) ? options.maxPlayRetries : 1;
     this._retryDelayMs = Number.isInteger(options.retryDelayMs) ? options.retryDelayMs : 300;
+    this._chunkLoadTimeoutMs = Number(options.chunkLoadTimeoutMs) > 0 ? Number(options.chunkLoadTimeoutMs) : 30000;
 
     // Polling handle for manifest checks
     this._pollTimer = null;
     this._cancelPollWait = null;
+    this._pendingAudioLoads = new Set();
     this._timeUpdateTimer = null;
     this._manifestRefreshFailures = 0;
 
@@ -156,7 +158,10 @@ class ChunkPlayer {
       if (gen !== this._generation) return;
       this._applyManifest(manifest);
     } catch (err) {
-      if (gen === this._generation) this._emitError(err);
+      if (gen === this._generation) {
+        this._emitError(err);
+        throw err;
+      }
       return;
     }
 
@@ -179,7 +184,12 @@ class ChunkPlayer {
     }
 
     // Load first chunk into the active player
-    await this._loadChunkInto(this._getActive(), 0);
+    try {
+      await this._loadChunkInto(this._getActive(), 0);
+    } catch (err) {
+      if (gen === this._generation) this._emitError(err);
+      throw err;
+    }
     if (gen !== this._generation) return;
 
     // Preload second chunk if available
@@ -368,17 +378,20 @@ class ChunkPlayer {
    * Load a chunk into a specific Audio element.
    * Returns a promise that resolves when loadedmetadata fires.
    */
-  async _loadChunkInto(audioEl, chunkIndex, retries = this._maxChunkLoadRetries) {
+  async _loadChunkInto(audioEl, chunkIndex, retries = this._maxChunkLoadRetries, expectedGeneration = this._generation) {
     let lastError = null;
 
     for (let attempt = 0; attempt <= retries; attempt++) {
+      if (expectedGeneration !== this._generation) return;
       try {
         await this._loadChunkIntoOnce(audioEl, chunkIndex);
         return;
       } catch (err) {
+        if (expectedGeneration !== this._generation) return;
         lastError = err;
         if (this._destroyed || attempt >= retries) break;
-        await this._refreshManifest();
+        await this._refreshManifest(expectedGeneration);
+        if (expectedGeneration !== this._generation) return;
         if (!this._isChunkReady(chunkIndex)) break;
         await this._delay(this._retryDelayMs * (attempt + 1));
       }
@@ -390,28 +403,41 @@ class ChunkPlayer {
   _loadChunkIntoOnce(audioEl, chunkIndex) {
     return new Promise((resolve, reject) => {
       if (this._destroyed) return reject(new Error('Player destroyed'));
+      let settled = false;
 
       const onMeta = () => {
-        cleanup();
         // Record duration
         if (audioEl.duration && isFinite(audioEl.duration)) {
           this.chunkDurations[chunkIndex] = audioEl.duration;
         }
-        resolve();
+        finish();
       };
 
       const onError = () => {
-        cleanup();
         const detail = audioEl.error && (audioEl.error.message || audioEl.error.code);
-        reject(new Error(`Failed to load chunk ${chunkIndex}: ${detail || 'unknown error'}`));
+        finish(new Error(`Failed to load chunk ${chunkIndex}: ${detail || 'unknown error'}`));
       };
 
       const cleanup = () => {
+        clearTimeout(timer);
+        this._pendingAudioLoads.delete(cancel);
         audioEl.removeEventListener('loadedmetadata', onMeta);
         audioEl.removeEventListener('error', onError);
       };
+      const finish = (error) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        if (error) reject(error);
+        else resolve();
+      };
+      const cancel = () => finish();
+      const timer = setTimeout(
+        () => finish(new Error(`Chunk ${chunkIndex} media load timed out`)),
+        this._chunkLoadTimeoutMs
+      );
 
-      cleanup();
+      this._pendingAudioLoads.add(cancel);
       audioEl.addEventListener('loadedmetadata', onMeta, { once: true });
       audioEl.addEventListener('error', onError, { once: true });
 
@@ -783,7 +809,9 @@ class ChunkPlayer {
    */
   cancelPendingLoad() {
     this._generation++;
+    this._preloadToken++;
     this._cancelPollWait?.();
+    for (const cancel of [...this._pendingAudioLoads]) cancel();
     this._stopPolling();
     this._detachEvents();
     this.pause();

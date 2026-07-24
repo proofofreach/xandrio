@@ -135,6 +135,19 @@ function fakeAudio() {
     assert.strictEqual(audio.countFor('error'), 1);
   });
 
+  await test('a rejected play attempt removes its fallback listeners immediately', async () => {
+    const audio = fakeAudio();
+    const { player } = makePlayer(audio);
+    const load = player.loadChapter('book1', 0);
+    audio.emit('loadedmetadata');
+    await load;
+    audio.play = async () => { throw new Error('autoplay denied'); };
+
+    await assert.rejects(player.play(), /autoplay denied/);
+    assert.strictEqual(audio.countFor('playing'), 1, 'only the engine-level playing listener should remain');
+    assert.strictEqual(audio.countFor('error'), 1, 'only the engine-level error listener should remain');
+  });
+
   await test('dispose during a load suppresses onReady', async () => {
     const audio = fakeAudio();
     const { player, ready } = makePlayer(audio);

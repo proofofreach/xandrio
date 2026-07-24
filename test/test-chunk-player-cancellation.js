@@ -25,14 +25,27 @@ function deferred() {
 
 class FakeAudio {
   constructor() {
+    this.listeners = new Map();
     this.paused = true;
     this.currentTime = 0;
     this.duration = 0;
     this.volume = 1;
     this.playbackRate = 1;
+    this.error = null;
   }
-  addEventListener() {}
-  removeEventListener() {}
+  addEventListener(type, fn) {
+    if (!this.listeners.has(type)) this.listeners.set(type, new Set());
+    this.listeners.get(type).add(fn);
+  }
+  removeEventListener(type, fn) {
+    this.listeners.get(type)?.delete(fn);
+  }
+  emit(type) {
+    for (const fn of [...(this.listeners.get(type) || [])]) fn();
+  }
+  countFor(type) {
+    return this.listeners.get(type)?.size || 0;
+  }
   pause() { this.paused = true; }
   load() {}
   removeAttribute() {}
@@ -102,6 +115,39 @@ class FakeAudio {
     assert.strictEqual(ready, 0);
     assert.strictEqual(player.manifest.chunks[0].status, 'queued');
     assert.strictEqual(player.servedTier, 'instant');
+  });
+
+  await test('a failed manifest rejects instead of committing a broken engine', async () => {
+    global.fetch = async () => ({ ok: false, status: 503 });
+    const errors = [];
+    const player = new ChunkPlayer({ onError: error => errors.push(error) });
+
+    await assert.rejects(player.loadChapter('book-a', 1), /manifest fetch failed/i);
+    assert.strictEqual(errors.length, 1);
+  });
+
+  await test('a silent chunk media load times out and reaches onError', async () => {
+    global.fetch = async () => ({
+      ok: true,
+      async json() {
+        return { totalChunks: 1, chunks: [{ status: 'ready', url: '/chunk.mp3' }] };
+      }
+    });
+    const errors = [];
+    const player = new ChunkPlayer({
+      chunkLoadTimeoutMs: 25,
+      maxChunkLoadRetries: 0,
+      onError: error => errors.push(error)
+    });
+
+    await assert.rejects(
+      Promise.race([
+        player.loadChapter('book-a', 1),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('chunk media load did not time out')), 100))
+      ]),
+      /timed out/i
+    );
+    assert.strictEqual(errors.length, 1);
   });
 
   console.log(`\n${passed} passed, ${failed} failed`);
