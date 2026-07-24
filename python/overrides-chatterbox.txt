@@ -1,0 +1,18 @@
+# Security overrides for the Chatterbox lock (see LOCKING.md).
+#
+# chatterbox-tts 0.1.7 (latest) exact-pins these packages at versions with
+# published advisories and no upstream release lifting them. Each override
+# forces the first patched version; upstream itself allows torch>=2.9 on
+# CPython >= 3.14, so the pins are stale rather than known-incompatible.
+# The release container build/import gate is the compatibility check.
+torch==2.13.0+cpu
+torchaudio==2.11.0+cpu
+transformers==5.5.0
+diffusers==0.38.0
+gradio==6.15.1
+safetensors==0.8.0
+# omegaconf: every 2.x stable is uninstallable under this policy — 2.0.x has
+# legacy `>=5.1.*` metadata that pip >= 24.1 rejects, and 2.1–2.3 require the
+# sdist-only antlr4-python3-runtime 4.9.* (blocked by --only-binary). The 2.4
+# dev line drops antlr and ships a wheel; drop this pin when 2.4.0 finals.
+omegaconf==2.4.0.dev13

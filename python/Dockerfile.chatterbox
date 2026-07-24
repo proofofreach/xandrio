@@ -25,11 +25,14 @@ WORKDIR /app
 COPY python/requirements-chatterbox.txt ./python/
 # The lock is deliberately Linux x86_64 / CPython 3.12 only. Do not silently
 # resolve a different dependency graph on another platform.
+# --no-deps: the lock is complete and hash-checked, and it carries security
+# overrides (python/overrides-chatterbox.txt) that supersede chatterbox-tts's
+# stale exact pins, which pip's resolver would otherwise re-impose.
 ARG TARGETOS
 ARG TARGETARCH
 RUN test "$TARGETOS" = linux \
   && test "$TARGETARCH" = amd64 \
-  && python -m pip install --require-hashes --only-binary=:all: -r python/requirements-chatterbox.txt
+  && python -m pip install --no-deps --require-hashes --only-binary=:all: -r python/requirements-chatterbox.txt
 
 COPY --chown=xandrio:xandrio m4-server/chatterbox-server.py /app/chatterbox-server.py
 

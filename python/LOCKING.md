@@ -10,9 +10,14 @@ Install a lock exactly as the images do:
 ```sh
 python3.12 -m pip install --require-hashes --only-binary=:all: \
   -r python/requirements-kokoro.txt
-python3.12 -m pip install --require-hashes --only-binary=:all: \
+python3.12 -m pip install --no-deps --require-hashes --only-binary=:all: \
   -r python/requirements-chatterbox.txt
 ```
+
+The Chatterbox install needs `--no-deps`: the lock carries security overrides
+(`python/overrides-chatterbox.txt`) that supersede chatterbox-tts's stale
+exact pins, and pip's resolver would otherwise re-impose them. The lock is
+complete and hash-checked, so skipping resolution loses nothing.
 
 Regenerate only on a reviewed dependency update, using uv 0.10.8 or later.
 The command must run against the named target platform; do not run an
@@ -24,11 +29,17 @@ uv pip compile python/requirements-kokoro.in --python 3.12 \
   --index-strategy unsafe-best-match --only-binary :all: --generate-hashes --emit-index-url \
   --output-file python/requirements-kokoro.txt
 
-uv pip compile python/requirements-chatterbox.in --python 3.12 \
+uv pip compile python/requirements-chatterbox.in --override python/overrides-chatterbox.txt \
+  --python 3.12 \
   --python-platform x86_64-unknown-linux-gnu --torch-backend cpu \
   --index-strategy unsafe-best-match --only-binary :all: --generate-hashes --emit-index-url \
   --output-file python/requirements-chatterbox.txt
 ```
+
+`python/overrides-chatterbox.txt` supersedes chatterbox-tts's stale exact
+pins (torch, torchaudio, transformers, diffusers, gradio, safetensors) with
+the first security-patched versions; review it whenever chatterbox-tts is
+bumped, and delete any override upstream no longer forces.
 
 Review the diff, then run the matching hash-enforced dry run or a Linux x86_64
 image build. `requirements-chatterbox-mlx.txt` remains a separate macOS MLX

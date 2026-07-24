@@ -344,7 +344,7 @@ This file is generated from the locked installed Node dependency tree by `npm ru
 | strip-json-comments | 2.0.1 | MIT | sindresorhus/strip-json-comments |
 | strnum | 2.4.1 | MIT | https://github.com/NaturalIntelligence/strnum |
 | supports-color | 5.5.0 | MIT | chalk/supports-color |
-| tar | 7.5.16 | BlueOak-1.0.0 | https://github.com/isaacs/node-tar.git |
+| tar | 7.5.18 | BlueOak-1.0.0 | https://github.com/isaacs/node-tar.git |
 | tar-fs | 2.1.5 | MIT | https://github.com/mafintosh/tar-fs.git |
 | tar-stream | 2.2.0 | MIT | https://github.com/mafintosh/tar-stream.git |
 | tinyglobby | 0.2.17 | MIT | https://github.com/SuperchupuDev/tinyglobby.git |
@@ -390,9 +390,9 @@ This file is generated from the locked installed Node dependency tree by `npm ru
 | Application and Umbrel icons | Project-owned Xandrio artwork; the project owner approved public distribution, including Umbrel-specific use, on 2026-07-15. |
 | Embedded TTS comparison pages | The project owner approved public distribution of the embedded comparison assets on 2026-07-15. |
 | Kokoro 0.9.4 and Misaki 0.9.4 | Apache-2.0. Pinned in python/requirements-kokoro.txt; model-card and model-weight terms must be reviewed before shipping weights. Xandrio does not bundle model weights. |
-| PyTorch 2.12.0 / 2.6.0 and torchaudio 2.6.0 | BSD-3-Clause (PyTorch); pinned in the hash-checked Linux locks. |
+| PyTorch 2.13.0 and torchaudio 2.11.0 | BSD-3-Clause (PyTorch); pinned in the hash-checked Linux locks. |
 | Chatterbox 0.1.7 and Resemble Perth 1.0.1 | MIT. Pinned in python/requirements-chatterbox.txt; model-card and model-weight terms must be reviewed before shipping weights. Xandrio does not bundle model weights. |
-| MLX-Audio 0.2.9 and MLX 0.31.2 | MIT. Pinned in python/requirements-chatterbox-mlx.txt. |
+| MLX-Audio 0.4.5 and MLX 0.31.2 | MIT. Pinned in python/requirements-chatterbox-mlx.txt. |
 | Edge TTS | Remote integration; no Microsoft binaries or voices are bundled. See product documentation for service terms and data flow. |
 | OCR, Poppler, ffmpeg, Playwright/Chromium, and base image | Installed by the container distribution. Container SBOM and image scan are generated for every release; retain their upstream notices with distributed images. |
 

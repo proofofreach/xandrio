@@ -60,7 +60,7 @@ for (const [engine, lockFile, sourceFile, platformPattern, dockerfile] of locks)
     assert.match(docker, /ARG TARGETARCH/);
     assert.match(docker, /test "\$TARGETOS" = linux/);
     assert.match(docker, /test "\$TARGETARCH" = amd64/);
-    assert.match(docker, /pip install --require-hashes --only-binary=:all:/);
+    assert.match(docker, /pip install (?:--no-deps )?--require-hashes --only-binary=:all:/);
   });
 }
 
@@ -68,10 +68,10 @@ test('MLX lock includes Chatterbox runtime imports', () => {
   const mlx = read('requirements-chatterbox-mlx.txt');
   const source = read('requirements-chatterbox-mlx.in');
   assert.match(source, /^einops==0\.8\.2$/m);
-  assert.match(source, /^mlx-lm==0\.29\.1$/m);
+  assert.match(source, /^mlx-lm==0\.31\.1$/m);
   assert.match(source, /^scipy==1\.17\.1$/m);
   assert.match(mlx, /^einops==0\.8\.2\b/m);
-  assert.match(mlx, /^mlx-lm==0\.29\.1\b/m);
+  assert.match(mlx, /^mlx-lm==0\.31\.1\b/m);
   assert.match(mlx, /^scipy==1\.17\.1\b/m);
 });
 
