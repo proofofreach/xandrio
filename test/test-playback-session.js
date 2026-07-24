@@ -241,6 +241,7 @@ function engine(name, options = {}) {
       }),
       displayChapterTitle: () => 'Chapter',
       isIOSLike: () => false,
+      needsReliablePlayback: () => false,
       isBookDownloadedForOffline: () => false,
       refreshVoicePrepPanel() {},
       syncPlaybackProgressScope() {},
