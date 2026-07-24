@@ -114,13 +114,16 @@ async function request(base, method, pathname, body) {
       secretKey: 'local-shadow-key', baseUrl: 'annas-archive.li'
     });
     const environmentReplaceBody = JSON.parse(environmentReplace.text);
-    assert(environmentReplace.status === 409 && environmentReplaceBody.code === 'ANNAS_KEY_ENVIRONMENT_MANAGED' && state.getSaves() === beforeEnvironmentWrite,
-      'an environment-managed key cannot be silently shadowed by local settings');
+    assert(environmentReplace.status === 200 && environmentReplaceBody.overridesEnvironment === true && state.getSaves() === beforeEnvironmentWrite + 1,
+      'a Settings key overrides an environment-managed key without a restart');
 
+    state.setConfig({
+      secretKey: 'environment-key', baseUrl: 'https://annas-archive.li', keySource: 'environment', updatedAt: null
+    });
     const removed = await request(base, 'DELETE', '/api/annas/configure');
     const removedBody = JSON.parse(removed.text);
-    assert(removed.status === 409 && removedBody.configured === true && removedBody.keySource === 'environment' && !removed.text.includes('environment-key'),
-      'removal refuses to claim an environment-managed key was disconnected');
+    assert(removed.status === 200 && removedBody.configured === true && removedBody.keySource === 'environment' && !removed.text.includes('environment-key'),
+      'removing the Settings key reports the environment key as still active');
   });
 
   console.log(`\n${passed} passed, ${failed} failed`);

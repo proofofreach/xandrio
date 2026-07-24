@@ -52,6 +52,7 @@ const { computeListeningStats } = require('./lib/listening-stats');
 const { createAuthMiddleware, createAuthRoutes, createSessionStore, requireAdmin, DEFAULT_SESSION_TTL_MS } = require('./lib/auth');
 const { createAccountsStore } = require('./lib/accounts');
 const shelves = require('./lib/shelves');
+const { parseVoiceProviders, filterVoicesByProvider } = require('./lib/voice-catalog');
 const { registerAccountRoutes } = require('./lib/routes/accounts-routes');
 const { createRateLimitMiddleware, positiveInteger } = require('./lib/rate-limit');
 const { createGracefulShutdown } = require('./lib/graceful-shutdown');
@@ -851,8 +852,13 @@ function isPremiumPrepEnabled() {
   return readSettingsSync().premiumPrepEnabled !== false;
 }
 
+const ALLOWED_VOICE_PROVIDERS = parseVoiceProviders(process.env.XANDRIO_VOICE_PROVIDERS);
+
 async function getAvailableVoices() {
-  return [...AVAILABLE_VOICES, ...customVoiceEntries(await loadCustomVoiceRegistry())];
+  return filterVoicesByProvider(
+    [...AVAILABLE_VOICES, ...customVoiceEntries(await loadCustomVoiceRegistry())],
+    ALLOWED_VOICE_PROVIDERS
+  );
 }
 
 function getChatterboxRefVersionSync(voiceId) {
@@ -2008,10 +2014,14 @@ function isSafeBookId(value) {
 }
 
 function sanitizeFileStem(value, fallback = 'book') {
+  // Bound the input before the regexes and split the anchored trims so no
+  // step backtracks polynomially on adversarial strings.
   const stem = String(value || fallback)
+    .slice(0, 300)
     .replace(/\.[^.]+$/i, '')
     .replace(/[^A-Za-z0-9_-]+/g, '_')
-    .replace(/^_+|_+$/g, '')
+    .replace(/^_+/, '')
+    .replace(/_+$/, '')
     .slice(0, 120);
   return stem || fallback;
 }
@@ -3796,6 +3806,7 @@ async function backfillChapterDurations() {
 
 registerPreferencesRoutes(app, {
   annasAuthFile: ANNAS_AUTH_FILE,
+  chatterboxVoicesEnabled: !ALLOWED_VOICE_PROVIDERS || ALLOWED_VOICE_PROVIDERS.has('chatterbox'),
   availableVoices: AVAILABLE_VOICES,
   cacheDir: CACHE_DIR,
   customVoicesFile: CUSTOM_VOICES_FILE,
