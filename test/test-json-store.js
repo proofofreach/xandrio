@@ -62,6 +62,36 @@ async function main() {
     assert.deepStrictEqual(data, { fallback: 1 });
   });
 
+  await test('corrupt JSON is preserved before the defaults can overwrite it', async () => {
+    await fsp.writeFile(file('salvage.json'), '{ "books": truncated');
+    await jsonStore.load(file('salvage.json'), {});
+
+    const quarantined = (await fsp.readdir(dir))
+      .filter(name => name.startsWith('salvage.json.corrupt-'));
+    assert.strictEqual(quarantined.length, 1, `expected one quarantine copy, got: ${quarantined}`);
+    assert.strictEqual(
+      await fsp.readFile(path.join(dir, quarantined[0]), 'utf8'),
+      '{ "books": truncated',
+      'quarantine copy must hold the original bytes'
+    );
+
+    // The recovery path stays usable: writing defaults over the original is
+    // still allowed, but the operator now has the damaged file to inspect.
+    await jsonStore.save(file('salvage.json'), { books: {} });
+    assert.deepStrictEqual(await jsonStore.load(file('salvage.json')), { books: {} });
+  });
+
+  await test('repeatedly loading the same corrupt file makes one quarantine copy', async () => {
+    await fsp.writeFile(file('repeat.json'), 'still not json');
+    await jsonStore.load(file('repeat.json'), {});
+    await jsonStore.load(file('repeat.json'), {});
+    await jsonStore.load(file('repeat.json'), {});
+
+    const quarantined = (await fsp.readdir(dir))
+      .filter(name => name.startsWith('repeat.json.corrupt-'));
+    assert.strictEqual(quarantined.length, 1, `quarantine copies must not accumulate: ${quarantined}`);
+  });
+
   await test('update mutates in place and persists', async () => {
     await jsonStore.save(file('c.json'), { count: 1 });
     const result = await jsonStore.update(file('c.json'), (data) => {
