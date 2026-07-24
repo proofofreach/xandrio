@@ -7,7 +7,9 @@ const DEFAULTS = {
   skipIntervalSeconds: 15,
   defaultSpeed: null,
   progressDisplayMode: 'elapsed',
-  defaultSearchSources: ['standardebooks', 'gutenberg']
+  defaultSearchSources: ['standardebooks', 'gutenberg'],
+  smartRewindEnabled: true,
+  rollingOfflineEnabled: true
 };
 
 const ALLOWED_SKIP_INTERVALS = new Set([10, 15, 30]);
@@ -34,6 +36,12 @@ function sanitize(source = {}) {
   if (Array.isArray(source.defaultSearchSources)) {
     const sources = [...new Set(source.defaultSearchSources.filter(id => ALLOWED_SEARCH_SOURCES.has(id)))];
     if (sources.length > 0) next.defaultSearchSources = sources;
+  }
+  if (typeof source.smartRewindEnabled === 'boolean') {
+    next.smartRewindEnabled = source.smartRewindEnabled;
+  }
+  if (typeof source.rollingOfflineEnabled === 'boolean') {
+    next.rollingOfflineEnabled = source.rollingOfflineEnabled;
   }
   return next;
 }
@@ -90,6 +98,14 @@ export function getDefaultSearchSources() {
   return Array.isArray(settings.defaultSearchSources)
     ? settings.defaultSearchSources.slice()
     : DEFAULTS.defaultSearchSources.slice();
+}
+
+export function isSmartRewindEnabled() {
+  return settings.smartRewindEnabled !== false;
+}
+
+export function isRollingOfflineEnabled() {
+  return settings.rollingOfflineEnabled !== false;
 }
 
 export function setClientSetting(key, value) {

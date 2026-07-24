@@ -93,6 +93,8 @@ export function initSettings(options = {}) {
   const skipIntervalControl = document.getElementById('skip-interval-control');
   const defaultSpeedLabel = document.getElementById('default-speed-label');
   const progressModeControl = document.getElementById('progress-mode-control');
+  const smartRewindControl = document.getElementById('smart-rewind-control');
+  const rollingOfflineControl = document.getElementById('rolling-offline-control');
   const defaultSearchSourcesControl = document.getElementById('default-search-sources');
   const defaultSearchSourcesError = document.getElementById('default-search-sources-error');
   const providerStatusList = document.getElementById('provider-status-list');
@@ -966,6 +968,8 @@ export function initSettings(options = {}) {
     const settings = getClientSettings();
     renderSegmentedControl(skipIntervalControl, settings.skipIntervalSeconds || getSkipInterval(), 'skipInterval');
     renderSegmentedControl(progressModeControl, settings.progressDisplayMode || getProgressDisplayMode(), 'progressMode');
+    renderSegmentedControl(smartRewindControl, settings.smartRewindEnabled === false ? 'off' : 'on', 'smartRewind');
+    renderSegmentedControl(rollingOfflineControl, settings.rollingOfflineEnabled === false ? 'off' : 'on', 'rollingOffline');
     const defaultSources = settings.defaultSearchSources || getDefaultSearchSources();
     defaultSearchSourcesControl?.querySelectorAll('input[type="checkbox"]').forEach(input => {
       input.checked = defaultSources.includes(input.value);
@@ -977,6 +981,7 @@ export function initSettings(options = {}) {
 
   async function reloadClientSettingsForSyncUser() {
     await loadClientSettings({ force: true, preferLocal: false });
+    await deps.loadListeningQueue?.();
     deps.syncTimeDisplayModeFromClientSettings();
     deps.applySkipIntervalLabels();
     renderClientSettings();
@@ -995,6 +1000,20 @@ export function initSettings(options = {}) {
     if (!btn) return;
     setClientSetting('progressDisplayMode', btn.dataset.progressMode);
     deps.syncTimeDisplayModeFromClientSettings();
+    renderClientSettings();
+  });
+
+  smartRewindControl?.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-smart-rewind]');
+    if (!btn) return;
+    setClientSetting('smartRewindEnabled', btn.dataset.smartRewind === 'on');
+    renderClientSettings();
+  });
+
+  rollingOfflineControl?.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-rolling-offline]');
+    if (!btn) return;
+    setClientSetting('rollingOfflineEnabled', btn.dataset.rollingOffline === 'on');
     renderClientSettings();
   });
 

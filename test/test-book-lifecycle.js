@@ -41,7 +41,12 @@ function deletionHarness(options = {}) {
     },
     positions: { owner: { books: { book_1: { chapterIndex: 2 } } } },
     bookmarks: { owner: [{ id: 'mark', bookId: 'book_1' }] },
-    shelves: { owner: ['book_1'], other: ['book_1'] }
+    shelves: { owner: ['book_1'], other: ['book_1'] },
+    listeningQueues: {
+      users: {
+        owner: { bookIds: ['book_1'], bookSettings: { book_1: { playbackSpeed: 1.5 } } }
+      }
+    }
   };
   const operations = [];
   const artifactCleanup = options.artifactCleanup || {
@@ -71,6 +76,7 @@ function deletionHarness(options = {}) {
     positionsFile: 'positions',
     bookmarksFile: 'bookmarks',
     shelvesFile: 'shelves',
+    listeningQueueFile: 'listeningQueues',
     updateJSON,
     skipSave,
     rememberDeletedBookId: bookId => operations.push(`remember:${bookId}`),
@@ -95,6 +101,12 @@ function deletionHarness(options = {}) {
     removeBookFromAllShelves: (shelves, bookId) => {
       for (const [userId, entries] of Object.entries(shelves)) {
         shelves[userId] = entries.filter(entry => entry !== bookId);
+      }
+    },
+    removeBookFromAllQueues: (store, bookId) => {
+      for (const queue of Object.values(store.users || {})) {
+        queue.bookIds = queue.bookIds.filter(id => id !== bookId);
+        delete queue.bookSettings?.[bookId];
       }
     },
     log: { warn: (...args) => operations.push(`warn:${args[0]}`) }
@@ -268,6 +280,7 @@ function metadataHarness(options = {}) {
     assert.strictEqual(harness.files.positions.owner.books.book_1, undefined);
     assert.deepStrictEqual(harness.files.bookmarks.owner, []);
     assert.deepStrictEqual(harness.files.shelves, { owner: [], other: [] });
+    assert.deepStrictEqual(harness.files.listeningQueues.users.owner, { bookIds: [], bookSettings: {} });
     assert(
       harness.operations.indexOf('update:books:saved') < harness.operations.indexOf('cleanup:book_1:Example'),
       'catalog write must finish before irreversible cleanup'

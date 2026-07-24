@@ -305,10 +305,17 @@ function fakeAudio() {
           return Promise.resolve({ stale: false });
         }
       }),
+      createSmartRewindController: () => ({
+        recordPause() {},
+        planResume() { return null; },
+        clear() {}
+      }),
       displayChapterTitle: () => 'Chapter',
       isIOSLike: () => false,
       needsReliablePlayback: () => false,
       isBookDownloadedForOffline: () => false,
+      ensureRollingOfflineWindow: async () => {},
+      isRollingOfflineEnabled: () => true,
       refreshVoicePrepPanel() {},
       syncPlaybackProgressScope() {},
       updateChapterTrigger() {},

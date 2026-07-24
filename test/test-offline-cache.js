@@ -48,7 +48,11 @@ function installBrowser({ book, chapters, cache, manifest = {}, variants = ['voi
   };
   global.window = { location: { origin: 'https://reader.test' }, addEventListener() {} };
   global.document = { getElementById: id => elements.get(id) || null };
-  global.navigator = { onLine: true, storage: { estimate: async () => ({ quota: 1000000, usage: 0 }) } };
+  Object.defineProperty(global, 'navigator', {
+    configurable: true,
+    writable: true,
+    value: { onLine: true, storage: { estimate: async () => ({ quota: 1000000, usage: 0 }) } }
+  });
   global.caches = { open: async () => cache };
   global.window.caches = global.caches;
   const audioRequests = [];
@@ -84,7 +88,11 @@ function installBrowser({ book, chapters, cache, manifest = {}, variants = ['voi
     .replace("import { API_BASE, apiSend } from '../api.js';", "const API_BASE = window.location.origin; const apiSend = (...args) => globalThis.__offlineApiSend(...args);")
     .replace("import { escapeHTML, formatDuration, relativeTime } from '../util/format.js';", "const escapeHTML = value => String(value); const relativeTime = () => ''; const formatDuration = () => '';")
     .replace("import { readJSON, writeJSON } from '../util/storage.js';", "const readJSON = (key, fallback = null) => { try { const value = localStorage.getItem(key); return value == null ? fallback : JSON.parse(value); } catch { return fallback; } }; const writeJSON = (key, value) => localStorage.setItem(key, JSON.stringify(value));")
-    .replace("import { showToast, showUndoToast } from '../ui/toast.js';", "const showToast = () => {}; const showUndoToast = () => {};");
+    .replace("import { showToast, showUndoToast } from '../ui/toast.js';", "const showToast = () => {}; const showUndoToast = () => {};")
+    .replace(
+      "import { planRollingOfflineWindow } from './rolling-offline.mjs';",
+      "const planRollingOfflineWindow = ({ currentChapter, chapterCount, cachedChapters = [] }) => { const first = Math.max(0, currentChapter - 1); const last = Math.min(chapterCount - 1, currentChapter + 2); const retain = Array.from({ length: Math.max(0, last - first + 1) }, (_, index) => first + index); const cached = new Set(cachedChapters); const kept = new Set(retain); return { retain, prepare: retain.filter(index => !cached.has(index)), evict: [...cached].filter(index => !kept.has(index)).sort((a, b) => a - b) }; };"
+    );
   const moduleUrl = `data:text/javascript;base64,${Buffer.from(source).toString('base64')}`;
   const offline = await import(moduleUrl);
   const book = { id: 'book-1', title: 'A Book' };
@@ -213,6 +221,99 @@ function installBrowser({ book, chapters, cache, manifest = {}, variants = ['voi
     assert.strictEqual(offline.getOfflineManifest()[book.id].state, 'incomplete');
     assert.deepStrictEqual(env.prepareCalls, []);
     assert.deepStrictEqual(env.audioRequests, []);
+  });
+
+  await test('rolling cache keeps one chapter behind and two ahead', async () => {
+    const cache = makeCache();
+    const rollingChapters = [{}, {}, {}, {}, {}];
+    const env = installBrowser({
+      book,
+      chapters: rollingChapters,
+      cache,
+      variants: ['voice-a', 'voice-a', 'voice-a', 'voice-a', 'voice-a']
+    });
+    offline.initOffline(env.init);
+    await offline.ensureRollingOfflineWindow(book, rollingChapters, 2, { enabled: true });
+
+    let entry = offline.getOfflineManifest()[book.id];
+    assert.strictEqual(entry.mode, 'rolling');
+    assert.deepStrictEqual(entry.chapterEntries.map((chapter, index) => chapter ? index : null).filter(index => index !== null), [1, 2, 3, 4]);
+    assert.strictEqual(offline.isBookDownloadedForOffline(book.id, 2), true);
+
+    await offline.ensureRollingOfflineWindow(book, rollingChapters, 3, { enabled: true });
+    entry = offline.getOfflineManifest()[book.id];
+    assert.deepStrictEqual(entry.chapterEntries.map((chapter, index) => chapter ? index : null).filter(index => index !== null), [2, 3, 4]);
+    assert.strictEqual(await cache.match('https://reader.test/api/audio/book-1/1'), undefined);
+  });
+
+  await test('rolling cache repairs a voice change without deleting the replacement window', async () => {
+    const cache = makeCache();
+    const rollingChapters = [{}, {}, {}, {}, {}];
+    let env = installBrowser({
+      book,
+      chapters: rollingChapters,
+      cache,
+      variants: ['voice-a', 'voice-a', 'voice-a', 'voice-a', 'voice-a']
+    });
+    offline.initOffline(env.init);
+    await offline.ensureRollingOfflineWindow(book, rollingChapters, 2, { enabled: true });
+    const initialManifest = offline.getOfflineManifest();
+
+    env = installBrowser({
+      book,
+      chapters: rollingChapters,
+      cache,
+      manifest: initialManifest,
+      variants: ['voice-b', 'voice-b', 'voice-b', 'voice-b', 'voice-b']
+    });
+    offline.initOffline(env.init);
+    await offline.ensureRollingOfflineWindow(book, rollingChapters, 2, { enabled: true });
+
+    const entry = offline.getOfflineManifest()[book.id];
+    assert.deepStrictEqual(
+      entry.chapterEntries.map((chapter, index) => chapter ? index : null).filter(index => index !== null),
+      [1, 2, 3, 4]
+    );
+    assert(entry.chapterEntries.filter(Boolean).every(chapter => chapter.variantKey === 'voice-b'));
+    for (const index of [1, 2, 3, 4]) {
+      assert(await cache.match(`https://reader.test/api/audio/book-1/${index}`));
+    }
+  });
+
+  await test('rolling cache never overwrites an incomplete full-book download', async () => {
+    const cache = makeCache();
+    const fullEntry = {
+      bookId: book.id,
+      title: book.title,
+      chapters: 2,
+      chapterEntries: [null, null],
+      mode: 'full',
+      state: 'incomplete',
+      manifestVersion: 2
+    };
+    const env = installBrowser({ book, chapters, cache, manifest: { [book.id]: fullEntry } });
+    offline.initOffline(env.init);
+    await offline.ensureRollingOfflineWindow(book, chapters, 0, { enabled: true });
+
+    assert.deepStrictEqual(env.prepareCalls, []);
+    assert.strictEqual(offline.getOfflineManifest()[book.id].mode, 'full');
+  });
+
+  await test('offline availability repairs an evicted rolling manifest pointer', async () => {
+    const cache = makeCache();
+    const rollingChapters = [{}, {}, {}];
+    const env = installBrowser({
+      book,
+      chapters: rollingChapters,
+      cache,
+      variants: ['voice-a', 'voice-a', 'voice-a']
+    });
+    offline.initOffline(env.init);
+    await offline.ensureRollingOfflineWindow(book, rollingChapters, 1, { enabled: true });
+    await cache.delete('https://reader.test/api/audio/book-1/1');
+
+    assert.strictEqual(await offline.isChapterAvailableOffline(book.id, 1), false);
+    assert.strictEqual(offline.getOfflineManifest()[book.id].chapterEntries[1], null);
   });
 
   console.log(`\n${passed} passed, ${failed} failed`);

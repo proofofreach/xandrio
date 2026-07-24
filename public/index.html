@@ -11,7 +11,7 @@
   <title>Xandrio - Audiobook Library</title>
   <link rel="preload" href="/fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin>
   <!-- ?v= values must match ASSET_VERSIONS in sw.js (single source of truth) -->
-  <link rel="stylesheet" href="style-v3.css?v=77">
+  <link rel="stylesheet" href="style-v3.css?v=78">
   <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=2">
 </head>
 <body>
@@ -89,6 +89,7 @@
       </div>
 
       <div id="continue-rail" class="continue-rail" hidden></div>
+      <section id="up-next-rail" class="up-next-rail" hidden aria-label="Up Next"></section>
 
       <p id="shelf-empty-hint" class="shelf-empty-hint" hidden>Your shelf is empty — browse All Books and tap “+ Shelf” to add some.</p>
 
@@ -446,6 +447,16 @@
             Offline
           </summary>
           <div class="settings-section-body">
+            <div class="settings-row settings-row-stacked">
+              <div class="settings-label">
+                <span class="settings-label-text">Automatic chapter cache</span>
+                <span class="settings-label-hint">Keep the current chapter, one behind, and two ahead. Data Saver pauses automatic downloads.</span>
+              </div>
+              <div id="rolling-offline-control" class="segmented-control" role="group" aria-label="Automatic chapter cache">
+                <button type="button" data-rolling-offline="on">On</button>
+                <button type="button" data-rolling-offline="off">Off</button>
+              </div>
+            </div>
             <div id="offline-books-list" class="offline-books-list"></div>
           </div>
         </details>
@@ -474,6 +485,16 @@
                 <span class="settings-label-hint">Set from the speed panel while listening</span>
               </div>
               <span id="default-speed-label" class="settings-status">Not set</span>
+            </div>
+            <div class="settings-row settings-row-stacked">
+              <div class="settings-label">
+                <span class="settings-label-text">Smart rewind</span>
+                <span class="settings-label-hint">After a pause, replay 5–30 seconds depending on how long you were away.</span>
+              </div>
+              <div id="smart-rewind-control" class="segmented-control" role="group" aria-label="Smart rewind">
+                <button type="button" data-smart-rewind="on">On</button>
+                <button type="button" data-smart-rewind="off">Off</button>
+              </div>
             </div>
             <div class="settings-row settings-row-stacked">
               <div class="settings-label">
@@ -806,7 +827,25 @@
           </button>
         </div>
         <button id="set-default-speed-btn" class="btn-ghost btn-sm speed-default-btn" type="button">Set as default</button>
-        <p class="speed-sheet-caption">Speed applies to all books</p>
+        <button id="set-book-speed-btn" class="btn-ghost btn-sm speed-default-btn" type="button">Use for this book</button>
+        <button id="clear-book-speed-btn" class="btn-ghost btn-sm speed-default-btn" type="button">Use global speed</button>
+        <p class="speed-sheet-caption">Book-specific speed overrides your default.</p>
+        <div class="settings-row settings-row-stacked">
+          <div class="settings-label"><span class="settings-label-text">Smart rewind for this book</span></div>
+          <div id="book-smart-rewind-control" class="segmented-control" role="group" aria-label="Smart rewind for this book">
+            <button type="button" data-book-smart-rewind="default">Default</button>
+            <button type="button" data-book-smart-rewind="on">On</button>
+            <button type="button" data-book-smart-rewind="off">Off</button>
+          </div>
+        </div>
+        <div class="settings-row settings-row-stacked">
+          <div class="settings-label"><span class="settings-label-text">Automatic cache for this book</span></div>
+          <div id="book-rolling-offline-control" class="segmented-control" role="group" aria-label="Automatic cache for this book">
+            <button type="button" data-book-rolling-offline="default">Default</button>
+            <button type="button" data-book-rolling-offline="on">On</button>
+            <button type="button" data-book-rolling-offline="off">Off</button>
+          </div>
+        </div>
         <button id="close-speed-sheet-btn" class="btn-primary" style="margin-top:8px;">Close</button>
       </div>
     </div>
@@ -959,6 +998,6 @@
 
   <script src="/js/lifecycle.js?v=1"></script>
   <script src="/js/chunk-player.js?v=20"></script>
-  <script type="module" src="app.js?v=88"></script>
+  <script type="module" src="app.js?v=89"></script>
 </body>
 </html>

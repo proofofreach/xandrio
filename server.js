@@ -58,10 +58,12 @@ const { registerPreferencesRoutes } = require('./lib/routes/preferences-routes')
 const { registerDiagnosticsRoutes } = require('./lib/routes/diagnostics-routes');
 const { createOperatorDiagnostics } = require('./lib/operator-diagnostics');
 const { registerBookmarksRoutes, removeBookBookmarks } = require('./lib/routes/bookmarks-routes');
+const { registerListeningQueueRoutes } = require('./lib/routes/listening-queue-routes');
 const { registerOperatorPolicyRoutes } = require('./lib/routes/operator-policy-routes');
 const jsonStore = require('./lib/json-store');
 const { createBooksStore } = require('./lib/books-store');
 const { computeListeningStats } = require('./lib/listening-stats');
+const { removeBookFromAllQueues } = require('./lib/listening-queue');
 const { createAuthMiddleware, createAuthRoutes, createSessionStore, requireAdmin, DEFAULT_SESSION_TTL_MS } = require('./lib/auth');
 const { createAccountsStore } = require('./lib/accounts');
 const shelves = require('./lib/shelves');
@@ -324,6 +326,7 @@ const USERS_FILE = path.join(DATA_DIR, 'users.json');
 const BOOKMARKS_FILE = path.join(DATA_DIR, 'bookmarks.json');
 const SHELVES_FILE = path.join(DATA_DIR, 'shelves.json');
 const CLIENT_SETTINGS_FILE = path.join(DATA_DIR, 'client-settings.json');
+const LISTENING_QUEUE_FILE = path.join(DATA_DIR, 'listening-queues.json');
 const CUSTOM_VOICES_FILE = path.join(DATA_DIR, 'custom-voices.json');
 const PRONUNCIATIONS_FILE = path.join(DATA_DIR, 'pronunciations.json');
 const searchCoverService = createSearchCoverService({
@@ -2584,6 +2587,7 @@ const bookDeletionService = createBookDeletionService({
   positionsFile: POSITIONS_FILE,
   bookmarksFile: BOOKMARKS_FILE,
   shelvesFile: SHELVES_FILE,
+  listeningQueueFile: LISTENING_QUEUE_FILE,
   updateJSON,
   skipSave: jsonStore.SKIP_SAVE,
   rememberDeletedBookId,
@@ -2593,7 +2597,8 @@ const bookDeletionService = createBookDeletionService({
   scheduleArtifactSweeps: bookArtifactCleaner.scheduleSweeps,
   removeBookPositions: (positions, bookId) => removeBookPositions(positions, bookId),
   removeBookBookmarks,
-  removeBookFromAllShelves: (shelvesStore, bookId) => shelves.removeBookFromAllShelves(shelvesStore, bookId)
+  removeBookFromAllShelves: (shelvesStore, bookId) => shelves.removeBookFromAllShelves(shelvesStore, bookId),
+  removeBookFromAllQueues
 });
 
 const bookMetadataRefreshService = createBookMetadataRefreshService({
@@ -2978,6 +2983,7 @@ const {
   normalizePositionsStore,
   removeBookPositions,
   setBookPositionsStructureKey,
+  migrateUserScopedStore,
   migratePositions,
   positionForBook,
   positionsForUser,
@@ -3037,6 +3043,9 @@ app.post('/api/sync/profile', async (req, res) => {
     if (migrateFromUserId && migrateFromUserId !== userId) {
       await updateJSON(POSITIONS_FILE, (data) => {
         migratePositions(data, migrateFromUserId, userId);
+      });
+      await updateJSON(LISTENING_QUEUE_FILE, (data) => {
+        migrateUserScopedStore(data, migrateFromUserId, userId);
       });
     }
 
@@ -3462,6 +3471,14 @@ registerBookmarksRoutes(app, {
   bookmarksFile: BOOKMARKS_FILE,
   clientSettingsFile: CLIENT_SETTINGS_FILE,
   jsonStore,
+  loadJSON,
+  updateJSON
+});
+
+registerListeningQueueRoutes(app, {
+  listeningQueueFile: LISTENING_QUEUE_FILE,
+  booksFile: BOOKS_FILE,
+  positionsFile: POSITIONS_FILE,
   loadJSON,
   updateJSON
 });

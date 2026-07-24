@@ -41,6 +41,8 @@ export class SingleFileChapterPlayer {
     this._loadWait = null;
     this._eventScope = null;
     this._playWait = null;
+    this._pauseReason = null;
+    this._playReason = null;
     this._boundTimeUpdate = this._handleTimeUpdate.bind(this);
     this._boundEnded = this._handleEnded.bind(this);
     this._boundError = this._handleError.bind(this);
@@ -144,17 +146,25 @@ export class SingleFileChapterPlayer {
   }
 
   _handleNativePlay() {
+    const wasPlaying = this._isPlaying;
+    const reason = this._playReason || 'external';
+    this._playReason = null;
     this._isPlaying = true;
-    this.onPlaybackChange?.(true);
+    if (wasPlaying && reason === 'external') return;
+    this.onPlaybackChange?.(true, { reason });
   }
 
   _handleNativePause() {
     if (this.audio.ended) return;
     this._isPlaying = false;
-    this.onPlaybackChange?.(false);
+    const reason = this._pauseReason || 'external';
+    this._pauseReason = null;
+    this.onPlaybackChange?.(false, { reason });
   }
 
   async play() {
+    this._pauseReason = null;
+    this._playReason = 'app';
     this._isPlaying = true;
     const wait = waitForMediaEvents(this.audio, {
       resolveEvents: ['playing'],
@@ -178,10 +188,15 @@ export class SingleFileChapterPlayer {
     } finally {
       wait.cancel();
       if (this._playWait === wait) this._playWait = null;
+      this._playReason = null;
     }
   }
 
-  pause() { this._isPlaying = false; this.audio.pause(); }
+  pause(reason = 'app') {
+    this._isPlaying = false;
+    this._pauseReason = reason;
+    this.audio.pause();
+  }
   get isPlaying() { return this._isPlaying && !this.audio.paused; }
   async seek(seconds) {
     this.audio.currentTime = Math.max(0, Math.min(Number(seconds) || 0, this.getTotalTime() || Number(seconds) || 0));

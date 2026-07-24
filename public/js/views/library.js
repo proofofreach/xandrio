@@ -111,6 +111,10 @@ function shelfToggleHTML(id, title, onShelf) {
     </button>`;
 }
 
+function queueToggleHTML(id, title) {
+  return `<button class="queue-toggle" data-queue-add="${safeAttr(id)}" aria-label="Add ${safeAttr(title)} to Up Next">+ Up Next</button>`;
+}
+
 function renderBookCard(book, position, onShelf = false) {
   const progress = bookProgressInfo(book, position);
   const id = String(book.id || '');
@@ -145,6 +149,7 @@ function renderBookCard(book, position, onShelf = false) {
           ${metaLine}
           ${finishedBadge}
           ${shelfToggleHTML(id, title, onShelf)}
+          ${queueToggleHTML(id, title)}
         </div>
         ${progressBar}
       </div>
@@ -570,6 +575,12 @@ export function initLibrary(options = {}) {
     if (shelfBtn) {
       e.stopPropagation();
       toggleShelfMembership(shelfBtn.dataset.shelfToggle, shelfBtn);
+      return;
+    }
+    const queueBtn = e.target.closest('[data-queue-add]');
+    if (queueBtn) {
+      e.stopPropagation();
+      deps.addToListeningQueue?.(queueBtn.dataset.queueAdd);
       return;
     }
     const bookItem = e.target.closest('.book-item');

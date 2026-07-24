@@ -159,6 +159,37 @@ function fakeAudio() {
     assert.strictEqual(audio.countFor('error'), 1, 'only the engine-level error listener should remain');
   });
 
+  await test('distinguishes app controls from native playback interruptions', async () => {
+    const audio = fakeAudio();
+    const changes = [];
+    const { player } = makePlayer(audio, {
+      onPlaybackChange: (playing, detail) => changes.push([playing, detail.reason])
+    });
+    const load = player.loadChapter('book1', 0);
+    audio.emit('loadedmetadata');
+    await load;
+
+    const play = player.play();
+    audio.emit('play');
+    audio.emit('playing');
+    await play;
+    player.pause();
+    audio.emit('pause');
+
+    audio.paused = false;
+    audio.emit('play');
+    audio.emit('playing');
+    audio.paused = true;
+    audio.emit('pause');
+
+    assert.deepStrictEqual(changes, [
+      [true, 'app'],
+      [false, 'app'],
+      [true, 'external'],
+      [false, 'external']
+    ]);
+  });
+
   await test('a rejected native play does not leave an unhandled media wait rejection', async () => {
     const audio = fakeAudio();
     const { player } = makePlayer(audio);
