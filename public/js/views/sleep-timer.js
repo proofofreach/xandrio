@@ -123,7 +123,9 @@ function setSleepTimerToChapterEnd() {
   showToast('Sleep timer set for end of chapter');
 }
 
-export function clearSleepTimer() {
+// Drops the live countdown/expiry handles without touching persisted state,
+// so an arming path can re-arm safely. clearSleepTimer() is the full reset.
+function clearSleepTimerHandles() {
   if (sleepTimer) {
     clearTimeout(sleepTimer);
     sleepTimer = null;
@@ -133,6 +135,10 @@ export function clearSleepTimer() {
     clearInterval(sleepTimerInterval);
     sleepTimerInterval = null;
   }
+}
+
+export function clearSleepTimer() {
+  clearSleepTimerHandles();
 
   sleepTimerEndTime = null;
   sleepTimerMode = null;
@@ -243,6 +249,7 @@ export function restoreSleepTimer() {
   if (savedMode === 'chapter') {
     const target = readJSON('xandrio_sleep_timer_chapter_target', null);
     if (target && target.bookId === deps.getCurrentBook()?.id && Number.isInteger(target.chapterIndex)) {
+      clearSleepTimerHandles();
       sleepTimerMode = 'chapter';
       sleepTimerChapterTarget = target;
       timerBtnInline.classList.add('active');
@@ -255,12 +262,16 @@ export function restoreSleepTimer() {
 
   const savedEndTime = readText('xandrio_sleep_timer_end', '');
   if (savedEndTime) {
-    const endTime = parseInt(savedEndTime);
+    const endTime = parseInt(savedEndTime, 10);
     const remaining = endTime - Date.now();
 
     if (remaining > 0) {
-      // Restore timer
+      // Restore timer. Restoring twice (view remount) must replace the
+      // handles rather than stack a second countdown and expiry on top.
+      clearSleepTimerHandles();
       sleepTimerEndTime = endTime;
+      sleepTimerMode = 'time';
+      sleepTimerChapterTarget = null;
 
       // Update display
       timerBtnInline.classList.add('active');

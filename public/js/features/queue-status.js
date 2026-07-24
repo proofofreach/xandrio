@@ -36,19 +36,26 @@ async function pollQueueStatus() {
   }
 }
 
+function onVisibilityChange() {
+  if (!document.hidden) pollQueueStatus();
+}
+
 export function initQueueStatus(options = {}) {
   queueStatusEl = document.getElementById('queue-status');
   if (!queueStatusEl) return;
 
+  // Re-initialising (view remount) must not stack a second poll timer and a
+  // second visibility listener on top of the first.
+  stopQueueStatus();
+
   const intervalMs = Math.max(2000, Number(options.intervalMs || 4000));
   pollQueueStatus();
   pollTimer = window.setInterval(pollQueueStatus, intervalMs);
-  document.addEventListener('visibilitychange', () => {
-    if (!document.hidden) pollQueueStatus();
-  });
+  document.addEventListener('visibilitychange', onVisibilityChange);
 }
 
 export function stopQueueStatus() {
   if (pollTimer) window.clearInterval(pollTimer);
   pollTimer = null;
+  document.removeEventListener('visibilitychange', onVisibilityChange);
 }
