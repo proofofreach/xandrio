@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Xandrio operator notice</title>
+  <link rel="stylesheet" href="/style-v3.css">
+</head>
+<body>
+  <main class="legal-page">
+    <a class="legal-page-back" href="/">← Back to Xandrio</a>
+    <p class="operator-notice-eyebrow">Operator notice</p>
+    <h1>Your instance, your decisions</h1>
+    <p>Xandrio is self-hosted software. It is not a content provider, book store, hosted TTS service, or project-operated catalog. You control this server, its sources, credentials, books, and generated playback cache.</p>
+    <p>Before importing, narrating, or sharing access to content, confirm that you have the required authority under applicable law and provider agreements. Provider labels and metadata do not decide rights status. Generated audio is intended for private playback unless you have broader rights. Xandrio has no social-sharing or audiobook-publishing feature.</p>
+    <p>Owning or lawfully accessing an ebook may permit personal reading or text-to-speech use in some places, but ownership alone does not answer every question about copying, format shifting, access controls, acquisition from another source, or sharing. Xandrio does not geolocate operators or enable providers by country.</p>
+    <p>Xandrio does not include ebook DRM-removal functionality and rejects known DRM-protected Kindle imports. Do not bypass a technological protection measure merely to make a file usable in Xandrio. Owning an ebook does not, by itself, establish that circumvention or acquisition of another copy is permitted. The optional Anna browser integration changes automation fingerprints; it is disabled by default and requires a separate operator setting after review of the provider's current terms.</p>
+    <p>Sources whose rights status is unverified are optional and disabled on a new instance until you separately enable them. Enabling a connector is a technical setting, not a legal determination.</p>
+    <p>If you supply a voice reference, confirm that you have authority and any required consent to use it. This notice is informational, not legal advice, and does not change the MIT licence.</p>
+
+    <section id="data-flow">
+      <h2>Outbound data flow</h2>
+      <p>This instance contacts only the services you choose to use. Provider requests originate from this server, not project infrastructure.</p>
+      <dl>
+        <dt>Book providers</dt>
+        <dd>Search terms, requested item identifiers, and provider-specific account traffic may be sent to the selected provider. Disable a source or remove its configuration to stop new requests. Xandrio does not supply shared provider accounts, credentials, proxies, or project-operated mirrors.</dd>
+        <dt>Metadata and covers</dt>
+        <dd>Titles, authors, ISBNs, work keys, and cover URLs may be sent to metadata and cover services. Returned metadata and images can be cached locally.</dd>
+        <dt>Microsoft Edge TTS</dt>
+        <dd>Narration text and voice settings are sent to Microsoft through an unofficial consumer-endpoint integration. Use a local engine to avoid that path.</dd>
+        <dt>Local Kokoro and Chatterbox</dt>
+        <dd>Narration text, and for Chatterbox an optional voice reference, are sent to the local host you configure. Generated audio and voice references remain in this instance's storage.</dd>
+      </dl>
+      <p>Books, source configuration or sessions, generated audio, covers, and voice references can remain in <code>data/</code>, <code>cache/</code>, browser storage, and backups until you remove them according to your retention policy.</p>
+    </section>
+  </main>
+</body>
+</html>

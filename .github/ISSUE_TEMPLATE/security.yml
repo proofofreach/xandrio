@@ -1,0 +1,6 @@
+name: Security report
+description: Security reports must stay private.
+body:
+  - type: markdown
+    attributes:
+      value: "Do not submit a public security issue. Follow the private reporting instructions in SECURITY.md."

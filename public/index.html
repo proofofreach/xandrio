@@ -1,0 +1,938 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Xandrio">
+  <meta name="theme-color" content="#101217">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <title>Xandrio - Audiobook Library</title>
+  <link rel="preload" href="/fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin>
+  <!-- ?v= values must match ASSET_VERSIONS in sw.js (single source of truth) -->
+  <link rel="stylesheet" href="style-v3.css?v=75">
+  <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=2">
+</head>
+<body>
+  <!-- Global offline indicator -->
+  <div id="offline-banner" class="offline-banner" role="status" aria-live="polite" hidden>
+    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="icon-inline" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M3 3l18 18M8.288 8.29A9.04 9.04 0 002.985 12M12 20h.01M8.53 16.11a6 6 0 016.94 0M5.5 12.55a11 11 0 013.4-2.02m11.6 2.02a10.99 10.99 0 00-6.53-3.32"/></svg>
+    <span>You're offline. Downloaded books are still available.</span>
+  </div>
+  <div id="queue-status" class="queue-status" role="status" aria-live="polite" hidden></div>
+
+  <!-- Sign-in gate: covers the app until a session exists -->
+  <div id="login-view" class="login-gate" role="dialog" aria-modal="true" aria-labelledby="login-title">
+    <form id="login-form" class="login-card">
+      <img src="icon-xandrio-ankh.png" alt="" class="login-logo">
+      <h1 id="login-title">Xandrio</h1>
+      <p id="login-hint" class="login-hint">Sign in with your Xandrio account.</p>
+      <div id="login-username-row">
+        <input type="text" id="login-username" placeholder="Username" autocomplete="username" autocapitalize="none" spellcheck="false" />
+      </div>
+      <input type="password" id="login-password" placeholder="Password" autocomplete="current-password" />
+      <p id="login-error" class="settings-error" style="display:none"></p>
+      <button type="submit" id="login-submit" class="btn-primary">Sign In</button>
+    </form>
+  </div>
+
+  <div id="app">
+    <!-- Library View -->
+    <div id="library-view" class="view active">
+      <header class="library-header">
+        <h1>
+          <img src="icon-xandrio-ankh.png" alt="Xandrio" class="header-logo">
+          Xandrio
+        </h1>
+        <div class="header-actions">
+          <button id="stats-btn" class="btn-icon" aria-label="Listening stats" title="Your listening">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="width:20px;height:20px"><path stroke-linecap="round" stroke-linejoin="round" d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75zM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625zM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V4.125z"/></svg>
+          </button>
+          <button id="settings-btn" class="btn-icon" aria-label="Settings" title="Settings">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="width:20px;height:20px"><path stroke-linecap="round" stroke-linejoin="round" d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.325.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 011.37.49l1.296 2.247a1.125 1.125 0 01-.26 1.431l-1.003.827c-.293.24-.438.613-.431.992a6.759 6.759 0 010 .255c-.007.378.138.75.43.99l1.005.828c.424.35.534.954.26 1.43l-1.298 2.247a1.125 1.125 0 01-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.57 6.57 0 01-.22.128c-.331.183-.581.495-.644.869l-.213 1.28c-.09.543-.56.941-1.11.941h-2.594c-.55 0-1.02-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 01-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 01-1.369-.49l-1.297-2.247a1.125 1.125 0 01.26-1.431l1.004-.827c.292-.24.437-.613.43-.992a6.932 6.932 0 010-.255c.007-.378-.138-.75-.43-.99l-1.004-.828a1.125 1.125 0 01-.26-1.43l1.297-2.247a1.125 1.125 0 011.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.087.22-.128.332-.183.582-.495.644-.869l.214-1.281z"/><path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+          </button>
+          <button id="library-search-toggle" class="btn-icon" aria-label="Search library" title="Filter library">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="width:20px;height:20px"><path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z"/></svg>
+          </button>
+          <button id="add-book-btn" class="btn-primary btn-add-book" aria-label="Add a new book to library">
+            <span class="btn-add-symbol" aria-hidden="true">+</span>
+            <span class="btn-add-label">Add Book</span>
+          </button>
+        </div>
+      </header>
+
+      <div id="library-search-bar" class="library-search-bar collapsed">
+        <input type="text" id="library-search" placeholder="Filter your library..." aria-label="Filter library by title or author" />
+        <button id="library-search-close" class="library-search-close" aria-label="Close search"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="icon"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg></button>
+      </div>
+
+      <div id="library-tabs" class="library-tabs" role="tablist" aria-label="Library scope">
+        <button data-library-tab="shelf" class="library-tab active" role="tab">My Shelf</button>
+        <button data-library-tab="all" class="library-tab" role="tab">All Books</button>
+      </div>
+
+      <div class="library-controls">
+        <div class="control-row">
+          <select id="sort-select" aria-label="Sort books">
+            <option value="last-read" selected>Last Played</option>
+            <option value="recent">Recently Added</option>
+            <option value="title-az">Title A-Z</option>
+            <option value="title-za">Title Z-A</option>
+            <option value="author-az">Author A-Z</option>
+            <option value="author-za">Author Z-A</option>
+          </select>
+          <button id="view-toggle-btn" class="btn-icon" aria-label="Toggle grid/list view" title="Toggle view">
+            <span id="view-toggle-icon"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="icon"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 6A2.25 2.25 0 016 3.75h2.25A2.25 2.25 0 0110.5 6v2.25a2.25 2.25 0 01-2.25 2.25H6a2.25 2.25 0 01-2.25-2.25V6zM3.75 15.75A2.25 2.25 0 016 13.5h2.25a2.25 2.25 0 012.25 2.25V18a2.25 2.25 0 01-2.25 2.25H6A2.25 2.25 0 013.75 18v-2.25zM13.5 6a2.25 2.25 0 012.25-2.25H18A2.25 2.25 0 0120.25 6v2.25A2.25 2.25 0 0118 10.5h-2.25a2.25 2.25 0 01-2.25-2.25V6zM13.5 15.75a2.25 2.25 0 012.25-2.25H18a2.25 2.25 0 012.25 2.25V18A2.25 2.25 0 0118 20.25h-2.25A2.25 2.25 0 0113.5 18v-2.25z"/></svg></span>
+          </button>
+        </div>
+      </div>
+
+      <div id="continue-rail" class="continue-rail" hidden></div>
+
+      <p id="shelf-empty-hint" class="shelf-empty-hint" hidden>Your shelf is empty — browse All Books and tap “+ Shelf” to add some.</p>
+
+      <div id="library-list" class="book-list">
+        <div class="empty-state-modern">
+          <div class="empty-icon"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="icon-lg"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6.042A8.967 8.967 0 006 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 016 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 016-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0018 18a8.967 8.967 0 00-6 2.292m0-14.25v14.25"/></svg></div>
+          <h3>Your library is empty</h3>
+          <p>Add your first audiobook to get started</p>
+          <button class="btn-primary" data-add-book-empty>+ Add Book</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Search View -->
+    <div id="search-view" class="view">
+      <header class="search-header">
+        <button id="back-to-library-btn" class="btn-back" aria-label="Return to library">← Library</button>
+        <h2>Search Books</h2>
+      </header>
+
+      <section class="search-workspace" aria-label="Book search">
+        <div class="search-box">
+          <div class="search-input-wrap">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" />
+            </svg>
+            <input type="search" id="search-input" name="book-search" placeholder="Title or author…" aria-label="Search for books by title or author" autocomplete="off" />
+            <button id="search-clear-btn" class="search-clear-btn" type="button" aria-label="Clear search" hidden>
+              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+          <button id="search-btn" class="btn-primary" aria-label="Search for books">Search</button>
+        </div>
+
+        <div class="search-toolbar">
+          <button id="search-filter-toggle" class="search-filter-toggle" type="button" aria-expanded="false" aria-controls="search-filter-panel">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" aria-hidden="true">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 5.25h16.5M6.75 12h10.5M9.75 18.75h4.5" />
+            </svg>
+            <span>Filters</span>
+            <span id="search-filter-count" class="search-filter-count">2</span>
+          </button>
+          <span id="search-results-count" class="search-results-count" role="status" aria-live="polite" hidden></span>
+          <label id="search-sort-wrap" class="search-sort-wrap" hidden>
+            <span>Sort</span>
+            <select id="search-sort" name="search-sort" aria-label="Sort search results">
+              <option value="relevance">Best match</option>
+              <option value="title">Title A–Z</option>
+              <option value="author">Author A–Z</option>
+              <option value="year">Newest edition</option>
+              <option value="source">Source</option>
+            </select>
+          </label>
+        </div>
+
+        <button id="search-filter-scrim" class="search-filter-scrim" type="button" aria-label="Close search filters" tabindex="-1" hidden></button>
+        <div id="search-filter-panel" class="search-filter-panel" hidden>
+          <div class="search-filter-sheet-header">
+            <div>
+              <h3 id="search-filter-title">Filter books</h3>
+              <p>Choose a language and the sources to search.</p>
+            </div>
+            <button id="search-filter-close" class="search-filter-close" type="button" aria-label="Close search filters">
+              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+          <label class="search-language-filter">
+            <span>Language</span>
+            <select id="language-filter" name="book-language" aria-label="Book language" title="Book language">
+              <option value="en" selected>English</option>
+              <option value="de">Deutsch</option>
+              <option value="es">Español</option>
+              <option value="fr">Français</option>
+              <option value="it">Italiano</option>
+              <option value="pt">Português</option>
+              <option value="ru">Русский</option>
+              <option value="zh">中文</option>
+              <option value="ja">日本語</option>
+              <option value="all">Any Language</option>
+            </select>
+          </label>
+
+          <fieldset class="search-source-shelf">
+            <legend class="sr-only">Search sources</legend>
+            <div class="search-source-shelf-header">
+              <span>Sources</span>
+              <button id="search-source-reset" class="search-source-reset" type="button" hidden>Use defaults</button>
+            </div>
+            <div id="search-source-controls" class="search-source-controls" role="group" aria-label="Sources included in this search"></div>
+            <p id="search-source-message" class="search-source-message" aria-live="polite"></p>
+          </fieldset>
+          <div class="search-filter-sheet-actions">
+            <button id="search-filter-apply" class="btn-primary" type="button">Apply filters</button>
+          </div>
+        </div>
+      </section>
+
+      <div class="upload-section">
+        <div class="upload-divider"><span>or</span></div>
+        <div id="book-drop-zone" class="book-drop-zone" role="button" tabindex="0" aria-label="Upload a book by dragging a file here or choosing a file">
+          <div class="book-drop-icon" aria-hidden="true">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.7" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 16.5V3.75m0 0L7.5 8.25M12 3.75l4.5 4.5M4.5 14.25v4.5A2.25 2.25 0 006.75 21h10.5a2.25 2.25 0 002.25-2.25v-4.5"/></svg>
+          </div>
+          <div class="book-drop-copy">
+            <h3>Drop a book file here</h3>
+            <p>EPUB, MOBI, AZW, AZW3, PRC, or PDF</p>
+          </div>
+          <span id="upload-btn" class="btn-secondary" aria-hidden="true">Choose File</span>
+        </div>
+        <input type="file" id="file-input" accept=".epub,.mobi,.prc,.azw,.azw3,.pdf" style="display: none;" />
+        <div id="upload-progress" class="upload-progress" style="display: none;">
+          <div class="upload-progress-info">
+            <span class="upload-filename"></span>
+            <span class="upload-status">Uploading...</span>
+          </div>
+          <div class="upload-progress-bar">
+            <div class="upload-progress-fill"></div>
+          </div>
+        </div>
+      </div>
+
+      <div id="download-error" class="download-error-notification" role="alert" aria-live="polite" style="display: none;"></div>
+      <div id="search-results" class="search-results"></div>
+    </div>
+
+    <!-- Settings View -->
+    <div id="settings-view" class="view">
+      <header>
+        <button id="settings-back-btn" class="btn-back" aria-label="Return to library">← Library</button>
+        <h2>Settings</h2>
+      </header>
+
+      <div class="settings-sections">
+        <!-- Book Sources -->
+        <details class="settings-section" open>
+          <summary class="settings-section-header">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="width:18px;height:18px"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6.042A8.967 8.967 0 006 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 016 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 016-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0018 18a8.967 8.967 0 00-6 2.292m0-14.25v14.25"/></svg>
+            Book Sources
+          </summary>
+          <div class="settings-section-body">
+            <div class="settings-subsection">
+              <div class="settings-row settings-row-stacked">
+                <div class="settings-label">
+                  <span class="settings-label-text">Default search sources</span>
+                  <span class="settings-label-hint">Used when opening Search. You can temporarily change the source shelf there. A source may still require instance enablement.</span>
+                </div>
+                <fieldset id="default-search-sources" class="source-default-list">
+                  <legend class="sr-only">Default search sources</legend>
+                  <div class="source-default-group">
+                    <span class="source-default-group-label">Public domain</span>
+                    <label><input type="checkbox" value="standardebooks" /> <span class="source-default-copy"><span>Standard Ebooks</span><small>Carefully formatted public-domain EPUBs</small></span></label>
+                    <label><input type="checkbox" value="gutenberg" /> <span class="source-default-copy"><span>Project Gutenberg</span><small>Large public-domain library</small></span></label>
+                  </div>
+                  <div class="source-default-group">
+                    <span class="source-default-group-label">Libraries</span>
+                    <label><input type="checkbox" value="annas" /> <span class="source-default-copy"><span>Anna's Archive</span><small>Broad coverage; rights unverified</small></span></label>
+                    <label><input type="checkbox" value="zlibrary" /> <span class="source-default-copy"><span>Z-Library</span><small>Broad coverage; downloads need an account</small></span></label>
+                    <label><input type="checkbox" value="internetarchive" /> <span class="source-default-copy"><span>Internet Archive</span><small>Scanned and digitized texts; rights unverified</small></span></label>
+                  </div>
+                  <div class="source-default-group">
+                    <span class="source-default-group-label">Your catalogs</span>
+                    <label><input type="checkbox" value="opds" /> <span class="source-default-copy"><span>My catalog (OPDS)</span><small>Your own OPDS server — Calibre-Web, Kavita, COPS</small></span></label>
+                  </div>
+                </fieldset>
+                <p id="default-search-sources-error" class="settings-error" aria-live="polite"></p>
+              </div>
+              <div class="provider-disclosure" aria-labelledby="provider-disclosure-title">
+                <div class="settings-label">
+                  <span id="provider-disclosure-title" class="settings-label-text">Provider status</span>
+                  <span class="settings-label-hint">Status describes configuration and reported metadata, not whether a work is lawful to use.</span>
+                </div>
+                <div id="provider-status-list" class="provider-status-list" aria-live="polite">
+                  <p class="settings-hint">Checking this instance's provider settings…</p>
+                </div>
+                <label class="provider-policy-control">
+                  <input id="unverified-sources-enabled" type="checkbox" />
+                  <span>Enable sources whose rights status is unverified</span>
+                </label>
+                <p id="unverified-sources-error" class="settings-error" aria-live="polite"></p>
+                <p class="provider-disclosure-note">Leave a provider disabled or unconfigured to prevent Xandrio from contacting it. Provider terms, availability, and rights status remain the operator's responsibility.</p>
+              </div>
+            </div>
+            <div class="settings-divider"></div>
+            <div class="settings-subsection">
+              <div class="settings-row">
+                <div class="settings-label">
+                  <span class="settings-label-text">Anna's Archive</span>
+                  <span class="settings-label-hint">Optional source. A secret key is required for downloads.</span>
+                </div>
+                <span id="annas-status" class="settings-status">Checking...</span>
+              </div>
+              <div id="annas-connected-info" class="settings-info" style="display:none">
+                <span class="settings-info-text"><span id="annas-base-url"></span><span id="annas-key-updated"></span></span>
+                <div class="settings-actions">
+                  <button id="annas-edit-btn" class="btn-ghost btn-ghost-edit btn-sm">Replace local key</button>
+                  <button id="annas-disconnect-btn" class="btn-ghost btn-ghost-danger btn-sm">Disconnect</button>
+                </div>
+              </div>
+              <div id="annas-form" class="settings-form" style="display:none">
+                <input type="password" id="annas-secret-key" placeholder="Secret Key" autocomplete="off" />
+                <input type="text" id="annas-base-url-input" placeholder="Base URL (default: annas-archive.gl)" autocomplete="off" />
+                <div class="settings-form-buttons">
+                  <button id="annas-save-btn" class="btn-primary btn-sm">Save</button>
+                  <button id="annas-cancel-edit-btn" class="btn-ghost btn-sm" style="display:none">Cancel</button>
+                </div>
+                <p class="settings-hint">This only replaces Xandrio's local copy. It does not rotate or revoke the provider-side key.</p>
+              </div>
+              <p id="annas-error" class="settings-error" style="display:none"></p>
+            </div>
+            <div class="settings-divider"></div>
+            <div class="settings-subsection">
+              <div class="settings-row">
+                <div class="settings-label">
+                  <span class="settings-label-text">Z-Library</span>
+                  <span class="settings-label-hint">Search works without an account. Connect to download.</span>
+                </div>
+                <span id="zlib-status" class="settings-status">Not connected</span>
+              </div>
+              <div id="zlib-connected-info" class="settings-info" style="display:none">
+                <span id="zlib-downloads-left" class="settings-info-text"></span>
+                <div class="settings-actions">
+                  <button id="zlib-edit-btn" class="btn-ghost btn-ghost-edit btn-sm">Edit</button>
+                  <button id="zlib-disconnect-btn" class="btn-ghost btn-ghost-danger btn-sm">Disconnect</button>
+                </div>
+              </div>
+              <div id="zlib-form" class="settings-form" style="display:none">
+                <input type="email" id="zlib-email" placeholder="Email" autocomplete="email" />
+                <input type="password" id="zlib-password" placeholder="Password" autocomplete="current-password" />
+                <div class="settings-form-buttons">
+                  <button id="zlib-connect-btn" class="btn-primary btn-sm">Connect</button>
+                  <button id="zlib-cancel-edit-btn" class="btn-ghost btn-sm" style="display:none">Cancel</button>
+                </div>
+              </div>
+              <p id="zlib-error" class="settings-error" style="display:none"></p>
+            </div>
+          </div>
+        </details>
+
+        <!-- Account (shown when signed in with a username/password account) -->
+        <details class="settings-section" id="account-section" style="display:none" open>
+          <summary class="settings-section-header">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="width:18px;height:18px"><path stroke-linecap="round" stroke-linejoin="round" d="M17.982 18.725A7.488 7.488 0 0012 15.75a7.488 7.488 0 00-5.982 2.975m11.963 0a9 9 0 10-11.963 0m11.963 0A8.966 8.966 0 0112 21a8.966 8.966 0 01-5.982-2.275M15 9.75a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+            Account
+          </summary>
+          <div class="settings-section-body">
+            <div class="settings-row">
+              <div class="settings-label">
+                <span class="settings-label-text" id="account-display-name">Signed in</span>
+                <span id="account-username-hint" class="settings-label-hint"></span>
+              </div>
+              <span id="account-role" class="settings-status settings-status-ok">member</span>
+            </div>
+            <div id="account-device-list" class="sync-device-list"></div>
+            <div class="settings-actions">
+              <button id="account-change-password-btn" class="btn-ghost btn-sm">Change Password</button>
+              <button id="account-logout-btn" class="btn-ghost btn-ghost-danger btn-sm">Sign Out</button>
+            </div>
+            <div id="account-password-form" class="settings-form" style="display:none">
+              <input type="password" id="account-current-password" placeholder="Current password" autocomplete="current-password" />
+              <input type="password" id="account-new-password" placeholder="New password (min 8 characters)" autocomplete="new-password" />
+              <div class="settings-form-buttons">
+                <button id="account-password-save-btn" class="btn-primary btn-sm">Update Password</button>
+                <button id="account-password-cancel-btn" class="btn-ghost btn-sm">Cancel</button>
+              </div>
+            </div>
+            <p id="account-error" class="settings-error" style="display:none"></p>
+
+            <!-- Admin-only account management -->
+            <div id="admin-accounts" style="display:none">
+              <div class="settings-row">
+                <div class="settings-label">
+                  <span class="settings-label-text">Accounts</span>
+                  <span class="settings-label-hint">Manage who can sign in to this server</span>
+                </div>
+                <span class="settings-status">Admin</span>
+              </div>
+              <div id="admin-account-list" class="sync-device-list"></div>
+              <div id="admin-account-form" class="settings-form">
+                <input type="text" id="admin-new-username" placeholder="Username (a-z, 0-9, _ or -)" autocomplete="off" autocapitalize="none" spellcheck="false" />
+                <input type="password" id="admin-new-password" placeholder="Password (min 8 characters)" autocomplete="new-password" />
+                <label class="admin-role-check"><input type="checkbox" id="admin-new-is-admin" /> Admin account</label>
+                <div class="settings-form-buttons">
+                  <button id="admin-add-account-btn" class="btn-primary btn-sm">Add Account</button>
+                </div>
+              </div>
+              <p id="admin-accounts-error" class="settings-error" style="display:none"></p>
+            </div>
+          </div>
+        </details>
+
+        <!-- Sync (legacy trusted-LAN profiles; hidden when signed in) -->
+        <details class="settings-section" id="sync-section">
+          <summary class="settings-section-header">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="width:18px;height:18px"><path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001m-4.992.001a8.25 8.25 0 00-13.07 2.577m13.07-2.577L18.75 6.62M7.977 14.652H2.985v.001m4.992-.001a8.25 8.25 0 0013.07-2.577m-13.07 2.577L5.25 17.38"/></svg>
+            Sync
+          </summary>
+          <div class="settings-section-body">
+            <div class="settings-row">
+              <div class="settings-label">
+                <span class="settings-label-text">Reading progress</span>
+                <span id="sync-profile-hint" class="settings-label-hint">Not linked to a sync profile</span>
+              </div>
+              <span id="sync-status" class="settings-status">Local</span>
+            </div>
+              <div id="sync-connected-info" class="settings-info" style="display:none">
+                <span id="sync-profile-name" class="settings-info-text"></span>
+                <div class="settings-actions">
+                  <button id="sync-forget-btn" class="btn-ghost btn-ghost-danger btn-sm">Forget This Device</button>
+                </div>
+                <div id="sync-device-list" class="sync-device-list"></div>
+              </div>
+            <div id="sync-form" class="settings-form">
+              <input type="text" id="sync-profile-input" placeholder="Profile name" autocomplete="off" />
+              <div class="settings-form-buttons">
+                <button id="sync-start-btn" class="btn-primary btn-sm">Create Profile</button>
+              </div>
+            </div>
+            <p id="sync-error" class="settings-error" style="display:none"></p>
+          </div>
+        </details>
+
+        <!-- Offline -->
+        <details class="settings-section">
+          <summary class="settings-section-header">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="width:18px;height:18px"><path stroke-linecap="round" stroke-linejoin="round" d="M12 3v12m0 0l-4-4m4 4l4-4M4.5 19.5h15"/></svg>
+            Offline
+          </summary>
+          <div class="settings-section-body">
+            <div id="offline-books-list" class="offline-books-list"></div>
+          </div>
+        </details>
+
+        <!-- Playback -->
+        <details class="settings-section">
+          <summary class="settings-section-header">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="width:18px;height:18px"><path stroke-linecap="round" stroke-linejoin="round" d="M5.25 5.653c0-1.427 1.529-2.33 2.78-1.642l11.52 6.347c1.295.714 1.295 2.572 0 3.286L8.03 19.991c-1.251.688-2.78-.215-2.78-1.642V5.653z"/></svg>
+            Playback
+          </summary>
+          <div class="settings-section-body">
+            <div class="settings-row settings-row-stacked">
+              <div class="settings-label">
+                <span class="settings-label-text">Skip interval</span>
+                <span class="settings-label-hint">Used by player buttons, keyboard shortcuts, and lock screen controls</span>
+              </div>
+              <div id="skip-interval-control" class="segmented-control" role="group" aria-label="Skip interval">
+                <button type="button" data-skip-interval="10">10s</button>
+                <button type="button" data-skip-interval="15">15s</button>
+                <button type="button" data-skip-interval="30">30s</button>
+              </div>
+            </div>
+            <div class="settings-row">
+              <div class="settings-label">
+                <span class="settings-label-text">Default speed</span>
+                <span class="settings-label-hint">Set from the speed panel while listening</span>
+              </div>
+              <span id="default-speed-label" class="settings-status">Not set</span>
+            </div>
+            <div class="settings-row settings-row-stacked">
+              <div class="settings-label">
+                <span class="settings-label-text">Chapter time display</span>
+                <span class="settings-label-hint">Choose what the right-side chapter time shows by default</span>
+              </div>
+              <div id="progress-mode-control" class="segmented-control" role="group" aria-label="Chapter time display">
+                <button type="button" data-progress-mode="elapsed">Total</button>
+                <button type="button" data-progress-mode="remaining">Remaining</button>
+              </div>
+            </div>
+            <div class="settings-row settings-row-stacked">
+              <div class="settings-label">
+                <span class="settings-label-text">Prepare premium audio in background</span>
+                <span class="settings-label-hint">With a premium voice, playback starts instantly and chapters upgrade as they're ready</span>
+              </div>
+              <div id="premium-prep-control" class="segmented-control" role="group" aria-label="Prepare premium audio in background">
+                <button type="button" data-premium-prep="on">On</button>
+                <button type="button" data-premium-prep="off">Off</button>
+              </div>
+            </div>
+          </div>
+        </details>
+
+        <!-- Voice -->
+        <details class="settings-section">
+          <summary class="settings-section-header">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="width:18px;height:18px"><path stroke-linecap="round" stroke-linejoin="round" d="M19.114 5.636a9 9 0 010 12.728M16.463 8.288a5.25 5.25 0 010 7.424M6.75 8.25l4.72-4.72a.75.75 0 011.28.53v15.88a.75.75 0 01-1.28.53l-4.72-4.72H4.51c-.88 0-1.704-.507-1.938-1.354A9.01 9.01 0 012.25 12c0-.83.112-1.633.322-2.396C2.806 8.756 3.63 8.25 4.51 8.25H6.75z"/></svg>
+            Voice
+          </summary>
+          <div class="settings-section-body">
+            <p class="settings-hint">Choose the TTS voice for audiobook narration</p>
+            <div id="voice-filter-bar" class="voice-filter-bar" aria-label="Voice filters"></div>
+            <div id="voice-list" class="voice-list"></div>
+          </div>
+        </details>
+
+        <!-- Language -->
+        <details class="settings-section">
+          <summary class="settings-section-header">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="width:18px;height:18px"><path stroke-linecap="round" stroke-linejoin="round" d="M10.5 21l5.25-11.25L21 21m-9-3h7.5M3 5.621a48.474 48.474 0 016-.371m0 0c1.12 0 2.233.038 3.334.114M9 5.25V3m3.334 2.364C11.176 10.658 7.69 15.08 3 17.502m9.334-12.138c.896.061 1.785.147 2.666.257m-4.589 8.495a18.023 18.023 0 01-3.827-5.802"/></svg>
+            Language
+          </summary>
+          <div class="settings-section-body">
+            <div class="settings-row">
+              <div class="settings-label">
+                <span class="settings-label-text">Default search language</span>
+                <span class="settings-label-hint">Used when searching for new books</span>
+              </div>
+              <select id="settings-language" class="settings-select" aria-label="Default language">
+                <option value="en">English</option>
+                <option value="de">Deutsch</option>
+                <option value="es">Español</option>
+                <option value="fr">Français</option>
+                <option value="it">Italiano</option>
+                <option value="pt">Português</option>
+                <option value="ru">Русский</option>
+                <option value="zh">中文</option>
+                <option value="ja">日本語</option>
+                <option value="all">Any Language</option>
+              </select>
+            </div>
+          </div>
+        </details>
+      </div>
+    </div>
+
+    <!-- Stats / Listening History View -->
+    <div id="stats-view" class="view">
+      <header>
+        <button id="stats-back-btn" class="btn-back" aria-label="Return to library">← Library</button>
+        <h2>Your Listening</h2>
+      </header>
+      <div id="stats-body" class="stats-body"></div>
+    </div>
+
+    <!-- Player View — Libby-inspired -->
+    <div id="player-view" class="view">
+      <div class="player-ambient" aria-hidden="true"><img id="player-ambient-img" alt="" /></div>
+      <!-- Top bar -->
+      <div class="player-topbar">
+        <div class="player-topbar-left">
+          <button id="back-btn" class="topbar-btn" aria-label="Return to library">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 19.5L8.25 12l7.5-7.5" />
+            </svg>
+          </button>
+        </div>
+        <div class="player-topbar-right">
+          <div class="speed-btn-group">
+            <button id="speed-btn" class="topbar-btn" aria-label="Playback speed" title="Playback speed">
+              <span style="font-size:13px;font-weight:700;">1x</span>
+            </button>
+            <button id="speed-sheet-btn" class="topbar-btn topbar-btn-chevron" aria-label="More speed options" title="More speed options" aria-haspopup="dialog">
+              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5" />
+              </svg>
+            </button>
+          </div>
+          <button id="bookmark-btn" class="topbar-btn" aria-label="Bookmark this spot" title="Bookmark this spot">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M17.593 3.322c1.1.128 1.907 1.077 1.907 2.185V21L12 17.25 4.5 21V5.507c0-1.108.806-2.057 1.907-2.185a48.507 48.507 0 0111.186 0z" />
+            </svg>
+          </button>
+          <button id="timer-btn-inline" class="topbar-btn" aria-label="Sleep timer" title="Sleep timer">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M21.752 15.002A9.718 9.718 0 0118 15.75c-5.385 0-9.75-4.365-9.75-9.75 0-1.33.266-2.597.748-3.752A9.753 9.753 0 003 11.25C3 16.635 7.365 21 12.75 21a9.753 9.753 0 009.002-5.998z" />
+            </svg>
+            <span id="timer-countdown" class="timer-countdown" aria-hidden="true"></span>
+          </button>
+          <button id="voice-btn" class="topbar-btn" aria-label="Voice selection" title="Voice selection">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M19.114 5.636a9 9 0 010 12.728M16.463 8.288a5.25 5.25 0 010 7.424M6.75 8.25l4.72-4.72a.75.75 0 011.28.53v15.88a.75.75 0 01-1.28.53l-4.72-4.72H4.51c-.88 0-1.704-.507-1.938-1.354A9.01 9.01 0 012.25 12c0-.83.112-1.633.322-2.396C2.806 8.756 3.63 8.25 4.51 8.25H6.75z" />
+            </svg>
+          </button>
+          <button id="pronunciation-repair-btn" class="topbar-btn pronunciation-repair-btn" type="button" aria-label="Fix pronunciation" title="Fix pronunciation">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M4 7.5h8m-8 9h5m-2.5 0l3-9m7 1.75v5.5m2.75-2.75h-5.5" />
+            </svg>
+          </button>
+        </div>
+      </div>
+
+      <div class="player-main">
+        <div class="player-art-column">
+          <!-- Large cover art -->
+          <div class="player-cover-wrap">
+            <img id="book-cover" src="" alt="" class="player-cover" />
+          </div>
+
+          <!-- About this book -->
+          <details class="player-details">
+            <summary>About this book</summary>
+            <div class="player-offline-actions">
+              <button id="download-book-btn" class="btn-ghost btn-sm" type="button">Download for Offline</button>
+              <span id="offline-book-badge" class="offline-book-badge" hidden></span>
+            </div>
+            <p id="book-description" class="player-details-desc"></p>
+            <p id="book-details-text" class="player-details-meta"></p>
+          </details>
+        </div>
+
+        <div class="player-control-column">
+          <!-- Book info -->
+          <div class="player-book-info">
+            <h1 id="book-title" class="player-book-title">Book Title</h1>
+            <p id="book-author-header" class="player-book-author"></p>
+          </div>
+
+          <!-- Primary chapter selector -->
+          <div class="player-secondary">
+            <button id="chapter-sheet-btn" class="player-chapter-trigger" type="button" aria-label="Open chapter list">
+              <span class="player-chapter-trigger-copy">
+                <span class="player-chapter-trigger-label">Current chapter</span>
+                <span id="chapter-trigger-title" class="player-chapter-trigger-title">Chapter 1</span>
+              </span>
+              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="icon">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M8.25 6.75h12M8.25 12h12M8.25 17.25h12M3.75 6.75h.008v.008H3.75V6.75zm0 5.25h.008v.008H3.75V12zm0 5.25h.008v.008H3.75v-.008z" />
+              </svg>
+            </button>
+            <select id="chapter-select" class="player-chapter-select sr-only" aria-label="Select chapter"></select>
+          </div>
+
+          <button id="player-voice-status" class="player-voice-status" type="button" aria-label="Change narration voice">
+            <span class="player-voice-status-label">Voice</span>
+            <span id="player-voice-name" class="player-voice-status-name">Loading voice...</span>
+            <span id="player-voice-cache" class="player-voice-status-cache">Cache status unavailable</span>
+          </button>
+
+          <div id="hq-voice-prep" class="hq-voice-prep" data-state="idle" hidden aria-live="polite">
+            <div class="hq-voice-prep-row">
+              <div class="hq-voice-prep-copy">
+                <span id="hq-voice-prep-title" class="hq-voice-prep-title">High-quality audio</span>
+                <span id="hq-voice-prep-detail" class="hq-voice-prep-detail">Ready to prepare this chapter.</span>
+              </div>
+              <button id="hq-voice-prep-btn" class="hq-voice-prep-btn" type="button">Prepare chapter</button>
+            </div>
+            <div class="hq-voice-prep-track" aria-hidden="true">
+              <div id="hq-voice-prep-fill" class="hq-voice-prep-fill"></div>
+            </div>
+            <div id="hq-voice-prep-count" class="hq-voice-prep-count">0%</div>
+          </div>
+
+          <div id="playback-reliability" class="playback-reliability" data-state="hidden" hidden aria-live="polite">
+            <span class="playback-reliability-dot" aria-hidden="true"></span>
+            <span id="playback-reliability-text">Preparing lock-screen playback</span>
+          </div>
+
+          <div id="iphone-playback-tip" class="iphone-playback-tip" hidden>
+            <span>For best listening, keep this screen open until it says “Ready for lock screen.”</span>
+            <button id="iphone-playback-tip-dismiss" type="button" aria-label="Dismiss tip">Got it</button>
+          </div>
+
+          <div id="playback-resume-prompt" class="playback-resume-prompt" hidden role="status">
+            <div>
+              <strong>Tap to resume</strong>
+              <span>iPhone paused audio after leaving the app.</span>
+            </div>
+            <button id="playback-resume-btn" type="button">Resume playback</button>
+          </div>
+
+          <!-- Audio loading -->
+          <div id="audio-loading" class="audio-loading" style="display: none;" role="status" aria-live="polite">
+            <div class="audio-loading-row">
+              <div class="spinner"></div>
+              <div class="audio-loading-copy">
+                <span id="loading-text">Preparing audio...</span>
+                <span id="loading-detail" class="loading-detail"></span>
+              </div>
+            </div>
+            <div class="audio-loading-progress" aria-hidden="true">
+              <div id="audio-loading-fill" class="audio-loading-fill"></div>
+            </div>
+            <div id="audio-loading-actions" class="audio-loading-actions" hidden></div>
+          </div>
+
+          <!-- Progress -->
+          <div class="player-progress">
+            <div id="player-progress-scope" class="player-progress-scope" role="group" aria-label="Seek within chapter or book" hidden>
+              <button type="button" class="player-progress-scope-btn active" data-progress-scope="chapter" aria-pressed="true">Chapter</button>
+              <button type="button" class="player-progress-scope-btn" data-progress-scope="book" aria-pressed="false">Book</button>
+            </div>
+            <input type="range" id="progress-slider" class="player-progress-slider" min="0" max="100" value="0" aria-label="Playback progress" />
+            <div class="player-time-row">
+              <span id="chapter-progress-current">0:00</span>
+              <span id="player-progress-context" class="player-progress-context">Chapter 1</span>
+              <span id="chapter-progress-total" role="button" tabindex="0" aria-label="Toggle chapter time display">0:00</span>
+            </div>
+          </div>
+
+          <!-- Book-level progress -->
+          <div id="player-book-progress" class="player-book-progress" role="progressbar" aria-label="Book progress" aria-valuemin="0" aria-valuemax="100" hidden>
+            <div class="player-book-progress-meta">
+              <span class="player-book-progress-label">Book progress</span>
+              <span id="book-progress-text" class="player-book-progress-text"></span>
+            </div>
+            <div class="player-book-progress-track" aria-hidden="true"><div id="player-book-progress-fill" class="player-book-progress-fill"></div></div>
+          </div>
+          <button id="start-over-btn" class="start-over-btn" type="button" hidden>Start Over</button>
+
+          <!-- Main controls -->
+          <div class="player-controls">
+            <button id="prev-chapter-btn" class="ctrl-btn ctrl-btn-chapter" aria-label="Previous chapter">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor"><path d="M9.195 18.44c1.25.713 2.805-.19 2.805-1.629v-2.34l6.945 3.968c1.25.714 2.805-.188 2.805-1.628V7.19c0-1.44-1.555-2.342-2.805-1.628L12 9.528v-2.34c0-1.44-1.555-2.343-2.805-1.629L1.2 10.372c-1.25.712-1.25 2.544 0 3.256l7.995 4.812z"/></svg>
+            </button>
+            <button id="skip-back-btn" class="ctrl-btn" aria-label="Skip back 15 seconds">
+              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9 15L3 9m0 0l6-6M3 9h12a6 6 0 010 12h-3"/></svg>
+              <span class="skip-label">15</span>
+            </button>
+            <button id="play-pause-btn" class="ctrl-btn-play" aria-label="Play or pause">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor"><path fill-rule="evenodd" d="M4.5 5.653c0-1.426 1.529-2.33 2.779-1.643l11.54 6.348c1.295.712 1.295 2.572 0 3.285L7.28 19.991c-1.25.687-2.779-.217-2.779-1.643V5.653z" clip-rule="evenodd"/></svg>
+            </button>
+            <button id="skip-forward-btn" class="ctrl-btn" aria-label="Skip forward 15 seconds">
+              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M15 15l6-6m0 0l-6-6m6 6H9a6 6 0 000 12h3"/></svg>
+              <span class="skip-label">15</span>
+            </button>
+            <button id="next-chapter-btn" class="ctrl-btn ctrl-btn-chapter" aria-label="Next chapter">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor"><path d="M5.055 7.19c0-1.44 1.555-2.342 2.805-1.628L12 9.528V7.19c0-1.44 1.555-2.342 2.805-1.628l7.995 4.812c1.25.712 1.25 2.544 0 3.256l-7.995 4.812c-1.25.713-2.805-.19-2.805-1.629v-2.34l-6.945 3.968c-1.25.714-2.805-.19-2.805-1.629V7.19z"/></svg>
+            </button>
+          </div>
+
+          <nav class="player-utility-row" aria-label="Playback tools">
+            <button id="utility-timer-btn" class="player-utility-btn" type="button">
+              <span class="player-utility-icon" aria-hidden="true">
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M21.752 15.002A9.718 9.718 0 0118 15.75c-5.385 0-9.75-4.365-9.75-9.75 0-1.33.266-2.597.748-3.752A9.753 9.753 0 003 11.25C3 16.635 7.365 21 12.75 21a9.753 9.753 0 009.002-5.998z" />
+                </svg>
+              </span>
+              <span>Sleep</span>
+            </button>
+            <button id="utility-chapters-btn" class="player-utility-btn" type="button">
+              <span class="player-utility-icon" aria-hidden="true">
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M8.25 6.75h12M8.25 12h12M8.25 17.25h12M3.75 6.75h.008v.008H3.75V6.75zm0 5.25h.008v.008H3.75V12zm0 5.25h.008v.008H3.75v-.008z" />
+                </svg>
+              </span>
+              <span>Chapters</span>
+            </button>
+            <button id="utility-bookmark-btn" class="player-utility-btn" type="button">
+              <span class="player-utility-icon" aria-hidden="true">
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M17.593 3.322c1.1.128 1.907 1.077 1.907 2.185V21L12 17.25 4.5 21V5.507c0-1.108.806-2.057 1.907-2.185a48.507 48.507 0 0111.186 0z" />
+                </svg>
+              </span>
+              <span>Bookmark</span>
+            </button>
+            <button id="utility-speed-btn" class="player-utility-btn" type="button" aria-haspopup="dialog">
+              <span id="utility-speed-value" class="player-utility-speed" aria-hidden="true">1x</span>
+              <span>Speed</span>
+            </button>
+          </nav>
+        </div>
+      </div>
+
+      <!-- Output element for SingleFileChapterPlayer (iOS reliable/offline playback) -->
+      <audio id="audio-player" preload="metadata"></audio>
+    </div>
+
+    <!-- Timer Modal -->
+    <div id="timer-modal" class="modal" role="dialog" aria-labelledby="timer-modal-title">
+      <div class="modal-content">
+        <h3 id="timer-modal-title">Sleep Timer</h3>
+        <div class="timer-options">
+          <button class="timer-option" data-minutes="5">5 min</button>
+          <button class="timer-option" data-minutes="10">10 min</button>
+          <button class="timer-option" data-minutes="15">15 min</button>
+          <button class="timer-option" data-minutes="30">30 min</button>
+          <button class="timer-option" data-minutes="60">60 min</button>
+          <button class="timer-option timer-option-wide" data-mode="chapter">End of chapter</button>
+        </div>
+        <button id="extend-timer-btn" class="btn-secondary" hidden>+5 min</button>
+        <button id="cancel-timer-btn" class="btn-secondary">Cancel Timer</button>
+        <button id="close-timer-modal-btn" class="btn-primary" style="margin-top:8px;">Close</button>
+      </div>
+    </div>
+
+    <!-- Speed sheet -->
+    <div id="speed-sheet" class="modal" role="dialog" aria-labelledby="speed-sheet-title">
+      <div class="modal-content">
+        <h3 id="speed-sheet-title">Playback Speed</h3>
+        <!-- Preset chips rendered from PLAYBACK_SPEEDS in playback-speed.js -->
+        <div class="speed-presets"></div>
+        <div class="speed-stepper">
+          <button type="button" id="speed-stepper-down" class="btn-icon" aria-label="Decrease speed">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M5 12h14" /></svg>
+          </button>
+          <span id="speed-stepper-value" class="speed-stepper-value">1.00x</span>
+          <button type="button" id="speed-stepper-up" class="btn-icon" aria-label="Increase speed">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 5v14M5 12h14" /></svg>
+          </button>
+        </div>
+        <button id="set-default-speed-btn" class="btn-ghost btn-sm speed-default-btn" type="button">Set as default</button>
+        <p class="speed-sheet-caption">Speed applies to all books</p>
+        <button id="close-speed-sheet-btn" class="btn-primary" style="margin-top:8px;">Close</button>
+      </div>
+    </div>
+
+    <!-- Start Over Modal -->
+    <div id="start-over-modal" class="modal" role="dialog" aria-labelledby="start-over-modal-title">
+      <div class="modal-content delete-confirmation">
+        <h3 id="start-over-modal-title">Start Over</h3>
+        <p class="delete-modal-text">Clear finished progress and return to the first chapter?</p>
+        <div class="delete-modal-buttons">
+          <button id="cancel-start-over-btn" class="btn-secondary">Cancel</button>
+          <button id="confirm-start-over-btn" class="btn-destructive">Start Over</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Shortcut Help Overlay -->
+    <div id="shortcut-overlay" class="modal shortcut-overlay" role="dialog" aria-labelledby="shortcut-overlay-title">
+      <div class="modal-content shortcut-overlay-content">
+        <div class="shortcut-overlay-header">
+          <h3 id="shortcut-overlay-title">Keyboard Shortcuts</h3>
+          <button id="shortcut-overlay-close" class="btn-icon" type="button" aria-label="Close shortcuts">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="icon"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+          </button>
+        </div>
+        <table class="shortcut-table">
+          <tbody>
+            <tr><td><kbd>Space</kbd></td><td>Play / pause</td></tr>
+            <tr><td><kbd>&larr;</kbd> <kbd>&rarr;</kbd></td><td>Skip 15s back / forward</td></tr>
+            <tr><td><kbd>Shift</kbd>+<kbd>&larr;</kbd>/<kbd>&rarr;</kbd></td><td>Previous / next chapter</td></tr>
+            <tr><td><kbd>&uarr;</kbd> <kbd>&darr;</kbd></td><td>Playback speed</td></tr>
+            <tr><td><kbd>C</kbd></td><td>Chapters</td></tr>
+            <tr><td><kbd>V</kbd></td><td>Voices</td></tr>
+            <tr><td><kbd>B</kbd></td><td>Bookmark</td></tr>
+            <tr><td><kbd>/</kbd></td><td>Search library</td></tr>
+            <tr><td><kbd>Esc</kbd></td><td>Close sheet / modal</td></tr>
+            <tr><td><kbd>?</kbd></td><td>This help</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Player Voice Sheet -->
+    <div id="voice-sheet" class="voice-sheet" aria-hidden="true">
+      <div class="voice-sheet-backdrop" id="voice-sheet-backdrop"></div>
+      <section class="voice-sheet-panel" role="dialog" aria-modal="true" aria-labelledby="voice-sheet-title">
+        <div class="voice-sheet-handle" aria-hidden="true"></div>
+        <div class="voice-sheet-header">
+          <div>
+            <h3 id="voice-sheet-title">Narration Voice</h3>
+            <p>Switch voices without losing your place.</p>
+          </div>
+          <button id="voice-sheet-close" class="btn-icon" type="button" aria-label="Close voice selector">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="icon"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+          </button>
+        </div>
+        <div id="player-voice-filter-bar" class="voice-filter-bar compact" aria-label="Voice filters"></div>
+        <div id="player-voice-list" class="voice-list player-voice-list"></div>
+      </section>
+    </div>
+
+    <!-- Player Chapter Sheet -->
+    <div id="chapter-sheet" class="voice-sheet chapter-sheet" aria-hidden="true">
+      <div class="voice-sheet-backdrop" id="chapter-sheet-backdrop"></div>
+      <section class="voice-sheet-panel chapter-sheet-panel" role="dialog" aria-modal="true" aria-labelledby="chapter-sheet-title">
+        <div class="voice-sheet-handle" aria-hidden="true"></div>
+        <div class="voice-sheet-header">
+          <div>
+            <h3 id="chapter-sheet-title">Chapters</h3>
+            <p id="chapter-sheet-subtitle">Jump without losing your place.</p>
+          </div>
+          <button id="chapter-sheet-close" class="btn-icon" aria-label="Close chapter list">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="icon"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+          </button>
+        </div>
+        <div id="chapter-sheet-bookmarks"></div>
+        <div id="chapter-list" class="chapter-list" role="listbox" aria-label="Chapters"></div>
+      </section>
+    </div>
+
+    <div id="pronunciation-repair-dialog" class="modal pronunciation-repair-dialog" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="pronunciation-repair-title">
+      <form id="pronunciation-repair-form" class="modal-content">
+        <h3 id="pronunciation-repair-title">Fix pronunciation</h3>
+        <div class="pronunciation-context-wrap">
+          <p class="pronunciation-context-hint">Select the exact word or phrase below to copy it into the repair.</p>
+          <p id="pronunciation-repair-context" class="pronunciation-repair-context" tabindex="0"></p>
+        </div>
+        <label>Word or phrase heard incorrectly
+          <input id="pronunciation-source" required maxlength="160" autocomplete="off" />
+        </label>
+        <label>Speak it as
+          <input id="pronunciation-replacement" required maxlength="240" autocomplete="off" />
+        </label>
+        <fieldset>
+          <legend>Apply to</legend>
+          <label><input type="radio" name="pronunciation-scope" value="book" checked /> This book</label>
+          <label><input type="radio" name="pronunciation-scope" value="global" /> Every book</label>
+        </fieldset>
+        <div>
+          <h4>Saved pronunciations</h4>
+          <div id="pronunciation-existing-rules" class="pronunciation-existing-rules"></div>
+        </div>
+        <div class="pronunciation-repair-actions">
+          <button id="pronunciation-repair-cancel" class="btn-ghost" type="button">Cancel</button>
+          <button id="pronunciation-repair-submit" class="btn-primary" type="submit">Save and regenerate</button>
+        </div>
+      </form>
+    </div>
+
+    <!-- Toast -->
+    <div id="success-toast" class="toast" role="alert" aria-live="polite"></div>
+  </div>
+
+  <!-- Mini Player — persistent bottom bar visible on non-player views -->
+  <div id="mini-player" class="mini-player" style="display:none" role="complementary" aria-label="Now playing">
+    <div class="mini-player-progress" id="mini-player-progress"></div>
+    <div class="mini-player-content" id="mini-player-tap">
+      <img id="mini-player-cover" class="mini-player-cover" src="" alt="" />
+      <div class="mini-player-info">
+        <span id="mini-player-title" class="mini-player-title"></span>
+        <span id="mini-player-chapter" class="mini-player-chapter"></span>
+      </div>
+      <button id="mini-player-back" class="mini-player-btn" aria-label="Back 15 seconds">
+        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9 15L3 9m0 0l6-6M3 9h12a6 6 0 010 12h-3"/></svg>
+        <span class="mini-skip-label">15</span>
+      </button>
+      <button id="mini-player-play" class="mini-player-btn" aria-label="Play/Pause"></button>
+      <button id="mini-player-forward" class="mini-player-btn" aria-label="Forward 15 seconds">
+        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M15 15l6-6m0 0l-6-6m6 6H9a6 6 0 000 12h3"/></svg>
+        <span class="mini-skip-label">15</span>
+      </button>
+    </div>
+  </div>
+
+  <div id="operator-notice-dialog" class="modal operator-notice-dialog" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="operator-notice-title">
+    <section class="modal-content operator-notice-content">
+      <p class="operator-notice-eyebrow">Operator acknowledgement</p>
+      <h3 id="operator-notice-title">This is your self-hosted instance</h3>
+      <p>You control its books, sources, credentials, generated playback cache, and network connections. Xandrio is not a content provider or hosted TTS service.</p>
+      <p>Before using a source, narration engine, or voice reference, confirm that you have the authority required by applicable law and provider agreements. Source labels do not determine rights status.</p>
+      <p>Sources with unverified rights status remain disabled after this acknowledgement. Enable them separately in Settings only after reviewing the source and your intended use.</p>
+      <label class="operator-notice-check"><input id="operator-notice-ack" type="checkbox" /> <span>I understand and will make those decisions for this instance.</span></label>
+      <p class="operator-notice-links"><a href="/legal.html" target="_blank" rel="noopener">Legal notice</a><a href="/legal.html#data-flow" target="_blank" rel="noopener">Data flow</a></p>
+      <p id="operator-notice-error" class="settings-error" role="alert" hidden></p>
+      <div class="operator-notice-actions">
+        <button id="operator-notice-continue" class="btn-primary" type="button" disabled>Continue</button>
+      </div>
+    </section>
+  </div>
+
+  <script src="/js/chunk-player.js?v=17"></script>
+  <script type="module" src="app.js?v=87"></script>
+</body>
+</html>

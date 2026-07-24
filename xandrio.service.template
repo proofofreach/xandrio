@@ -1,0 +1,20 @@
+[Unit]
+Description=Xandrio Audiobook Player
+After=network.target
+
+[Service]
+Type=simple
+User=YOUR_USER
+WorkingDirectory=/path/to/audiobook-player
+ExecStart=/usr/bin/node server.js
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+# Environment — load from .env file (no secrets in the unit file)
+Environment=NODE_ENV=production
+EnvironmentFile=/path/to/audiobook-player/.env
+
+[Install]
+WantedBy=multi-user.target

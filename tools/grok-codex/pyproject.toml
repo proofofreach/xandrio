@@ -1,0 +1,26 @@
+[build-system]
+requires = []
+build-backend = "grok_codex_build"
+backend-path = ["."]
+
+[project]
+name = "grok-codex"
+version = "0.1.0"
+description = "Use Grok Build with ChatGPT Codex models through CLIProxyAPI"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+keywords = ["codex", "grok-build", "oauth", "cli", "responses-api"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: MacOS",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Topic :: Software Development :: Libraries :: Application Frameworks",
+]
+
+[project.scripts]
+grok-codex = "grok_codex.cli:main"

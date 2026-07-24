@@ -1,0 +1,34 @@
+services:
+  xandrio:
+    build:
+      context: .
+      args:
+        VERSION: ${XANDRIO_VERSION:-1.1.0}
+    image: xandrio:${XANDRIO_VERSION:-1.1.0}
+    init: true
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${PORT:-8181}:8181"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      NODE_ENV: production
+      PORT: 8181
+      HOST: 0.0.0.0
+      KOKORO_AUTO_START: "false"
+    volumes:
+      - xandrio-data:/app/data
+      - xandrio-cache:/app/cache
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8181/health').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+volumes:
+  xandrio-data:
+    name: ${XANDRIO_DATA_VOLUME:-xandrio-data}
+  xandrio-cache:
+    name: ${XANDRIO_CACHE_VOLUME:-xandrio-cache}

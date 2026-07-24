@@ -1,0 +1,10 @@
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Synthetic recovery variant mistaken for a generic API key"
+targetRules = ["generic-api-key"]
+condition = "AND"
+regexTarget = "line"
+regexes = ['''variantKey:\s*'historical-v2',''']
+paths = ['''^test/test-chunked-tts\.js$''']

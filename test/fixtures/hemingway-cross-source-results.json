@@ -1,0 +1,93 @@
+[
+  {
+    "hash": "zlib-delphi-epub",
+    "source": "zlibrary",
+    "title": "Delphi Complete Works of Ernest Hemingway",
+    "author": "Ernest Hemingway",
+    "format": "EPUB",
+    "size": "9.34 MB",
+    "publisher": "Delphi Classics",
+    "language": "English",
+    "isbn": ["9781786560360", "1786560364"],
+    "qualityScore": 5,
+    "relevanceScore": 200
+  },
+  {
+    "hash": "annas-delphi-mobi",
+    "source": "annas",
+    "title": "Delphi Complete Works of Ernest Hemingway (Illustrated)",
+    "author": "Ernest Hemingway",
+    "format": "MOBI",
+    "size": "9.2 MB",
+    "publisher": "Delphi Classics, 2016",
+    "language": "English",
+    "qualityScore": 4,
+    "relevanceScore": 190,
+    "_year": 2016
+  },
+  {
+    "hash": "annas-delphi-azw3",
+    "source": "annas",
+    "title": "Delphi Complete Works of Ernest Hemingway (Illustrated)",
+    "author": "Ernest Hemingway",
+    "format": "AZW3",
+    "size": "8.1 MB",
+    "publisher": "Delphi Classics, 2016",
+    "language": "English",
+    "qualityScore": 4,
+    "relevanceScore": 188,
+    "_year": 2016
+  },
+  {
+    "hash": "annas-complete-epub",
+    "source": "annas",
+    "title": "Complete Works of Ernest Hemingway",
+    "author": "Ernest Hemingway",
+    "format": "EPUB",
+    "size": "7.5 MB",
+    "publisher": "Delphi Classics, 2022",
+    "language": "English",
+    "qualityScore": 5,
+    "relevanceScore": 210,
+    "_year": 2022
+  },
+  {
+    "hash": "zlib-complete-mobi",
+    "source": "zlibrary",
+    "title": "Complete Works of Ernest Hemingway",
+    "author": "Ernest Hemingway",
+    "format": "MOBI",
+    "size": "8.25 MB",
+    "publisher": "Delphi Classics",
+    "language": "English",
+    "isbn": ["9781786560360", "1786560364"],
+    "qualityScore": 4,
+    "relevanceScore": 205
+  },
+  {
+    "hash": "zlib-parenthetical-epub",
+    "source": "zlibrary",
+    "title": "Complete Works of Ernest Hemingway (Delphi Classics)",
+    "author": "Ernest Hemingway",
+    "format": "EPUB",
+    "size": "9.04 MB",
+    "publisher": "Delphi Classics",
+    "language": "English",
+    "isbn": ["9781786560360", "1786560364"],
+    "qualityScore": 5,
+    "relevanceScore": 198
+  },
+  {
+    "hash": "zlib-sun-volume-2",
+    "source": "zlibrary",
+    "title": "The Sun Also Rises (The Complete Works of Ernest Hemingway, Volume 2 of 21)",
+    "author": "Ernest Hemingway [Hemingway, Ernest]",
+    "format": "EPUB",
+    "size": "8.75 MB",
+    "publisher": "Delphi Classics",
+    "language": "English",
+    "isbn": ["9781786560360", "1786560364"],
+    "qualityScore": 5,
+    "relevanceScore": 180
+  }
+]

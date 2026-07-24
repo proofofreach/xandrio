@@ -1,0 +1,23 @@
+name: Feature request
+description: Propose a bounded improvement.
+title: "feature: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What operator need is not met?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+    validations:
+      required: true
+  - type: textarea
+    id: impact
+    attributes:
+      label: Privacy, network, compatibility, and migration impact
+      description: Include any provider, TTS, storage, or deployment effects.

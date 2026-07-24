@@ -1,0 +1,36 @@
+name: Provider or TTS compatibility report
+description: Report an upstream provider, catalog, or narration-engine problem.
+title: "provider: "
+labels: [provider]
+body:
+  - type: markdown
+    attributes:
+      value: "Provider availability and terms are independent of Xandrio. Do not post credentials, content, or voice references."
+  - type: dropdown
+    id: component
+    attributes:
+      label: Provider or engine
+      options:
+        - Anna's Archive
+        - Z-Library
+        - Project Gutenberg
+        - Internet Archive
+        - Standard Ebooks
+        - OPDS
+        - Edge TTS
+        - Kokoro
+        - Chatterbox
+    validations:
+      required: true
+  - type: textarea
+    id: issue
+    attributes:
+      label: Observed status and redacted reproduction steps
+    validations:
+      required: true
+  - type: input
+    id: deployment
+    attributes:
+      label: Xandrio version and deployment mode
+    validations:
+      required: true
