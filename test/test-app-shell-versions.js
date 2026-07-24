@@ -75,5 +75,39 @@ for (const [, referencedPath] of indexSource.matchAll(/(?:href|src)="\/?([^"?]+)
   );
 }
 
+// Every ES module app.js can reach statically must be precached. A module
+// missing here is invisible online (the network serves it) and only breaks on
+// a cold offline boot, where the import fails and the app never starts.
+// chunk-player.js is exempt: index.html loads it as a classic script tag, so
+// it is not part of app.js's module graph.
+function moduleGraphFrom(entryFile) {
+  const reached = new Set();
+  const patterns = [
+    /(?:import|export)[^'"\n]*from\s*['"]([^'"]+)['"]/g,
+    /import\(\s*['"]([^'"]+)['"]/g
+  ];
+  (function walk(file) {
+    if (reached.has(file) || !fs.existsSync(file)) return;
+    reached.add(file);
+    const source = fs.readFileSync(file, 'utf8');
+    for (const pattern of patterns) {
+      for (const [, specifier] of source.matchAll(pattern)) {
+        if (specifier.startsWith('.')) walk(path.resolve(path.dirname(file), specifier));
+      }
+    }
+  })(entryFile);
+  return [...reached].map(file => `/${path.relative(publicDir, file)}`).sort();
+}
+
+const versionedShellPaths = new Set(
+  [...appShellPaths].concat([...assetVersions.keys()])
+);
+for (const modulePath of moduleGraphFrom(path.join(publicDir, 'app.js'))) {
+  assert(
+    versionedShellPaths.has(modulePath),
+    `app.js module graph entry ${modulePath} is precached in APP_SHELL`
+  );
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

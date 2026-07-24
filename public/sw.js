@@ -1,5 +1,5 @@
 const APP_RELEASE = '1.1.0';
-const CACHE_VERSION = 'xandrio-v78';
+const CACHE_VERSION = 'xandrio-v79';
 const OFFLINE_AUDIO_CACHE = 'xandrio-offline-audio';
 // Single source of truth for the versioned shell assets. The <link>/<script>
 // tags in index.html must carry the SAME ?v= values — update both together,
@@ -20,6 +20,8 @@ const APP_SHELL = [
   '/js/router.js',
   '/js/api.js',
   '/js/client-settings.js',
+  '/js/playback-session.js',
+  '/js/single-file-chapter-player.js',
   '/js/util/format.js',
   '/js/ui/toast.js',
   '/js/ui/keys.js',
