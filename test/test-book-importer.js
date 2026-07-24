@@ -381,6 +381,30 @@ section('Successful direct import');
     alternativeResult.book.sourceProvenance?.itemId === 'pg-alternative',
   'records provenance for the edition that was actually imported');
 
+  // Spine-granularity file warnings vs extracted-chapter reality
+  const { buildImportValidationReport } = require('../lib/import-validation');
+  const spineWarning = '38% of chapters are empty or very short. Consider finding a better formatted edition.';
+  const goodQuality = { totalChapters: 24, contentChapters: 24, emptyChapters: 0 };
+  const suppressed = buildImportValidationReport({
+    file: { valid: true, errors: [], warnings: [spineWarning, 'Found 3 consecutive empty/short chapters. Audio playback may have noticeable gaps.'] },
+    content: { valid: true, errors: [], warnings: [], quality: goodQuality }
+  });
+  assert(!suppressed.warnings.some(w => /empty or very short|consecutive empty/.test(w)),
+    'healthy extracted chapters suppress spine-granularity short-chapter warnings');
+  assert(suppressed.file.warnings.includes(spineWarning),
+    'the nested file diagnostics retain the raw spine warning');
+  const kept = buildImportValidationReport({
+    file: { valid: true, errors: [], warnings: [spineWarning] },
+    content: { valid: true, errors: [], warnings: [], quality: { totalChapters: 20, contentChapters: 10, emptyChapters: 10 } }
+  });
+  assert(kept.warnings.includes(spineWarning),
+    'spine warnings survive when extraction confirms many empty chapters');
+  const noQuality = buildImportValidationReport({
+    file: { valid: true, errors: [], warnings: [spineWarning] }
+  });
+  assert(noQuality.warnings.includes(spineWarning),
+    'spine warnings survive when no extraction quality is available');
+
   console.log(`\nBook Importer tests: ${passed} passed, ${failed} failed`);
   if (failed) process.exit(1);
 })().catch(error => {
