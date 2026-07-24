@@ -66,6 +66,7 @@ const tests = [
   'test-user-library-state.js',
   'test-playback-session.js',
   'test-single-file-player.js',
+  'test-audio-streaming.js',
   'test-chapter-navigation.js',
   'test-chapter-structure.js',
   'test-search-ranking.js',

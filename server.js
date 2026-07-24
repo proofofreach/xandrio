@@ -344,6 +344,13 @@ function rememberDeletedBookId(bookId) {
 // message with no raw err.message so internal details are not leaked to clients.
 function sendServerError(res, err, publicMessage = 'Something went wrong') {
   console.error(`${publicMessage}:`, err);
+  // Routes that stream (audio, covers) may fail after the response has begun.
+  // Writing a JSON body then would throw ERR_HTTP_HEADERS_SENT on top of the
+  // original error; all we can still do is cut the connection.
+  if (res.headersSent) {
+    res.destroy?.();
+    return;
+  }
   res.status(500).json({ error: publicMessage });
 }
 
