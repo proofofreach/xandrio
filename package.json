@@ -72,6 +72,8 @@
     "qs": "6.15.3",
     "brace-expansion": "1.1.16",
     "minimatch": "3.1.4",
+    "puppeteer-extra-plugin-user-data-dir": "2.3.3",
+    "puppeteer-extra-plugin-user-preferences": "2.3.3",
     "tar": "7.5.18"
   }
 }

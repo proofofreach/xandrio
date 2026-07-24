@@ -92,6 +92,8 @@ async function test(name, fn) {
     const trapDir = path.join(dir, 'trap');
     await fsp.mkdir(trapDir, { recursive: true });
     const trapApp = express();
+    // Loopback-only test fixture; it is never part of the production server.
+    // codeql[js/missing-rate-limiting]
     trapApp.get('/trap', async (req, res) => {
       // stat() reports a size, so headers go out before the read fails.
       await serveAudioFile(req, res, trapDir).catch(() => {});
