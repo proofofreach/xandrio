@@ -84,6 +84,7 @@ function moduleGraphFrom(entryFile) {
   const reached = new Set();
   const patterns = [
     /(?:import|export)[^'"\n]*from\s*['"]([^'"]+)['"]/g,
+    /\bimport\s*['"]([^'"]+)['"]/g,
     /import\(\s*['"]([^'"]+)['"]/g
   ];
   (function walk(file) {

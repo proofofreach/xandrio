@@ -4,6 +4,7 @@
  */
 
 const assert = require('assert');
+const crypto = require('crypto');
 const fs = require('fs');
 const fsp = fs.promises;
 const os = require('os');
@@ -90,6 +91,20 @@ async function main() {
     const quarantined = (await fsp.readdir(dir))
       .filter(name => name.startsWith('repeat.json.corrupt-'));
     assert.strictEqual(quarantined.length, 1, `quarantine copies must not accumulate: ${quarantined}`);
+  });
+
+  await test('a failed quarantine aborts before corrupt data can be overwritten', async () => {
+    const target = file('blocked-salvage.json');
+    const raw = '{ "accounts": truncated';
+    await fsp.writeFile(target, raw);
+    const digest = crypto.createHash('sha1').update(raw).digest('hex').slice(0, 8);
+    await fsp.mkdir(`${target}.corrupt-${digest}`);
+
+    await assert.rejects(
+      jsonStore.update(target, data => { data.accounts = {}; }, {}),
+      error => error.code === 'JSON_STORE_QUARANTINE_FAILED'
+    );
+    assert.strictEqual(await fsp.readFile(target, 'utf8'), raw);
   });
 
   await test('update mutates in place and persists', async () => {

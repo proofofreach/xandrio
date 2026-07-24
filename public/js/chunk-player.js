@@ -59,6 +59,7 @@ class ChunkPlayer {
 
     // Polling handle for manifest checks
     this._pollTimer = null;
+    this._cancelPollWait = null;
     this._timeUpdateTimer = null;
     this._manifestRefreshFailures = 0;
 
@@ -151,12 +152,13 @@ class ChunkPlayer {
     this._resetAudioElement(this.audioB);
 
     try {
-      this.manifest = await this._fetchManifest();
+      const manifest = await this._fetchManifest();
+      if (gen !== this._generation) return;
+      this._applyManifest(manifest);
     } catch (err) {
       if (gen === this._generation) this._emitError(err);
       return;
     }
-    if (gen !== this._generation) return;
 
     this.totalChunks = this.manifest.totalChunks;
     this.chunkDurations = new Array(this.totalChunks).fill(null);
@@ -172,7 +174,7 @@ class ChunkPlayer {
     if (!firstChunk || firstChunk.status !== 'ready') {
       this._emitWaiting('Preparing narration…');
       this._emitPreparing('Preparing narration…', 0);
-      await this._pollUntilChunkReady(0);
+      await this._pollUntilChunkReady(0, gen);
       if (gen !== this._generation) return;
     }
 
@@ -203,18 +205,22 @@ class ChunkPlayer {
       throw new Error(`Manifest fetch failed: HTTP ${res.status}`);
     }
     const manifest = await res.json();
-    if (manifest && manifest.servedTier) {
-      this.servedTier = manifest.servedTier;
-    }
     return manifest;
+  }
+
+  _applyManifest(manifest) {
+    this.manifest = manifest;
+    if (manifest && manifest.servedTier) this.servedTier = manifest.servedTier;
   }
 
   /**
    * Refresh the manifest (to check for newly generated chunks).
    */
-  async _refreshManifest() {
+  async _refreshManifest(expectedGeneration = this._generation) {
     try {
-      this.manifest = await this._fetchManifest();
+      const manifest = await this._fetchManifest();
+      if (expectedGeneration !== this._generation) return false;
+      this._applyManifest(manifest);
       this._manifestRefreshFailures = 0;
       this.totalChunks = this.manifest.totalChunks;
       // Grow durations array if needed
@@ -261,22 +267,41 @@ class ChunkPlayer {
    * Poll the manifest until a specific chunk is ready.
    * Returns a promise that resolves when the chunk is available.
    */
-  _pollUntilChunkReady(chunkIndex) {
+  _pollUntilChunkReady(chunkIndex, expectedGeneration = this._generation) {
+    this._cancelPollWait?.();
     return new Promise((resolve, reject) => {
       if (this._destroyed) return reject(new Error('Player destroyed'));
+      let settled = false;
+      const finish = (error) => {
+        if (settled) return;
+        settled = true;
+        if (this._cancelPollWait === cancel) this._cancelPollWait = null;
+        this._stopPolling();
+        if (error) reject(error);
+        else resolve();
+      };
+      const cancel = () => finish();
+      this._cancelPollWait = cancel;
 
       const check = async () => {
-        if (this._destroyed) {
-          reject(new Error('Player destroyed'));
+        if (settled || expectedGeneration !== this._generation) {
+          finish();
           return;
         }
-        const refreshed = await this._refreshManifest();
+        if (this._destroyed) {
+          finish(new Error('Player destroyed'));
+          return;
+        }
+        const refreshed = await this._refreshManifest(expectedGeneration);
+        if (settled || expectedGeneration !== this._generation) {
+          finish();
+          return;
+        }
         if (!refreshed) {
           if (this._manifestRefreshFailures >= 3) {
-            this._stopPolling();
             const err = new Error('Server connection lost while preparing audio. Check that Xandrio is still running.');
             this._emitError(err);
-            reject(err);
+            finish(err);
             return;
           }
           this._pollTimer = setTimeout(check, 2000);
@@ -289,16 +314,14 @@ class ChunkPlayer {
         );
 
         if (this._chunkStatus(chunkIndex) === 'error') {
-          this._stopPolling();
           const err = new Error('Narration failed to prepare for this part of the chapter.');
           this._emitError(err);
-          reject(err);
+          finish(err);
           return;
         }
 
         if (this._isChunkReady(chunkIndex)) {
-          this._stopPolling();
-          resolve();
+          finish();
         } else {
           this._pollTimer = setTimeout(check, 2000);
         }
@@ -309,7 +332,7 @@ class ChunkPlayer {
       // background tabs throttle timers to a minute or more, but fetches
       // run unthrottled, so a stale manifest must not cost a timer cycle.
       if (this._isChunkReady(chunkIndex)) {
-        resolve();
+        finish();
       } else {
         check();
       }
@@ -758,12 +781,17 @@ class ChunkPlayer {
   /**
    * Clean up both audio elements and stop all timers.
    */
-  destroy() {
-    this._destroyed = true;
+  cancelPendingLoad() {
     this._generation++;
+    this._cancelPollWait?.();
     this._stopPolling();
     this._detachEvents();
     this.pause();
+  }
+
+  destroy() {
+    this._destroyed = true;
+    this.cancelPendingLoad();
 
     this._resetAudioElement(this.audioA);
     this._resetAudioElement(this.audioB);

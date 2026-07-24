@@ -64,7 +64,13 @@ export class SingleFileChapterPlayer {
     await new Promise((resolve, reject) => {
       const done = () => { cleanup(); resolve(); };
       const fail = () => { cleanup(); reject(this._audioError()); };
-      const timer = setTimeout(fail, this.loadTimeoutMs);
+      const timeout = () => {
+        cleanup();
+        const error = this._audioError();
+        this.onError?.(error);
+        reject(error);
+      };
+      const timer = setTimeout(timeout, this.loadTimeoutMs);
       const cleanup = () => {
         clearTimeout(timer);
         this._loadCleanup = null;
@@ -209,10 +215,13 @@ export class SingleFileChapterPlayer {
       isPlaying: this._isPlaying
     };
   }
-  dispose() {
+  cancelPendingLoad() {
     this._generation++;
     this.pause();
     this._detach();
+  }
+  dispose() {
+    this.cancelPendingLoad();
     this.audio.removeAttribute('src');
     this.audio.load();
   }

@@ -56,6 +56,9 @@ async function test(name, fn) {
   const unhandled = [];
   const onUnhandled = (err) => unhandled.push(err);
   process.on('uncaughtException', onUnhandled);
+  const streamWarnings = [];
+  const originalConsoleWarn = console.warn;
+  console.warn = (...args) => streamWarnings.push(args.join(' '));
 
   await test('serves a full body with the audio content type', async () => {
     const response = await fetch(`${base}/ok`);
@@ -106,9 +109,14 @@ async function test(name, fn) {
       [],
       'stream error must be handled, not thrown as an uncaught exception'
     );
+    assert(
+      streamWarnings.some(message => message.includes('Audio stream failed') && message.includes('EISDIR')),
+      'non-client stream failures must remain visible to operators'
+    );
   });
 
   process.off('uncaughtException', onUnhandled);
+  console.warn = originalConsoleWarn;
   await new Promise(resolve => server.close(resolve));
   await fsp.rm(dir, { recursive: true, force: true });
 

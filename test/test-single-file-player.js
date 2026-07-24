@@ -112,11 +112,13 @@ function fakeAudio() {
 
   await test('a stalled media element rejects instead of hanging', async () => {
     const audio = fakeAudio();
-    const { player, ready } = makePlayer(audio);
+    const errors = [];
+    const { player, ready } = makePlayer(audio, { onError: error => errors.push(error) });
 
     // No 'canplay', no 'error' — exactly the backgrounded-iOS stall case.
     await assert.rejects(player.loadChapter('book1', 0), /playback failed/i);
     assert.deepStrictEqual(ready, [], 'a timed-out load must not report ready');
+    assert.strictEqual(errors.length, 1, 'a timed-out load must clear the loading UI through onError');
   });
 
   await test('a settled load leaves no listeners or timer behind', async () => {

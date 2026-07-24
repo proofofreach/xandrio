@@ -38,9 +38,44 @@ function engine(name, options = {}) {
       if (options.play) await options.play();
       this.isPlaying = true;
     },
+    cancelPendingLoad() {
+      calls.push(['cancelPendingLoad']);
+      options.cancelPendingLoad?.();
+    },
     pause() { calls.push(['pause']); this.isPlaying = false; },
     getPosition() { return this.position; },
     dispose() { calls.push(['dispose']); }
+  };
+}
+
+function fakeAudio() {
+  const listeners = new Map();
+  return {
+    src: '',
+    preload: '',
+    volume: 1,
+    playbackRate: 1,
+    currentTime: 0,
+    duration: 10,
+    paused: true,
+    ended: false,
+    error: null,
+    addEventListener(type, fn) {
+      if (!listeners.has(type)) listeners.set(type, new Set());
+      listeners.get(type).add(fn);
+    },
+    removeEventListener(type, fn) {
+      listeners.get(type)?.delete(fn);
+    },
+    emit(type) {
+      for (const fn of [...(listeners.get(type) || [])]) fn();
+    },
+    countFor(type) {
+      return listeners.get(type)?.size || 0;
+    },
+    load() {},
+    pause() { this.paused = true; },
+    removeAttribute() { this.src = ''; }
   };
 }
 
@@ -104,6 +139,35 @@ function engine(name, options = {}) {
     assert.strictEqual(session.snapshot.chapterIndex, 2);
     assert.strictEqual(session.snapshot.engine, second);
     assert(first.calls.some(call => call[0] === 'dispose'));
+  });
+
+  await test('cancels stale single-file callbacks before the latest transition loads', async () => {
+    const audio = fakeAudio();
+    const ready = [];
+    const first = new SingleFileChapterPlayer(audio, {
+      onReady: () => ready.push(1),
+      loadTimeoutMs: 1000
+    });
+    const second = new SingleFileChapterPlayer(audio, {
+      onReady: () => ready.push(2),
+      loadTimeoutMs: 1000
+    });
+    const session = createPlaybackSession();
+    const book = { id: 'book-a' };
+
+    const firstTransition = session.transitionTo({ book, chapterIndex: 1, engine: first });
+    await Promise.resolve();
+    assert.strictEqual(audio.countFor('loadedmetadata'), 1);
+
+    const secondTransition = session.transitionTo({ book, chapterIndex: 2, engine: second });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.strictEqual(audio.countFor('loadedmetadata'), 1);
+    audio.emit('loadedmetadata');
+
+    const [firstResult, secondResult] = await Promise.all([firstTransition, secondTransition]);
+    assert.strictEqual(firstResult.stale, true);
+    assert.strictEqual(secondResult.stale, false);
+    assert.deepStrictEqual(ready, [2]);
   });
 
   await test('releases a request engine when its queued transition is stale before starting', async () => {

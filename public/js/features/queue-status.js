@@ -41,12 +41,12 @@ function onVisibilityChange() {
 }
 
 export function initQueueStatus(options = {}) {
+  // Re-initialising (view remount) must stop the previous poller even when
+  // the replacement view does not render a queue-status element.
+  stopQueueStatus();
+
   queueStatusEl = document.getElementById('queue-status');
   if (!queueStatusEl) return;
-
-  // Re-initialising (view remount) must not stack a second poll timer and a
-  // second visibility listener on top of the first.
-  stopQueueStatus();
 
   const intervalMs = Math.max(2000, Number(options.intervalMs || 4000));
   pollQueueStatus();

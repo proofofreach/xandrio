@@ -21,6 +21,7 @@ export function createPlaybackSession(options = {}) {
   const provisionalMinPositionSeconds = options.provisionalMinPositionSeconds ?? DEFAULT_PROVISIONAL_MIN_POSITION_SECONDS;
   let revision = 0;
   let queue = Promise.resolve();
+  let activeTransition = null;
   let disposed = false;
   let provisional = null;
   const engineClaims = new Map();
@@ -192,13 +193,24 @@ export function createPlaybackSession(options = {}) {
     const id = ++revision;
     const transition = { id, request, engine: null };
     if (!request.createEngine) claimTransitionEngine(transition, request.engine);
+    // isCurrent() prevents a stale transition from committing, but that check
+    // happens after loadChapter() settles. Cancel the active wait now so the
+    // superseded engine cannot emit onReady/onTimeUpdate into the newer view.
+    try { activeTransition?.engine?.cancelPendingLoad?.(); } catch {}
     state.book = request.book;
     state.chapterIndex = request.chapterIndex;
     if (request.provisionalForward) markProvisionalForward(request.fromChapter, request.chapterIndex);
     else if (request.commitImmediately || (provisional && request.chapterIndex !== provisional.toChapter)) clearProvisionalForward();
     publish();
 
-    const run = () => commitTransition(transition);
+    const run = async () => {
+      activeTransition = transition;
+      try {
+        return await commitTransition(transition);
+      } finally {
+        if (activeTransition === transition) activeTransition = null;
+      }
+    };
     const result = queue.then(run, run).finally(() => finishTransition(transition));
     queue = result.catch(() => undefined);
     return result;
