@@ -57,7 +57,7 @@ Chatterbox can use an operator-supplied voice reference. Use one only with autho
 
 ## Storage and privacy
 
-`data/` contains library metadata, settings, credentials or sessions, playback state, sync state, and custom-voice metadata. `cache/` contains imported material or extracted playback artifacts, covers, voice samples, and generated audio. Browser storage may hold the PWA shell and offline material. Generated audio is cached so it can be reused and played offline.
+`data/` contains library metadata, settings, credentials or sessions, playback state, sync state, and custom-voice metadata. `cache/` contains imported material or extracted playback artifacts, covers, voice samples, and generated audio. A full offline download stores verified chapter audio plus a compact title/chapter snapshot in that browser, so the local library and player can reopen it after a cold offline launch. Library cards show whether each title is downloaded, partial, or needs repair. Deleting a title removes its server artifacts and the deleting browser's offline copy.
 
 See [docs/PRIVACY.md](docs/PRIVACY.md) for the outbound-data matrix, retention, and disablement controls. See [docs/SELF_HOSTING.md](docs/SELF_HOSTING.md) for private deployment, backups, upgrades, and deletion.
 

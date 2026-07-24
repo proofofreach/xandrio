@@ -21,11 +21,13 @@ function isButtonLike(el) {
 // direct listeners and container-delegated listeners, since the raw event
 // is passed through to `handler` for any closest()-based target lookup.
 export function onActivate(el, handler) {
-  el?.addEventListener('keydown', (e) => {
+  const listener = (e) => {
     if (e.key !== 'Enter' && e.key !== ' ') return;
     e.preventDefault();
     handler(e);
-  });
+  };
+  el?.addEventListener('keydown', listener);
+  return () => el?.removeEventListener('keydown', listener);
 }
 
 export function initKeys(actions = {}) {

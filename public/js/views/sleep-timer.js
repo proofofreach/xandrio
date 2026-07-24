@@ -3,6 +3,7 @@ import { registerSheet } from '../ui/sheets.js';
 import { readJSON, writeJSON, readText, writeText, removeStorage } from '../util/storage.js';
 import { onActivate } from '../ui/keys.js';
 
+const { DisposableScope } = globalThis.XandrioLifecycle || {};
 const ICON_CLOCK = '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="icon-inline"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>';
 
 let deps = {};
@@ -16,6 +17,7 @@ let closeTimerModalBtn = null;
 let cancelTimerBtn = null;
 let extendTimerBtn = null;
 let timerModalController = null;
+let initScope = null;
 
 function syncUtilityTimer(label = 'Sleep timer', active = false) {
   const utilityButton = document.getElementById('utility-timer-btn');
@@ -25,6 +27,8 @@ function syncUtilityTimer(label = 'Sleep timer', active = false) {
 }
 
 export function initSleepTimer(options = {}) {
+  initScope?.dispose();
+  initScope = new DisposableScope();
   deps = options;
   const timerModal = document.getElementById('timer-modal');
   timerBtnInline = document.getElementById('timer-btn-inline');
@@ -36,27 +40,27 @@ export function initSleepTimer(options = {}) {
   const openTimerModal = () => timerModalController?.open();
   const dismissTimerModal = () => timerModalController?.dismiss();
 
-  timerBtnInline?.addEventListener('click', () => {
+  initScope.listen(timerBtnInline, 'click', () => {
     if (sleepTimer || sleepTimerMode === 'chapter') clearSleepTimer();
     else openTimerModal();
   });
-  onActivate(timerBtnInline, () => {
+  initScope.add(onActivate(timerBtnInline, () => {
     if (sleepTimer || sleepTimerMode === 'chapter') clearSleepTimer();
     else openTimerModal();
-  });
-  closeTimerModalBtn?.addEventListener('click', dismissTimerModal);
-  cancelTimerBtn?.addEventListener('click', () => {
+  }));
+  initScope.listen(closeTimerModalBtn, 'click', dismissTimerModal);
+  initScope.listen(cancelTimerBtn, 'click', () => {
     clearSleepTimer();
     dismissTimerModal();
   });
   document.querySelectorAll('.timer-option').forEach(btn => {
-    btn.addEventListener('click', () => {
+    initScope.listen(btn, 'click', () => {
       if (btn.dataset.mode === 'chapter') setSleepTimerToChapterEnd();
       else setSleepTimer(parseInt(btn.dataset.minutes));
       dismissTimerModal();
     });
   });
-  extendTimerBtn?.addEventListener('click', () => extendSleepTimer(5));
+  initScope.listen(extendTimerBtn, 'click', () => extendSleepTimer(5));
 }
 
 export function closeSleepTimerModal() {
@@ -123,7 +127,9 @@ function setSleepTimerToChapterEnd() {
   showToast('Sleep timer set for end of chapter');
 }
 
-export function clearSleepTimer() {
+// Drops the live countdown/expiry handles without touching persisted state,
+// so an arming path can re-arm safely. clearSleepTimer() is the full reset.
+function clearSleepTimerHandles() {
   if (sleepTimer) {
     clearTimeout(sleepTimer);
     sleepTimer = null;
@@ -133,6 +139,10 @@ export function clearSleepTimer() {
     clearInterval(sleepTimerInterval);
     sleepTimerInterval = null;
   }
+}
+
+export function clearSleepTimer() {
+  clearSleepTimerHandles();
 
   sleepTimerEndTime = null;
   sleepTimerMode = null;
@@ -243,6 +253,7 @@ export function restoreSleepTimer() {
   if (savedMode === 'chapter') {
     const target = readJSON('xandrio_sleep_timer_chapter_target', null);
     if (target && target.bookId === deps.getCurrentBook()?.id && Number.isInteger(target.chapterIndex)) {
+      clearSleepTimerHandles();
       sleepTimerMode = 'chapter';
       sleepTimerChapterTarget = target;
       timerBtnInline.classList.add('active');
@@ -255,12 +266,16 @@ export function restoreSleepTimer() {
 
   const savedEndTime = readText('xandrio_sleep_timer_end', '');
   if (savedEndTime) {
-    const endTime = parseInt(savedEndTime);
+    const endTime = parseInt(savedEndTime, 10);
     const remaining = endTime - Date.now();
 
     if (remaining > 0) {
-      // Restore timer
+      // Restore timer. Restoring twice (view remount) must replace the
+      // handles rather than stack a second countdown and expiry on top.
+      clearSleepTimerHandles();
       sleepTimerEndTime = endTime;
+      sleepTimerMode = 'time';
+      sleepTimerChapterTarget = null;
 
       // Update display
       timerBtnInline.classList.add('active');

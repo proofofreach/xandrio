@@ -4,6 +4,11 @@ import { readJSON, writeJSON, readText, writeText } from '../util/storage.js';
 import { confirmSheet } from '../ui/confirm.js';
 import { showToast, showUndoToast } from '../ui/toast.js';
 import { onActivate } from '../ui/keys.js';
+import {
+  getOfflineLibraryBooks,
+  offlineStatusForBook,
+  removeOfflineBook
+} from '../features/offline.js';
 
 const ICON_GRID = '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="icon"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 6A2.25 2.25 0 016 3.75h2.25A2.25 2.25 0 0110.5 6v2.25a2.25 2.25 0 01-2.25 2.25H6a2.25 2.25 0 01-2.25-2.25V6zM3.75 15.75A2.25 2.25 0 016 13.5h2.25a2.25 2.25 0 012.25 2.25V18a2.25 2.25 0 01-2.25 2.25H6A2.25 2.25 0 013.75 18v-2.25zM13.5 6a2.25 2.25 0 012.25-2.25H18A2.25 2.25 0 0120.25 6v2.25A2.25 2.25 0 0118 10.5h-2.25a2.25 2.25 0 01-2.25-2.25V6zM13.5 15.75a2.25 2.25 0 012.25-2.25H18a2.25 2.25 0 012.25 2.25V18a2.25 2.25 0 01-2.25 2.25h-2.25A2.25 2.25 0 0113.5 18v-2.25z"/></svg>';
 const ICON_LIST = '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="icon"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5"/></svg>';
@@ -111,6 +116,15 @@ function shelfToggleHTML(id, title, onShelf) {
     </button>`;
 }
 
+function queueToggleHTML(id, title) {
+  return `<button class="queue-toggle" data-queue-add="${safeAttr(id)}" aria-label="Add ${safeAttr(title)} to Up Next">+ Up Next</button>`;
+}
+
+function offlineBadgeHTML(bookId) {
+  const status = offlineStatusForBook(bookId);
+  return `<span class="library-offline-badge library-offline-badge--${safeAttr(status.kind)}" data-offline-status="${safeAttr(bookId)}">${escapeHTML(status.label)}</span>`;
+}
+
 function renderBookCard(book, position, onShelf = false) {
   const progress = bookProgressInfo(book, position);
   const id = String(book.id || '');
@@ -144,7 +158,9 @@ function renderBookCard(book, position, onShelf = false) {
           <p>${escapeHTML(author)}</p>
           ${metaLine}
           ${finishedBadge}
+          ${offlineBadgeHTML(id)}
           ${shelfToggleHTML(id, title, onShelf)}
+          ${queueToggleHTML(id, title)}
         </div>
         ${progressBar}
       </div>
@@ -234,6 +250,7 @@ export async function loadLibrary() {
   if (libraryList && !hasRenderedBooks) libraryList.innerHTML = skeletonCardsHTML(6);
 
   let data, positions;
+  let offlineFallback = false;
   try {
     const [libraryData, posData] = await Promise.all([
       apiGet('/api/library'),
@@ -243,7 +260,15 @@ export async function loadLibrary() {
     positions = posData.positions || {};
   } catch (err) {
     console.error('Failed to load library:', err);
-    if (libraryList) {
+    const offlineBooks = getOfflineLibraryBooks();
+    if (offlineBooks.length > 0) {
+      offlineFallback = true;
+      data = { books: offlineBooks, shelf: offlineBooks.map(book => book.id) };
+      positions = Object.fromEntries(offlineBooks.map(book => [
+        book.id,
+        readJSON(`xandrio_playback_checkpoint:${book.id}`, null)
+      ]));
+    } else if (libraryList) {
       renderContinueRail([]);
       libraryList.innerHTML = `
         <div class="empty-state-modern">
@@ -254,8 +279,8 @@ export async function loadLibrary() {
         </div>
       `;
       libraryList.querySelector('[data-retry-library]')?.addEventListener('click', () => loadLibrary());
+      return;
     }
-    return;
   }
 
   if (data.books.length === 0) {
@@ -279,6 +304,7 @@ export async function loadLibrary() {
   currentTab = (storedTab === 'shelf' && currentShelf.size === 0) ? 'all' : storedTab;
   syncLibraryTabs();
   libraryList.innerHTML = data.books.map(book => renderBookCard(book, positions[book.id] || null, currentShelf.has(book.id))).join('');
+  libraryList.classList.toggle('offline-library-fallback', offlineFallback);
   const continueEntries = data.books
     .map(book => ({ book, progress: bookProgressInfo(book, positions[book.id]) }))
     .filter(entry => entry.progress && !entry.progress.finished)
@@ -290,6 +316,14 @@ export async function loadLibrary() {
   sortLibrary();
   filterLibrary();
   setupSwipeDelete();
+}
+
+function refreshOfflineIndicators() {
+  document.querySelectorAll('[data-offline-status]').forEach(element => {
+    const status = offlineStatusForBook(element.dataset.offlineStatus);
+    element.className = `library-offline-badge library-offline-badge--${status.kind}`;
+    element.textContent = status.label;
+  });
 }
 
 function syncLibraryTabs() {
@@ -429,6 +463,19 @@ async function deleteBook(id) {
   try {
     const data = await apiSend('DELETE', `/api/book/${encodeURIComponent(id)}`);
     if (data.success) {
+      let localCleanupFailed = false;
+      try {
+        await deps.onBookDeleted?.(id);
+      } catch (error) {
+        localCleanupFailed = true;
+        console.warn('Deleted title but could not clear its active player:', error);
+      }
+      try {
+        await removeOfflineBook(id, { removePlaybackState: true });
+      } catch (error) {
+        localCleanupFailed = true;
+        console.warn('Deleted title but could not remove its local download:', error);
+      }
       const escapedId = cssEscape(id);
       const bookElement = document.querySelector(`[data-book-id="${escapedId}"]`);
       if (bookElement) {
@@ -440,7 +487,10 @@ async function deleteBook(id) {
           if (document.querySelectorAll('.book-item').length === 0) loadLibrary();
         }, 300);
       }
-      showToast('Book deleted');
+      showToast(
+        localCleanupFailed ? 'Book deleted; local download cleanup needs retry' : 'Book and local download deleted',
+        localCleanupFailed ? 'error' : ''
+      );
     } else {
       showToast('Failed to delete book', 'error');
     }
@@ -534,6 +584,7 @@ export function initLibrary(options = {}) {
   sortSelect = document.getElementById('sort-select');
   viewToggleIcon = document.getElementById('view-toggle-icon');
   continueRail = document.getElementById('continue-rail');
+  document.addEventListener('xandrio:offlinechange', refreshOfflineIndicators);
 
   document.getElementById('library-search-toggle')?.addEventListener('click', () => {
     document.getElementById('library-search-bar')?.classList.remove('collapsed');
@@ -570,6 +621,12 @@ export function initLibrary(options = {}) {
     if (shelfBtn) {
       e.stopPropagation();
       toggleShelfMembership(shelfBtn.dataset.shelfToggle, shelfBtn);
+      return;
+    }
+    const queueBtn = e.target.closest('[data-queue-add]');
+    if (queueBtn) {
+      e.stopPropagation();
+      deps.addToListeningQueue?.(queueBtn.dataset.queueAdd);
       return;
     }
     const bookItem = e.target.closest('.book-item');

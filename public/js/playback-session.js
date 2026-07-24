@@ -21,6 +21,7 @@ export function createPlaybackSession(options = {}) {
   const provisionalMinPositionSeconds = options.provisionalMinPositionSeconds ?? DEFAULT_PROVISIONAL_MIN_POSITION_SECONDS;
   let revision = 0;
   let queue = Promise.resolve();
+  let activeTransition = null;
   let disposed = false;
   let provisional = null;
   const engineClaims = new Map();
@@ -192,13 +193,30 @@ export function createPlaybackSession(options = {}) {
     const id = ++revision;
     const transition = { id, request, engine: null };
     if (!request.createEngine) claimTransitionEngine(transition, request.engine);
+    // isCurrent() prevents a stale transition from committing, but that check
+    // happens after loadChapter() settles. Cancel the active wait now so the
+    // superseded engine cannot emit onReady/onTimeUpdate into the newer view.
+    try { activeTransition?.engine?.cancelPendingLoad?.(); } catch {}
     state.book = request.book;
     state.chapterIndex = request.chapterIndex;
     if (request.provisionalForward) markProvisionalForward(request.fromChapter, request.chapterIndex);
     else if (request.commitImmediately || (provisional && request.chapterIndex !== provisional.toChapter)) clearProvisionalForward();
     publish();
 
-    const run = () => commitTransition(transition);
+    const run = async () => {
+      activeTransition = transition;
+      try {
+        return await commitTransition(transition);
+      } catch (error) {
+        // A replacement transition deliberately cancels the older media
+        // wait. Its caller gets a normal stale result rather than an error
+        // notification for a chapter that is no longer being opened.
+        if (!isCurrent(id) && error?.cancelled) return { stale: true, snapshot: snapshot() };
+        throw error;
+      } finally {
+        if (activeTransition === transition) activeTransition = null;
+      }
+    };
     const result = queue.then(run, run).finally(() => finishTransition(transition));
     queue = result.catch(() => undefined);
     return result;
@@ -220,6 +238,11 @@ export function createPlaybackSession(options = {}) {
     disposed = true;
     revision += 1;
     clearProvisionalForward();
+    // Unblock a transition stalled in media loading before waiting for the
+    // serialized queue. finishTransition() owns release of an incoming
+    // engine; releasedEngines prevents a shared active engine being disposed
+    // twice below and again when the transition unwinds.
+    try { activeTransition?.engine?.cancelPendingLoad?.(); } catch {}
     const engine = state.engine;
     state.engine = null;
     state.backend = null;

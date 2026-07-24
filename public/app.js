@@ -8,10 +8,10 @@ import { showToast } from './js/ui/toast.js';
 import { initKeys, onActivate } from './js/ui/keys.js';
 import { registerSheet } from './js/ui/sheets.js';
 import { initBookmarks, renderBookmarksSection, addBookmarkAtCurrentPosition } from './js/features/bookmarks.js';
-import { initOffline, renderOfflineState, queuePendingPosition, isBookDownloadedForOffline } from './js/features/offline.js';
+import { initOffline, renderOfflineState, queuePendingPosition, isChapterAvailableOffline, ensureRollingOfflineWindow, getOfflineBookData } from './js/features/offline.js';
 import { initPronunciationRepair } from './js/features/pronunciations.js';
 import { initQueueStatus } from './js/features/queue-status.js';
-import { loadClientSettings, getSkipInterval } from './js/client-settings.js';
+import { loadClientSettings, getSkipInterval, isSmartRewindEnabled, isRollingOfflineEnabled } from './js/client-settings.js';
 import { initLibrary, loadLibrary, cacheBookMeta } from './js/views/library.js';
 import { initSearch } from './js/views/search.js';
 import { initSettings } from './js/views/settings.js';
@@ -25,6 +25,8 @@ import { navigateChapterSelection, positionMatchesChapterStructure, shouldAllowB
 import { SingleFileChapterPlayer } from './js/single-file-chapter-player.js';
 import { initPlayerUI, paintChapterTimes, paintScrubPreview, toggleTimeDisplayMode, syncTimeDisplayModeFromClientSettings, getPlaybackProgressScope, getBookSeekTarget, syncPlaybackProgressScope, setPlaybackReliabilityState, setResumePromptVisible, maybeShowIphonePlaybackTip, dismissIphonePlaybackTip, handleChunkWaiting, handleChunkPreparing, setChunkOverlayState, displayChapterTitle, updateChapterTrigger, updateBookProgress, updatePlayerAmbient, renderChapterList, openChapterSheet, closeChapterSheet, dismissChapterSheet, showAudioLoading, hideAudioLoading, updateMiniPlayer, syncMiniPlayerInfo, syncMiniPlayerIcon } from './js/views/player-ui.js';
 import { findPreferredStartChapterIndex } from './js/util/chapter-labels.mjs';
+import { createSmartRewindController } from './js/smart-rewind.mjs';
+import { initListeningQueue, loadListeningQueue, addToListeningQueue, advanceListeningQueue, getBookPlaybackSettings, saveBookPlaybackSettings } from './js/features/listening-queue.js';
 
 // SVG Icon constants
 const ICON_PLAY = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="icon"><path fill-rule="evenodd" d="M4.5 5.653c0-1.426 1.529-2.33 2.779-1.643l11.54 6.348c1.295.712 1.295 2.572 0 3.285L7.28 19.991c-1.25.687-2.779-.217-2.779-1.643V5.653z" clip-rule="evenodd"/></svg>';
@@ -38,10 +40,13 @@ function haptic(ms = 10) {
 let currentBook = null;
 let currentChapter = 0;
 let chapters = [];
+let currentBookOfflineFallback = false;
 let currentBookFinished = false;
 let chunkPlayer = null; // Active playback engine — ChunkPlayer or SingleFileChapterPlayer
 let chunkedPlayer = null; // Chunked fallback/first-load engine
 let playbackBackend = 'chunked';
+let currentBookPlaybackSettings = {};
+const smartRewind = createSmartRewindController();
 
 // API_BASE and sync identity now live in js/api.js
 const PLAYBACK_CHECKPOINT_PREFIX = 'xandrio_playback_checkpoint:';
@@ -242,12 +247,17 @@ function makePlaybackCallbacks() {
     onReady: handleChunkReady,
     onWaiting: handleChunkWaiting,
     onPreparing: handleChunkPreparing,
-    onPlaybackChange: (isPlaying) => {
+    onPlaybackChange: (isPlaying, detail = {}) => {
       updatePlaybackUI(isPlaying);
       if (isPlaying) {
         setResumePromptVisible(false);
         checkpointPlayback({ throttle: true });
+        if (detail.reason === 'external') {
+          void applySmartRewindBeforeResume()
+            .catch(error => console.warn('Smart rewind after interruption failed:', error));
+        }
       } else {
+        if (detail.reason === 'external') recordSmartRewindPause();
         checkpointPlayback();
         scheduleServerPositionSave();
       }
@@ -288,8 +298,8 @@ function prepareReliableChapterAudio(bookId, chapterIndex) {
     .catch(err => console.warn('Reliable chapter audio prepare failed:', err));
 }
 
-async function selectPlaybackEngineForChapter(bookId, chapterIndex) {
-  if (!navigator.onLine && isBookDownloadedForOffline(bookId, chapterIndex)) {
+async function selectPlaybackEngineForChapter(bookId, chapterIndex, options = {}) {
+  if (options.offlineMode && options.offlineChapterAvailable) {
     return {
       engine: createSingleFileChapterEngine({ preferStandardAudio: true }),
       backend: 'single-file',
@@ -428,7 +438,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
   applySkipIntervalLabels();
   
-  initLibrary({ openBook, navigateTo });
+  initLibrary({ openBook, navigateTo, addToListeningQueue, onBookDeleted: clearDeletedBookFromPlayer });
+  initListeningQueue({ openBook });
   initSearch({ openBook, navigateTo });
   initSleepTimer({
     getCurrentBook: () => currentBook,
@@ -439,6 +450,11 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
   initPlaybackSpeed({
     getChunkPlayer: () => chunkPlayer,
+    getCurrentBook: () => currentBook,
+    getCurrentBookPlaybackSettings: () => currentBookPlaybackSettings,
+    isSmartRewindEnabled,
+    isRollingOfflineEnabled,
+    saveBookPlaybackSettings: saveCurrentBookPlaybackSettings,
     onSpeedChange: () => updateMediaSessionPosition()
   });
   initSettings({
@@ -453,6 +469,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     hideAudioLoading,
     updatePlaybackUI,
     checkpointPlayback,
+    loadListeningQueue,
     syncTimeDisplayModeFromClientSettings,
     applySkipIntervalLabels
   });
@@ -797,17 +814,69 @@ function closeTransientSheets() {
   clearSheetStack();
 }
 
+async function clearDeletedBookFromPlayer(bookId) {
+  if (!currentBook || String(currentBook.id) !== String(bookId)) return;
+  loadChapterToken++;
+  clearTimeout(pendingServerPositionTimer);
+  pendingServerPositionTimer = null;
+  stopReliableAudioStatusPolling();
+  reliableHandoffInProgress = false;
+
+  const retiredEngines = new Set([chunkPlayer, chunkedPlayer].filter(Boolean));
+  for (const engine of retiredEngines) {
+    try { engine.cancelPendingLoad?.(); } catch {}
+    try { engine.pause?.(); } catch {}
+    try { engine.dispose?.(); } catch {}
+  }
+
+  chunkedPlayer = adaptChunkedEngine(new ChunkPlayer(makePlaybackCallbacks()));
+  playbackSession.setBook(null);
+  playbackSession.adoptEngine(chunkedPlayer, 'chunked');
+  chapters = [];
+  currentBookPlaybackSettings = {};
+  currentBookOfflineFallback = false;
+  currentBookFinished = false;
+  if ('mediaSession' in navigator) {
+    try { navigator.mediaSession.metadata = null; } catch {}
+    try { navigator.mediaSession.playbackState = 'none'; } catch {}
+  }
+  updateMiniPlayer('library');
+  updatePlaybackUI(false);
+}
+
 // Player Functions
 async function openBook(bookId) {
   // Keep the address bar/history in sync no matter who called us (router,
   // library tap, post-download/upload flow).
   syncPlayerHash(bookId);
   try {
-    const data = await apiGet(`/api/book/${encodeURIComponent(bookId)}`);
+    let data;
+    let usedOfflineFallback = false;
+    try {
+      data = await apiGet(`/api/book/${encodeURIComponent(bookId)}`);
+    } catch (error) {
+      // A full offline download includes the title/chapter snapshot needed to
+      // rebuild the player after a cold launch. Do not mask authoritative
+      // server errors (404/401) while online with an obsolete local copy.
+      const localData = (!navigator.onLine || !error?.status)
+        ? getOfflineBookData(bookId)
+        : null;
+      if (!localData) throw error;
+      data = localData;
+      usedOfflineFallback = true;
+    }
 
     currentBook = data.book;
     chapters = data.chapters;
+    currentBookOfflineFallback = usedOfflineFallback;
+    if (usedOfflineFallback && !navigator.onLine) {
+      const fallbackBookId = String(currentBook.id);
+      window.addEventListener('online', () => {
+        if (String(currentBook?.id || '') === fallbackBookId) currentBookOfflineFallback = false;
+      }, { once: true });
+    }
     currentBookFinished = false;
+    currentBookPlaybackSettings = await getBookPlaybackSettings(bookId);
 
     // Cache chapter count for library progress bars (see bookProgressInfo)
     if (Array.isArray(chapters) && chapters.length > 0) {
@@ -926,7 +995,7 @@ async function openBook(bookId) {
     loadVoices();
     
     // Load saved playback speed
-    loadPlaybackSpeed();
+    loadPlaybackSpeed(currentBookPlaybackSettings.playbackSpeed);
     
     // Restore sleep timer if active
     restoreSleepTimer();
@@ -945,9 +1014,11 @@ async function openBook(bookId) {
     }
     
     // NOTE: Pre-generation no longer needed — ChunkPlayer handles chunk look-ahead
+    return true;
   } catch (err) {
     console.error('Failed to open book:', err);
     showToast("Couldn't open book", 'error');
+    return false;
   }
 }
 
@@ -987,20 +1058,36 @@ async function loadChapter(index, options = {}) {
   // Offline + not downloaded: skip the doomed network fetch and surface a
   // calm situational state. No retry button — retrying can't succeed without a
   // connection, so the chapter reloads itself the moment the network returns.
-  if (!navigator.onLine && !isBookDownloadedForOffline(currentBook.id, index)) {
+  let offlineMode = !navigator.onLine || currentBookOfflineFallback;
+  const offlineChapterAvailable = offlineMode
+    ? await isChapterAvailableOffline(currentBook.id, index)
+    : false;
+  if (token !== loadChapterToken) return;
+  // navigator.onLine can remain true through a transient metadata failure. If
+  // that local snapshot points at an evicted chapter, let normal network
+  // playback recover instead of pinning the player to an offline error.
+  if (offlineMode && !offlineChapterAvailable && navigator.onLine) {
+    currentBookOfflineFallback = false;
+    offlineMode = false;
+  }
+  if (offlineMode && !offlineChapterAvailable) {
     setChunkOverlayState('offline', {
       message: "You're offline",
       detail: 'This book isn’t downloaded. It will start when you’re back online.'
     });
     updatePlaybackUI(false);
     const resumeWhenOnline = () => {
+      currentBookOfflineFallback = false;
       if (currentBook?.id && currentChapter === index) loadChapter(index);
     };
     window.addEventListener('online', resumeWhenOnline, { once: true });
     return;
   }
 
-  const selection = await selectPlaybackEngineForChapter(currentBook.id, index);
+  const selection = await selectPlaybackEngineForChapter(currentBook.id, index, {
+    offlineChapterAvailable,
+    offlineMode
+  });
   if (token !== loadChapterToken) return;
   const transition = await playbackSession.transitionTo({
     book: currentBook,
@@ -1014,12 +1101,18 @@ async function loadChapter(index, options = {}) {
   });
   if (transition.stale) return;
   applyPlaybackSelection(selection, currentBook.id, index);
+  chunkPlayer?.setSpeed?.(getCurrentPlaybackSpeed());
   if (token !== loadChapterToken) return;
   if (Number.isFinite(options.seekToSeconds)) {
     await chunkPlayer.seek(Math.max(0, options.seekToSeconds));
     if (token !== loadChapterToken) return;
   }
-  maybePrepareUpcomingReliableAudio();
+  if (!offlineMode) {
+    maybePrepareUpcomingReliableAudio();
+    void ensureRollingOfflineWindow(currentBook, chapters, currentChapter, {
+      enabled: currentBookPlaybackSettings.rollingOfflineEnabled ?? isRollingOfflineEnabled()
+    }).catch(error => console.warn('Automatic chapter cache unavailable:', error));
+  }
   checkpointPlayback();
   // ChunkPlayer will call onReady/onWaiting callbacks
 
@@ -1078,16 +1171,54 @@ async function resumePlaybackFromPrompt() {
   await togglePlayPause(true);
 }
 
+function smartRewindIsEnabled() {
+  return currentBookPlaybackSettings.smartRewindEnabled ?? isSmartRewindEnabled();
+}
+
+async function saveCurrentBookPlaybackSettings(bookId, settings) {
+  const saved = await saveBookPlaybackSettings(bookId, settings);
+  if (currentBook?.id === bookId) {
+    currentBookPlaybackSettings = { ...saved };
+  }
+  return saved;
+}
+
+function recordSmartRewindPause() {
+  if (!currentBook || !chunkPlayer || !smartRewindIsEnabled()) return;
+  smartRewind.recordPause({
+    bookId: currentBook.id,
+    chapterIndex: currentChapter,
+    positionSeconds: chunkPlayer.getCurrentTime?.() || 0
+  });
+}
+
+async function applySmartRewindBeforeResume() {
+  if (!currentBook || !chunkPlayer || !smartRewindIsEnabled()) {
+    smartRewind.clear();
+    return;
+  }
+  const plan = smartRewind.planResume({
+    bookId: currentBook.id,
+    chapterIndex: currentChapter,
+    positionSeconds: chunkPlayer.getCurrentTime?.() || 0
+  });
+  if (!plan) return;
+  await chunkPlayer.seek(plan.targetSeconds);
+  showToast(`Smart rewind · ${plan.rewindSeconds} seconds`);
+}
+
 async function togglePlayPause(forcePlay = false) {
   forcePlay = forcePlay === true;
-  if (!chunkPlayer) return;
+  if (!currentBook || !chunkPlayer) return;
   try {
     if (forcePlay || !chunkPlayer.isPlaying) {
+      await applySmartRewindBeforeResume();
       await chunkPlayer.play();
       setResumePromptVisible(false);
       updatePlaybackUI(true);
     } else {
       await switchToReliableIfReadyForPause();
+      recordSmartRewindPause();
       chunkPlayer.pause();
       updatePlaybackUI(false);
     }
@@ -1227,6 +1358,7 @@ function isNativeSingleFileReady() {
 async function resumeNativeSingleFileFromMediaSession() {
   if (!isNativeSingleFileReady()) return false;
   try {
+    await applySmartRewindBeforeResume();
     await chunkPlayer.play();
     setResumePromptVisible(false);
     updatePlaybackUI(true);
@@ -1243,6 +1375,7 @@ async function resumeNativeSingleFileFromMediaSession() {
 
 function pauseNativeSingleFileFromMediaSession() {
   if (!isNativeSingleFileReady()) return false;
+  recordSmartRewindPause();
   chunkPlayer.pause();
   navigator.mediaSession.playbackState = 'paused';
   updatePlaybackUI(false);
@@ -1264,6 +1397,7 @@ function setupMediaSessionHandlers() {
       if (chunkPlayer.isPlaying) {
         await togglePlayPause();
       } else if (playbackBackend === 'single-file' && audioPlayer && !audioPlayer.paused) {
+        recordSmartRewindPause();
         audioPlayer.pause();
         updatePlaybackUI(false);
       }
@@ -1337,6 +1471,21 @@ async function handleAudioEnd() {
   } else {
     setCurrentBookFinished(true);
     updatePlaybackUI(false);
+    checkpointPlayback({ force: true, finished: true });
+    await savePosition({ force: true, finished: true });
+    updateBookProgress();
+    try {
+      const result = await advanceListeningQueue(currentBook.id);
+      if (result.nextBookId) {
+        const opened = await openBook(result.nextBookId);
+        if (opened) await togglePlayPause(true);
+      } else {
+        await loadListeningQueue();
+      }
+    } catch (error) {
+      console.warn('Up Next could not continue:', error);
+    }
+    return;
   }
   checkpointPlayback();
   savePosition({ force: currentBookFinished, finished: currentBookFinished });

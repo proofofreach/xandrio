@@ -1935,10 +1935,18 @@ section('21. Error responses and bounded caches');
     json(body) { captured = { code: this._code, body }; return this; }
   };
   serverTestHooks.sendServerError(fakeRes, new Error('secret internal detail'), 'Failed to load library');
-  console.error = originalConsoleError;
   assertEqual(captured.code, 500, 'sendServerError responds with HTTP 500');
   assertEqual(captured.body.error, 'Failed to load library', 'sendServerError returns the public message');
   assert(!JSON.stringify(captured.body).includes('secret internal detail'), 'sendServerError does not leak err.message to the client');
+
+  let destroyedAfterHeaders = false;
+  serverTestHooks.sendServerError({
+    headersSent: true,
+    destroy() { destroyedAfterHeaders = true; },
+    status() { throw new Error('must not write headers twice'); }
+  }, new Error('late stream failure'), 'Failed to stream');
+  assert(destroyedAfterHeaders, 'sendServerError destroys a response that already sent headers');
+  console.error = originalConsoleError;
 
   const historicalPremiumVariant = 'chatterbox:archived-voice:modelturbo:profilequality:chunk220:fmtwav:refv1:prep1:audio3:pause350';
   assertEqual(serverTestHooks.premiumVoiceFromVariantKey(historicalPremiumVariant), 'chatterbox:archived-voice', 'premium recovery restores the recorded voice without switching UI state');

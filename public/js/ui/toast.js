@@ -3,6 +3,15 @@
 let toastEl = null;
 let hideTimer = null;
 
+function runToastAction(action, label = 'Toast action') {
+  if (typeof action !== 'function') return;
+  try {
+    Promise.resolve(action()).catch(error => console.error(`${label} failed:`, error));
+  } catch (error) {
+    console.error(`${label} failed:`, error);
+  }
+}
+
 // showToast(message, type = '', options = {})
 //   type    — '' (neutral/success styling) or 'error'
 //   options — { actionLabel, onAction, duration }
@@ -28,7 +37,7 @@ export function showToast(message, type = '', options = {}) {
     btn.textContent = actionLabel;
     btn.addEventListener('click', () => {
       hideToast();
-      onAction?.();
+      runToastAction(onAction);
     });
     toastEl.append(msg, btn);
   } else {
@@ -62,7 +71,7 @@ function commitPending() {
   entry.settled = true;
   pendingUndo = null;
   clearTimeout(entry.timer);
-  entry.onCommit?.();
+  runToastAction(entry.onCommit, 'Undo commit');
 }
 
 export function showUndoToast(message, { onUndo, onCommit, duration = 5000 } = {}) {
@@ -83,7 +92,7 @@ export function showUndoToast(message, { onUndo, onCommit, duration = 5000 } = {
     entry.settled = true;
     if (pendingUndo === entry) pendingUndo = null;
     clearTimeout(entry.timer);
-    action?.();
+    runToastAction(action, action === onUndo ? 'Undo action' : 'Undo commit');
   };
 
   showToast(message, '', {

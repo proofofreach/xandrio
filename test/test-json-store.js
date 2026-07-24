@@ -4,6 +4,8 @@
  */
 
 const assert = require('assert');
+const crypto = require('crypto');
+const { spawnSync } = require('child_process');
 const fs = require('fs');
 const fsp = fs.promises;
 const os = require('os');
@@ -56,10 +58,81 @@ async function main() {
     assert(!entries.some(e => e.includes('.tmp')), `found temp files: ${entries}`);
   });
 
+  await test('a failed atomic save removes its temporary file', async () => {
+    const target = file('rename-blocked');
+    await fsp.mkdir(target);
+    await assert.rejects(jsonStore.save(target, { will: 'fail' }));
+    const entries = await fsp.readdir(dir);
+    assert(
+      !entries.some(name => name.startsWith('rename-blocked.') && name.endsWith('.tmp')),
+      `failed save leaked a temp file: ${entries}`
+    );
+  });
+
+  await test('an unreadable store aborts update instead of replacing it with defaults', async () => {
+    const target = file('unreadable.json');
+    const original = '{"accounts":{"owner":true}}';
+    await fsp.writeFile(target, original);
+    await fsp.chmod(target, 0o000);
+    try {
+      await assert.rejects(
+        jsonStore.update(target, data => { data.accounts = {}; }, {}),
+        error => error.code === 'EACCES'
+      );
+    } finally {
+      await fsp.chmod(target, 0o600).catch(() => {});
+    }
+    assert.strictEqual(await fsp.readFile(target, 'utf8'), original);
+  });
+
   await test('load returns default for corrupt JSON', async () => {
     await fsp.writeFile(file('corrupt.json'), '{ not json');
     const data = await jsonStore.load(file('corrupt.json'), { fallback: 1 });
     assert.deepStrictEqual(data, { fallback: 1 });
+  });
+
+  await test('corrupt JSON is preserved before the defaults can overwrite it', async () => {
+    await fsp.writeFile(file('salvage.json'), '{ "books": truncated');
+    await jsonStore.load(file('salvage.json'), {});
+
+    const quarantined = (await fsp.readdir(dir))
+      .filter(name => name.startsWith('salvage.json.corrupt-'));
+    assert.strictEqual(quarantined.length, 1, `expected one quarantine copy, got: ${quarantined}`);
+    assert.strictEqual(
+      await fsp.readFile(path.join(dir, quarantined[0]), 'utf8'),
+      '{ "books": truncated',
+      'quarantine copy must hold the original bytes'
+    );
+
+    // The recovery path stays usable: writing defaults over the original is
+    // still allowed, but the operator now has the damaged file to inspect.
+    await jsonStore.save(file('salvage.json'), { books: {} });
+    assert.deepStrictEqual(await jsonStore.load(file('salvage.json')), { books: {} });
+  });
+
+  await test('repeatedly loading the same corrupt file makes one quarantine copy', async () => {
+    await fsp.writeFile(file('repeat.json'), 'still not json');
+    await jsonStore.load(file('repeat.json'), {});
+    await jsonStore.load(file('repeat.json'), {});
+    await jsonStore.load(file('repeat.json'), {});
+
+    const quarantined = (await fsp.readdir(dir))
+      .filter(name => name.startsWith('repeat.json.corrupt-'));
+    assert.strictEqual(quarantined.length, 1, `quarantine copies must not accumulate: ${quarantined}`);
+  });
+
+  await test('a failed quarantine aborts before corrupt data can be overwritten', async () => {
+    const target = file('blocked-salvage.json');
+    const raw = '{ "accounts": truncated';
+    await fsp.writeFile(target, raw);
+    const digest = crypto.createHash('sha1').update(raw).digest('hex').slice(0, 8);
+    await fsp.mkdir(`${target}.corrupt-${digest}`);
+
+    await assert.rejects(
+      jsonStore.update(target, data => { data.accounts = {}; }, {}),
+      error => error.code === 'JSON_STORE_QUARANTINE_FAILED'
+    );
+    assert.strictEqual(await fsp.readFile(target, 'utf8'), raw);
   });
 
   await test('update mutates in place and persists', async () => {
@@ -138,6 +211,146 @@ async function main() {
       jsonStore.update(p, (d) => { order.push('update'); d.x = 1; })
     ]);
     assert.deepStrictEqual(order, ['lock-start', 'lock-end', 'update']);
+  });
+
+  await test('settled lock tails are removed without deleting a newer lock', async () => {
+    const p = file('lock-cleanup.json');
+    const baseline = jsonStore.pendingLockCount();
+    let releaseFirst;
+    let releaseSecond;
+    const firstGate = new Promise(resolve => { releaseFirst = resolve; });
+    const secondGate = new Promise(resolve => { releaseSecond = resolve; });
+    const first = jsonStore.withLock(p, () => firstGate);
+    const second = jsonStore.withLock(p, () => secondGate);
+    assert.strictEqual(jsonStore.pendingLockCount(), baseline + 1);
+    releaseFirst();
+    await first;
+    // The first completion must not remove the newer queued tail.
+    assert.strictEqual(jsonStore.pendingLockCount(), baseline + 1);
+    releaseSecond();
+    await second;
+    await new Promise(resolve => setImmediate(resolve));
+    assert.strictEqual(jsonStore.pendingLockCount(), baseline);
+  });
+
+  await test('validation rejects an invalid top-level shape without replacing it', async () => {
+    const target = file('validated.json');
+    const raw = JSON.stringify(['not', 'an', 'object']);
+    await fsp.writeFile(target, raw);
+    const validate = value => value && typeof value === 'object' && !Array.isArray(value);
+    await assert.rejects(
+      jsonStore.load(target, {}, { validate }),
+      error => error.code === 'JSON_STORE_VALIDATION_FAILED'
+    );
+    assert.strictEqual(await fsp.readFile(target, 'utf8'), raw);
+  });
+
+  await test('ordinary stores do not create backups implicitly', async () => {
+    const target = file('ordinary.json');
+    await jsonStore.save(target, { version: 1 });
+    await jsonStore.save(target, { version: 2 });
+    await assert.rejects(fsp.access(`${target}.backups`), error => error.code === 'ENOENT');
+  });
+
+  await test('critical stores validate and retain only the configured number of backups', async () => {
+    const target = file('critical.json');
+    const store = jsonStore.createCriticalStore({
+      filePath: target,
+      defaultValue: { version: 0 },
+      validate: value => (
+        value && typeof value === 'object' && !Array.isArray(value) &&
+        Number.isInteger(value.version)
+      ),
+      maxBackups: 2
+    });
+    await store.save({ version: 1 });
+    await store.save({ version: 2 });
+    await store.save({ version: 3 });
+    await store.save({ version: 4 });
+
+    const candidates = await store.listRecoveryCandidates();
+    const backups = candidates.filter(candidate => candidate.kind === 'backup');
+    assert.strictEqual(backups.length, 2);
+    assert(backups.every(candidate => candidate.valid));
+    const versions = [];
+    for (const backup of backups) {
+      versions.push(JSON.parse(await fsp.readFile(backup.path, 'utf8')).version);
+    }
+    assert.deepStrictEqual(versions.sort(), [2, 3]);
+    assert.deepStrictEqual(await store.load(), { version: 4 });
+  });
+
+  await test('critical updates refuse corrupt current state after quarantining it', async () => {
+    const target = file('critical-corrupt.json');
+    const raw = '{"version":';
+    await fsp.writeFile(target, raw);
+    const store = jsonStore.createCriticalStore({
+      filePath: target,
+      validate: value => value && Number.isInteger(value.version)
+    });
+    await assert.rejects(
+      store.update(data => { data.version = 2; }),
+      error => error.code === 'JSON_STORE_CORRUPT'
+    );
+    assert.strictEqual(await fsp.readFile(target, 'utf8'), raw);
+    const candidates = await store.listRecoveryCandidates();
+    assert.strictEqual(candidates.filter(candidate => candidate.kind === 'quarantine').length, 1);
+  });
+
+  await test('restore validates the candidate and preserves displaced current bytes', async () => {
+    const target = file('restore.json');
+    const validate = value => value && Number.isInteger(value.version);
+    const store = jsonStore.createCriticalStore({
+      filePath: target,
+      validate,
+      maxBackups: 4
+    });
+    await store.save({ version: 1 });
+    await store.save({ version: 2 });
+    const candidate = (await store.listRecoveryCandidates())
+      .find(item => item.valid && item.kind === 'backup');
+    assert(candidate, 'expected a recovery backup');
+
+    await store.restore(candidate.path);
+    assert.deepStrictEqual(await store.load(), { version: 1 });
+    const restoredCandidates = await store.listRecoveryCandidates();
+    const preservedVersions = [];
+    for (const item of restoredCandidates.filter(entry => entry.kind === 'backup')) {
+      preservedVersions.push(JSON.parse(await fsp.readFile(item.path, 'utf8')).version);
+    }
+    assert(preservedVersions.includes(2), 'restore must preserve the displaced store');
+
+    const unrelated = file('unrelated.json');
+    await fsp.writeFile(unrelated, '{"version":3}');
+    await assert.rejects(
+      jsonStore.restoreRecoveryCandidate(target, unrelated, { validate }),
+      error => error.code === 'JSON_STORE_UNSAFE_RECOVERY_PATH'
+    );
+  });
+
+  await test('recovery CLI lists candidates and requires explicit confirmation to restore', async () => {
+    const target = file('cli-restore.json');
+    const store = jsonStore.createCriticalStore({
+      filePath: target,
+      validate: value => value && Number.isInteger(value.version)
+    });
+    await store.save({ version: 1 });
+    await store.save({ version: 2 });
+    const candidate = (await store.listRecoveryCandidates()).find(item => item.valid);
+    const cli = path.join(__dirname, '..', 'scripts', 'recover-json-store.js');
+
+    const dryRun = spawnSync(process.execPath, [
+      cli, 'restore', target, candidate.path, '--required-key', 'version'
+    ], { encoding: 'utf8' });
+    assert.strictEqual(dryRun.status, 2);
+    assert.match(dryRun.stderr, /No changes made/);
+    assert.deepStrictEqual(await store.load(), { version: 2 });
+
+    const restore = spawnSync(process.execPath, [
+      cli, 'restore', target, candidate.path, '--required-key', 'version', '--yes'
+    ], { encoding: 'utf8' });
+    assert.strictEqual(restore.status, 0, restore.stderr);
+    assert.deepStrictEqual(await store.load(), { version: 1 });
   });
 
   await fsp.rm(dir, { recursive: true, force: true });

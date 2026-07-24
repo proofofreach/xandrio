@@ -44,6 +44,7 @@
     "release:prepare-public-root": "node scripts/release/prepare-public-root.mjs",
     "release:verify": "node scripts/release/verify-release-consistency.mjs",
     "backfill:metadata": "node scripts/backfill-book-metadata.js",
+    "recover:json": "node scripts/recover-json-store.js",
     "test": "node test/run-all.js",
     "test:browser": "node scripts/smoke-browser.js"
   },

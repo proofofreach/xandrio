@@ -18,6 +18,8 @@
  *   player.play();
  */
 
+const { LifecycleCancelledError, waitForMediaEvents } = globalThis.XandrioLifecycle || {};
+
 class ChunkPlayer {
   constructor(options = {}) {
     // Two audio elements for double-buffering
@@ -56,9 +58,13 @@ class ChunkPlayer {
     this._maxChunkLoadRetries = Number.isInteger(options.maxChunkLoadRetries) ? options.maxChunkLoadRetries : 2;
     this._maxPlayRetries = Number.isInteger(options.maxPlayRetries) ? options.maxPlayRetries : 1;
     this._retryDelayMs = Number.isInteger(options.retryDelayMs) ? options.retryDelayMs : 300;
+    this._chunkLoadTimeoutMs = Number(options.chunkLoadTimeoutMs) > 0 ? Number(options.chunkLoadTimeoutMs) : 30000;
 
     // Polling handle for manifest checks
     this._pollTimer = null;
+    this._cancelPollWait = null;
+    this._pendingAudioLoads = new Set();
+    this._requestController = null;
     this._timeUpdateTimer = null;
     this._manifestRefreshFailures = 0;
 
@@ -131,6 +137,10 @@ class ChunkPlayer {
    */
   async loadChapter(bookId, chapterIndex) {
     const gen = ++this._generation;
+    this._cancelRequests();
+    this._cancelPollWait?.();
+    for (const cancel of [...this._pendingAudioLoads]) cancel();
+    this._requestController = new AbortController();
     this._stopPolling();
     this._detachEvents();
     this.pause();
@@ -151,12 +161,16 @@ class ChunkPlayer {
     this._resetAudioElement(this.audioB);
 
     try {
-      this.manifest = await this._fetchManifest();
+      const manifest = await this._fetchManifest(this._requestController.signal);
+      if (gen !== this._generation) return;
+      this._applyManifest(manifest);
     } catch (err) {
-      if (gen === this._generation) this._emitError(err);
-      return;
+      if (gen === this._generation) {
+        this._emitError(err);
+        throw err;
+      }
+      throw err;
     }
-    if (gen !== this._generation) return;
 
     this.totalChunks = this.manifest.totalChunks;
     this.chunkDurations = new Array(this.totalChunks).fill(null);
@@ -172,12 +186,17 @@ class ChunkPlayer {
     if (!firstChunk || firstChunk.status !== 'ready') {
       this._emitWaiting('Preparing narration…');
       this._emitPreparing('Preparing narration…', 0);
-      await this._pollUntilChunkReady(0);
+      await this._pollUntilChunkReady(0, gen);
       if (gen !== this._generation) return;
     }
 
     // Load first chunk into the active player
-    await this._loadChunkInto(this._getActive(), 0);
+    try {
+      await this._loadChunkInto(this._getActive(), 0);
+    } catch (err) {
+      if (gen === this._generation) this._emitError(err);
+      throw err;
+    }
     if (gen !== this._generation) return;
 
     // Preload second chunk if available
@@ -192,29 +211,55 @@ class ChunkPlayer {
   /**
    * Fetch the chunk manifest from the server.
    */
-  async _fetchManifest() {
+  async _fetchManifest(signal = this._requestController?.signal) {
     // Once a chapter starts on a tier (instant vs premium), stay on it for
     // the whole chapter — no mid-chapter voice swaps. The pin is cleared on
     // the next chapter load, where the server picks the best available tier.
     const tierPin = this.servedTier ? `?tier=${encodeURIComponent(this.servedTier)}` : '';
     const url = `/api/chunks/${encodeURIComponent(this.bookId)}/${this.chapterIndex}/manifest${tierPin}`;
-    const res = await fetch(url);
+    const res = await this._raceWithAbort(fetch(url, { signal }), signal);
     if (!res.ok) {
       throw new Error(`Manifest fetch failed: HTTP ${res.status}`);
     }
     const manifest = await res.json();
-    if (manifest && manifest.servedTier) {
-      this.servedTier = manifest.servedTier;
-    }
     return manifest;
+  }
+
+  _raceWithAbort(promise, signal) {
+    if (!signal) return promise;
+    if (signal.aborted) return Promise.reject(new LifecycleCancelledError('Chapter load cancelled'));
+    return new Promise((resolve, reject) => {
+      const onAbort = () => {
+        cleanup();
+        reject(new LifecycleCancelledError('Chapter load cancelled'));
+      };
+      const cleanup = () => signal.removeEventListener('abort', onAbort);
+      signal.addEventListener('abort', onAbort, { once: true });
+      Promise.resolve(promise).then(
+        value => { cleanup(); resolve(value); },
+        error => { cleanup(); reject(error); }
+      );
+    });
+  }
+
+  _cancelRequests() {
+    this._requestController?.abort();
+    this._requestController = null;
+  }
+
+  _applyManifest(manifest) {
+    this.manifest = manifest;
+    if (manifest && manifest.servedTier) this.servedTier = manifest.servedTier;
   }
 
   /**
    * Refresh the manifest (to check for newly generated chunks).
    */
-  async _refreshManifest() {
+  async _refreshManifest(expectedGeneration = this._generation) {
     try {
-      this.manifest = await this._fetchManifest();
+      const manifest = await this._fetchManifest();
+      if (expectedGeneration !== this._generation) return false;
+      this._applyManifest(manifest);
       this._manifestRefreshFailures = 0;
       this.totalChunks = this.manifest.totalChunks;
       // Grow durations array if needed
@@ -223,6 +268,7 @@ class ChunkPlayer {
       }
       return true;
     } catch (err) {
+      if (expectedGeneration !== this._generation || err?.cancelled) return false;
       this._manifestRefreshFailures++;
       console.warn('Manifest refresh failed:', err);
       return false;
@@ -261,22 +307,41 @@ class ChunkPlayer {
    * Poll the manifest until a specific chunk is ready.
    * Returns a promise that resolves when the chunk is available.
    */
-  _pollUntilChunkReady(chunkIndex) {
+  _pollUntilChunkReady(chunkIndex, expectedGeneration = this._generation) {
+    this._cancelPollWait?.();
     return new Promise((resolve, reject) => {
       if (this._destroyed) return reject(new Error('Player destroyed'));
+      let settled = false;
+      const finish = (error) => {
+        if (settled) return;
+        settled = true;
+        if (this._cancelPollWait === cancel) this._cancelPollWait = null;
+        this._stopPolling();
+        if (error) reject(error);
+        else resolve();
+      };
+      const cancel = () => finish(new LifecycleCancelledError('Chunk preparation cancelled'));
+      this._cancelPollWait = cancel;
 
       const check = async () => {
-        if (this._destroyed) {
-          reject(new Error('Player destroyed'));
+        if (settled || expectedGeneration !== this._generation) {
+          finish();
           return;
         }
-        const refreshed = await this._refreshManifest();
+        if (this._destroyed) {
+          finish(new Error('Player destroyed'));
+          return;
+        }
+        const refreshed = await this._refreshManifest(expectedGeneration);
+        if (settled || expectedGeneration !== this._generation) {
+          finish();
+          return;
+        }
         if (!refreshed) {
           if (this._manifestRefreshFailures >= 3) {
-            this._stopPolling();
             const err = new Error('Server connection lost while preparing audio. Check that Xandrio is still running.');
             this._emitError(err);
-            reject(err);
+            finish(err);
             return;
           }
           this._pollTimer = setTimeout(check, 2000);
@@ -289,16 +354,14 @@ class ChunkPlayer {
         );
 
         if (this._chunkStatus(chunkIndex) === 'error') {
-          this._stopPolling();
           const err = new Error('Narration failed to prepare for this part of the chapter.');
           this._emitError(err);
-          reject(err);
+          finish(err);
           return;
         }
 
         if (this._isChunkReady(chunkIndex)) {
-          this._stopPolling();
-          resolve();
+          finish();
         } else {
           this._pollTimer = setTimeout(check, 2000);
         }
@@ -309,7 +372,7 @@ class ChunkPlayer {
       // background tabs throttle timers to a minute or more, but fetches
       // run unthrottled, so a stale manifest must not cost a timer cycle.
       if (this._isChunkReady(chunkIndex)) {
-        resolve();
+        finish();
       } else {
         check();
       }
@@ -345,17 +408,20 @@ class ChunkPlayer {
    * Load a chunk into a specific Audio element.
    * Returns a promise that resolves when loadedmetadata fires.
    */
-  async _loadChunkInto(audioEl, chunkIndex, retries = this._maxChunkLoadRetries) {
+  async _loadChunkInto(audioEl, chunkIndex, retries = this._maxChunkLoadRetries, expectedGeneration = this._generation) {
     let lastError = null;
 
     for (let attempt = 0; attempt <= retries; attempt++) {
+      if (expectedGeneration !== this._generation) return;
       try {
         await this._loadChunkIntoOnce(audioEl, chunkIndex);
         return;
       } catch (err) {
+        if (expectedGeneration !== this._generation) return;
         lastError = err;
         if (this._destroyed || attempt >= retries) break;
-        await this._refreshManifest();
+        await this._refreshManifest(expectedGeneration);
+        if (expectedGeneration !== this._generation) return;
         if (!this._isChunkReady(chunkIndex)) break;
         await this._delay(this._retryDelayMs * (attempt + 1));
       }
@@ -365,37 +431,26 @@ class ChunkPlayer {
   }
 
   _loadChunkIntoOnce(audioEl, chunkIndex) {
-    return new Promise((resolve, reject) => {
-      if (this._destroyed) return reject(new Error('Player destroyed'));
-
-      const onMeta = () => {
-        cleanup();
-        // Record duration
-        if (audioEl.duration && isFinite(audioEl.duration)) {
-          this.chunkDurations[chunkIndex] = audioEl.duration;
-        }
-        resolve();
-      };
-
-      const onError = () => {
-        cleanup();
+    if (this._destroyed) return Promise.reject(new Error('Player destroyed'));
+    const wait = waitForMediaEvents(audioEl, {
+      resolveEvents: ['loadedmetadata'],
+      rejectEvents: ['error'],
+      timeoutMs: this._chunkLoadTimeoutMs,
+      timeoutError: () => new Error(`Chunk ${chunkIndex} media load timed out`),
+      eventError: () => {
         const detail = audioEl.error && (audioEl.error.message || audioEl.error.code);
-        reject(new Error(`Failed to load chunk ${chunkIndex}: ${detail || 'unknown error'}`));
-      };
-
-      const cleanup = () => {
-        audioEl.removeEventListener('loadedmetadata', onMeta);
-        audioEl.removeEventListener('error', onError);
-      };
-
-      cleanup();
-      audioEl.addEventListener('loadedmetadata', onMeta, { once: true });
-      audioEl.addEventListener('error', onError, { once: true });
-
-      audioEl.src = this._chunkUrl(chunkIndex);
-      audioEl.volume = this._volume;
-      audioEl.playbackRate = this.playbackRate;
-      audioEl.load();
+        return new Error(`Failed to load chunk ${chunkIndex}: ${detail || 'unknown error'}`);
+      },
+      cancelledError: () => new LifecycleCancelledError('Chunk media load cancelled')
+    });
+    this._pendingAudioLoads.add(wait.cancel);
+    wait.promise.finally(() => this._pendingAudioLoads.delete(wait.cancel)).catch(() => {});
+    audioEl.src = this._chunkUrl(chunkIndex);
+    audioEl.volume = this._volume;
+    audioEl.playbackRate = this.playbackRate;
+    audioEl.load();
+    return wait.promise.then(() => {
+      if (audioEl.duration && isFinite(audioEl.duration)) this.chunkDurations[chunkIndex] = audioEl.duration;
     });
   }
 
@@ -758,12 +813,20 @@ class ChunkPlayer {
   /**
    * Clean up both audio elements and stop all timers.
    */
-  destroy() {
-    this._destroyed = true;
+  cancelPendingLoad() {
     this._generation++;
+    this._preloadToken++;
+    this._cancelRequests();
+    this._cancelPollWait?.();
+    for (const cancel of [...this._pendingAudioLoads]) cancel();
     this._stopPolling();
     this._detachEvents();
     this.pause();
+  }
+
+  destroy() {
+    this._destroyed = true;
+    this.cancelPendingLoad();
 
     this._resetAudioElement(this.audioA);
     this._resetAudioElement(this.audioB);

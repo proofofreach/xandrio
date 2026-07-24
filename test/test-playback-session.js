@@ -38,13 +38,50 @@ function engine(name, options = {}) {
       if (options.play) await options.play();
       this.isPlaying = true;
     },
+    cancelPendingLoad() {
+      calls.push(['cancelPendingLoad']);
+      options.cancelPendingLoad?.();
+    },
     pause() { calls.push(['pause']); this.isPlaying = false; },
     getPosition() { return this.position; },
     dispose() { calls.push(['dispose']); }
   };
 }
 
+function fakeAudio() {
+  const listeners = new Map();
+  return {
+    src: '',
+    preload: '',
+    volume: 1,
+    playbackRate: 1,
+    currentTime: 0,
+    duration: 10,
+    paused: true,
+    ended: false,
+    error: null,
+    addEventListener(type, fn) {
+      if (!listeners.has(type)) listeners.set(type, new Set());
+      listeners.get(type).add(fn);
+    },
+    removeEventListener(type, fn) {
+      listeners.get(type)?.delete(fn);
+    },
+    emit(type) {
+      for (const fn of [...(listeners.get(type) || [])]) fn();
+    },
+    countFor(type) {
+      return listeners.get(type)?.size || 0;
+    },
+    load() {},
+    pause() { this.paused = true; },
+    removeAttribute() { this.src = ''; }
+  };
+}
+
 (async () => {
+  const lifecycleSource = fs.readFileSync(path.join(__dirname, '..', 'public', 'js', 'lifecycle.js'), 'utf8');
+  Function(lifecycleSource)();
   const source = fs.readFileSync(path.join(__dirname, '..', 'public', 'js', 'playback-session.js'), 'utf8');
   const moduleUrl = `data:text/javascript;base64,${Buffer.from(source).toString('base64')}`;
   const { createPlaybackSession } = await import(moduleUrl);
@@ -104,6 +141,35 @@ function engine(name, options = {}) {
     assert.strictEqual(session.snapshot.chapterIndex, 2);
     assert.strictEqual(session.snapshot.engine, second);
     assert(first.calls.some(call => call[0] === 'dispose'));
+  });
+
+  await test('cancels stale single-file callbacks before the latest transition loads', async () => {
+    const audio = fakeAudio();
+    const ready = [];
+    const first = new SingleFileChapterPlayer(audio, {
+      onReady: () => ready.push(1),
+      loadTimeoutMs: 1000
+    });
+    const second = new SingleFileChapterPlayer(audio, {
+      onReady: () => ready.push(2),
+      loadTimeoutMs: 1000
+    });
+    const session = createPlaybackSession();
+    const book = { id: 'book-a' };
+
+    const firstTransition = session.transitionTo({ book, chapterIndex: 1, engine: first });
+    await Promise.resolve();
+    assert.strictEqual(audio.countFor('loadedmetadata'), 1);
+
+    const secondTransition = session.transitionTo({ book, chapterIndex: 2, engine: second });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.strictEqual(audio.countFor('loadedmetadata'), 1);
+    audio.emit('loadedmetadata');
+
+    const [firstResult, secondResult] = await Promise.all([firstTransition, secondTransition]);
+    assert.strictEqual(firstResult.stale, true);
+    assert.strictEqual(secondResult.stale, false);
+    assert.deepStrictEqual(ready, [2]);
   });
 
   await test('releases a request engine when its queued transition is stale before starting', async () => {
@@ -239,10 +305,17 @@ function engine(name, options = {}) {
           return Promise.resolve({ stale: false });
         }
       }),
+      createSmartRewindController: () => ({
+        recordPause() {},
+        planResume() { return null; },
+        clear() {}
+      }),
       displayChapterTitle: () => 'Chapter',
       isIOSLike: () => false,
       needsReliablePlayback: () => false,
       isBookDownloadedForOffline: () => false,
+      ensureRollingOfflineWindow: async () => {},
+      isRollingOfflineEnabled: () => true,
       refreshVoicePrepPanel() {},
       syncPlaybackProgressScope() {},
       updateChapterTrigger() {},
@@ -358,6 +431,37 @@ function engine(name, options = {}) {
     assert.strictEqual(result.stale, true);
     assert.strictEqual(session.snapshot.engine, null);
     assert(late.calls.some(call => call[0] === 'dispose'));
+  });
+
+  await test('dispose cancels an incoming engine stalled during chapter load', async () => {
+    let rejectLoad;
+    const incoming = engine('incoming', {
+      load: () => new Promise((_, reject) => { rejectLoad = reject; }),
+      cancelPendingLoad: () => {
+        const error = new Error('load cancelled');
+        error.cancelled = true;
+        rejectLoad(error);
+      }
+    });
+    const session = createPlaybackSession();
+    const transition = session.transitionTo({
+      book: { id: 'book-a' },
+      chapterIndex: 1,
+      createEngine: async () => incoming
+    });
+    await new Promise(resolve => setImmediate(resolve));
+    assert(incoming.calls.some(call => call[0] === 'load'));
+
+    const disposing = session.dispose();
+    await Promise.race([
+      disposing,
+      new Promise((_, reject) => setTimeout(() => reject(new Error('session disposal remained blocked')), 100))
+    ]);
+    const result = await transition;
+
+    assert.strictEqual(result.stale, true);
+    assert.strictEqual(incoming.calls.filter(call => call[0] === 'cancelPendingLoad').length, 1);
+    assert.strictEqual(incoming.calls.filter(call => call[0] === 'dispose').length, 1);
   });
 
   await test('disposes an active engine shared by queued work only once during cleanup', async () => {

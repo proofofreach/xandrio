@@ -53,6 +53,12 @@ for (const [assetPath, version] of assetVersions) {
   assert(fs.existsSync(path.join(publicDir, assetPath.slice(1))), `${assetPath} exists in public/`);
 }
 
+assert(
+  indexSource.indexOf('/js/lifecycle.js') !== -1 &&
+    indexSource.indexOf('/js/lifecycle.js') < indexSource.indexOf('/js/chunk-player.js'),
+  'index.html loads lifecycle helpers before the classic chunk player'
+);
+
 // APP_SHELL entries must exist on disk, or cache.addAll() rejects and the new
 // service worker never installs (clients then stay pinned to the old shell).
 const appShellMatch = swSource.match(/const APP_SHELL = \[([\s\S]*?)\];/);
@@ -72,6 +78,41 @@ for (const [, referencedPath] of indexSource.matchAll(/(?:href|src)="\/?([^"?]+)
   assert(
     assetVersions.has(`/${referencedPath}`),
     `index.html versioned shell asset /${referencedPath} is tracked in sw.js ASSET_VERSIONS`
+  );
+}
+
+// Every ES module app.js can reach statically must be precached. A module
+// missing here is invisible online (the network serves it) and only breaks on
+// a cold offline boot, where the import fails and the app never starts.
+// chunk-player.js is exempt: index.html loads it as a classic script tag, so
+// it is not part of app.js's module graph.
+function moduleGraphFrom(entryFile) {
+  const reached = new Set();
+  const patterns = [
+    /(?:import|export)[^'"\n]*from\s*['"]([^'"]+)['"]/g,
+    /\bimport\s*['"]([^'"]+)['"]/g,
+    /import\(\s*['"]([^'"]+)['"]/g
+  ];
+  (function walk(file) {
+    if (reached.has(file) || !fs.existsSync(file)) return;
+    reached.add(file);
+    const source = fs.readFileSync(file, 'utf8');
+    for (const pattern of patterns) {
+      for (const [, specifier] of source.matchAll(pattern)) {
+        if (specifier.startsWith('.')) walk(path.resolve(path.dirname(file), specifier));
+      }
+    }
+  })(entryFile);
+  return [...reached].map(file => `/${path.relative(publicDir, file)}`).sort();
+}
+
+const versionedShellPaths = new Set(
+  [...appShellPaths].concat([...assetVersions.keys()])
+);
+for (const modulePath of moduleGraphFrom(path.join(publicDir, 'app.js'))) {
+  assert(
+    versionedShellPaths.has(modulePath),
+    `app.js module graph entry ${modulePath} is precached in APP_SHELL`
   );
 }
 

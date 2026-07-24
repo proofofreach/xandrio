@@ -24,6 +24,10 @@ let speedStepperValue = null;
 let speedStepperDown = null;
 let speedStepperUp = null;
 let setDefaultSpeedBtn = null;
+let setBookSpeedBtn = null;
+let clearBookSpeedBtn = null;
+let bookSmartRewindControl = null;
+let bookRollingOfflineControl = null;
 
 export function initPlaybackSpeed(options = {}) {
   deps = options;
@@ -37,6 +41,10 @@ export function initPlaybackSpeed(options = {}) {
   speedStepperDown = document.getElementById('speed-stepper-down');
   speedStepperUp = document.getElementById('speed-stepper-up');
   setDefaultSpeedBtn = document.getElementById('set-default-speed-btn');
+  setBookSpeedBtn = document.getElementById('set-book-speed-btn');
+  clearBookSpeedBtn = document.getElementById('clear-book-speed-btn');
+  bookSmartRewindControl = document.getElementById('book-smart-rewind-control');
+  bookRollingOfflineControl = document.getElementById('book-rolling-offline-control');
 
   speedBtn?.addEventListener('click', cyclePlaybackSpeed);
   onActivate(speedBtn, () => cyclePlaybackSpeed());
@@ -59,6 +67,56 @@ export function initPlaybackSpeed(options = {}) {
     setClientSetting('defaultSpeed', currentPlaybackSpeed);
     showToast(`Default speed set to ${currentPlaybackSpeed.toFixed(2)}x`);
   });
+  setBookSpeedBtn?.addEventListener('click', async () => {
+    const book = deps.getCurrentBook?.();
+    if (!book) return;
+    try {
+      await deps.saveBookPlaybackSettings?.(book.id, { playbackSpeed: currentPlaybackSpeed });
+      showToast(`Using ${currentPlaybackSpeed.toFixed(2)}x for this book`);
+    } catch {
+      showToast('Could not save book speed', 'error');
+    }
+  });
+  clearBookSpeedBtn?.addEventListener('click', async () => {
+    const book = deps.getCurrentBook?.();
+    if (!book) return;
+    try {
+      await deps.saveBookPlaybackSettings?.(book.id, { playbackSpeed: null });
+      loadPlaybackSpeed();
+      updateSpeedSheetState();
+      showToast('Using global speed for this book');
+    } catch {
+      showToast('Could not reset book speed', 'error');
+    }
+  });
+  bookSmartRewindControl?.addEventListener('click', async event => {
+    const button = event.target.closest('[data-book-smart-rewind]');
+    const book = deps.getCurrentBook?.();
+    if (!button || !book) return;
+    try {
+      const value = button.dataset.bookSmartRewind;
+      await deps.saveBookPlaybackSettings?.(book.id, {
+        smartRewindEnabled: value === 'default' ? null : value === 'on'
+      });
+      updateSpeedSheetState();
+    } catch {
+      showToast('Could not save book settings', 'error');
+    }
+  });
+  bookRollingOfflineControl?.addEventListener('click', async event => {
+    const button = event.target.closest('[data-book-rolling-offline]');
+    const book = deps.getCurrentBook?.();
+    if (!button || !book) return;
+    try {
+      const value = button.dataset.bookRollingOffline;
+      await deps.saveBookPlaybackSettings?.(book.id, {
+        rollingOfflineEnabled: value === 'default' ? null : value === 'on'
+      });
+      updateSpeedSheetState();
+    } catch {
+      showToast('Could not save book settings', 'error');
+    }
+  });
 }
 
 export function getCurrentPlaybackSpeed() {
@@ -80,7 +138,14 @@ export function applySkipIntervalLabels() {
   document.getElementById('mini-player-forward')?.setAttribute('aria-label', `Forward ${interval} seconds`);
 }
 
-export function loadPlaybackSpeed() {
+export function loadPlaybackSpeed(bookSpeed = null) {
+  const preferredBookSpeed = Number(bookSpeed);
+  if (Number.isFinite(preferredBookSpeed) && preferredBookSpeed >= SPEED_MIN && preferredBookSpeed <= SPEED_MAX) {
+    currentPlaybackSpeed = preferredBookSpeed;
+    applyPlaybackSpeed();
+    updateSpeedButton();
+    return;
+  }
   const savedSpeed = readJSON(PLAYBACK_SPEED_KEY, null);
   if (savedSpeed !== null) {
     const parsed = parseFloat(savedSpeed);
@@ -151,6 +216,19 @@ function updateSpeedSheetState() {
   if (speedStepperValue) speedStepperValue.textContent = `${currentPlaybackSpeed.toFixed(2)}x`;
   speedSheet?.querySelectorAll('.speed-preset').forEach(btn => {
     btn.classList.toggle('active', Math.abs(parseFloat(btn.dataset.speed) - currentPlaybackSpeed) < 0.001);
+  });
+  const bookSettings = deps.getCurrentBookPlaybackSettings?.() || {};
+  const smartRewindChoice = Object.hasOwn(bookSettings, 'smartRewindEnabled')
+    ? (bookSettings.smartRewindEnabled ? 'on' : 'off')
+    : 'default';
+  const rollingOfflineChoice = Object.hasOwn(bookSettings, 'rollingOfflineEnabled')
+    ? (bookSettings.rollingOfflineEnabled ? 'on' : 'off')
+    : 'default';
+  bookSmartRewindControl?.querySelectorAll('[data-book-smart-rewind]').forEach(button => {
+    button.classList.toggle('active', smartRewindChoice === button.dataset.bookSmartRewind);
+  });
+  bookRollingOfflineControl?.querySelectorAll('[data-book-rolling-offline]').forEach(button => {
+    button.classList.toggle('active', rollingOfflineChoice === button.dataset.bookRollingOffline);
   });
 }
 

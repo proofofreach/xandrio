@@ -1,6 +1,10 @@
 /** Username/password accounts, server-side sessions, and account-mode auth tests. */
 
 const assert = require('assert');
+const fsp = require('fs').promises;
+const os = require('os');
+const path = require('path');
+const realJsonStore = require('../lib/json-store');
 const {
   normalizeUsername,
   hashPassword,
@@ -137,6 +141,93 @@ test('changePassword rotates the hash', async () => {
   assert.strictEqual(await accounts.changePassword('usr_missing', 'irrelevant-1'), false);
 });
 
+test('production accounts store refuses corrupt or invalid state without replacing it', async () => {
+  const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'accounts-critical-test-'));
+  try {
+    const corruptPath = path.join(dir, 'corrupt-accounts.json');
+    const corruptRaw = '{"accounts":';
+    await fsp.writeFile(corruptPath, corruptRaw);
+    const corruptStore = createAccountsStore({ filePath: corruptPath, jsonStore: realJsonStore });
+    await assert.rejects(
+      corruptStore.createAccount({ username: 'reader', password: 'password123' }),
+      error => error.code === 'JSON_STORE_CORRUPT'
+    );
+    assert.strictEqual(await fsp.readFile(corruptPath, 'utf8'), corruptRaw);
+
+    const invalidPath = path.join(dir, 'invalid-accounts.json');
+    const invalidRaw = '{"accounts":[]}';
+    await fsp.writeFile(invalidPath, invalidRaw);
+    const invalidStore = createAccountsStore({ filePath: invalidPath, jsonStore: realJsonStore });
+    await assert.rejects(
+      invalidStore.createAccount({ username: 'reader', password: 'password123' }),
+      error => error.code === 'JSON_STORE_VALIDATION_FAILED'
+    );
+    assert.strictEqual(await fsp.readFile(invalidPath, 'utf8'), invalidRaw);
+  } finally {
+    await fsp.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('account validation rejects malformed records without overwriting them', async () => {
+  const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'accounts-record-validation-'));
+  const valid = {
+    id: 'usr_valid',
+    username: 'reader',
+    displayName: 'Reader',
+    role: 'member',
+    password: hashPassword('password123'),
+    disabled: false,
+    createdAt: '2026-01-01T00:00:00.000Z'
+  };
+  const cases = [
+    ['null record', null],
+    ['mismatched id', { ...valid, id: 'usr_other' }],
+    ['invalid username', { ...valid, username: 'Reader Name' }],
+    ['invalid role', { ...valid, role: 'owner' }],
+    ['invalid disabled flag', { ...valid, disabled: 'false' }],
+    ['missing password', { ...valid, password: null }],
+    ['malformed password', { ...valid, password: { ...valid.password, hash: 'not base64!' } }]
+  ];
+  try {
+    for (const [name, record] of cases) {
+      const filePath = path.join(dir, `${name.replaceAll(' ', '-')}.json`);
+      const raw = JSON.stringify({ accounts: { usr_valid: record } });
+      await fsp.writeFile(filePath, raw);
+      const accounts = createAccountsStore({ filePath, jsonStore: realJsonStore });
+      await assert.rejects(
+        accounts.count(),
+        error => error.code === 'JSON_STORE_VALIDATION_FAILED',
+        name
+      );
+      assert.strictEqual(await fsp.readFile(filePath, 'utf8'), raw, name);
+    }
+  } finally {
+    await fsp.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('production accounts store backs up valid state before mutation', async () => {
+  const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'accounts-backup-test-'));
+  try {
+    const filePath = path.join(dir, 'accounts.json');
+    const accounts = createAccountsStore({ filePath, jsonStore: realJsonStore });
+    const account = await accounts.createAccount({
+      username: 'reader',
+      password: 'password123'
+    });
+    await accounts.setDisabled(account.id, true);
+
+    const backupDir = `${filePath}.backups`;
+    const names = await fsp.readdir(backupDir);
+    assert.strictEqual(names.length, 1);
+    const backup = JSON.parse(await fsp.readFile(path.join(backupDir, names[0]), 'utf8'));
+    assert.strictEqual(backup.accounts[account.id].disabled, false);
+    assert.strictEqual((await accounts.findById(account.id)).disabled, true);
+  } finally {
+    await fsp.rm(dir, { recursive: true, force: true });
+  }
+});
+
 // ─── Session store ─────────────────────────────────────────────────────────
 
 test('sessions create, resolve, expire, and destroy', async () => {
@@ -162,6 +253,46 @@ test('destroyAllForUser keeps only the excepted session', async () => {
   assert.strictEqual(await sessions.resolve(a.token), null);
   assert((await sessions.resolve(b.token)).userId === 'usr_a');
   assert((await sessions.resolve(other.token)).userId === 'usr_b');
+});
+
+test('production sessions store validates old state and backs up mutations', async () => {
+  const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'sessions-critical-test-'));
+  try {
+    const invalidPath = path.join(dir, 'invalid-sessions.json');
+    const invalidRaw = '{"sessions":[]}';
+    await fsp.writeFile(invalidPath, invalidRaw);
+    const invalidStore = createSessionStore({
+      filePath: invalidPath,
+      jsonStore: realJsonStore,
+      ttlMs: 60_000
+    });
+    await assert.rejects(
+      invalidStore.create('usr_a'),
+      error => error.code === 'JSON_STORE_VALIDATION_FAILED'
+    );
+    assert.strictEqual(await fsp.readFile(invalidPath, 'utf8'), invalidRaw);
+
+    const filePath = path.join(dir, 'sessions.json');
+    await fsp.writeFile(filePath, '{}');
+    const sessions = createSessionStore({
+      filePath,
+      jsonStore: realJsonStore,
+      ttlMs: 60_000
+    });
+    const first = await sessions.create('usr_a');
+    const second = await sessions.create('usr_b');
+    assert((await sessions.resolve(first.token)).userId === 'usr_a');
+    assert((await sessions.resolve(second.token)).userId === 'usr_b');
+
+    const names = await fsp.readdir(`${filePath}.backups`);
+    assert.strictEqual(names.length, 2);
+    const snapshots = await Promise.all(names.map(async name =>
+      JSON.parse(await fsp.readFile(path.join(`${filePath}.backups`, name), 'utf8'))
+    ));
+    assert(snapshots.some(snapshot => Object.keys(snapshot.sessions || {}).length === 1));
+  } finally {
+    await fsp.rm(dir, { recursive: true, force: true });
+  }
 });
 
 // ─── resolveRequestUser + middleware ───────────────────────────────────────

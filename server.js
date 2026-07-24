@@ -22,6 +22,7 @@ const zlibrary = require('./lib/zlibrary');
 const gutenberg = require('./lib/gutenberg');
 const { isSafeBookId: requestGuardIsSafeBookId, parseNonNegativeInteger } = require('./lib/request-guards');
 const { serveAudioFile } = require('./lib/audio-response');
+const { registerPlaybackRoutes } = require('./lib/routes/playback-routes');
 const { getTtsOutputFormatForVoice } = require('./lib/tts-output-format');
 const { createNarrationEngineRegistry } = require('./lib/narration-engine-registry');
 const { createNarrationRuntime } = require('./lib/narration-runtime');
@@ -32,6 +33,15 @@ const { createPronunciationService, createCacheInvalidator } = require('./lib/pr
 const { registerPronunciationRoutes } = require('./lib/routes/pronunciation-routes');
 const { createXBookStore } = require('./lib/xbook-store');
 const { createBookDocument } = require('./lib/book-document');
+const {
+  DELETE_BOOK_RESULT,
+  createBookArtifactCleaner,
+  createBookDeletionService
+} = require('./lib/book-deletion');
+const {
+  REFRESH_BOOK_RESULT,
+  createBookMetadataRefreshService
+} = require('./lib/book-metadata-refresh');
 const { chapterStructureKey, positionMatchesChapterStructure } = require('./lib/chapter-structure');
 const { parseEpub } = require('./lib/epub-parser');
 const { BookImportError, createBookImporter } = require('./lib/book-importer');
@@ -45,10 +55,15 @@ const internetArchive = require('./lib/search-providers/internet-archive');
 const { createStandardEbooksProvider } = require('./lib/search-providers/standard-ebooks');
 const { createOpdsProvider } = require('./lib/search-providers/opds');
 const { registerPreferencesRoutes } = require('./lib/routes/preferences-routes');
+const { registerDiagnosticsRoutes } = require('./lib/routes/diagnostics-routes');
+const { createOperatorDiagnostics } = require('./lib/operator-diagnostics');
 const { registerBookmarksRoutes, removeBookBookmarks } = require('./lib/routes/bookmarks-routes');
+const { registerListeningQueueRoutes } = require('./lib/routes/listening-queue-routes');
 const { registerOperatorPolicyRoutes } = require('./lib/routes/operator-policy-routes');
 const jsonStore = require('./lib/json-store');
+const { createBooksStore } = require('./lib/books-store');
 const { computeListeningStats } = require('./lib/listening-stats');
+const { removeBookFromAllQueues } = require('./lib/listening-queue');
 const { createAuthMiddleware, createAuthRoutes, createSessionStore, requireAdmin, DEFAULT_SESSION_TTL_MS } = require('./lib/auth');
 const { createAccountsStore } = require('./lib/accounts');
 const shelves = require('./lib/shelves');
@@ -303,6 +318,7 @@ app.use(express.static('public', {
 // Data directories
 const RUNTIME_DIR = path.join(DATA_DIR, 'runtime');
 const BOOKS_FILE = path.join(DATA_DIR, 'books.json');
+const booksStore = createBooksStore({ filePath: BOOKS_FILE, jsonStore, maxBackups: 5 });
 const POSITIONS_FILE = path.join(DATA_DIR, 'positions.json');
 const SETTINGS_FILE = path.join(DATA_DIR, 'settings.json');
 const ANNAS_AUTH_FILE = path.join(DATA_DIR, 'annas-auth.json');
@@ -310,6 +326,7 @@ const USERS_FILE = path.join(DATA_DIR, 'users.json');
 const BOOKMARKS_FILE = path.join(DATA_DIR, 'bookmarks.json');
 const SHELVES_FILE = path.join(DATA_DIR, 'shelves.json');
 const CLIENT_SETTINGS_FILE = path.join(DATA_DIR, 'client-settings.json');
+const LISTENING_QUEUE_FILE = path.join(DATA_DIR, 'listening-queues.json');
 const CUSTOM_VOICES_FILE = path.join(DATA_DIR, 'custom-voices.json');
 const PRONUNCIATIONS_FILE = path.join(DATA_DIR, 'pronunciations.json');
 const searchCoverService = createSearchCoverService({
@@ -340,10 +357,24 @@ function rememberDeletedBookId(bookId) {
   }
 }
 
+const bookArtifactCleaner = createBookArtifactCleaner({
+  cacheDir: CACHE_DIR,
+  fs,
+  invalidateChapterCache,
+  isBookDeleted: bookId => deletedBookIds.has(bookId)
+});
+
 // Unified 500 response: log the full error server-side, return a generic public
 // message with no raw err.message so internal details are not leaked to clients.
 function sendServerError(res, err, publicMessage = 'Something went wrong') {
   console.error(`${publicMessage}:`, err);
+  // Routes that stream (audio, covers) may fail after the response has begun.
+  // Writing a JSON body then would throw ERR_HTTP_HEADERS_SENT on top of the
+  // original error; all we can still do is cut the connection.
+  if (res.headersSent) {
+    res.destroy?.();
+    return;
+  }
   res.status(500).json({ error: publicMessage });
 }
 
@@ -502,59 +533,6 @@ async function searchAnnasProvider(query) {
   } catch {
     console.error('Anna browser fallback unavailable');
     return [];
-  }
-}
-
-async function cleanupBookArtifacts(bookId, book = {}) {
-  const deleted = [];
-  const failed = [];
-  const paths = new Set();
-
-  const addPath = (candidate) => {
-    if (!candidate || typeof candidate !== 'string') return;
-    const resolved = path.resolve(candidate);
-    const cacheRoot = path.resolve(CACHE_DIR);
-    if (resolved === cacheRoot || !resolved.startsWith(`${cacheRoot}${path.sep}`)) return;
-    paths.add(resolved);
-  };
-
-  addPath(book.path);
-  addPath(book.sourcePath);
-  addPath(book.extractedArtifact);
-  addPath(book.coverPath);
-
-  const cacheFiles = await fs.readdir(CACHE_DIR).catch(() => []);
-  for (const file of cacheFiles) {
-    if (file === bookId || file.startsWith(`${bookId}.`) || file.startsWith(`${bookId}_`)) {
-      addPath(path.join(CACHE_DIR, file));
-    }
-  }
-
-  for (const target of paths) {
-    try {
-      await fs.rm(target, { force: true, recursive: true });
-      deleted.push(target);
-      invalidateChapterCache(target);
-    } catch (err) {
-      failed.push({ path: target, error: err.message });
-    }
-  }
-
-  return { deleted, failed };
-}
-
-function scheduleDeletedBookArtifactSweeps(bookId, book = {}) {
-  for (const delay of [2000, 10000, 30000]) {
-    setTimeout(() => {
-      if (!deletedBookIds.has(bookId)) return;
-      cleanupBookArtifacts(bookId, book)
-        .then(result => {
-          if (result.deleted.length > 0 || result.failed.length > 0) {
-            console.log(`Post-delete sweep for ${bookId}: removed ${result.deleted.length}, failed ${result.failed.length}`);
-          }
-        })
-        .catch(err => console.error(`Post-delete sweep failed for ${bookId}:`, err));
-    }, delay);
   }
 }
 
@@ -1997,14 +1975,22 @@ async function ensureDirectories() {
 // holds the file's lock; loadJSON/saveJSON remain for reads and
 // whole-value replacement.
 async function loadJSON(filePath, defaultValue = {}) {
+  if (path.resolve(filePath) === path.resolve(BOOKS_FILE)) return booksStore.load();
   return jsonStore.load(filePath, defaultValue);
 }
 
 async function saveJSON(filePath, data) {
+  if (path.resolve(filePath) === path.resolve(BOOKS_FILE)) {
+    await booksStore.save(data);
+    return;
+  }
   await jsonStore.save(filePath, data);
 }
 
-const updateJSON = jsonStore.update;
+function updateJSON(filePath, mutator, defaultValue = {}) {
+  if (path.resolve(filePath) === path.resolve(BOOKS_FILE)) return booksStore.update(mutator);
+  return jsonStore.update(filePath, mutator, defaultValue);
+}
 const downloadImportGate = new ConcurrencyGate(CONCURRENCY_LIMITS.download, { name: 'download' });
 
 function isSafeBookId(value) {
@@ -2504,7 +2490,15 @@ app.post('/api/upload', uploadSingleEpub, handleUploadImport);
 // book records before they leave the API.
 function publicBookRecord(book) {
   if (!book || typeof book !== 'object') return book;
-  const { path: _path, coverPath, extractedArtifact, sourceHash, importValidation, ...pub } = book;
+  const {
+    path: _path,
+    coverPath,
+    extractedArtifact,
+    sourceHash,
+    importValidation,
+    metadataRefreshReconciliation,
+    ...pub
+  } = book;
   pub.hasCover = Boolean(coverPath);
   return pub;
 }
@@ -2588,6 +2582,55 @@ app.delete('/api/shelf/:bookId', async (req, res) => {
   }
 });
 
+const bookDeletionService = createBookDeletionService({
+  booksFile: BOOKS_FILE,
+  positionsFile: POSITIONS_FILE,
+  bookmarksFile: BOOKMARKS_FILE,
+  shelvesFile: SHELVES_FILE,
+  listeningQueueFile: LISTENING_QUEUE_FILE,
+  updateJSON,
+  skipSave: jsonStore.SKIP_SAVE,
+  rememberDeletedBookId,
+  cancelBookJobs: bookId => chunkedTTS.cancelBook(bookId) + instantChunkedTTS.cancelBook(bookId),
+  stopPremiumPrep: bookId => premiumPrep.stopBook(bookId),
+  cleanupBookArtifacts: bookArtifactCleaner.cleanup,
+  scheduleArtifactSweeps: bookArtifactCleaner.scheduleSweeps,
+  removeBookPositions: (positions, bookId) => removeBookPositions(positions, bookId),
+  removeBookBookmarks,
+  removeBookFromAllShelves: (shelvesStore, bookId) => shelves.removeBookFromAllShelves(shelvesStore, bookId),
+  removeBookFromAllQueues
+});
+
+const bookMetadataRefreshService = createBookMetadataRefreshService({
+  booksFile: BOOKS_FILE,
+  positionsFile: POSITIONS_FILE,
+  cacheDir: CACHE_DIR,
+  path,
+  loadJSON,
+  updateJSON,
+  skipSave: jsonStore.SKIP_SAVE,
+  isXBookPath,
+  invalidateXBookArtifactCache,
+  extractBookMetadata,
+  getChaptersCached,
+  resolveMetadataSeed,
+  enrichBookMetadata,
+  trustedEnrichedTitle,
+  resolveOpenLibraryIdentity,
+  isGarbageTitle,
+  isGarbageAuthor,
+  normalizeAuthorForDisplay,
+  publishedYearFromMetadata,
+  cleanBookDescription,
+  chapterStructureKey,
+  bookRecordOpenLibraryFields,
+  canonicalWorkKey,
+  removeFileIfExists,
+  removeBookPositions: (positions, bookId) => removeBookPositions(positions, bookId),
+  setBookPositionsStructureKey: (positions, bookId, structureKey) =>
+    setBookPositionsStructureKey(positions, bookId, structureKey)
+});
+
 // API: Delete book
 app.delete('/api/book/:bookId', async (req, res) => {
   try {
@@ -2595,58 +2638,19 @@ app.delete('/api/book/:bookId', async (req, res) => {
     if (!isSafeBookId(bookId)) {
       return res.status(400).json({ error: 'Invalid book identifier' });
     }
-    let forbidden = false;
-    const deletion = await updateJSON(BOOKS_FILE, async (books) => {
-      const book = books[bookId];
-      if (!book) return jsonStore.SKIP_SAVE;
-
-      // Members may delete only books they added; shared books (no addedBy)
-      // and other users' books are admin-only deletions.
-      if (req.user?.role === 'member' && book.addedBy !== req.user.id) {
-        forbidden = true;
-        return jsonStore.SKIP_SAVE;
-      }
-
-      rememberDeletedBookId(bookId);
-
-      const cancelledJobs = chunkedTTS.cancelBook(bookId) + instantChunkedTTS.cancelBook(bookId);
-      premiumPrep.stopBook(bookId);
-      const artifactCleanup = await cleanupBookArtifacts(bookId, book);
-      scheduleDeletedBookArtifactSweeps(bookId, book);
-      if (artifactCleanup.failed.length > 0) {
-        console.warn(`Book deletion left ${artifactCleanup.failed.length} artifact(s):`, artifactCleanup.failed);
-      }
-
-      delete books[bookId];
-      return { cancelledJobs, artifactCleanup };
-    });
-
-    if (forbidden) {
+    const deletion = await bookDeletionService.deleteBook({ bookId, actor: req.user });
+    if (deletion.status === DELETE_BOOK_RESULT.FORBIDDEN) {
       return res.status(403).json({ error: 'Only the book owner or an admin can delete this book' });
     }
-    if (deletion === jsonStore.SKIP_SAVE) {
+    if (deletion.status === DELETE_BOOK_RESULT.NOT_FOUND) {
       return res.status(404).json({ error: 'Book not found' });
     }
-    const { cancelledJobs, artifactCleanup } = deletion;
-
-    // Remove saved positions for this book across all sync users.
-    await updateJSON(POSITIONS_FILE, (positions) => {
-      removeBookPositions(positions, bookId);
-    });
-    // Remove saved bookmarks for this book across all sync users.
-    await updateJSON(BOOKMARKS_FILE, (bookmarks) => {
-      removeBookBookmarks(bookmarks, bookId);
-    });
-    // Remove the book from every user's shelf.
-    await updateJSON(SHELVES_FILE, (data) => {
-      shelves.removeBookFromAllShelves(data, bookId);
-    });
     res.json({
       success: true,
       message: 'Book deleted successfully',
-      deletedArtifacts: artifactCleanup.deleted.length,
-      failedArtifacts: artifactCleanup.failed,
-      cancelledJobs
+      deletedArtifacts: deletion.artifactCleanup.deleted.length,
+      failedArtifacts: deletion.artifactCleanup.failed,
+      cancelledJobs: deletion.cancelledJobs
     });
   } catch (err) {
     console.error('Delete book error:', err);
@@ -2661,94 +2665,11 @@ app.post('/api/refresh-metadata/:bookId', async (req, res) => {
     if (!isSafeBookId(bookId)) {
       return res.status(400).json({ error: 'Invalid book identifier' });
     }
-    const books = await loadJSON(BOOKS_FILE, {});
-    const book = books[bookId];
-    
-    if (!book) {
+    const refresh = await bookMetadataRefreshService.refreshBook(bookId);
+    if (refresh.status === REFRESH_BOOK_RESULT.NOT_FOUND) {
       return res.status(404).json({ error: 'Book not found' });
     }
-
-    // Extract fresh metadata from the stored book file
-    if (isXBookPath(book.path)) {
-      invalidateXBookArtifactCache(book.path);
-    }
-    const metadata = await extractBookMetadata(book.path);
-    
-    // Clean and enrich
-    const metadataSeed = resolveMetadataSeed(
-      metadata,
-      book.title,
-      book.author,
-      book.originalFilename || book.uploadedFile || book.filename
-    );
-    const cleanTitle = metadataSeed.title;
-    const cleanAuthor = metadataSeed.author;
-    const enrichedMetadata = await enrichBookMetadata(cleanTitle, cleanAuthor);
-    const enrichedTitle = trustedEnrichedTitle(enrichedMetadata.title, cleanTitle, metadataSeed);
-    const openLibraryIdentity = await resolveOpenLibraryIdentity({
-      title: cleanTitle,
-      author: cleanAuthor,
-      language: metadata.language || book.language,
-      isbn: metadata.isbn
-    }, { timeoutMs: 5000 });
-    
-    const epubTitleIsGarbage = isGarbageTitle(metadata.title) || metadataSeed.embeddedLooksWrong;
-    const epubAuthorIsGarbage = isGarbageAuthor(metadata.author);
-    const refreshedChapters = await getChaptersCached(book.path);
-
-    // Refreshed fields (prefer Open Library when EPUB data is garbage) —
-    // applied under the library lock so a concurrent writer isn't clobbered.
-    const refreshedAuthorCandidate = epubAuthorIsGarbage
-      ? (enrichedMetadata.author || cleanAuthor || book.author)
-      : (metadata.author || enrichedMetadata.author || book.author);
-    const refreshedStructureKey = chapterStructureKey(refreshedChapters);
-    const structureIntroduced = Boolean(refreshedStructureKey) && !book.chapterStructureKey;
-    const structureChanged = Boolean(refreshedStructureKey && book.chapterStructureKey) &&
-      refreshedStructureKey !== book.chapterStructureKey;
-    const refreshedFields = {
-      title: epubTitleIsGarbage
-        ? (enrichedTitle || cleanTitle || book.title)
-        : (metadata.title || enrichedTitle || book.title),
-      author: normalizeAuthorForDisplay(refreshedAuthorCandidate),
-      publisher: metadata.publisher || enrichedMetadata.publisher,
-      publishedDate: publishedYearFromMetadata(metadata.date, enrichedMetadata.publishedDate),
-      description: cleanBookDescription(metadata.description || enrichedMetadata.description),
-      subjects: enrichedMetadata.subjects || [],
-      language: metadata.language || book.language || 'en',
-      chapterCount: refreshedChapters.length,
-      chapterStructureKey: refreshedStructureKey || book.chapterStructureKey,
-      // A refresh may repair chapter ordering/types. Any preload indices from
-      // the previous structure are no longer trustworthy.
-      chapter1Ready: false,
-      preloadedThrough: null,
-      ...bookRecordOpenLibraryFields(openLibraryIdentity),
-      metadataRefreshed: new Date().toISOString()
-    };
-    refreshedFields.workKey = canonicalWorkKey(refreshedFields.title, refreshedFields.author) || book.workKey;
-
-    const updatedBook = await updateJSON(BOOKS_FILE, (books) => {
-      const current = books[bookId];
-      if (!current) return jsonStore.SKIP_SAVE;
-      books[bookId] = { ...current, ...refreshedFields };
-      return books[bookId];
-    });
-
-    if (updatedBook === jsonStore.SKIP_SAVE) {
-      return res.status(404).json({ error: 'Book not found' });
-    }
-
-    const titleChanged = updatedBook.title !== book.title || updatedBook.author !== book.author;
-    if (titleChanged) {
-      await removeFileIfExists(path.join(CACHE_DIR, `${bookId}_cover.jpg`));
-    }
-    if (structureChanged) {
-      await updateJSON(POSITIONS_FILE, positions => removeBookPositions(positions, bookId));
-    } else if (structureIntroduced) {
-      await updateJSON(POSITIONS_FILE, positions =>
-        setBookPositionsStructureKey(positions, bookId, refreshedStructureKey));
-    }
-
-    res.json({ success: true, book: publicBookRecord(updatedBook) });
+    res.json({ success: true, book: publicBookRecord(refresh.book) });
   } catch (err) {
     console.error('Metadata refresh error:', err);
     sendServerError(res, err, "Failed to refresh metadata");
@@ -2866,207 +2787,21 @@ app.get('/api/cover/:bookId', async (req, res) => {
   }
 });
 
-// API: Test chunked audio generation (legacy endpoint, updated for new chunked system)
-app.get('/api/audio-chunked/:bookId/:chapterIndex', async (req, res) => {
-  try {
-    const { bookId } = req.params;
-    const chapterIndex = parseNonNegativeInteger(req.params.chapterIndex);
-    if (!isSafeBookId(bookId) || chapterIndex === null) {
-      return res.status(400).json({ error: 'Invalid book or chapter identifier' });
-    }
-    const startTime = Date.now();
-    const response = await playbackOrchestrator.prepareFirstChunk({
-      bookId,
-      chapterIndex,
-      requestedTier: req.query.tier
-    });
-    res.json({ ...response, generationTime: Date.now() - startTime });
-    
-  } catch (err) {
-    if (err.statusCode === 404) return res.status(404).json({ error: err.message });
-    console.error('Chunked audio generation error:', err);
-    sendServerError(res, err, "Failed to load audio");
-  }
-});
-
-// API: Serve audio chunks
-app.get('/api/serve-chunk/:filename', (req, res) => {
-  const redirect = playbackOrchestrator.legacyChunkRedirect(req.params.filename);
-  if (!redirect) {
-    return res.status(403).json({ error: 'Invalid chunk filename' });
-  }
-  res.redirect(307, redirect);
-});
-
-// API: Get audio for chapter (backward-compatible, now uses chunked generation as backend)
-app.get('/api/audio/:bookId/:chapterIndex', async (req, res) => {
-  try {
-    const { bookId } = req.params;
-    const chapterIndex = parseNonNegativeInteger(req.params.chapterIndex);
-    if (!isSafeBookId(bookId) || chapterIndex === null) {
-      return res.status(400).json({ error: 'Invalid book or chapter identifier' });
-    }
-    const { path: preparedPath, servedTier } = await playbackOrchestrator.prepareChapterAudio({
-      bookId,
-      chapterIndex,
-      requestedTier: req.query.tier,
-      priority: 'immediate'
-    });
-    if (servedTier) res.set('X-Served-Tier', servedTier);
-    return await serveAudioFile(req, res, preparedPath);
-  } catch (err) {
-    if (err.message === 'Book not found' || err.message === 'Chapter not found') {
-      return res.status(404).json({ error: err.message });
-    }
-    console.error('Audio generation error:', err);
-    sendServerError(res, err, "Failed to load audio");
-  }
-});
-
-
-// API: Get clean iOS chapter audio.
-app.get('/api/audio-ios/:bookId/:chapterIndex', async (req, res) => {
-  try {
-    const { bookId } = req.params;
-    const chapterIndex = parseNonNegativeInteger(req.params.chapterIndex);
-    if (!isSafeBookId(bookId) || chapterIndex === null) {
-      return res.status(400).json({ error: 'Invalid book or chapter identifier' });
-    }
-
-    const { path: preparedPath, servedTier } = await playbackOrchestrator.prepareChapterAudio({
-      bookId,
-      chapterIndex,
-      requestedTier: req.query.tier,
-      clean: true,
-      priority: 'immediate'
-    });
-    if (servedTier) res.set('X-Served-Tier', servedTier);
-    return await serveAudioFile(req, res, preparedPath);
-  } catch (err) {
-    console.error('iOS audio generation error:', err);
-    sendServerError(res, err, "Failed to load audio");
-  }
+// Playback, chapter audio, and chunk delivery — see lib/routes/playback-routes.js.
+// Registered here so the chunk routes keep their position relative to the
+// voice-cache and premium-prep routes below.
+registerPlaybackRoutes(app, {
+  playbackOrchestrator,
+  ttsForTier,
+  generationJournal,
+  serveAudioFile,
+  sendServerError,
+  fs
 });
 
 // =========================================================================
-// Chunk API endpoints (new chunked TTS system)
+// Chunk API endpoints that still reach into server-local state
 // =========================================================================
-
-// API: Get chapter chunk manifest (triggers generation if needed)
-app.get('/api/chunks/:bookId/:chapterIndex/manifest', async (req, res) => {
-  try {
-    const { bookId } = req.params;
-    const chapterIndex = parseNonNegativeInteger(req.params.chapterIndex);
-    if (!isSafeBookId(bookId) || chapterIndex === null) {
-      return res.status(400).json({ error: 'Invalid book or chapter identifier' });
-    }
-    const response = await playbackOrchestrator.preparePlayback({
-      bookId,
-      chapterIndex,
-      requestedTier: req.query.tier,
-      targetChunk: 0
-    });
-    res.json(response);
-  } catch (err) {
-    if (err.statusCode === 404) return res.status(404).json({ error: err.message });
-    console.error('Chunk manifest error:', err);
-    sendServerError(res, err, "Failed to load chunk manifest");
-  }
-});
-
-
-// API: Get status for reliable single-file chapter audio.
-app.get('/api/chunks/:bookId/:chapterIndex/chapter-audio-status', async (req, res) => {
-  try {
-    const { bookId } = req.params;
-    const chapterIndex = parseNonNegativeInteger(req.params.chapterIndex);
-    if (!isSafeBookId(bookId) || chapterIndex === null) {
-      return res.status(400).json({ error: 'Invalid book or chapter identifier' });
-    }
-    res.json(await playbackOrchestrator.chapterAudioStatus({
-      bookId,
-      chapterIndex,
-      requestedTier: req.query.tier,
-      clean: req.query.clean === '1'
-    }));
-  } catch (err) {
-    console.error('Chapter audio status error:', err);
-    sendServerError(res, err, "Failed to get chapter audio status");
-  }
-});
-
-// API: Prepare reliable single-file chapter audio in the background.
-app.post('/api/chunks/:bookId/:chapterIndex/prepare-chapter-audio', async (req, res) => {
-  try {
-    const { bookId } = req.params;
-    const chapterIndex = parseNonNegativeInteger(req.params.chapterIndex);
-    if (!isSafeBookId(bookId) || chapterIndex === null) {
-      return res.status(400).json({ error: 'Invalid book or chapter identifier' });
-    }
-
-    const clean = req.query.clean === '1' || req.body?.clean === true;
-    const status = await playbackOrchestrator.startChapterAudio({
-      bookId,
-      chapterIndex,
-      requestedTier: req.query.tier || req.body?.tier,
-      clean
-    });
-    res.status(202).json(status);
-  } catch (err) {
-    console.error('Chapter audio prepare error:', err);
-    sendServerError(res, err, "Failed to prepare chapter audio");
-  }
-});
-
-// API: Prepare the current chapter after a voice change without forcing a full chapter regen first.
-app.post('/api/chunks/:bookId/:chapterIndex/prepare', async (req, res) => {
-  try {
-    const { bookId } = req.params;
-    const chapterIndex = parseNonNegativeInteger(req.params.chapterIndex);
-    const requestedTargetChunk = Math.max(0, parseInt(req.body?.targetChunk ?? 0) || 0);
-    if (!isSafeBookId(bookId) || chapterIndex === null) {
-      return res.status(400).json({ error: 'Invalid book or chapter identifier' });
-    }
-    res.json(await playbackOrchestrator.prepareCurrentChapter({
-      bookId,
-      chapterIndex,
-      requestedTier: req.query.tier || req.body?.tier,
-      targetChunk: requestedTargetChunk
-    }));
-  } catch (err) {
-    if (err.statusCode === 404) return res.status(404).json({ error: err.message });
-    console.error('Chunk prepare error:', err);
-    sendServerError(res, err, "Failed to prepare chunks");
-  }
-});
-
-// Explicit user retry: automatic startup recovery respects quarantine, while
-// this action clears it for the currently requested playback tier and starts
-// a fresh generation attempt.
-app.post('/api/chunks/:bookId/:chapterIndex/retry', async (req, res) => {
-  try {
-    const { bookId } = req.params;
-    const chapterIndex = parseNonNegativeInteger(req.params.chapterIndex);
-    if (!isSafeBookId(bookId) || chapterIndex === null) {
-      return res.status(400).json({ error: 'Invalid book or chapter identifier' });
-    }
-    const resolution = await playbackOrchestrator.resolveTier(bookId, chapterIndex, req.query.tier || req.body?.tier);
-    const tts = ttsForTier(resolution.tier);
-    const variantKey = String(tts.variantKeyProvider() || 'default');
-    await generationJournal.clearChapterQuarantine(bookId, chapterIndex, variantKey);
-    const prepared = await playbackOrchestrator.prepareCurrentChapter({
-      bookId,
-      chapterIndex,
-      requestedTier: req.query.tier || req.body?.tier,
-      targetChunk: Math.max(0, parseInt(req.body?.targetChunk ?? 0) || 0)
-    });
-    res.json({ retried: true, ...prepared });
-  } catch (err) {
-    if (err.statusCode === 404) return res.status(404).json({ error: err.message });
-    console.error('Chunk retry error:', err);
-    sendServerError(res, err, 'Failed to retry chapter narration');
-  }
-});
 
 app.get('/api/voice-cache/:bookId/:chapterIndex', async (req, res) => {
   try {
@@ -3126,39 +2861,6 @@ app.get('/api/voice-cache/:bookId/:chapterIndex', async (req, res) => {
   }
 });
 
-// API: Get chunk generation status for a chapter
-app.get('/api/chunks/:bookId/:chapterIndex/status', async (req, res) => {
-  try {
-    const { bookId } = req.params;
-    const chapterIndex = parseNonNegativeInteger(req.params.chapterIndex);
-    if (!isSafeBookId(bookId) || chapterIndex === null) {
-      return res.status(400).json({ error: 'Invalid book or chapter identifier' });
-    }
-
-    const status = await playbackOrchestrator.chunkStatus({
-      bookId,
-      chapterIndex,
-      requestedTier: req.query.tier
-    });
-    const resolution = await playbackOrchestrator.resolveTier(bookId, chapterIndex, req.query.tier);
-    const variantKey = String(ttsForTier(resolution.tier).variantKeyProvider() || 'default');
-    const quarantined = (await generationJournal.listQuarantinedChapters()).find(entry =>
-      entry.bookId === bookId && entry.chapterIndex === chapterIndex && entry.variantKey === variantKey
-    );
-    res.json({
-      ...status,
-      recovery: quarantined ? {
-        quarantined: true,
-        attempts: quarantined.attempts || 0,
-        message: 'Generation paused after repeated failures. Use retry after correcting the voice or engine.'
-      } : { quarantined: false }
-    });
-  } catch (err) {
-    if (err.statusCode === 404) return res.status(404).json({ error: err.message });
-    console.error('Chunk status error:', err);
-    sendServerError(res, err, "Failed to get chunk status");
-  }
-});
 
 // --- Progressive premium audio: book-level background prep -----------------
 
@@ -3258,86 +2960,6 @@ app.post('/api/premium-prep/settings', async (req, res) => {
   }
 });
 
-// API: Prioritize a queued chunk, usually after seeking into an uncached voice variant
-app.post('/api/chunks/:bookId/:chapterIndex/:chunkIndex/prioritize', async (req, res) => {
-  try {
-    const { bookId } = req.params;
-    const chapterIndex = parseNonNegativeInteger(req.params.chapterIndex);
-    const chunkIndex = parseNonNegativeInteger(req.params.chunkIndex);
-
-    if (!isSafeBookId(bookId) || chapterIndex === null || chunkIndex === null) {
-      return res.status(400).json({ error: 'Invalid chunk' });
-    }
-
-    const result = await playbackOrchestrator.prioritizeChunk({
-      bookId,
-      chapterIndex,
-      chunkIndex,
-      requestedTier: req.query.tier
-    });
-    if (!result) {
-      return res.status(404).json({ error: 'Chunk not found' });
-    }
-    res.json(result);
-  } catch (err) {
-    console.error('Chunk prioritize error:', err);
-    sendServerError(res, err, "Failed to prioritize chunk");
-  }
-});
-
-// API: Serve individual playback audio chunk
-app.get('/api/chunks/:bookId/:chapterIndex/:chunkIndex', async (req, res) => {
-  try {
-    const { bookId } = req.params;
-    const chapterIndex = parseNonNegativeInteger(req.params.chapterIndex);
-    const chunkIndex = parseNonNegativeInteger(req.params.chunkIndex);
-    if (!isSafeBookId(bookId) || chapterIndex === null || chunkIndex === null) {
-      return res.status(400).json({ error: 'Invalid chunk' });
-    }
-
-    const access = await playbackOrchestrator.chunkAccess({
-      bookId,
-      chapterIndex,
-      chunkIndex,
-      requestedTier: req.query.tier
-    });
-    const chunkFilePath = access.path;
-    if (access.servedTier) res.set('X-Served-Tier', access.servedTier);
-
-    // Check if chunk file exists on disk
-    try {
-      await fs.access(chunkFilePath);
-    } catch {
-      // File not on disk — check manifest for status
-      if (access.status !== 'missing') {
-        if (access.status === 'queued' || access.status === 'generating') {
-          return res.status(202).json({ status: 'generating' });
-        }
-        if (access.status === 'error') {
-          return res.status(500).json({ status: 'error', error: 'Chunk generation failed' });
-        }
-      }
-      return res.status(404).json({ error: 'Chunk not found' });
-    }
-
-    // Serve the chunk with range request support
-    const stat = await fs.stat(chunkFilePath);
-    const fileSize = stat.size;
-
-    // Guard against 0-byte files (failed TTS generation)
-    if (fileSize === 0) {
-      // Delete the corrupt file so it can be regenerated
-      try { await fs.unlink(chunkFilePath); } catch {}
-      return res.status(202).json({ status: 'generating', error: 'Chunk was empty, queued for regeneration' });
-    }
-
-    await serveAudioFile(req, res, chunkFilePath);
-  } catch (err) {
-    console.error('Chunk serve error:', err);
-    sendServerError(res, err, "Failed to load chunk");
-  }
-});
-
 // API: Get TTS queue status
 app.get('/api/queue/status', (req, res) => {
   res.json(ttsQueue.getQueueStatus());
@@ -3361,6 +2983,7 @@ const {
   normalizePositionsStore,
   removeBookPositions,
   setBookPositionsStructureKey,
+  migrateUserScopedStore,
   migratePositions,
   positionForBook,
   positionsForUser,
@@ -3420,6 +3043,9 @@ app.post('/api/sync/profile', async (req, res) => {
     if (migrateFromUserId && migrateFromUserId !== userId) {
       await updateJSON(POSITIONS_FILE, (data) => {
         migratePositions(data, migrateFromUserId, userId);
+      });
+      await updateJSON(LISTENING_QUEUE_FILE, (data) => {
+        migrateUserScopedStore(data, migrateFromUserId, userId);
       });
     }
 
@@ -3802,7 +3428,7 @@ async function backfillChapterDurations() {
   }
 }
 
-registerPreferencesRoutes(app, {
+const preferencesRoutes = registerPreferencesRoutes(app, {
   annasAuthFile: ANNAS_AUTH_FILE,
   chatterboxVoicesEnabled: !ALLOWED_VOICE_PROVIDERS || ALLOWED_VOICE_PROVIDERS.has('chatterbox'),
   availableVoices: AVAILABLE_VOICES,
@@ -3831,10 +3457,28 @@ registerPreferencesRoutes(app, {
   zlibrary
 });
 
+registerDiagnosticsRoutes(app, {
+  requireAdmin,
+  collectDiagnostics: createOperatorDiagnostics({
+    dataDir: DATA_DIR,
+    cacheDir: CACHE_DIR,
+    getQueueStatus: () => ttsQueue.getQueueStatus(),
+    getEngineStatus: preferencesRoutes.getEngineStatus
+  })
+});
+
 registerBookmarksRoutes(app, {
   bookmarksFile: BOOKMARKS_FILE,
   clientSettingsFile: CLIENT_SETTINGS_FILE,
   jsonStore,
+  loadJSON,
+  updateJSON
+});
+
+registerListeningQueueRoutes(app, {
+  listeningQueueFile: LISTENING_QUEUE_FILE,
+  booksFile: BOOKS_FILE,
+  positionsFile: POSITIONS_FILE,
   loadJSON,
   updateJSON
 });

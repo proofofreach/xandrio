@@ -1,25 +1,31 @@
 const APP_RELEASE = '1.1.0';
-const CACHE_VERSION = 'xandrio-v78';
+const CACHE_VERSION = 'xandrio-v86';
 const OFFLINE_AUDIO_CACHE = 'xandrio-offline-audio';
+const OFFLINE_TITLE_CACHE = 'xandrio-offline-titles';
 // Single source of truth for the versioned shell assets. The <link>/<script>
 // tags in index.html must carry the SAME ?v= values — update both together,
 // and bump CACHE_VERSION whenever any APP_SHELL entry changes (including the
 // un-versioned js/ modules below, which only invalidate via CACHE_VERSION).
 const ASSET_VERSIONS = {
-  '/style-v3.css': 76,
-  '/js/chunk-player.js': 18,
-  '/app.js': 88
+  '/style-v3.css': 79,
+  '/js/lifecycle.js': 1,
+  '/js/chunk-player.js': 20,
+  '/app.js': 90
 };
 const versionedAsset = (path) => `${path}?v=${ASSET_VERSIONS[path]}`;
 const APP_SHELL = [
   '/',
   '/index.html',
   versionedAsset('/style-v3.css'),
+  versionedAsset('/js/lifecycle.js'),
   versionedAsset('/js/chunk-player.js'),
   versionedAsset('/app.js'),
   '/js/router.js',
   '/js/api.js',
   '/js/client-settings.js',
+  '/js/playback-session.js',
+  '/js/smart-rewind.mjs',
+  '/js/single-file-chapter-player.js',
   '/js/util/format.js',
   '/js/ui/toast.js',
   '/js/ui/keys.js',
@@ -42,6 +48,8 @@ const APP_SHELL = [
   '/js/views/sleep-timer.js',
   '/js/features/bookmarks.js',
   '/js/features/offline.js',
+  '/js/features/rolling-offline.mjs',
+  '/js/features/listening-queue.js',
   '/js/features/pronunciations.js',
   '/js/features/queue-status.js',
   '/fonts/inter-latin.woff2',
@@ -85,7 +93,7 @@ self.addEventListener('activate', event => {
     }
     const keys = await caches.keys();
     await Promise.all(keys
-      .filter(key => key !== CACHE_VERSION && key !== OFFLINE_AUDIO_CACHE)
+      .filter(key => key !== CACHE_VERSION && key !== OFFLINE_AUDIO_CACHE && key !== OFFLINE_TITLE_CACHE)
       .map(key => caches.delete(key)));
     await self.clients.claim();
   })());
@@ -107,6 +115,17 @@ function isOfflineAudioRequest(request) {
   // Both audio endpoints: /api/audio/ (chunked concat) and /api/audio-ios/
   // (clean AAC used by SingleFileChapterPlayer on iOS).
   return /^\/api\/audio(?:-ios)?\/[^/]+\/\d+$/.test(url.pathname);
+}
+
+function isOfflineTitleRequest(request) {
+  if (request.method !== 'GET') return false;
+  const url = new URL(request.url);
+  return url.origin === self.location.origin && /^\/api\/cover\/[^/]+$/.test(url.pathname);
+}
+
+async function cachedTitleResponse(request) {
+  const cache = await caches.open(OFFLINE_TITLE_CACHE);
+  return (await cache.match(request.url)) || Response.error();
 }
 
 async function cachedAudioResponse(request) {
@@ -157,6 +176,8 @@ self.addEventListener('fetch', event => {
   const request = event.request;
   if (isOfflineAudioRequest(request)) {
     event.respondWith(fetch(request, { cache: 'no-store' }).catch(() => cachedAudioResponse(request)));
+  } else if (isOfflineTitleRequest(request)) {
+    event.respondWith(fetch(request, { cache: 'no-store' }).catch(() => cachedTitleResponse(request)));
   } else if (isAppShell(request)) {
     const networkResponse = fetch(request);
     event.respondWith(networkResponse.catch(() => caches.match(request)));

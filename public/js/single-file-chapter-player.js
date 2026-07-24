@@ -2,6 +2,13 @@
  * Native-audio chapter engine used for reliable iOS and downloaded playback.
  * It implements the same playback adapter contract used by ChunkPlayer.
  */
+
+// A media element that neither fires `canplay`/`loadedmetadata` nor `error`
+// (backgrounded iOS tab, silently stalled response) would otherwise leave
+// loadChapter() pending forever with the loading overlay stuck up.
+const LOAD_TIMEOUT_MS = 30000;
+const { DisposableScope, LifecycleCancelledError, waitForMediaEvents } = globalThis.XandrioLifecycle || {};
+
 export class SingleFileChapterPlayer {
   constructor(audio, options = {}) {
     this.audio = audio;
@@ -15,6 +22,7 @@ export class SingleFileChapterPlayer {
     this.onPlaybackChange = options.onPlaybackChange || null;
     this.isIOSLike = options.isIOSLike || (() => false);
     this.preferStandardAudio = Boolean(options.preferStandardAudio);
+    this.loadTimeoutMs = Number(options.loadTimeoutMs) > 0 ? Number(options.loadTimeoutMs) : LOAD_TIMEOUT_MS;
     this.backend = 'single-file';
     this.supportsNativeMediaSession = true;
     this.bookId = null;
@@ -24,6 +32,17 @@ export class SingleFileChapterPlayer {
     this._isPlaying = false;
     this._volume = 1;
     this.playbackRate = 1;
+    // Incremented on every loadChapter()/dispose(). Async chains capture it
+    // on entry and bail after each await if a newer chapter has taken over,
+    // so an in-flight load can't fire onReady for a superseded chapter.
+    // Mirrors the same guard in ChunkPlayer.
+    this._generation = 0;
+    // Tears down the in-flight loadChapter() wait, if any.
+    this._loadWait = null;
+    this._eventScope = null;
+    this._playWait = null;
+    this._pauseReason = null;
+    this._playReason = null;
     this._boundTimeUpdate = this._handleTimeUpdate.bind(this);
     this._boundEnded = this._handleEnded.bind(this);
     this._boundError = this._handleError.bind(this);
@@ -32,6 +51,7 @@ export class SingleFileChapterPlayer {
   }
 
   async loadChapter(bookId, chapterIndex) {
+    const gen = ++this._generation;
     this.pause();
     this.bookId = bookId;
     this.chapterIndex = chapterIndex;
@@ -46,40 +66,51 @@ export class SingleFileChapterPlayer {
     this.audio.playbackRate = this.playbackRate;
     this._attach();
     this.onWaiting?.('Loading audio…');
-    await new Promise((resolve, reject) => {
-      const done = () => { cleanup(); resolve(); };
-      const fail = () => { cleanup(); reject(this._audioError()); };
-      const cleanup = () => {
-        this.audio.removeEventListener('loadedmetadata', done);
-        this.audio.removeEventListener('canplay', done);
-        this.audio.removeEventListener('error', fail);
-      };
-      this.audio.addEventListener('loadedmetadata', done, { once: true });
-      this.audio.addEventListener('canplay', done, { once: true });
-      this.audio.addEventListener('error', fail, { once: true });
-      this.audio.load();
+    const wait = waitForMediaEvents(this.audio, {
+      resolveEvents: ['loadedmetadata', 'canplay'],
+      rejectEvents: ['error'],
+      timeoutMs: this.loadTimeoutMs,
+      timeoutError: () => {
+        const error = this._audioError();
+        error.code = 'MEDIA_LOAD_TIMEOUT';
+        return error;
+      },
+      eventError: () => this._audioError(),
+      cancelledError: () => new LifecycleCancelledError('Chapter load cancelled')
     });
+    this._loadWait = wait;
+    try {
+      this.audio.load();
+      await wait.promise;
+    } catch (error) {
+      if (gen === this._generation && error?.code === 'MEDIA_LOAD_TIMEOUT') this.onError?.(error);
+      throw error;
+    } finally {
+      if (this._loadWait === wait) this._loadWait = null;
+    }
+    if (gen !== this._generation) return;
     this.onReady?.();
     this._handleTimeUpdate();
   }
 
   _attach() {
     this._detach();
-    this.audio.addEventListener('timeupdate', this._boundTimeUpdate);
-    this.audio.addEventListener('ended', this._boundEnded);
-    this.audio.addEventListener('error', this._boundError);
-    this.audio.addEventListener('play', this._boundNativePlay);
-    this.audio.addEventListener('playing', this._boundNativePlay);
-    this.audio.addEventListener('pause', this._boundNativePause);
+    this._eventScope = new DisposableScope();
+    this._eventScope.listen(this.audio, 'timeupdate', this._boundTimeUpdate);
+    this._eventScope.listen(this.audio, 'ended', this._boundEnded);
+    this._eventScope.listen(this.audio, 'error', this._boundError);
+    this._eventScope.listen(this.audio, 'play', this._boundNativePlay);
+    this._eventScope.listen(this.audio, 'playing', this._boundNativePlay);
+    this._eventScope.listen(this.audio, 'pause', this._boundNativePause);
   }
 
   _detach() {
-    this.audio.removeEventListener('timeupdate', this._boundTimeUpdate);
-    this.audio.removeEventListener('ended', this._boundEnded);
-    this.audio.removeEventListener('error', this._boundError);
-    this.audio.removeEventListener('play', this._boundNativePlay);
-    this.audio.removeEventListener('playing', this._boundNativePlay);
-    this.audio.removeEventListener('pause', this._boundNativePause);
+    this._loadWait?.cancel();
+    this._loadWait = null;
+    this._playWait?.cancel();
+    this._playWait = null;
+    this._eventScope?.dispose();
+    this._eventScope = null;
   }
 
   _audioError() {
@@ -115,39 +146,57 @@ export class SingleFileChapterPlayer {
   }
 
   _handleNativePlay() {
+    const wasPlaying = this._isPlaying;
+    const reason = this._playReason || 'external';
+    this._playReason = null;
     this._isPlaying = true;
-    this.onPlaybackChange?.(true);
+    if (wasPlaying && reason === 'external') return;
+    this.onPlaybackChange?.(true, { reason });
   }
 
   _handleNativePause() {
     if (this.audio.ended) return;
     this._isPlaying = false;
-    this.onPlaybackChange?.(false);
+    const reason = this._pauseReason || 'external';
+    this._pauseReason = null;
+    this.onPlaybackChange?.(false, { reason });
   }
 
   async play() {
+    this._pauseReason = null;
+    this._playReason = 'app';
     this._isPlaying = true;
+    const wait = waitForMediaEvents(this.audio, {
+      resolveEvents: ['playing'],
+      rejectEvents: ['error'],
+      timeoutMs: 1500,
+      resolveOnTimeout: true,
+      eventError: () => this._audioError(),
+      cancelledError: () => new LifecycleCancelledError('Playback start cancelled')
+    });
+    this._playWait = wait;
+    // Observe the event wait immediately. audio.play() can reject before the
+    // next await, and teardown must not turn cancellation of this sibling
+    // promise into an unhandled rejection.
+    wait.promise.catch(() => {});
     try {
-      const playing = new Promise((resolve, reject) => {
-        const done = () => { cleanup(); resolve(); };
-        const fail = () => { cleanup(); reject(this._audioError()); };
-        const cleanup = () => {
-          this.audio.removeEventListener('playing', done);
-          this.audio.removeEventListener('error', fail);
-        };
-        this.audio.addEventListener('playing', done, { once: true });
-        this.audio.addEventListener('error', fail, { once: true });
-        setTimeout(done, 1500);
-      });
       await this.audio.play();
-      await playing;
+      await wait.promise;
     } catch (error) {
       this._isPlaying = false;
       throw error;
+    } finally {
+      wait.cancel();
+      if (this._playWait === wait) this._playWait = null;
+      this._playReason = null;
     }
   }
 
-  pause() { this._isPlaying = false; this.audio.pause(); }
+  pause(reason = 'app') {
+    this._isPlaying = false;
+    this._pauseReason = reason;
+    this.audio.pause();
+  }
   get isPlaying() { return this._isPlaying && !this.audio.paused; }
   async seek(seconds) {
     this.audio.currentTime = Math.max(0, Math.min(Number(seconds) || 0, this.getTotalTime() || Number(seconds) || 0));
@@ -181,9 +230,13 @@ export class SingleFileChapterPlayer {
       isPlaying: this._isPlaying
     };
   }
-  dispose() {
+  cancelPendingLoad() {
+    this._generation++;
     this.pause();
     this._detach();
+  }
+  dispose() {
+    this.cancelPendingLoad();
     this.audio.removeAttribute('src');
     this.audio.load();
   }

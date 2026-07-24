@@ -1,7 +1,8 @@
 import { apiGet } from '../api.js';
 
+const { DisposableScope } = globalThis.XandrioLifecycle || {};
 let queueStatusEl = null;
-let pollTimer = null;
+let pollScope = null;
 let lastVisible = false;
 
 function renderQueueStatus(status) {
@@ -27,28 +28,37 @@ function renderQueueStatus(status) {
   lastVisible = true;
 }
 
-async function pollQueueStatus() {
+async function pollQueueStatus(scope = pollScope) {
   try {
-    renderQueueStatus(await apiGet('/api/queue/status'));
+    const status = await apiGet('/api/queue/status');
+    if (scope !== pollScope || scope?.closed) return;
+    renderQueueStatus(status);
   } catch {
+    if (scope !== pollScope || scope?.closed) return;
     if (queueStatusEl && lastVisible) queueStatusEl.hidden = true;
     lastVisible = false;
   }
 }
 
 export function initQueueStatus(options = {}) {
+  // Re-initialising (view remount) must stop the previous poller even when
+  // the replacement view does not render a queue-status element.
+  stopQueueStatus();
+
   queueStatusEl = document.getElementById('queue-status');
   if (!queueStatusEl) return;
 
   const intervalMs = Math.max(2000, Number(options.intervalMs || 4000));
-  pollQueueStatus();
-  pollTimer = window.setInterval(pollQueueStatus, intervalMs);
-  document.addEventListener('visibilitychange', () => {
-    if (!document.hidden) pollQueueStatus();
+  const scope = new DisposableScope();
+  pollScope = scope;
+  pollQueueStatus(scope);
+  scope.interval(() => pollQueueStatus(scope), intervalMs, window);
+  scope.listen(document, 'visibilitychange', () => {
+    if (!document.hidden) pollQueueStatus(scope);
   });
 }
 
 export function stopQueueStatus() {
-  if (pollTimer) window.clearInterval(pollTimer);
-  pollTimer = null;
+  pollScope?.dispose();
+  pollScope = null;
 }

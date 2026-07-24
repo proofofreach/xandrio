@@ -36,6 +36,11 @@ assertEqual(
   undefined,
   'non-array search source defaults are rejected'
 );
+assertEqual(
+  sanitizeClientSettings({ smartRewindEnabled: false, rollingOfflineEnabled: true }),
+  { smartRewindEnabled: false, rollingOfflineEnabled: true },
+  'automatic playback settings accept booleans'
+);
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);
