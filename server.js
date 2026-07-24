@@ -669,17 +669,10 @@ const AVAILABLE_VOICES = [
   { id: 'en-US-BrianMultilingualNeural', name: 'Brian', gender: 'Male', language: 'English', accent: 'US', depth: 'Lively', provider: 'Edge', tags: ['Approachable', 'Casual'], tier: 'natural' },
   { id: 'en-US-EmmaMultilingualNeural', name: 'Emma', gender: 'Female', language: 'English', accent: 'US', depth: 'Clear', provider: 'Edge', tags: ['Cheerful', 'Clear'], tier: 'natural' },
   { id: 'en-AU-WilliamMultilingualNeural', name: 'William', gender: 'Male', language: 'English', accent: 'AU', depth: 'Warm', provider: 'Edge', tags: ['Warm', 'Australian'], tier: 'natural' },
-  // Standard Neural — also good for audiobooks
-  { id: 'en-US-AriaNeural', name: 'Aria', gender: 'Female', language: 'English', accent: 'US', depth: 'Expressive', provider: 'Edge', tags: ['Positive', 'Confident'], tier: 'neural' },
-  { id: 'en-US-ChristopherNeural', name: 'Christopher', gender: 'Male', language: 'English', accent: 'US', depth: 'Deep', provider: 'Edge', tags: ['Reliable', 'Authority'], tier: 'neural' },
-  { id: 'en-US-GuyNeural', name: 'Guy', gender: 'Male', language: 'English', accent: 'US', depth: 'Lively', provider: 'Edge', tags: ['Passionate', 'Lively'], tier: 'neural' },
-  { id: 'en-US-JennyNeural', name: 'Jenny', gender: 'Female', language: 'English', accent: 'US', depth: 'Warm', provider: 'Edge', tags: ['Friendly', 'Warm'], tier: 'neural' },
-  { id: 'en-US-MichelleNeural', name: 'Michelle', gender: 'Female', language: 'English', accent: 'US', depth: 'Warm', provider: 'Edge', tags: ['Friendly', 'Pleasant'], tier: 'neural' },
-  { id: 'en-US-RogerNeural', name: 'Roger', gender: 'Male', language: 'English', accent: 'US', depth: 'Lively', provider: 'Edge', tags: ['Lively', 'Engaging'], tier: 'neural' },
-  { id: 'en-GB-RyanNeural', name: 'Ryan', gender: 'Male', language: 'English', accent: 'UK', depth: 'Warm', provider: 'Edge', tags: ['British', 'Engaging'], tier: 'neural' },
-  { id: 'en-GB-SoniaNeural', name: 'Sonia', gender: 'Female', language: 'English', accent: 'UK', depth: 'Clear', provider: 'Edge', tags: ['British', 'Refined'], tier: 'neural' },
-  { id: 'en-GB-ThomasNeural', name: 'Thomas', gender: 'Male', language: 'English', accent: 'UK', depth: 'Deep', provider: 'Edge', tags: ['British', 'Classic'], tier: 'neural' },
-  { id: 'en-AU-NatashaNeural', name: 'Natasha', gender: 'Female', language: 'English', accent: 'AU', depth: 'Warm', provider: 'Edge', tags: ['Australian', 'Friendly'], tier: 'neural' },
+  // The older single-language Neural pipeline (Aria, Christopher, Guy, Jenny,
+  // Michelle, Roger, and the en-GB/en-AU Neural voices) is deliberately not
+  // exposed: the Multilingual voices above are the same personas on Edge's
+  // newest generation, and everything else audibly trails them.
   // Local Chatterbox Turbo voices. Requires m4-server/chatterbox-server.py and a local voice reference.
   { id: 'chatterbox:brick-scott', name: 'Brick Scott', gender: 'Male', language: 'English', accent: 'US', depth: 'Deep', provider: 'Chatterbox', tags: ['Local', 'US', 'Audiobook', 'Premium'], tier: 'chatterbox', top: true, pairedInstantVoice: 'kokoro:am_onyx' },
   // Local Kokoro voices. Requires m4-server/kokoro-server.py to be running.
