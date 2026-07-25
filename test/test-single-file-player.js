@@ -170,6 +170,22 @@ function fakeAudio() {
     assert.strictEqual(player.isContinuous, true);
   });
 
+  await test('playback session identity uses secure random bytes when randomUUID is unavailable', () => {
+    const values = Array.from({ length: 16 }, (_value, index) => index);
+    const { player } = makePlayer(fakeAudio(), {
+      cryptoProvider: {
+        getRandomValues(bytes) {
+          bytes.set(values);
+          return bytes;
+        }
+      }
+    });
+    assert.strictEqual(
+      player._newPlaybackSessionId(),
+      '00010203-0405-4607-8809-0a0b0c0d0e0f'
+    );
+  });
+
   await test('native HLS falls back directly to finite chapter audio', async () => {
     const audio = fakeAudio();
     audio.canPlayType = type => type === 'application/vnd.apple.mpegurl' ? 'maybe' : '';

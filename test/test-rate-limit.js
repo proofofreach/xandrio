@@ -60,9 +60,21 @@ test('default groups cover authentication, import, metadata, TTS, and voice uplo
   for (const path of [
     '/api/auth/login', '/api/search', '/api/upload', '/api/download',
     '/api/refresh-metadata/book', '/api/audio/book/0', '/api/audio-continuous/book/0',
+    '/api/audio-hls/book/0/index.m3u8',
+    '/api/audio-hls-segment/session/segment-000001.m4s',
+    '/api/audio-timeline/session',
     '/api/chunks/book/0/prepare', '/api/chunks/book/0/1',
     '/api/voices/clone'
   ]) assert(covered(path), `${path} should be rate limited`);
+});
+
+test('normal HLS polling does not share the low-volume TTS request bucket', () => {
+  const groups = defaultGroups(60);
+  const playlist = groups.find(group => group.match('/api/audio-hls/book/0/index.m3u8'));
+  const segment = groups.find(group => group.match('/api/audio-hls-segment/session/segment-000001.m4s'));
+  assert.strictEqual(playlist.name, 'playback-media');
+  assert.strictEqual(segment.name, 'playback-media');
+  assert(playlist.max >= 600);
 });
 
 console.log(`\nrate-limit tests: ${passed} passed, ${failed} failed`);

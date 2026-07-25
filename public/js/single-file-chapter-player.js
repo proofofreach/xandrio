@@ -22,6 +22,7 @@ export class SingleFileChapterPlayer {
     this.onPlaybackChange = options.onPlaybackChange || null;
     this.onChapterTransition = options.onChapterTransition || null;
     this.onDiagnosticEvent = options.onDiagnosticEvent || null;
+    this.cryptoProvider = options.cryptoProvider || globalThis.crypto || null;
     this.isIOSLike = options.isIOSLike || (() => false);
     this.getEstimatedDuration = options.getEstimatedDuration || (() => 0);
     this.getChapterCount = options.getChapterCount || (() => 0);
@@ -203,8 +204,26 @@ export class SingleFileChapterPlayer {
   }
 
   _newPlaybackSessionId() {
-    return globalThis.crypto?.randomUUID?.()
-      || `pb-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+    if (typeof this.cryptoProvider?.randomUUID === 'function') {
+      return this.cryptoProvider.randomUUID();
+    }
+    if (typeof this.cryptoProvider?.getRandomValues === 'function') {
+      const bytes = new Uint8Array(16);
+      this.cryptoProvider.getRandomValues(bytes);
+      // RFC 4122 version 4 / variant 1 bits. Keeping UUID shape also satisfies
+      // the server's bounded playback-session identifier validation.
+      bytes[6] = (bytes[6] & 0x0f) | 0x40;
+      bytes[8] = (bytes[8] & 0x3f) | 0x80;
+      const hex = Array.from(bytes, byte => byte.toString(16).padStart(2, '0'));
+      return [
+        hex.slice(0, 4).join(''),
+        hex.slice(4, 6).join(''),
+        hex.slice(6, 8).join(''),
+        hex.slice(8, 10).join(''),
+        hex.slice(10).join('')
+      ].join('-');
+    }
+    throw new Error('Secure playback session identity is unavailable');
   }
 
   _supportsNativeHls() {
