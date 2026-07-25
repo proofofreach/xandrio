@@ -99,6 +99,8 @@ async function main() {
       ['/api/refresh-metadata/book', 'POST'],
       ['/api/chunks/book/0/prepare', 'POST'],
       ['/api/audio/book/0', 'GET'],
+      ['/api/audio-continuous/book/0', 'GET'],
+      ['/api/audio-hls/book/0/index.m3u8', 'GET'],
       ['/api/voices/clone', 'POST']
     ]) assert(covered(path, method), `${method} ${path} should be concurrency limited`);
   });

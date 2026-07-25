@@ -310,15 +310,20 @@ function fakeAudio() {
         planResume() { return null; },
         clear() {}
       }),
+      expireSleepTimer: reason => appImports.sleepExpiries.push(reason),
+      isSleepTimerChapterTarget: () => appImports.sleepTarget,
       displayChapterTitle: () => 'Chapter',
       isIOSLike: () => false,
       needsReliablePlayback: () => false,
       isBookDownloadedForOffline: () => false,
-      ensureRollingOfflineWindow: async () => {},
+      ensureRollingOfflineWindow: async () => { appImports.rollingCalls += 1; },
       isRollingOfflineEnabled: () => true,
       refreshVoicePrepPanel() {},
       syncPlaybackProgressScope() {},
       updateChapterTrigger() {},
+      updateMediaSessionMetadata() {},
+      updateMediaSessionPosition() {},
+      updateBookProgress() {},
       renderChapterList() {},
       syncMiniPlayerInfo() {},
       showAudioLoading() {},
@@ -327,6 +332,9 @@ function fakeAudio() {
       getCurrentPlaybackSpeed: () => 1
     };
     appImports.transitionRequests = [];
+    appImports.rollingCalls = 0;
+    appImports.sleepTarget = false;
+    appImports.sleepExpiries = [];
     const appTestSource = appSource
       .replace(/^import \{([^}]+)\} from ['"][^'"]+['"];$/gm, 'const {$1} = globalThis.__playbackAppImports;')
       + `\nglobalThis.__playbackAppHarness = {
@@ -339,7 +347,12 @@ function fakeAudio() {
           chapterSelect = chapter;
           playPauseBtn = chapter;
         },
-        loadChapter
+        loadChapter,
+        recordPlaybackEvent,
+        playbackEvents() { return playbackEventLedger.slice(); },
+        handleChapterEnd,
+        handleContinuousChapterTransition,
+        estimateChapterPlaybackDuration
       };`;
     const previousGlobals = new Map(['window', 'document', 'navigator', 'setInterval', '__playbackAppImports', '__playbackAppHarness']
       .map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
@@ -351,17 +364,30 @@ function fakeAudio() {
     };
     const uiElement = { value: 0, innerHTML: '' };
     const player = engine('resume-rejecting', {
+      backend: 'audio-stream',
       isPlaying: true,
       play: async () => { throw new Error('autoplay denied'); }
     });
     const unhandled = [];
+    const localValues = new Map();
+    const fakeLocalStorage = {
+      getItem(key) { return localValues.get(key) || null; },
+      setItem(key, value) { localValues.set(key, String(value)); }
+    };
     const onUnhandled = error => unhandled.push(error);
     const originalWarn = console.warn;
 
     try {
       console.warn = () => {};
       Object.defineProperties(globalThis, {
-        window: { configurable: true, writable: true, value: { addEventListener() {} } },
+        window: {
+          configurable: true,
+          writable: true,
+          value: {
+            addEventListener() {},
+            localStorage: fakeLocalStorage
+          }
+        },
         document: { configurable: true, writable: true, value: { addEventListener() {} } },
         navigator: { configurable: true, writable: true, value: { onLine: true } },
         setInterval: { configurable: true, writable: true, value: () => 0 },
@@ -388,7 +414,88 @@ function fakeAudio() {
       assert.strictEqual(appImports.transitionRequests[0].engine, player);
       assert.strictEqual(appImports.transitionRequests[0].backend, 'audio-stream');
       assert(player.calls.some(call => call[0] === 'play'));
+      assert.strictEqual(appImports.rollingCalls, 0, 'live streaming must not compete with rolling offline downloads');
       assert(uiElement.innerHTML.includes('M4.5 5.653'));
+
+      for (let index = 0; index < 100; index++) {
+        globalThis.__playbackAppHarness.recordPlaybackEvent({
+          type: `event-${index}`,
+          reason: 'test',
+          token: 'must-not-be-persisted'
+        });
+      }
+      const diagnosticEvents = globalThis.__playbackAppHarness.playbackEvents();
+      assert.strictEqual(diagnosticEvents.length, 80);
+      assert.strictEqual(diagnosticEvents.at(-1).type, 'event-99');
+      assert(diagnosticEvents.every(event => !Object.hasOwn(event, 'token')));
+      assert.strictEqual(
+        JSON.parse(localValues.get('xandrio_playback_event_ledger')).length,
+        80,
+        'bounded diagnostics should survive a reload'
+      );
+
+      const persistedBeforeSamples = localValues.get('xandrio_playback_event_ledger');
+      globalThis.__playbackAppHarness.recordPlaybackEvent({ type: 'timeupdate', streamTime: 10 });
+      assert.strictEqual(
+        localValues.get('xandrio_playback_event_ledger'),
+        persistedBeforeSamples,
+        'periodic time samples must remain memory-only'
+      );
+
+      assert.strictEqual(
+        globalThis.__playbackAppHarness.estimateChapterPlaybackDuration({ text: 'a'.repeat(150) }),
+        10
+      );
+      assert.strictEqual(globalThis.__playbackAppHarness.estimateChapterPlaybackDuration({ text: '' }), 0);
+      globalThis.__playbackAppHarness.configure({
+        book: { id: 'book-a', chapterDurations: [12.5] },
+        chapters: [{ title: 'One', estimatedDuration: 9 }],
+        player,
+        chapter: uiElement
+      });
+      assert.strictEqual(
+        globalThis.__playbackAppHarness.estimateChapterPlaybackDuration(
+          { estimatedDuration: 9 },
+          0
+        ),
+        12.5,
+        'measured chapter durations should keep continuous chapter mapping aligned'
+      );
+      globalThis.__playbackAppHarness.configure({
+        book: { id: 'book-a' },
+        chapters: [{ title: 'One' }, { title: 'Two' }],
+        player,
+        chapter: uiElement
+      });
+
+      appImports.sleepTarget = true;
+      globalThis.__playbackAppHarness.handleContinuousChapterTransition({
+        previousChapterIndex: 0,
+        chapterIndex: 1,
+        chapterTime: 0,
+        streamTime: 10
+      });
+      assert(player.calls.some(call => call[0] === 'pause'));
+      assert.deepStrictEqual(appImports.sleepExpiries, ['chapter']);
+      assert(
+        globalThis.__playbackAppHarness.playbackEvents()
+          .some(event => event.type === 'sleep-timer-stop' && event.reason === 'chapter-transition')
+      );
+
+      appImports.sleepExpiries.length = 0;
+      globalThis.__playbackAppHarness.handleChapterEnd({
+        reason: 'continuous-limit',
+        endChapterIndex: 0
+      });
+      assert.deepStrictEqual(
+        appImports.sleepExpiries,
+        ['chapter'],
+        'a server-enforced chapter limit expires normally instead of entering recovery'
+      );
+      assert(
+        globalThis.__playbackAppHarness.playbackEvents()
+          .some(event => event.type === 'sleep-timer-stop' && event.reason === 'server-end-chapter-limit')
+      );
     } finally {
       process.removeListener('unhandledRejection', onUnhandled);
       console.warn = originalWarn;

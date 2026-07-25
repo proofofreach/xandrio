@@ -23,6 +23,7 @@ const gutenberg = require('./lib/gutenberg');
 const { isSafeBookId: requestGuardIsSafeBookId, parseNonNegativeInteger } = require('./lib/request-guards');
 const { serveAudioFile } = require('./lib/audio-response');
 const { createChapterAudioStreamer } = require('./lib/chapter-audio-stream');
+const { createHlsAudioStreamer } = require('./lib/hls-audio-stream');
 const { registerPlaybackRoutes } = require('./lib/routes/playback-routes');
 const { getTtsOutputFormatForVoice } = require('./lib/tts-output-format');
 const { createNarrationEngineRegistry } = require('./lib/narration-engine-registry');
@@ -1526,7 +1527,17 @@ async function ensureChapterAudioPrepared(bookId, chapterIndex, options = {}) {
   const voice = options.voice || voiceForTier(tier);
   const jobs = clean ? cleanChapterAudioPrepareJobs : chapterAudioPrepareJobs;
   const key = `${bookId}:${chapterIndex}:${tts.variantKeyProvider()}`;
-  if (jobs.has(key)) return jobs.get(key);
+  if (jobs.has(key)) {
+    if (priority === 'download') {
+      const existingManifest = tts.getChapterManifest(bookId, chapterIndex);
+      existingManifest?.chunks?.forEach((chunk, index) => {
+        if (chunk.status !== 'ready') {
+          tts.prioritizeChunk(bookId, chapterIndex, index, 'download');
+        }
+      });
+    }
+    return jobs.get(key);
+  }
 
   const job = (async () => {
     const books = await loadJSON(BOOKS_FILE, {});
@@ -1546,16 +1557,29 @@ async function ensureChapterAudioPrepared(bookId, chapterIndex, options = {}) {
     } catch {}
 
     const bookLanguage = book.language || 'en';
-    const firstChunkPriority = priority === 'background' ? 'background' : 'immediate';
+    const firstChunkPriority = priority === 'background'
+      ? 'background'
+      : priority === 'download'
+        ? 'download'
+        : 'immediate';
     let manifest = tts.getChapterManifest(bookId, chapterIndex);
     if (!manifest || manifestNeedsResume(manifest)) {
       manifest = await tts.generateChapter(bookId, chapterIndex, chapter.text, bookLanguage, priority, {
-        priorityForChunk: priority === 'background' ? (() => 'background') : getChapterGenerationPriority(0),
+        priorityForChunk: priority === 'background' || priority === 'download'
+          ? (() => priority)
+          : getChapterGenerationPriority(0),
         voice
       });
     } else {
       manifest.chunks.forEach((chunk, index) => {
-        if (chunk.status !== 'ready') tts.prioritizeChunk(bookId, chapterIndex, index, index === 0 ? firstChunkPriority : 'background');
+        if (chunk.status !== 'ready') {
+          const chunkPriority = priority === 'download'
+            ? 'download'
+            : index === 0
+              ? firstChunkPriority
+              : 'background';
+          tts.prioritizeChunk(bookId, chapterIndex, index, chunkPriority);
+        }
       });
     }
 
@@ -1835,6 +1859,7 @@ const playbackOrchestrator = createPlaybackOrchestrator({
   onBackgroundError: (error, context) => console.error(`Look-ahead generation failed for chapter ${context.chapterIndex}:`, error)
 });
 const chapterAudioStreamer = createChapterAudioStreamer({ serveAudioFile });
+const hlsAudioStreamer = createHlsAudioStreamer({ serveAudioFile });
 
 async function inspectChapterAudio(bookId, chapterIndex, options = {}) {
   const clean = Boolean(options.clean);
@@ -2816,9 +2841,12 @@ registerPlaybackRoutes(app, {
   ttsForTier,
   generationJournal,
   chapterAudioStreamer,
+  hlsAudioStreamer,
   serveAudioFile,
   sendServerError,
-  fs
+  fs,
+  rateLimitWindowMs: RATE_LIMIT_WINDOW,
+  rateLimitMax: RATE_LIMIT_MAX
 });
 
 // =========================================================================
@@ -3620,6 +3648,7 @@ const shutdownController = createGracefulShutdown({
       console.warn(`Search-cover descriptor flush failed: ${err.message}`);
     }
     narrationEngines.stopAll();
+    await hlsAudioStreamer.dispose();
     // Give the scraper's Chromium a moment to close, but never block exit.
     try {
       await Promise.race([

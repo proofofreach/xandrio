@@ -46,13 +46,16 @@ function installBrowser({
   manifest = {},
   variants = ['voice-a', 'voice-a'],
   failStorageWrites = false,
-  audioGate = null
+  audioGate = null,
+  transientAudioFailures = 0,
+  transientStreamFailures = 0
 }) {
   const storage = new Map();
   storage.set('xandrio_offline_books', JSON.stringify(manifest));
   const elements = new Map([
     ['player-voice-name', { textContent: 'Narrator' }]
   ]);
+  const documentEvents = [];
   global.localStorage = {
     getItem: key => storage.get(key) || null,
     setItem: (key, value) => {
@@ -62,7 +65,13 @@ function installBrowser({
     removeItem: key => storage.delete(key)
   };
   global.window = { location: { origin: 'https://reader.test' }, addEventListener() {} };
-  global.document = { getElementById: id => elements.get(id) || null };
+  global.document = {
+    getElementById: id => elements.get(id) || null,
+    dispatchEvent(event) {
+      documentEvents.push(event);
+      return true;
+    }
+  };
   Object.defineProperty(global, 'navigator', {
     configurable: true,
     writable: true,
@@ -74,9 +83,13 @@ function installBrowser({
   global.window.caches = global.caches;
   const audioRequests = [];
   const prepareCalls = [];
-  global.__offlineApiSend = async (method, requestPath) => {
+  const prepareBodies = [];
+  let remainingAudioFailures = transientAudioFailures;
+  let remainingStreamFailures = transientStreamFailures;
+  global.__offlineApiSend = async (method, requestPath, body) => {
     if (method === 'POST' && requestPath.includes('/prepare-chapter-audio')) {
       prepareCalls.push(Number(requestPath.match(/\/(\d+)\/prepare-chapter-audio$/)?.[1]));
+      prepareBodies.push(body);
     }
     return {};
   };
@@ -89,7 +102,23 @@ function installBrowser({
     if (url.includes('/api/audio/')) {
       audioRequests.push(chapter);
       if (audioGate) await audioGate;
+      if (remainingAudioFailures > 0) {
+        remainingAudioFailures -= 1;
+        return new Response('try again', { status: 503 });
+      }
       const bytes = new TextEncoder().encode(`audio-${variants[chapter]}-${chapter}`);
+      if (remainingStreamFailures > 0) {
+        remainingStreamFailures -= 1;
+        const stream = new ReadableStream({
+          start(controller) {
+            controller.enqueue(bytes.slice(0, 2));
+            controller.error(new Error('connection dropped'));
+          }
+        });
+        return new Response(stream, {
+          headers: { 'Content-Length': String(bytes.byteLength), ETag: `\"${variants[chapter]}-${chapter}\"` }
+        });
+      }
       return new Response(bytes, { headers: { 'Content-Length': String(bytes.byteLength), ETag: `\"${variants[chapter]}-${chapter}\"` } });
     }
     throw new Error(`Unexpected fetch ${url}`);
@@ -98,6 +127,8 @@ function installBrowser({
     storage,
     audioRequests,
     prepareCalls,
+    prepareBodies,
+    documentEvents,
     titleCache,
     init: { getCurrentBook: () => book, getChapters: () => chapters }
   };
@@ -174,6 +205,10 @@ function installBrowser({
     assert.strictEqual(entry.titleData.chapters.length, chapters.length);
     assert.strictEqual(overlayCalls, 0);
     assert.deepStrictEqual(env.audioRequests, [0, 1]);
+    assert(env.prepareBodies.every(body => body?.purpose === 'offline-download'));
+    const activityEvents = env.documentEvents.filter(event => event.type === 'xandrio:downloadactivity');
+    assert(activityEvents.some(event => event.detail?.downloads?.[0]?.percent >= 0));
+    assert.deepStrictEqual(activityEvents.at(-1).detail.downloads, []);
   });
 
   await test('reports absent, partial, active, and repair states without cache scans', async () => {
@@ -192,7 +227,7 @@ function installBrowser({
     };
     for (const [entry, kind, label] of [
       [{ ...base, mode: 'rolling', state: 'partial' }, 'partial', '1 chapter cached'],
-      [{ ...base, mode: 'full', state: 'repairing' }, 'downloading', 'Downloading 1 of 2'],
+      [{ ...base, mode: 'full', state: 'repairing', progressPercent: 42 }, 'downloading', 'Downloading · 42%'],
       [{ ...base, mode: 'full', state: 'incomplete' }, 'repair-needed', 'Download incomplete'],
       [{ ...base, mode: 'full', state: 'stale' }, 'repair-needed', 'Update download']
     ]) {
@@ -386,6 +421,64 @@ function installBrowser({
     assert.strictEqual(entry.chapterEntries[0].size > 0, true, 'completed audio remains available for resume');
     assert.strictEqual(entry.chapterEntries[1], null);
     assert.strictEqual(offline.isBookDownloadedForOffline(book.id), false);
+  });
+
+  await test('recovers from a transient chapter transfer failure without user intervention', async () => {
+    const cache = makeCache();
+    const env = installBrowser({
+      book,
+      chapters: [{}],
+      cache,
+      variants: ['voice-a'],
+      transientAudioFailures: 1
+    });
+    offline.initOffline(env.init);
+    const completed = await offline.downloadCurrentBook();
+    assert.strictEqual(completed, true);
+    assert.deepStrictEqual(env.audioRequests, [0, 0]);
+    assert.strictEqual(offline.getOfflineManifest()[book.id].state, 'ready');
+  });
+
+  await test('restarts a chapter transfer when the response stream drops', async () => {
+    const cache = makeCache();
+    const env = installBrowser({
+      book,
+      chapters: [{}],
+      cache,
+      variants: ['voice-a'],
+      transientStreamFailures: 1
+    });
+    offline.initOffline(env.init);
+    assert.strictEqual(await offline.downloadCurrentBook(), true);
+    assert.deepStrictEqual(env.audioRequests, [0, 0]);
+    assert.strictEqual(offline.getOfflineManifest()[book.id].state, 'ready');
+  });
+
+  await test('pipelines two chapters so transfer and generation can overlap', async () => {
+    const cache = makeCache();
+    let releaseAudio;
+    const audioGate = new Promise(resolve => { releaseAudio = resolve; });
+    const pipelinedChapters = [{}, {}, {}];
+    const env = installBrowser({
+      book,
+      chapters: pipelinedChapters,
+      cache,
+      variants: ['voice-a', 'voice-a', 'voice-a'],
+      audioGate
+    });
+    offline.initOffline(env.init);
+    const download = offline.downloadCurrentBook();
+    for (let attempt = 0; attempt < 20 && env.audioRequests.length < 2; attempt++) {
+      await new Promise(resolve => setImmediate(resolve));
+    }
+    assert.deepStrictEqual([...env.audioRequests].sort(), [0, 1]);
+    const activeDownload = env.documentEvents
+      .filter(event => event.type === 'xandrio:downloadactivity')
+      .at(-1)?.detail?.downloads?.[0];
+    assert(activeDownload && activeDownload.percent < 100);
+    releaseAudio();
+    assert.strictEqual(await download, true);
+    assert.strictEqual(offline.getOfflineManifest()[book.id].state, 'ready');
   });
 
   await test('render audit marks an evicted ready entry incomplete without downloading', async () => {

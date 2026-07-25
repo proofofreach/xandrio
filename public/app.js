@@ -50,10 +50,19 @@ const smartRewind = createSmartRewindController();
 
 // API_BASE and sync identity now live in js/api.js
 const PLAYBACK_CHECKPOINT_PREFIX = 'xandrio_playback_checkpoint:';
+const PLAYBACK_EVENT_LEDGER_KEY = 'xandrio_playback_event_ledger';
+const PLAYBACK_EVENT_LEDGER_LIMIT = 80;
 const CHECKPOINT_SAVE_MIN_INTERVAL_MS = 1000;
 let lastCheckpointSaveAt = 0;
 let lastServerPositionSaveAt = 0;
 let pendingServerPositionTimer = null;
+const restoredPlaybackEventLedger = loadPlaybackEventLedger();
+let playbackEventLedger = restoredPlaybackEventLedger.slice();
+let persistedPlaybackEventLedger = restoredPlaybackEventLedger.slice();
+let automaticRecoveryAttempts = 0;
+let automaticRecoveryTimer = null;
+let stablePlaybackTimer = null;
+let rollingOfflineTimer = null;
 const playbackSession = createPlaybackSession({
   onStateChange: (state) => {
     currentBook = state.book;
@@ -155,13 +164,262 @@ function handleChunkChange(chunkIndex) {
   updatePlaybackUI();
 }
 
-function handleChapterEnd() {
-  handleAudioEnd();
+function handleChapterEnd(detail = {}) {
+  handleAudioEnd(detail);
+}
+
+function finitePlaybackNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? Math.round(number * 100) / 100 : null;
+}
+
+function loadPlaybackEventLedger() {
+  try {
+    const parsed = JSON.parse(globalThis.window?.localStorage?.getItem(PLAYBACK_EVENT_LEDGER_KEY) || '[]');
+    return Array.isArray(parsed) ? parsed.slice(-PLAYBACK_EVENT_LEDGER_LIMIT) : [];
+  } catch {
+    return [];
+  }
+}
+
+function recordPlaybackEvent(detail = {}) {
+  const mediaDetail = { ...detail };
+  if (audioPlayer) {
+    mediaDetail.streamTime ??= audioPlayer.currentTime;
+    mediaDetail.chapterTime ??= chunkPlayer?.getCurrentTime?.();
+    mediaDetail.readyState ??= audioPlayer.readyState;
+    mediaDetail.networkState ??= audioPlayer.networkState;
+    mediaDetail.paused ??= audioPlayer.paused;
+    mediaDetail.ended ??= audioPlayer.ended;
+    if (mediaDetail.bufferRunway === undefined) {
+      try {
+        for (let index = 0; index < audioPlayer.buffered.length; index++) {
+          if (audioPlayer.currentTime <= audioPlayer.buffered.end(index)) {
+            mediaDetail.bufferRunway = Math.max(0, audioPlayer.buffered.end(index) - audioPlayer.currentTime);
+            break;
+          }
+        }
+      } catch {}
+    }
+  }
+  const entry = {
+    at: new Date().toISOString(),
+    type: String(mediaDetail.type || 'unknown').slice(0, 40),
+    chapterIndex: Number.isInteger(mediaDetail.chapterIndex) ? mediaDetail.chapterIndex : currentChapter,
+    visibility: String(mediaDetail.visibility || document?.visibilityState || 'unknown').slice(0, 16)
+  };
+  for (const key of ['reason', 'sourceKind']) {
+    if (mediaDetail[key]) entry[key] = String(mediaDetail[key]).slice(0, 40);
+  }
+  for (const key of ['streamTime', 'chapterTime', 'bufferRunway']) {
+    const value = finitePlaybackNumber(mediaDetail[key]);
+    if (value !== null) entry[key] = value;
+  }
+  for (const key of ['readyState', 'networkState', 'errorCode', 'previousChapterIndex']) {
+    if (Number.isInteger(Number(mediaDetail[key]))) entry[key] = Number(mediaDetail[key]);
+  }
+  for (const key of ['paused', 'ended', 'online']) {
+    if (typeof mediaDetail[key] === 'boolean') entry[key] = mediaDetail[key];
+  }
+  playbackEventLedger = [...playbackEventLedger, entry].slice(-PLAYBACK_EVENT_LEDGER_LIMIT);
+  // Timeupdate fires every few hundred milliseconds. Keep those diagnostic
+  // samples in memory so playback never synchronously writes storage in the
+  // media event hot path; significant lifecycle events still survive reloads.
+  if (entry.type !== 'timeupdate') {
+    persistedPlaybackEventLedger = [...persistedPlaybackEventLedger, entry].slice(-PLAYBACK_EVENT_LEDGER_LIMIT);
+    try {
+      globalThis.window?.localStorage?.setItem(
+        PLAYBACK_EVENT_LEDGER_KEY,
+        JSON.stringify(persistedPlaybackEventLedger)
+      );
+    } catch {}
+  }
+  return entry;
+}
+
+function estimateChapterPlaybackDuration(chapter, chapterIndex) {
+  const measuredDuration = Number(currentBook?.chapterDurations?.[chapterIndex]);
+  if (Number.isFinite(measuredDuration) && measuredDuration > 0) return measuredDuration;
+  const duration = Number(chapter?.estimatedDuration);
+  if (Number.isFinite(duration) && duration > 0) return duration;
+  const characterCount = String(chapter?.text || '').trim().length;
+  // Approximate 180 spoken words/minute and five characters/word. Empty
+  // structural chapters remain zero so the continuous mapper skips them.
+  return characterCount > 0 ? Math.max(1, characterCount / 15) : 0;
+}
+
+function handleContinuousChapterTransition(detail = {}) {
+  const chapterIndex = Number(detail.chapterIndex);
+  if (!currentBook || !Number.isInteger(chapterIndex) || chapterIndex < 0 || chapterIndex >= chapters.length) return;
+  const stopForSleepTimer = isSleepTimerChapterTarget(currentBook.id, detail.previousChapterIndex);
+  if (stopForSleepTimer) {
+    chunkPlayer?.pause?.('sleep-timer-chapter');
+    recordPlaybackEvent({
+      type: 'sleep-timer-stop',
+      reason: 'chapter-transition',
+      previousChapterIndex: detail.previousChapterIndex,
+      chapterIndex,
+      chapterTime: detail.chapterTime,
+      streamTime: detail.streamTime
+    });
+  }
+  playbackSession.setBook(currentBook, {
+    chapterIndex,
+    finished: false
+  });
+  if (chapterSelect) chapterSelect.value = String(chapterIndex);
+  syncPlaybackProgressScope();
+  updateChapterTrigger();
+  renderChapterList();
+  syncMiniPlayerInfo();
+  updateMediaSessionMetadata();
+  updateMediaSessionPosition();
+  updateBookProgress();
+  checkpointPlayback({ force: true });
+  scheduleServerPositionSave(0);
+  if (stopForSleepTimer) expireSleepTimer('chapter');
+}
+
+async function handleSleepTimerChapterTargetChange(target, detail = {}) {
+  if (!chunkPlayer?.isContinuous || typeof chunkPlayer.setContinuousEndChapter !== 'function') return;
+  // restoreSleepTimer() runs before the incoming book's engine is loaded. Do
+  // not retarget an outgoing book; loadChapter() reads the restored target when
+  // it constructs the new transport.
+  if (chunkPlayer.bookId !== currentBook?.id || chunkPlayer.chapterIndex !== currentChapter) return;
+  const endChapterIndex = target &&
+    target.bookId === currentBook.id &&
+    target.chapterIndex === currentChapter
+    ? currentChapter
+    : null;
+  recordPlaybackEvent({
+    type: 'sleep-timer-transport',
+    reason: detail.reason || (endChapterIndex === null ? 'cleared' : 'armed'),
+    chapterIndex: currentChapter
+  });
+  await chunkPlayer.setContinuousEndChapter(endChapterIndex);
+}
+
+function clearPlaybackRecoveryTimers() {
+  if (automaticRecoveryTimer !== null) {
+    window.clearTimeout?.(automaticRecoveryTimer);
+    automaticRecoveryTimer = null;
+  }
+  if (stablePlaybackTimer !== null) {
+    window.clearTimeout?.(stablePlaybackTimer);
+    stablePlaybackTimer = null;
+  }
+}
+
+function markPlaybackStableSoon() {
+  if (!window.setTimeout) return;
+  if (stablePlaybackTimer !== null) window.clearTimeout(stablePlaybackTimer);
+  stablePlaybackTimer = window.setTimeout(() => {
+    automaticRecoveryAttempts = 0;
+    stablePlaybackTimer = null;
+  }, 30000);
+}
+
+function scheduleRollingOfflineAfterStablePlayback() {
+  if (!window.setTimeout || currentBookOfflineFallback) return;
+  const enabled = currentBookPlaybackSettings.rollingOfflineEnabled ?? isRollingOfflineEnabled();
+  if (!enabled || !navigator.onLine) return;
+  if (rollingOfflineTimer !== null) window.clearTimeout(rollingOfflineTimer);
+  rollingOfflineTimer = window.setTimeout(() => {
+    rollingOfflineTimer = null;
+    if (!chunkPlayer?.isPlaying || (chunkPlayer.getBufferRunway?.() || 0) < 20) {
+      scheduleRollingOfflineAfterStablePlayback();
+      return;
+    }
+    void ensureRollingOfflineWindow(currentBook, chapters, currentChapter, { enabled: true })
+      .catch(error => console.warn('Automatic chapter cache unavailable:', error));
+  }, 60000);
+}
+
+function offerManualPlaybackRecovery(error, resumeAt) {
+  checkpointPlayback({ force: true });
+  setResumePromptVisible(true);
+  setPlaybackReliabilityState('resume', 'Stream interrupted');
+  recordPlaybackEvent({
+    type: 'recovery-offered',
+    reason: error?.code || 'playback-error',
+    chapterIndex: currentChapter,
+    chapterTime: resumeAt
+  });
+  const retry = async () => {
+    automaticRecoveryAttempts = 0;
+    await loadChapter(currentChapter, {
+      seekToSeconds: resumeAt,
+      reason: 'manual-recovery'
+    });
+    await chunkPlayer.play();
+    setResumePromptVisible(false);
+    updatePlaybackUI(true);
+  };
+  showToast('Playback was interrupted', 'error', {
+    actionLabel: 'Resume',
+    onAction: () => retry().catch(retryError => handleChunkError(retryError))
+  });
+}
+
+function scheduleAutomaticPlaybackRecovery(error, resumeAt) {
+  if (!window.setTimeout || automaticRecoveryTimer !== null || automaticRecoveryAttempts >= 3) {
+    return false;
+  }
+  automaticRecoveryAttempts += 1;
+  const attempt = automaticRecoveryAttempts;
+  const retry = async () => {
+    automaticRecoveryTimer = null;
+    if (!navigator.onLine) {
+      setPlaybackReliabilityState('resume', 'Waiting for connection');
+      window.addEventListener('online', () => {
+        if (!scheduleAutomaticPlaybackRecovery(error, resumeAt)) {
+          offerManualPlaybackRecovery(error, resumeAt);
+        }
+      }, { once: true });
+      return;
+    }
+    recordPlaybackEvent({
+      type: 'automatic-recovery',
+      reason: error?.code || 'playback-error',
+      attempt,
+      chapterIndex: currentChapter,
+      chapterTime: resumeAt
+    });
+    setPlaybackReliabilityState('preparing', `Reconnecting… (${attempt}/3)`);
+    try {
+      await loadChapter(currentChapter, {
+        seekToSeconds: resumeAt,
+        reason: 'automatic-recovery'
+      });
+      await chunkPlayer.play();
+      setResumePromptVisible(false);
+      updatePlaybackUI(true);
+      markPlaybackStableSoon();
+    } catch (retryError) {
+      if (!scheduleAutomaticPlaybackRecovery(retryError, resumeAt)) {
+        offerManualPlaybackRecovery(retryError, resumeAt);
+      }
+    }
+  };
+  automaticRecoveryTimer = window.setTimeout(retry, 250 * (2 ** (attempt - 1)));
+  return true;
 }
 
 
 function handleChunkError(error) {
   console.error('Chunk playback error:', error);
+  if (
+    error?.code === 'CONTINUOUS_STREAM_EOF'
+    || error?.code === 'MEDIA_PLAY_TIMEOUT'
+    || chunkPlayer?.isContinuous
+  ) {
+    const resumeAt = Math.max(0, Number(error.chapterTime ?? chunkPlayer?.getCurrentTime?.()) || 0);
+    checkpointPlayback({ force: true });
+    if (!scheduleAutomaticPlaybackRecovery(error, resumeAt)) {
+      offerManualPlaybackRecovery(error, resumeAt);
+    }
+    return;
+  }
   if (error && (error.name === 'NotAllowedError' || error.name === 'AbortError')) {
     hideAudioLoading();
     setResumePromptVisible(true);
@@ -221,12 +479,18 @@ function makePlaybackCallbacks() {
       updatePlaybackUI(isPlaying);
       if (isPlaying) {
         setResumePromptVisible(false);
+        markPlaybackStableSoon();
+        scheduleRollingOfflineAfterStablePlayback();
         checkpointPlayback({ throttle: true });
         if (detail.reason === 'external') {
           void applySmartRewindBeforeResume()
             .catch(error => console.warn('Smart rewind after interruption failed:', error));
         }
       } else {
+        if (rollingOfflineTimer !== null) {
+          window.clearTimeout?.(rollingOfflineTimer);
+          rollingOfflineTimer = null;
+        }
         if (detail.reason === 'external') recordSmartRewindPause();
         checkpointPlayback();
         scheduleServerPositionSave();
@@ -239,7 +503,16 @@ function createSingleFileChapterEngine(options = {}) {
   return new SingleFileChapterPlayer(audioPlayer, {
     ...makePlaybackCallbacks(),
     isIOSLike,
-    getEstimatedDuration: (_bookId, chapterIndex) => chapters[chapterIndex]?.estimatedDuration || 0,
+    getEstimatedDuration: (_bookId, chapterIndex) => estimateChapterPlaybackDuration(
+      chapters[chapterIndex],
+      chapterIndex
+    ),
+    getChapterCount: () => chapters.length,
+    getContinuousEndChapter: (bookId, chapterIndex) => (
+      isSleepTimerChapterTarget(bookId, chapterIndex) ? chapterIndex : null
+    ),
+    onChapterTransition: handleContinuousChapterTransition,
+    onDiagnosticEvent: recordPlaybackEvent,
     resolveServedTier: async (bookId, chapterIndex) => {
       const status = await apiGet(`/api/chunks/${encodeURIComponent(bookId)}/${chapterIndex}/status`);
       return status?.servedTier || null;
@@ -318,9 +591,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
   syncTimeDisplayModeFromClientSettings();
   
-  // The DOM media element is retained for the entire app lifetime. Every
-  // chapter changes this element's source; no background handoff calls play()
-  // on a newly-created element.
+  // The DOM media element is retained for the entire app lifetime. Online
+  // playback keeps one source across the remaining book; explicit navigation
+  // and downloaded/offline playback may replace that source.
   chunkedPlayer = createSingleFileChapterEngine();
   playbackSession.adoptEngine(chunkedPlayer, 'audio-stream');
   
@@ -339,7 +612,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     getCurrentChapter: () => currentChapter,
     getChunkPlayer: () => chunkPlayer,
     updatePlaybackUI,
-    savePosition
+    savePosition,
+    onChapterTargetChange: handleSleepTimerChapterTargetChange
   });
   initPlaybackSpeed({
     getChunkPlayer: () => chunkPlayer,
@@ -446,15 +720,9 @@ document.addEventListener('DOMContentLoaded', async () => {
 
 function registerServiceWorker() {
   if (!('serviceWorker' in navigator)) return;
-  let refreshing = false;
-  // On the very first visit clients.claim() fires controllerchange too —
-  // only reload when an existing controller was replaced by an update.
-  const hadController = Boolean(navigator.serviceWorker.controller);
-  navigator.serviceWorker.addEventListener('controllerchange', () => {
-    if (refreshing || !hadController) return;
-    refreshing = true;
-    window.location.reload();
-  });
+  // An activated worker controls future requests immediately, but the current
+  // page keeps its already-loaded code and native media resource. Reloading on
+  // controllerchange would tear down lock-screen playback mid-chapter.
   navigator.serviceWorker.register('/sw.js')
     .then(registration => registration?.update?.().catch(() => {}))
     .catch(err => console.warn('Service worker registration failed:', err));
@@ -477,7 +745,8 @@ function playbackReport() {
     checkpoint,
     reliabilityState: playbackReliability?.dataset?.state || null,
     mediaSessionSupported: 'mediaSession' in navigator,
-    serviceWorkerControlled: Boolean(navigator.serviceWorker?.controller)
+    serviceWorkerControlled: Boolean(navigator.serviceWorker?.controller),
+    events: playbackEventLedger.slice()
   };
 }
 
@@ -914,12 +1183,22 @@ let loadChapterToken = 0;
 
 async function loadChapter(index, options = {}) {
   if (!Number.isInteger(index) || index < 0 || index >= chapters.length) return;
+  if (!['automatic-recovery', 'manual-recovery'].includes(options.reason)) {
+    clearPlaybackRecoveryTimers();
+    automaticRecoveryAttempts = 0;
+  }
   // Latest-wins: rapid chapter switches invoke this concurrently; only the
   // most recent call may keep mutating player state after its awaits.
   const token = ++loadChapterToken;
   const previousChapter = currentChapter;
 
   const wasPlaying = chunkPlayer ? chunkPlayer.isPlaying : false;
+  recordPlaybackEvent({
+    type: 'load-chapter',
+    reason: options.reason || (index === currentChapter ? 'reload' : 'navigation'),
+    chapterIndex: index,
+    online: navigator.onLine
+  });
   if (chunkPlayer) chunkPlayer.pause();
   updatePlaybackUI(false);
   checkpointPlayback();
@@ -995,11 +1274,8 @@ async function loadChapter(index, options = {}) {
     await chunkPlayer.seek(Math.max(0, options.seekToSeconds));
     if (token !== loadChapterToken) return;
   }
-  if (!offlineMode) {
-    void ensureRollingOfflineWindow(currentBook, chapters, currentChapter, {
-      enabled: currentBookPlaybackSettings.rollingOfflineEnabled ?? isRollingOfflineEnabled()
-    }).catch(error => console.warn('Automatic chapter cache unavailable:', error));
-  }
+  // Never compete with first-play streaming for bandwidth or storage. Offline
+  // downloads remain available only through the user's explicit action.
   checkpointPlayback();
   // The media adapter calls onReady/onWaiting callbacks.
 
@@ -1307,12 +1583,26 @@ function setupMediaSessionHandlers() {
 
 function setupLifecycleHandlers() {
   document.addEventListener('visibilitychange', () => {
+    recordPlaybackEvent({
+      type: 'visibilitychange',
+      visibility: document.visibilityState,
+      online: navigator.onLine
+    });
     checkpointPlayback();
     if (document.visibilityState === 'hidden' && !beaconSavePosition()) savePosition();
     updatePlaybackUI();
   });
-  window.addEventListener('pagehide', () => { checkpointPlayback(); if (!beaconSavePosition()) savePosition(); });
-  window.addEventListener('pageshow', () => { updatePlaybackUI(); updateMediaSessionMetadata(); updateMediaSessionPosition(); });
+  window.addEventListener('pagehide', () => {
+    recordPlaybackEvent({ type: 'pagehide', online: navigator.onLine });
+    checkpointPlayback();
+    if (!beaconSavePosition()) savePosition();
+  });
+  window.addEventListener('pageshow', () => {
+    recordPlaybackEvent({ type: 'pageshow', online: navigator.onLine });
+    updatePlaybackUI();
+    updateMediaSessionMetadata();
+    updateMediaSessionPosition();
+  });
 }
 
 async function skip(seconds) {
@@ -1331,8 +1621,18 @@ function changeChapter(direction) {
   }
 }
 
-async function handleAudioEnd() {
+async function handleAudioEnd(detail = {}) {
   checkpointPlayback();
+  if (detail.reason === 'continuous-limit') {
+    recordPlaybackEvent({
+      type: 'sleep-timer-stop',
+      reason: 'server-end-chapter-limit',
+      chapterIndex: currentChapter,
+      streamTime: audioPlayer?.currentTime
+    });
+    expireSleepTimer('chapter');
+    return;
+  }
   if (isSleepTimerChapterTarget(currentBook?.id, currentChapter)) {
     if (currentChapter >= chapters.length - 1) {
       setCurrentBookFinished(true);
@@ -1343,6 +1643,9 @@ async function handleAudioEnd() {
     expireSleepTimer('chapter');
     return;
   }
+  // Continuous online playback advances chapters inside one native resource;
+  // `ended` is the end of the remaining book, never a chapter handoff.
+  if (chunkPlayer?.isContinuous && currentChapter < chapters.length - 1) return;
   // Auto-advance to next chapter
   if (currentChapter < chapters.length - 1) {
     if (chunkPlayer?.supportsNativeMediaSession && audioPlayer) {
@@ -1447,8 +1750,11 @@ setInterval(() => {
 // Helper function for screen reader announcements
 // Save position before page unload
 window.addEventListener('beforeunload', () => {
+  recordPlaybackEvent({ type: 'beforeunload', online: navigator.onLine });
   checkpointPlayback();
   if (!beaconSavePosition()) savePosition();
+  clearPlaybackRecoveryTimers();
+  if (rollingOfflineTimer !== null) window.clearTimeout?.(rollingOfflineTimer);
   playbackSession.dispose();
 });
 

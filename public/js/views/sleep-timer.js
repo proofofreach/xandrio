@@ -19,6 +19,16 @@ let extendTimerBtn = null;
 let timerModalController = null;
 let initScope = null;
 
+function notifyChapterTargetChange(reason) {
+  if (typeof deps.onChapterTargetChange !== 'function') return;
+  const target = sleepTimerMode === 'chapter' && sleepTimerChapterTarget
+    ? { ...sleepTimerChapterTarget }
+    : null;
+  Promise.resolve(deps.onChapterTargetChange(target, { reason })).catch(error => {
+    console.warn('Sleep timer transport update failed:', error);
+  });
+}
+
 function syncUtilityTimer(label = 'Sleep timer', active = false) {
   const utilityButton = document.getElementById('utility-timer-btn');
   if (!utilityButton) return;
@@ -101,7 +111,7 @@ function setSleepTimer(minutes) {
 }
 
 function setSleepTimerToChapterEnd() {
-  clearSleepTimer();
+  clearSleepTimer('replace', false);
   sleepTimerMode = 'chapter';
   sleepTimerEndTime = null;
   sleepTimerChapterTarget = {
@@ -123,6 +133,7 @@ function setSleepTimerToChapterEnd() {
     }
   }
   syncUtilityTimer('Sleep timer: end of chapter', true);
+  notifyChapterTargetChange('armed');
 
   showToast('Sleep timer set for end of chapter');
 }
@@ -141,7 +152,8 @@ function clearSleepTimerHandles() {
   }
 }
 
-export function clearSleepTimer() {
+export function clearSleepTimer(reason = 'cancelled', notify = true) {
+  const clearedChapterTarget = sleepTimerMode === 'chapter' && sleepTimerChapterTarget;
   clearSleepTimerHandles();
 
   sleepTimerEndTime = null;
@@ -166,6 +178,7 @@ export function clearSleepTimer() {
     deps.getChunkPlayer().setVolume(1.0);
   }
   updateTimerExtendButtonVisibility();
+  if (notify && clearedChapterTarget) notifyChapterTargetChange(reason);
 }
 
 function updateTimerDisplay() {
@@ -245,7 +258,7 @@ export function expireSleepTimer(reason = 'time') {
   // Show toast notification
   showToast(reason === 'chapter' ? 'Sleep timer stopped at end of chapter' : 'Sleep timer expired - sweet dreams!');
 
-  clearSleepTimer();
+  clearSleepTimer('expired');
 }
 
 export function restoreSleepTimer() {
@@ -258,8 +271,9 @@ export function restoreSleepTimer() {
       sleepTimerChapterTarget = target;
       timerBtnInline.classList.add('active');
       updateTimerDisplay();
+      notifyChapterTargetChange('restored');
     } else {
-      clearSleepTimer();
+      clearSleepTimer('restore-invalid');
     }
     return;
   }

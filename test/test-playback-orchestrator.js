@@ -234,6 +234,78 @@ function harness(overrides = {}) {
     ]), error => error?.name === 'AbortError');
   });
 
+  await test('continuous stream pins one tier and warms the next chapter before current audio is ready', async () => {
+    const { orchestrator, calls, tts } = harness({ ready: false });
+    const source = await orchestrator.prepareContinuousAudioStream({
+      bookId: 'book',
+      chapterIndex: 0,
+      requestedTier: 'instant'
+    });
+    assert.strictEqual(source.servedTier, 'instant');
+    assert.strictEqual(source.endChapterIndex, 1);
+
+    const iterator = source.iterateInputs();
+    const firstInput = iterator.next();
+    await new Promise(resolve => setImmediate(resolve));
+
+    const generations = calls.filter(call => call[0] === 'generate');
+    assert(generations.some(call => call[2] === 0), 'current chapter generation starts');
+    const warmed = generations.find(call => call[2] === 1);
+    assert(warmed, 'next chapter generation starts before current chunk is ready');
+    assert.strictEqual(warmed[5], 'next');
+    assert.strictEqual(
+      calls.filter(call => call[0] === 'tts').length,
+      1,
+      'tier is resolved once for the complete response'
+    );
+
+    tts.emit('chunk:ready', {
+      bookId: 'book',
+      chapterIndex: 0,
+      chunkIndex: 0,
+      path: '/cache/book-0-0.mp3'
+    });
+    assert.deepStrictEqual(await firstInput, {
+      value: {
+        path: '/cache/book-0-0.mp3',
+        chapterIndex: 0,
+        lastInChapter: false
+      },
+      done: false
+    });
+    await iterator.return();
+  });
+
+  await test('continuous timeline records sample-accurate decoded chapter durations', async () => {
+    const { orchestrator } = harness({ ready: false });
+    const source = await orchestrator.prepareContinuousAudioStream({
+      bookId: 'book',
+      chapterIndex: 0,
+      requestedTier: 'instant',
+      sessionId: 'timeline-session',
+      startOffsetSeconds: 2
+    });
+    source.onInputDecoded(
+      { chapterIndex: 0, lastInChapter: true },
+      4 * 24000 * 2,
+      { skippedPcmBytes: 2 * 24000 * 2 }
+    );
+    const timeline = orchestrator.continuousTimeline('timeline-session');
+    assert.deepStrictEqual(timeline.durations, [6, null]);
+    assert.strictEqual(timeline.startOffsetSeconds, 2);
+    assert.strictEqual(timeline.complete, false);
+  });
+
+  await test('continuous stream clamps an explicit chapter-end limit', async () => {
+    const { orchestrator } = harness({ ready: false });
+    const source = await orchestrator.prepareContinuousAudioStream({
+      bookId: 'book',
+      chapterIndex: 0,
+      endChapterIndex: 0
+    });
+    assert.strictEqual(source.endChapterIndex, 0);
+  });
+
   console.log(`playback-orchestrator tests: ${passed} passed, ${failed} failed`);
   if (failed) process.exitCode = 1;
 })();
