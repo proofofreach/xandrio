@@ -117,6 +117,7 @@ This file is generated from the locked installed Node dependency tree by `npm ru
 | expand-template | 2.0.3 | (MIT OR WTFPL) | https://github.com/ralphtheninja/expand-template.git |
 | exponential-backoff | 3.1.3 | Apache-2.0 | https://github.com/coveooss/exponential-backoff.git |
 | express | 5.2.1 | MIT | expressjs/express |
+| express-rate-limit | 8.6.0 | MIT | https://github.com/express-rate-limit/express-rate-limit.git |
 | extend | 3.0.2 | MIT | https://github.com/justmoon/node-extend.git |
 | fast-deep-equal | 3.1.3 | MIT | https://github.com/epoberezkin/fast-deep-equal.git |
 | fast-uri | 3.1.4 | BSD-3-Clause | https://github.com/fastify/fast-uri.git |
