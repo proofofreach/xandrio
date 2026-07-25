@@ -216,6 +216,12 @@ function currentVoiceLabel() {
   return document.getElementById('player-voice-name')?.textContent?.trim() || 'Current voice';
 }
 
+function setDownloadButtonLabel(button, label) {
+  const labelElement = button.querySelector('[data-download-label]');
+  if (labelElement) labelElement.textContent = label;
+  else button.textContent = label;
+}
+
 function renderPlayerOfflineState() {
   const btn = document.getElementById('download-book-btn');
   const badge = document.getElementById('offline-book-badge');
@@ -230,25 +236,25 @@ function renderPlayerOfflineState() {
   const entry = offlineEntryForBook(book.id);
   if (!entry) {
     badge.hidden = true;
-    btn.textContent = 'Download for Offline';
+    setDownloadButtonLabel(btn, 'Download');
     return;
   }
   badge.hidden = false;
   if (entry.mode === 'rolling') {
     const cachedCount = entry.chapterEntries?.filter(Boolean).length || 0;
     badge.textContent = `Auto-cached · ${cachedCount} chapter${cachedCount === 1 ? '' : 's'}`;
-    btn.textContent = 'Download Full Book';
+    setDownloadButtonLabel(btn, 'Download full book');
     return;
   }
   const state = offlineState(entry);
   badge.textContent = offlineStateLabel(entry);
-  btn.textContent = state === 'ready'
-    ? 'Re-download Offline'
+  setDownloadButtonLabel(btn, state === 'ready'
+    ? 'Downloaded'
     : state === 'stale'
-      ? 'Update Offline Audio'
+      ? 'Update download'
       : state === 'repairing'
-        ? 'Cancel Offline Download'
-        : 'Repair Offline Download';
+        ? 'Cancel download'
+        : 'Repair download');
   refreshCurrentVariantBadge(book, entry, badge, btn);
 }
 
@@ -260,7 +266,7 @@ async function refreshCurrentVariantBadge(book, entry, badge, btn) {
     if (!status.variantKey || !entry.variantKey || status.variantKey === entry.variantKey) return;
     if (offlineEntryForBook(book.id)?.state !== 'repairing') setOfflineEntryState(book.id, 'stale');
     badge.textContent = 'Offline audio · current voice changed';
-    btn.textContent = 'Update Offline Audio';
+    setDownloadButtonLabel(btn, 'Update download');
   } catch {}
 }
 

@@ -486,6 +486,12 @@ async function verifyPlayback(page, fixtureState) {
     throw new Error('First-run operator acknowledgement did not persist the expected instance policy');
   }
   if (await page.textContent('#book-title') !== 'Smoke Book') throw new Error('Mock book did not open');
+  if (!await page.isVisible('#download-book-btn') || !await page.isVisible('#share-book-btn')) {
+    throw new Error('Player title actions do not expose Download and Share');
+  }
+  if (await page.locator('.player-details #download-book-btn, .player-details #share-book-btn').count() !== 0) {
+    throw new Error('Primary book actions are still hidden inside About this book');
+  }
   if (!await page.isVisible('[data-progress-scope="book"]')) throw new Error('Measured book timeline did not enable book seeking');
   await page.click('[data-progress-scope="book"]');
   if (await page.getAttribute('[data-progress-scope="book"]', 'aria-pressed') !== 'true') {
@@ -564,6 +570,30 @@ async function verifyPronunciations(page, fixtureState) {
   await page.click('[data-pronunciation-rule-id="smoke-rule"]');
   await page.waitForFunction(() => document.getElementById('pronunciation-existing-rules')?.textContent.includes('No saved pronunciations'));
   if (fixtureState.pronunciationRequests[2]?.method !== 'DELETE') throw new Error('Pronunciation delete was not submitted');
+}
+
+async function verifyLibraryActions(page) {
+  await page.goto(`${origin}/#/library`, { waitUntil: 'networkidle' });
+  await page.waitForSelector('.book-item:not(.skeleton)');
+  if (await page.locator('[data-library-tab="shelf"]').textContent() !== 'Saved') {
+    throw new Error('Personal library subset is not labeled Saved');
+  }
+  if (!await page.isVisible('[data-download-book="smoke"]')) {
+    throw new Error('Library card does not expose a full-title download action');
+  }
+  if (await page.locator('.shelf-toggle, .queue-toggle, .library-offline-badge').count() !== 0) {
+    throw new Error('Library card still renders the old action-pill cluster');
+  }
+  await page.click('[data-book-menu-toggle]');
+  for (const label of ['Save', 'Add to Up Next', 'Share', 'Delete']) {
+    if (!await page.getByRole('menuitem', { name: label, exact: true }).isVisible()) {
+      throw new Error(`Library overflow menu is missing ${label}`);
+    }
+  }
+  await page.keyboard.press('Escape');
+  if (await page.locator('.book-overflow-menu:not([hidden])').count() !== 0) {
+    throw new Error('Library overflow menu did not close with Escape');
+  }
 }
 
 async function verifySearchWorkspace(page, fixtureState) {
@@ -1093,10 +1123,11 @@ async function main() {
     const fixtureState = await installBrowserFixtures(page);
     await verifyPlayback(page, fixtureState);
     await verifyPronunciations(page, fixtureState);
+    await verifyLibraryActions(page);
     await verifySearchWorkspace(page, fixtureState);
     if (pageErrors.length) throw new Error(`Browser page errors:\n${pageErrors.join('\n')}`);
     await verifyRealServiceWorkerOffline(browser);
-    console.log('Browser smoke passed: playback/tier/pronunciation, search workspace, atomic shell upgrade failure, PWA icons, and real offline Range 206/416.');
+    console.log('Browser smoke passed: playback/tier/pronunciation, library actions, search workspace, atomic shell upgrade failure, PWA icons, and real offline Range 206/416.');
   } catch (err) {
     if (serverOutput) process.stderr.write(`\nServer output:\n${serverOutput}\n`);
     throw err;

@@ -279,15 +279,15 @@ summary:focus-visible,
 
 .book-item {
   position: relative;
-  overflow: hidden;
+  overflow: visible;
   border-radius: var(--radius);
   background: var(--surface-raised);
-  cursor: pointer;
   min-height: var(--touch-min);
   touch-action: pan-y;
   -webkit-tap-highlight-color: transparent;
   animation: fadeInCard 300ms ease both;
 }
+.book-item.menu-open { z-index: 30; }
 @keyframes fadeInCard {
   from { opacity: 0; transform: translateY(8px); }
   to { opacity: 1; transform: translateY(0); }
@@ -303,8 +303,6 @@ summary:focus-visible,
 .book-item:nth-child(8)  { animation-delay: 280ms; }
 .book-item:nth-child(9)  { animation-delay: 320ms; }
 .book-item:nth-child(10) { animation-delay: 360ms; }
-
-.book-item:focus-visible { outline-color: var(--focus-ring); }
 
 /* Loading state: spinner only — clean and minimal */
 .book-item.loading .book-item-inner {
@@ -330,8 +328,9 @@ summary:focus-visible,
 
 /* Card inner — the main visible layer */
 .book-item-inner {
-  display: flex;
-  gap: 14px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
   align-items: center;
   position: relative;
   z-index: 2;
@@ -345,6 +344,19 @@ summary:focus-visible,
   transition: background var(--transition), border-color var(--transition), transform var(--transition);
 }
 .book-item-inner:active { background: var(--surface-hover); }
+
+.book-card-open {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
 
 /* Cover image — larger, with depth shadow */
 .book-cover-wrap {
@@ -382,19 +394,24 @@ summary:focus-visible,
 }
 
 /* Book info */
-.book-item-info { flex: 1; min-width: 0; }
-.book-item h3 {
+.book-item-info {
+  display: block;
+  flex: 1;
+  min-width: 0;
+}
+.book-title {
+  display: -webkit-box;
   font-size: 15px;
   font-weight: 600;
   margin-bottom: 3px;
   line-height: 1.3;
   color: var(--text);
   overflow: hidden;
-  display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
 }
-.book-item p {
+.book-author {
+  display: block;
   color: var(--text-secondary);
   font-size: 13px;
   font-weight: 400;
@@ -403,51 +420,112 @@ summary:focus-visible,
   white-space: nowrap;
 }
 
-.duration-badge {
-  display: inline-block;
-  font-size: 10px;
-  font-weight: 500;
-  padding: 2px 8px;
-  border-radius: 6px;
-  margin-top: 4px;
-  background: rgba(148, 163, 184, 0.12);
-  color: var(--text-secondary);
+.book-listening-meta {
+  display: block;
+  margin-top: 3px;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.35;
 }
-.library-offline-badge {
+
+.book-card-tools {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.book-local-control {
   display: inline-flex;
   align-items: center;
-  width: fit-content;
-  margin-top: 5px;
-  margin-right: 6px;
-  padding: 2px 7px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: oklch(94% 0.012 82 / 0.04);
+  justify-content: flex-end;
+  min-width: 84px;
   color: var(--text-muted);
-  font-size: 10px;
-  font-weight: 700;
-  line-height: 1.3;
+}
+
+.book-local-state,
+.book-download-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: var(--touch-min);
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: 650 11px var(--font);
   white-space: nowrap;
 }
-.library-offline-badge--downloaded {
-  border-color: color-mix(in oklch, var(--success), transparent 70%);
-  background: color-mix(in oklch, var(--success), transparent 88%);
+
+.book-download-action:hover,
+.book-download-action:focus-visible { color: var(--accent-strong); }
+.book-local-state svg,
+.book-download-action svg { width: 17px; height: 17px; }
+
+.book-local-control--downloaded {
   color: var(--success);
 }
-.library-offline-badge--downloading,
-.library-offline-badge--partial {
-  border-color: var(--accent-border-soft);
-  background: oklch(74% 0.13 82 / 0.1);
+.book-local-control--downloading,
+.book-local-control--partial {
   color: var(--accent);
 }
-.library-offline-badge--repair-needed {
-  border-color: color-mix(in oklch, var(--danger), transparent 70%);
-  background: color-mix(in oklch, var(--danger), transparent 90%);
+.book-local-control--repair-needed {
   color: var(--danger);
 }
 
-/* Desktop delete button — hidden by default, shown by media query */
-.delete-btn-desktop { display: none; }
+.book-overflow {
+  position: relative;
+  z-index: 8;
+}
+
+.book-overflow-trigger {
+  display: grid;
+  place-items: center;
+  width: var(--touch-min);
+  height: var(--touch-min);
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+}
+
+.book-overflow-trigger:hover,
+.book-overflow-trigger[aria-expanded="true"] {
+  background: oklch(94% 0.012 82 / 0.07);
+  color: var(--text);
+}
+.book-overflow-trigger svg { width: 20px; height: 20px; }
+
+.book-overflow-menu {
+  position: absolute;
+  top: calc(100% + 2px);
+  right: 0;
+  z-index: 20;
+  width: 184px;
+  padding: 5px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: 0 14px 36px oklch(4% 0.01 255 / 0.6);
+}
+.book-overflow-menu[hidden] { display: none; }
+.book-overflow-menu button {
+  display: flex;
+  width: 100%;
+  min-height: 38px;
+  align-items: center;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text);
+  font: 550 13px var(--font);
+  text-align: left;
+}
+.book-overflow-menu button:hover,
+.book-overflow-menu button:focus-visible {
+  background: var(--surface-hover);
+}
+.book-overflow-menu .book-menu-danger { color: var(--danger); }
 
 /* Delete button — sits behind inner, revealed on swipe */
 .delete-btn-reveal {
@@ -481,12 +559,19 @@ summary:focus-visible,
   border: none;
 }
 .book-list.grid-view .book-item-inner {
+  display: flex;
   flex-direction: column;
   text-align: center;
   padding: 0;
   background: transparent;
   border: none;
   gap: 8px;
+}
+.book-list.grid-view .book-card-open {
+  width: 100%;
+  flex-direction: column;
+  gap: 8px;
+  text-align: center;
 }
 .book-list.grid-view .book-cover-wrap {
   width: 100%;
@@ -501,14 +586,42 @@ summary:focus-visible,
   width: 100%;
   height: 100%;
 }
-.book-list.grid-view .book-item h3 { font-size: 12px; margin-bottom: 1px; -webkit-line-clamp: 1; }
-.book-list.grid-view .book-item p { font-size: 11px; }
+.book-list.grid-view .book-title { font-size: 12px; margin-bottom: 1px; -webkit-line-clamp: 1; }
+.book-list.grid-view .book-author { font-size: 11px; }
 .book-list.grid-view .delete-btn-reveal { display: none; }
-.book-list.grid-view .duration-badge { font-size: 9px; padding: 1px 6px; }
-.book-list.grid-view .library-offline-badge {
-  margin: 3px auto 0;
-  font-size: 9px;
-  padding: 1px 6px;
+.book-list.grid-view .book-card-tools {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  z-index: 4;
+  flex-direction: column-reverse;
+  align-items: flex-end;
+}
+.book-list.grid-view .book-local-control {
+  min-width: 0;
+}
+.book-list.grid-view .book-local-state,
+.book-list.grid-view .book-download-action {
+  width: 36px;
+  min-height: 36px;
+  justify-content: center;
+  border-radius: 50%;
+  background: oklch(10% 0.012 255 / 0.82);
+}
+.book-list.grid-view .book-local-state span,
+.book-list.grid-view .book-download-action span {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+.book-list.grid-view .book-overflow-trigger {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: oklch(10% 0.012 255 / 0.82);
 }
 .book-item.hidden { display: none !important; }
 
@@ -1992,6 +2105,44 @@ summary:focus-visible,
   font-weight: 400;
 }
 
+.player-book-actions {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  margin-top: 10px;
+}
+
+.player-book-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: var(--touch-min);
+  padding: 6px 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  font: 650 13px var(--font);
+}
+
+.player-book-action:hover,
+.player-book-action:focus-visible {
+  color: var(--accent-strong);
+}
+
+.player-book-action:active { transform: translateY(1px); }
+.player-book-action svg { width: 19px; height: 19px; }
+
+.player-book-actions .offline-book-badge {
+  flex-basis: 100%;
+  margin-top: -4px;
+  color: var(--text-muted);
+  font-size: 11px;
+  text-align: center;
+}
+
 /* Chapter info */
 .player-chapter-info {
   text-align: center;
@@ -3003,6 +3154,8 @@ button, a, .book-item, .timer-option, select, input[type="range"] {
     margin-right: 8px;
   }
 
+  .header-wordmark { display: none; }
+
   .header-actions {
     gap: 6px;
   }
@@ -3041,7 +3194,7 @@ button, a, .book-item, .timer-option, select, input[type="range"] {
     height: 84px;
   }
 
-  .book-item h3 {
+  .book-title {
     font-size: 15px;
   }
 
@@ -3088,35 +3241,8 @@ button, a, .book-item, .timer-option, select, input[type="range"] {
   .book-item-inner { transition: background 200ms ease, border-color 200ms ease; }
   .book-item-inner:hover { background: var(--surface-hover); border-color: var(--accent-border-soft); }
 
-  /* Desktop: show delete icon on hover (replaces swipe-to-delete) */
-  .book-item .delete-btn-desktop {
-    display: flex;
-    position: absolute;
-    top: 8px; right: 8px;
-    width: 44px; height: 44px;
-    align-items: center;
-    justify-content: center;
-    background: oklch(4% 0.01 255 / 0.66);
-    border: 1px solid oklch(94% 0.012 82 / 0.1);
-    border-radius: 6px;
-    color: var(--text-secondary);
-    cursor: pointer;
-    opacity: 0;
-    transition: opacity 150ms ease, color 150ms ease, background 150ms ease;
-    z-index: 5;
-    padding: 0;
-  }
-  .book-item:hover .delete-btn-desktop { opacity: 1; }
-  .book-item .delete-btn-desktop:hover { color: var(--danger); background: oklch(58% 0.22 29 / 0.15); border-color: oklch(58% 0.22 29 / 0.3); }
-  .book-item .delete-btn-desktop:active { background: oklch(58% 0.22 29 / 0.3); }
-
   /* Hide swipe delete on desktop — not needed */
   .delete-btn-reveal { display: none !important; }
-}
-
-/* Mobile: hide desktop delete button */
-@media (hover: none), (pointer: coarse) {
-  .delete-btn-desktop { display: none !important; }
 }
 
 /* ==================== VOICE SHEET ==================== */
@@ -3434,6 +3560,12 @@ body.has-mini-player #settings-view {
     padding: 0 0 4px;
     text-align: left;
   }
+  .player-book-actions {
+    justify-content: flex-start;
+  }
+  .player-book-actions .offline-book-badge {
+    text-align: left;
+  }
   .player-book-title {
     font-size: 26px;
     -webkit-line-clamp: 3;
@@ -3595,14 +3727,6 @@ body.has-mini-player #settings-view {
 
 /* ===== Phase 2: Library UX ===== */
 
-/* Progress meta line used by renderBookCard() library items */
-.progress-meta {
-  display: block;
-  font-size: 12px;
-  color: var(--text-muted);
-  margin-top: 2px;
-}
-
 /* Thin book-level progress bar along the bottom edge of a library card */
 .book-item-inner { position: relative; }
 .book-progress {
@@ -3620,18 +3744,6 @@ body.has-mini-player #settings-view {
 }
 .book-item.finished .book-item-inner {
   border-color: oklch(78% 0.15 82 / 0.38);
-}
-.book-finished-badge {
-  display: inline-flex;
-  align-items: center;
-  width: fit-content;
-  margin-top: 6px;
-  padding: 2px 7px;
-  border-radius: 6px;
-  background: oklch(74% 0.16 82 / 0.16);
-  color: oklch(82% 0.16 82);
-  font-size: 11px;
-  font-weight: 800;
 }
 .book-item.finished .book-progress-fill {
   background: oklch(78% 0.15 82);
@@ -5035,24 +5147,24 @@ body.login-gate-open { overflow: hidden; }
 /* ─── Library tabs + shelf ─────────────────────────────────────────────── */
 .library-tabs {
   display: flex;
-  gap: 6px;
-  padding: 0 16px;
-  margin: 4px 0 8px;
+  gap: 22px;
+  margin: 4px 0 12px;
+  border-bottom: 1px solid var(--border);
 }
 .library-tab {
-  padding: 6px 14px;
+  min-height: 38px;
+  padding: 6px 0 8px;
   font-size: 13px;
   font-weight: 600;
   color: var(--text-secondary);
-  background: var(--surface);
-  border: 1px solid transparent;
-  border-radius: 999px;
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid transparent;
   cursor: pointer;
 }
 .library-tab.active {
   color: var(--accent-strong);
-  background: var(--accent-dim);
-  border-color: var(--accent-border-soft);
+  border-bottom-color: var(--accent);
 }
 .shelf-empty-hint {
   padding: 20px 16px;
@@ -5060,24 +5172,6 @@ body.login-gate-open { overflow: hidden; }
   font-size: 13px;
   text-align: center;
 }
-.shelf-toggle {
-  align-self: flex-start;
-  margin-top: 4px;
-  padding: 2px 10px;
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--text-secondary);
-  background: var(--surface-inset);
-  border: 1px solid var(--surface-hover);
-  border-radius: 999px;
-  cursor: pointer;
-}
-.shelf-toggle.on-shelf {
-  color: var(--accent-strong);
-  background: var(--accent-dim);
-  border-color: var(--accent-border-soft);
-}
-
 /* ─── Admin account management ─────────────────────────────────────────── */
 .admin-account-row { align-items: center; }
 .admin-account-row small { display: block; color: var(--text-muted); }
@@ -5152,16 +5246,9 @@ body.login-gate-open { overflow: hidden; }
   gap: 4px;
 }
 
-.up-next-actions button,
-.queue-toggle {
+.up-next-actions button {
   border: 1px solid var(--border);
   border-radius: 8px;
   background: transparent;
   color: inherit;
-}
-
-.queue-toggle {
-  margin-left: 6px;
-  padding: 4px 8px;
-  font-size: 12px;
 }
