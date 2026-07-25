@@ -872,7 +872,7 @@ async function processFullDownloadChapter({
 
 export async function ensureRollingOfflineWindow(book, chapters, chapterIndex, options = {}) {
   if (!options.enabled || !book?.id || !Array.isArray(chapters) || chapters.length === 0) return;
-  if (!navigator.onLine || !('caches' in window) || navigator.connection?.saveData) return;
+  if (!offlineDownloadsSupported() || !navigator.onLine || navigator.connection?.saveData) return;
   const existing = offlineEntryForBook(book.id);
   if (downloadAbort || (existing && existing.mode !== 'rolling')) return;
 
@@ -1239,6 +1239,24 @@ async function contentIdentity(response) {
   return contentIdentityForBytes(bytes, response.headers.get('ETag') || '');
 }
 
+async function backfillContentIdentity(cache, request, response, identity) {
+  const storedSize = Number(response.headers.get('Content-Length'));
+  const storedHash = response.headers.get(OFFLINE_CONTENT_HASH_HEADER) || '';
+  if (
+    Number.isInteger(storedSize) &&
+    storedSize > 0 &&
+    /^sha256-[a-f0-9]{64}$/.test(storedHash)
+  ) return;
+  const headers = new Headers(response.headers);
+  headers.set('Content-Length', String(identity.size));
+  headers.set(OFFLINE_CONTENT_HASH_HEADER, identity.contentHash);
+  await cache.put(request, new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers
+  }));
+}
+
 async function contentIdentityForBytes(bytes, etag = '') {
   return {
     size: bytes.byteLength,
@@ -1325,8 +1343,12 @@ export async function verifyOfflineEntry(cache, entry, scopeId = offlineScopeId(
   for (let i = 0; i < entry.chapterEntries.length; i++) {
     const expected = entry.chapterEntries[i];
     if (!expected?.variantKey || !expected.contentHash || !Number.isFinite(expected.size) || expected.size <= 0) return false;
-    const response = await cache.match(offlineAudioRequest(entry.bookId, i, scopeId));
-    if (!response || !canReuseChapter(expected, await contentIdentity(response), expected.variantKey)) return false;
+    const request = offlineAudioRequest(entry.bookId, i, scopeId);
+    const response = await cache.match(request);
+    if (!response) return false;
+    const identity = await contentIdentity(response);
+    if (!canReuseChapter(expected, identity, expected.variantKey)) return false;
+    await backfillContentIdentity(cache, request, response, identity).catch(() => {});
   }
   if (entry.titleData?.book?.hasCover) {
     const titleCache = await caches.open(offlineCacheName(OFFLINE_TITLE_CACHE, scopeId));

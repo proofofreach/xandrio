@@ -113,6 +113,93 @@ async function test(name, fn) {
     }
   });
 
+  await test('cold offline boot reuses verified origin metadata and rechecks it online', async () => {
+    const values = new Map([[
+      'xandrio_deployment_origin',
+      JSON.stringify({ canonicalOrigin: '' })
+    ]]);
+    const storage = {
+      getItem(key) { return values.get(key) || null; },
+      setItem(key, value) { values.set(key, String(value)); }
+    };
+    const dataset = {};
+    let onlineHandler = null;
+    let fetchCount = 0;
+    const changes = [];
+    global.document = {
+      documentElement: { dataset },
+      getElementById() { return null; }
+    };
+    global.addEventListener = (type, handler) => {
+      if (type === 'online') onlineHandler = handler;
+    };
+    try {
+      const initial = await initDeploymentGuard({
+        currentUrl: 'https://alternate.example.com/library',
+        isSecureContext: true,
+        storage,
+        onChange: result => changes.push(result),
+        fetchImpl: async () => {
+          fetchCount += 1;
+          if (fetchCount === 1) throw new Error('offline');
+          return Response.json({ canonicalOrigin: 'https://reader.example.com' });
+        }
+      });
+      assert.strictEqual(initial.serviceWorkerAllowed, true);
+      assert(onlineHandler);
+
+      await onlineHandler();
+      assert.strictEqual(changes.at(-1).serviceWorkerAllowed, false);
+      assert.strictEqual(dataset.pwaStorageAllowed, 'false');
+      assert.strictEqual(
+        changes.at(-1).href,
+        'https://reader.example.com/library'
+      );
+    } finally {
+      delete global.document;
+      delete global.addEventListener;
+    }
+  });
+
+  await test('reconnect stays fail-closed when fresh deployment metadata is unavailable', async () => {
+    const values = new Map([[
+      'xandrio_deployment_origin',
+      JSON.stringify({ canonicalOrigin: '' })
+    ]]);
+    const storage = {
+      getItem(key) { return values.get(key) || null; },
+      setItem(key, value) { values.set(key, String(value)); }
+    };
+    const dataset = {};
+    let onlineHandler = null;
+    const changes = [];
+    global.document = {
+      documentElement: { dataset },
+      getElementById() { return null; }
+    };
+    global.addEventListener = (type, handler) => {
+      if (type === 'online') onlineHandler = handler;
+    };
+    try {
+      const initial = await initDeploymentGuard({
+        currentUrl: 'https://reader.example.com/',
+        isSecureContext: true,
+        storage,
+        onChange: result => changes.push(result),
+        fetchImpl: async () => new Response(null, { status: 503 })
+      });
+      assert.strictEqual(initial.serviceWorkerAllowed, true);
+
+      await onlineHandler();
+      assert.strictEqual(changes.at(-1).serviceWorkerAllowed, false);
+      assert.strictEqual(dataset.pwaStorageAllowed, 'false');
+      assert.match(changes.at(-1).message, /Reconnect to verify/i);
+    } finally {
+      delete global.document;
+      delete global.addEventListener;
+    }
+  });
+
   console.log(`\n${passed} passed, ${failed} failed`);
   if (failed > 0) process.exit(1);
 })();

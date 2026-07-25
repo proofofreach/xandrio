@@ -1,7 +1,7 @@
 importScripts('/js/offline-range.js');
 
 const APP_RELEASE = '1.1.0';
-const CACHE_VERSION = 'xandrio-v103';
+const CACHE_VERSION = 'xandrio-v104';
 const OFFLINE_AUDIO_CACHE = 'xandrio-offline-audio';
 const OFFLINE_TITLE_CACHE = 'xandrio-offline-titles';
 const OFFLINE_SCOPE_PARAM = 'xandrio-offline-scope';
@@ -13,7 +13,7 @@ const ASSET_VERSIONS = {
   '/style-v3.css': 90,
   '/js/lifecycle.js': 1,
   '/js/chunk-player.js': 21,
-  '/app.js': 101
+  '/app.js': 102
 };
 const versionedAsset = (path) => `${path}?v=${ASSET_VERSIONS[path]}`;
 const APP_SHELL = [
@@ -151,8 +151,12 @@ async function cachedAudioResponse(request) {
   // Offline downloads are stored under /api/audio/ (see offline.js). The iOS
   // single-file player requests /api/audio-ios/ — same chapter audio, different
   // encode — so fall back to the stored playback audio when the AAC path isn't cached.
-  let cached = await cache.match(request.url);
-  if (!cached) cached = await cache.match(request.url.replace('/api/audio-ios/', '/api/audio/'));
+  let cacheKey = request.url;
+  let cached = await cache.match(cacheKey);
+  if (!cached) {
+    cacheKey = request.url.replace('/api/audio-ios/', '/api/audio/');
+    cached = await cache.match(cacheKey);
+  }
   if (!cached) return Response.error();
   const range = request.headers.get('Range');
   if (!range) return cached;
@@ -165,6 +169,13 @@ async function cachedAudioResponse(request) {
   const match = range.match(/^bytes=(\d*)-(\d*)$/);
   const buffer = await cached.arrayBuffer();
   const size = buffer.byteLength;
+  const legacyHeaders = new Headers(cached.headers);
+  legacyHeaders.set('Content-Length', String(size));
+  await cache.put(cacheKey, new Response(buffer, {
+    status: cached.status,
+    statusText: cached.statusText,
+    headers: legacyHeaders
+  })).catch(() => {});
   const rangeError = () => new Response(null, {
     status: 416,
     headers: { 'Content-Range': `bytes */${size}`, 'Accept-Ranges': 'bytes' }

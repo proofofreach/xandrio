@@ -578,6 +578,41 @@ function installBrowser({
     assert.strictEqual(await offline.verifyOfflineEntry(metadataOnlyCache, entry), true);
   });
 
+  await test('a successful audit backfills legacy cache identity metadata', async () => {
+    const cache = makeCache();
+    const bytes = new TextEncoder().encode('legacy');
+    const entry = {
+      bookId: book.id,
+      title: book.title,
+      chapters: 1,
+      chapterEntries: [{
+        size: bytes.byteLength,
+        contentHash: 'sha256-c49fea7425fa7f8699897a97c159c6690267d9003bb78c53fafa8fc15c325d84',
+        variantKey: 'voice-a'
+      }],
+      titleData: { book, chapters: [{}] },
+      downloadedAt: '2026-07-24T12:00:00.000Z',
+      manifestVersion: 3,
+      mode: 'full',
+      state: 'ready'
+    };
+    await cache.put(offlineAudioKey(book.id, 0), new Response(bytes));
+    installBrowser({
+      book,
+      chapters: [{}],
+      cache,
+      manifest: { [book.id]: entry }
+    });
+
+    assert.strictEqual(await offline.auditOfflineManifest(), false);
+    const migrated = await cache.match(offlineAudioKey(book.id, 0));
+    assert.strictEqual(migrated.headers.get('Content-Length'), String(bytes.byteLength));
+    assert.strictEqual(
+      migrated.headers.get('X-Xandrio-Content-SHA256'),
+      entry.chapterEntries[0].contentHash
+    );
+  });
+
   await test('downloads an explicit library title without depending on player state or its overlay', async () => {
     const cache = makeCache();
     const env = installBrowser({ book, chapters, cache });
@@ -982,6 +1017,24 @@ function installBrowser({
       'the Downloaded view must wait for cache-presence verification'
     );
     assert.strictEqual(offline.getOfflineManifest()[book.id].state, 'incomplete');
+  });
+
+  await test('rolling cache does not write on an unverified deployment origin', async () => {
+    const cache = makeCache();
+    const rollingChapters = [{}, {}, {}];
+    const env = installBrowser({
+      book,
+      chapters: rollingChapters,
+      cache,
+      variants: ['voice-a', 'voice-a', 'voice-a']
+    });
+    document.documentElement.dataset.pwaStorageAllowed = 'false';
+
+    await offline.ensureRollingOfflineWindow(book, rollingChapters, 1, { enabled: true });
+
+    assert.deepStrictEqual(env.audioRequests, []);
+    assert.strictEqual(cache.entries.size, 0);
+    assert.strictEqual(offline.offlineEntryForBook(book.id), null);
   });
 
   await test('rolling cache keeps one chapter behind and two ahead', async () => {

@@ -94,6 +94,7 @@ let playbackReliability, iphonePlaybackTipDismiss;
 let playbackResumePrompt, playbackResumeBtn;
 let startOverModalController = null;
 let shortcutOverlayController = null;
+let serviceWorkerRegistrationStarted = false;
 
 // Initialize DOM elements after DOM is ready
 function initializeDOMElements() {
@@ -546,7 +547,11 @@ function applyPlaybackSelection(selection) {
 // Initialize when DOM is ready
 document.addEventListener('DOMContentLoaded', async () => {
   console.log('Xandrio initialized');
-  const deployment = await initDeploymentGuard();
+  const deployment = await initDeploymentGuard({
+    onChange: updated => {
+      if (updated.serviceWorkerAllowed) registerServiceWorker();
+    }
+  });
 
   // Sign-in gate. When a session later expires mid-playback (any 401), pause
   // so the local checkpoint survives, then the gate rises over the app.
@@ -723,12 +728,16 @@ document.addEventListener('DOMContentLoaded', async () => {
 
 
 function registerServiceWorker() {
-  if (!('serviceWorker' in navigator)) return;
+  if (!('serviceWorker' in navigator) || serviceWorkerRegistrationStarted) return;
+  serviceWorkerRegistrationStarted = true;
   // Updates wait for active clients to close, so a new shell cannot take over
   // a page with in-flight playback. Never reload on controllerchange either.
   navigator.serviceWorker.register('/sw.js')
     .then(registration => registration?.update?.().catch(() => {}))
-    .catch(err => console.warn('Service worker registration failed:', err));
+    .catch(err => {
+      serviceWorkerRegistrationStarted = false;
+      console.warn('Service worker registration failed:', err);
+    });
 }
 
 function playbackReport() {

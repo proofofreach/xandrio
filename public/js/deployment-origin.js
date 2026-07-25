@@ -5,6 +5,8 @@ function isLoopbackHostname(hostname) {
     /^127(?:\.\d{1,3}){3}$/.test(normalized);
 }
 
+const DEPLOYMENT_ORIGIN_KEY = 'xandrio_deployment_origin';
+
 export function deploymentGuard({
   currentUrl,
   isSecureContext,
@@ -40,8 +42,65 @@ export function deploymentGuard({
   };
 }
 
+function readStoredDeployment(storage) {
+  try {
+    const parsed = JSON.parse(storage?.getItem(DEPLOYMENT_ORIGIN_KEY) || 'null');
+    if (parsed && typeof parsed.canonicalOrigin === 'string') return parsed;
+  } catch {}
+  return null;
+}
+
+function storeDeployment(storage, canonicalOrigin) {
+  try {
+    storage?.setItem(DEPLOYMENT_ORIGIN_KEY, JSON.stringify({ canonicalOrigin }));
+  } catch {}
+}
+
+function unverifiedDeploymentGuard() {
+  return {
+    serviceWorkerAllowed: false,
+    message: 'Reconnect to verify this Xandrio address before installing or downloading. Existing offline books remain available.',
+    href: ''
+  };
+}
+
+async function resolveDeploymentGuard({
+  fetchImpl,
+  currentUrl,
+  isSecureContext,
+  storage,
+  requireFresh = false
+}) {
+  let deployment = readStoredDeployment(storage);
+  let verifiedFresh = false;
+  try {
+    const response = await fetchImpl('/api/deployment', { cache: 'no-store' });
+    if (response.ok) {
+      const payload = await response.json();
+      const canonicalOrigin = String(payload?.canonicalOrigin || '');
+      deployment = { canonicalOrigin };
+      storeDeployment(storage, canonicalOrigin);
+      verifiedFresh = true;
+    }
+  } catch {
+    // A previously verified result keeps a cold offline launch usable.
+  }
+
+  if (requireFresh && !verifiedFresh) return unverifiedDeploymentGuard();
+  if (!deployment) return unverifiedDeploymentGuard();
+  try {
+    return deploymentGuard({
+      currentUrl,
+      isSecureContext,
+      canonicalOrigin: deployment.canonicalOrigin
+    });
+  } catch {
+    return unverifiedDeploymentGuard();
+  }
+}
+
 function renderDeploymentGuard(result) {
-  const banner = document.getElementById('deployment-banner');
+  const banner = globalThis.document?.getElementById('deployment-banner');
   if (!banner) return;
   banner.replaceChildren();
   if (!result.message) {
@@ -49,11 +108,11 @@ function renderDeploymentGuard(result) {
     return;
   }
 
-  const message = document.createElement('span');
+  const message = globalThis.document.createElement('span');
   message.textContent = result.message;
   banner.append(message);
   if (result.href) {
-    const link = document.createElement('a');
+    const link = globalThis.document.createElement('a');
     link.href = result.href;
     link.textContent = 'Open Xandrio';
     banner.append(link);
@@ -64,29 +123,31 @@ function renderDeploymentGuard(result) {
 export async function initDeploymentGuard({
   fetchImpl = globalThis.fetch,
   currentUrl = globalThis.location?.href,
-  isSecureContext = globalThis.isSecureContext
+  isSecureContext = globalThis.isSecureContext,
+  storage = globalThis.window?.localStorage,
+  onChange = null
 } = {}) {
-  let canonicalOrigin = '';
-  try {
-    const response = await fetchImpl('/api/deployment', { cache: 'no-store' });
-    if (response.ok) {
-      const deployment = await response.json();
-      canonicalOrigin = String(deployment?.canonicalOrigin || '');
+  const apply = result => {
+    if (globalThis.document?.documentElement?.dataset) {
+      globalThis.document.documentElement.dataset.pwaStorageAllowed = String(result.serviceWorkerAllowed);
     }
-  } catch {
-    // The app shell can boot offline. Local secure-context checks still apply
-    // when deployment metadata is temporarily unavailable.
-  }
+    renderDeploymentGuard(result);
+  };
+  const resolve = (requireFresh = false) => resolveDeploymentGuard({
+    fetchImpl,
+    currentUrl,
+    isSecureContext,
+    storage,
+    requireFresh
+  });
 
-  let result;
-  try {
-    result = deploymentGuard({ currentUrl, isSecureContext, canonicalOrigin });
-  } catch {
-    result = deploymentGuard({ currentUrl, isSecureContext });
-  }
-  if (document.documentElement?.dataset) {
-    document.documentElement.dataset.pwaStorageAllowed = String(result.serviceWorkerAllowed);
-  }
-  renderDeploymentGuard(result);
+  const result = await resolve();
+  apply(result);
+  globalThis.addEventListener?.('online', async () => {
+    apply(unverifiedDeploymentGuard());
+    const updated = await resolve(true);
+    apply(updated);
+    onChange?.(updated);
+  });
   return result;
 }

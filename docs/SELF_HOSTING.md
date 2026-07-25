@@ -194,6 +194,14 @@ HTTP remains suitable only for localhost development because remote PWA
 installation, offline playback, and related platform APIs require a secure
 context.
 
+When introducing or changing the canonical origin, browser state does not move
+automatically. Sign in at the new origin, confirm the server-backed library and
+positions, then download any needed titles again. Existing offline downloads
+and sign-in state remain in the old origin's browser storage; after verifying
+the new install, clear site data for the old origin to reclaim space. Keep the
+old address available until this is complete if users still need those local
+copies.
+
 ## Backups, updates, rollback, and removal
 
 For a native installation, stop Xandrio and archive `data/` and `cache/`. For the standard Compose installation, stop writes and archive both named volumes:

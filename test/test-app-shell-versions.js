@@ -81,6 +81,11 @@ assert(
   'offline fallbacks resolve the cache namespace from the request scope'
 );
 assert(
+  swSource.includes("legacyHeaders.set('Content-Length', String(size))") &&
+    swSource.includes('cache.put(cacheKey, new Response(buffer'),
+  'the first legacy Range request backfills streaming metadata'
+);
+assert(
   indexSource.includes('id="downloaded-device-hint"') &&
     librarySource.includes("deviceHint.hidden = currentTab !== 'downloaded'"),
   'the populated Downloaded view explains that copies are device-local'
