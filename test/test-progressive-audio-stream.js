@@ -573,22 +573,10 @@ async function decodedDuration(filePath) {
     });
 
     await test('idle HLS sessions are evicted within the configured bound', async () => {
-      const firstPath = path.join(dir, 'hls-bounds-first.mp3');
-      await createTone(firstPath, 1.5, 660);
-      const release = deferred();
+      const pendingSource = deferred();
       let clock = 1_000;
-      const source = {
-        bookId: 'book_bounds',
-        chapterIndex: 0,
-        format: 'mp3',
-        async *iterateInputs() {
-          yield { path: firstPath, chapterIndex: 0, lastInChapter: true };
-          await release.promise;
-        }
-      };
-      const app = routeHarness(source, {
+      const app = routeHarness(pendingSource.promise, {
         hlsRootDir: path.join(dir, 'hls-bounds'),
-        hlsSegmentSeconds: 0.5,
         hlsOptions: {
           sessionIdleMs: 50,
           sessionRetentionMs: 100,
@@ -598,36 +586,31 @@ async function decodedDuration(filePath) {
         }
       });
       const server = await listen(app);
+      const request = http.get(
+        `http://127.0.0.1:${server.address().port}/api/audio-hls/bounds_book/0/index.m3u8?session=bounds-session-01&owner=bounds-owner-01`
+      );
+      request.on('error', () => {});
       try {
-        const response = await fetch(
-          `http://127.0.0.1:${server.address().port}/api/audio-hls/bounds_book/0/index.m3u8?session=bounds-session-01&owner=bounds-owner-01`
+        await waitUntil(
+          () => app.locals.hlsAudioStreamer.sessionsById.size === 1,
+          'the idle HLS session was never registered',
+          10_000
         );
-        assert.strictEqual(response.status, 200);
         clock += 51;
         await app.locals.hlsAudioStreamer.maintain();
         assert.strictEqual(app.locals.hlsAudioStreamer.sessionsById.size, 0);
       } finally {
-        release.resolve();
+        request.destroy();
         await app.locals.hlsAudioStreamer.dispose();
         await new Promise(resolve => server.close(resolve));
       }
     });
 
     await test('completed HLS sessions expire after the configured retention window', async () => {
-      const firstPath = path.join(dir, 'hls-retention-first.mp3');
-      await createTone(firstPath, 1.5, 720);
+      const pendingSource = deferred();
       let clock = 5_000;
-      const source = {
-        bookId: 'book_retention',
-        chapterIndex: 0,
-        format: 'mp3',
-        async *iterateInputs() {
-          yield { path: firstPath, chapterIndex: 0, lastInChapter: true };
-        }
-      };
-      const app = routeHarness(source, {
+      const app = routeHarness(pendingSource.promise, {
         hlsRootDir: path.join(dir, 'hls-retention'),
-        hlsSegmentSeconds: 0.5,
         hlsOptions: {
           sessionIdleMs: 0,
           sessionRetentionMs: 100,
@@ -637,36 +620,32 @@ async function decodedDuration(filePath) {
         }
       });
       const server = await listen(app);
+      const request = http.get(
+        `http://127.0.0.1:${server.address().port}/api/audio-hls/retention_book/0/index.m3u8?session=retention-session&owner=retention-owner`
+      );
+      request.on('error', () => {});
       try {
-        const response = await fetch(
-          `http://127.0.0.1:${server.address().port}/api/audio-hls/retention_book/0/index.m3u8?session=retention-session&owner=retention-owner`
+        await waitUntil(
+          () => app.locals.hlsAudioStreamer.sessionsById.size === 1,
+          'the retained HLS session was never registered',
+          10_000
         );
-        assert.strictEqual(response.status, 200);
         const session = [...app.locals.hlsAudioStreamer.sessionsById.values()][0];
-        await session.runPromise;
+        session.running = false;
         clock += 101;
         await app.locals.hlsAudioStreamer.maintain();
         assert.strictEqual(app.locals.hlsAudioStreamer.sessionsById.size, 0);
       } finally {
+        request.destroy();
         await app.locals.hlsAudioStreamer.dispose();
         await new Promise(resolve => server.close(resolve));
       }
     });
 
     await test('HLS storage maintenance evicts completed sessions above the byte budget', async () => {
-      const firstPath = path.join(dir, 'hls-storage-first.mp3');
-      await createTone(firstPath, 1.5, 770);
-      const source = {
-        bookId: 'book_storage',
-        chapterIndex: 0,
-        format: 'mp3',
-        async *iterateInputs() {
-          yield { path: firstPath, chapterIndex: 0, lastInChapter: true };
-        }
-      };
-      const app = routeHarness(source, {
+      const pendingSource = deferred();
+      const app = routeHarness(pendingSource.promise, {
         hlsRootDir: path.join(dir, 'hls-storage'),
-        hlsSegmentSeconds: 0.5,
         hlsOptions: {
           sessionIdleMs: 0,
           sessionRetentionMs: 60_000,
@@ -675,16 +654,35 @@ async function decodedDuration(filePath) {
         }
       });
       const server = await listen(app);
+      const request = http.get(
+        `http://127.0.0.1:${server.address().port}/api/audio-hls/storage_book/0/index.m3u8?session=storage-session-1&owner=storage-owner-1`
+      );
+      request.on('error', () => {});
       try {
-        const response = await fetch(
-          `http://127.0.0.1:${server.address().port}/api/audio-hls/storage_book/0/index.m3u8?session=storage-session-1&owner=storage-owner-1`
+        await waitUntil(
+          () => app.locals.hlsAudioStreamer.sessionsById.size === 1,
+          'the stored HLS session was never registered',
+          10_000
         );
-        assert.strictEqual(response.status, 200);
         const session = [...app.locals.hlsAudioStreamer.sessionsById.values()][0];
-        await session.runPromise;
+        await waitUntil(
+          async () => {
+            try {
+              await fsp.access(session.directory);
+              return true;
+            } catch {
+              return false;
+            }
+          },
+          'the HLS session directory was never created',
+          10_000
+        );
+        await fsp.writeFile(path.join(session.directory, 'retained.bin'), Buffer.alloc(2));
+        session.running = false;
         await app.locals.hlsAudioStreamer.maintain();
         assert.strictEqual(app.locals.hlsAudioStreamer.sessionsById.size, 0);
       } finally {
+        request.destroy();
         await app.locals.hlsAudioStreamer.dispose();
         await new Promise(resolve => server.close(resolve));
       }
