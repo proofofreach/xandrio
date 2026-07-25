@@ -98,6 +98,7 @@ async function main() {
       ['/api/upload', 'POST'],
       ['/api/refresh-metadata/book', 'POST'],
       ['/api/chunks/book/0/prepare', 'POST'],
+      ['/api/offline/preparation/book', 'POST'],
       ['/api/audio/book/0', 'GET'],
       ['/api/audio-continuous/book/0', 'GET'],
       ['/api/audio-hls/book/0/index.m3u8', 'GET'],

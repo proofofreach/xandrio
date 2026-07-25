@@ -24,7 +24,10 @@ const { isSafeBookId: requestGuardIsSafeBookId, parseNonNegativeInteger } = requ
 const { serveAudioFile } = require('./lib/audio-response');
 const { createChapterAudioStreamer } = require('./lib/chapter-audio-stream');
 const { createHlsAudioStreamer } = require('./lib/hls-audio-stream');
-const { registerPlaybackRoutes } = require('./lib/routes/playback-routes');
+const {
+  registerPlaybackRoutes,
+  replayOfflinePreparations
+} = require('./lib/routes/playback-routes');
 const { getTtsOutputFormatForVoice } = require('./lib/tts-output-format');
 const { createNarrationEngineRegistry } = require('./lib/narration-engine-registry');
 const { createNarrationRuntime } = require('./lib/narration-runtime');
@@ -2867,6 +2870,20 @@ app.get('/api/cover/:bookId', async (req, res) => {
 // Playback, chapter audio, and chunk delivery — see lib/routes/playback-routes.js.
 // Registered here so the chunk routes keep their position relative to the
 // voice-cache and premium-prep routes below.
+async function getOfflineBookChapters(bookId) {
+  const books = await loadJSON(BOOKS_FILE, {});
+  const book = books[bookId];
+  if (!book) {
+    const error = new Error('Book not found');
+    error.statusCode = 404;
+    throw error;
+  }
+  return {
+    book,
+    chapters: await getChaptersCached(book.path)
+  };
+}
+
 registerPlaybackRoutes(app, {
   playbackOrchestrator,
   ttsForTier,
@@ -2876,6 +2893,7 @@ registerPlaybackRoutes(app, {
   serveAudioFile,
   sendServerError,
   fs,
+  getBookChapters: getOfflineBookChapters,
   rateLimitWindowMs: RATE_LIMIT_WINDOW,
   rateLimitMax: RATE_LIMIT_MAX
 });
@@ -3647,6 +3665,20 @@ if (require.main === module) {
     const failedChapters = ordinaryRecovery.reduce((count, report) => count + (report.failed?.length || 0), 0);
     if (resumedChapters || failedChapters) {
       console.log(`Chapter generation recovery: ${resumedChapters} resumed, ${failedChapters} failed`);
+    }
+    const offlineRecovery = await replayOfflinePreparations({
+      generationJournal,
+      getBookChapters: getOfflineBookChapters,
+      playbackOrchestrator
+    }).catch(err => {
+      console.warn(`Offline preparation recovery failed: ${err.message}`);
+      return { resumedBooks: 0, resumedChapters: 0, failedBooks: [] };
+    });
+    if (offlineRecovery.resumedBooks || offlineRecovery.failedBooks.length) {
+      console.log(
+        `Offline preparation recovery: ${offlineRecovery.resumedBooks} title(s), ` +
+        `${offlineRecovery.resumedChapters} chapter(s), ${offlineRecovery.failedBooks.length} failed`
+      );
     }
     const { server, protocol } = createConfiguredServer();
     runningServer = server;

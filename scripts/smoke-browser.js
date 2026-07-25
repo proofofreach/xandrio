@@ -93,6 +93,7 @@ async function startOfflineFixtureServer() {
   const state = {
     missingShellPath: null,
     replacementCacheVersion: null,
+    offlinePreparationRequested: false,
     operatorPolicy: { version: 1, acknowledged: false, acknowledgedAt: null, unverifiedSourcesEnabled: false }
   };
 
@@ -116,6 +117,19 @@ async function startOfflineFixtureServer() {
     if (pathname === '/api/positions') return jsonResponse(res, { positions: {} });
     if (pathname === '/api/settings/client') return jsonResponse(res, { settings: {} });
     if (pathname === '/api/book/smoke-offline') return jsonResponse(res, { book, chapters: [chapter] });
+    if (pathname === '/api/offline/preparation/smoke-offline') {
+      if (req.method === 'POST') state.offlinePreparationRequested = true;
+      return jsonResponse(res, {
+        bookId: book.id,
+        state: state.offlinePreparationRequested ? 'ready' : 'not-requested',
+        readyChapters: state.offlinePreparationRequested ? 1 : 0,
+        totalChapters: 1,
+        readyChunks: state.offlinePreparationRequested ? 1 : 0,
+        totalChunks: 1,
+        errorChapters: 0,
+        percent: state.offlinePreparationRequested ? 100 : 0
+      }, req.method === 'POST' ? 202 : 200);
+    }
     if (pathname === '/api/position/smoke-offline') return jsonResponse(res, { position: null });
     if (pathname === '/api/position') return jsonResponse(res, { success: true });
     if (pathname === '/api/bookmarks/smoke-offline') return jsonResponse(res, { bookmarks: [] });
@@ -724,7 +738,7 @@ async function verifyLibraryActions(page) {
     throw new Error(`Library overflow trigger is not persistently visible: ${JSON.stringify(overflowTrigger)}`);
   }
   await page.click('[data-book-menu-toggle]');
-  for (const label of ['Download', 'Save to My Shelf', 'Add to Up Next', 'Share', 'Delete']) {
+  for (const label of ['Prepare for offline', 'Save to My Shelf', 'Add to Up Next', 'Share', 'Delete']) {
     if (!await page.getByRole('menuitem', { name: label, exact: true }).isVisible()) {
       throw new Error(`Library overflow menu is missing ${label}`);
     }
@@ -1139,11 +1153,21 @@ async function verifyRealServiceWorkerOffline(browser) {
     }
     await verifyAtomicServiceWorkerUpgrade(page, fixture);
 
-    // Exercise the library card's actual Download control. It must prepare
-    // and cache the full title without navigating into the player.
+    // Exercise the two-stage library workflow without navigating into the
+    // player: durable server preparation first, then device-local transfer.
     await page.goto(`${fixture.origin}/#/library`, { waitUntil: 'networkidle' });
     await page.click('[data-book-menu-toggle]');
+    await page.waitForSelector('[data-prepare-offline-book="smoke-offline"]', { state: 'visible' });
+    await page.click('[data-prepare-offline-book="smoke-offline"]');
+    await page.waitForFunction(() => {
+      const manifest = JSON.parse(localStorage.getItem('xandrio_offline_books:default') || '{}');
+      return manifest['smoke-offline']?.state === 'prepared';
+    });
+    await page.click('[data-book-menu-toggle]');
     await page.waitForSelector('[data-download-book="smoke-offline"]', { state: 'visible' });
+    if (!await page.getByRole('menuitem', { name: 'Download to this device', exact: true }).isVisible()) {
+      throw new Error('Prepared title does not offer a device-local download');
+    }
     await page.click('[data-download-book="smoke-offline"]');
     if (await page.evaluate(() => location.hash) !== '#/library') {
       throw new Error('Library download navigated away from the library');

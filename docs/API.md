@@ -27,6 +27,8 @@ The examples below omit authorization headers for readability.
 | GET | [/api/library](#get-apilibrary) | List all books in library |
 | DELETE | [/api/book/:bookId](#delete-apibookbookid) | Delete a book and its files |
 | GET | [/api/offline/deletions](#get-apiofflinedeletions) | Reconcile device-local downloads with server deletions |
+| GET | [/api/offline/preparation/:bookId](#get-apiofflinepreparationbookid) | Get full-title audio preparation progress |
+| POST | [/api/offline/preparation/:bookId](#post-apiofflinepreparationbookid) | Start durable full-title audio preparation |
 | GET | [/api/book/:bookId](#get-apibookbookid) | Get book details and chapters |
 | GET | [/api/cover/:bookId](#get-apicoverbookid) | Get book cover image |
 | GET | [/api/audio-stream/:bookId/:chapterIndex](#get-apiaudio-streambookidchapterindex) | Stream generated chapter audio through one stable response |
@@ -77,6 +79,8 @@ Regenerated from `server.js` and `lib/routes/*.js` on 2026-07-12.
 | GET | `/api/chunks/:bookId/:chapterIndex/manifest` |
 | GET | `/api/chunks/:bookId/:chapterIndex/chapter-audio-status` |
 | POST | `/api/chunks/:bookId/:chapterIndex/prepare-chapter-audio` |
+| GET | `/api/offline/preparation/:bookId` |
+| POST | `/api/offline/preparation/:bookId` |
 | POST | `/api/chunks/:bookId/:chapterIndex/prepare` |
 | POST | `/api/chunks/:bookId/:chapterIndex/retry` |
 | GET | `/api/chunks/:bookId/:chapterIndex/status` |
@@ -698,6 +702,37 @@ endpoint is intended for PWA reconciliation.
 The server resolves interrupted deletion transactions against `books.json`
 before returning the cursor. Clients advance their cursor only after applying
 the response.
+
+---
+
+## POST /api/offline/preparation/:bookId
+
+Record a durable full-title preparation intent and queue every chapter at
+`download` generation priority. The request returns after the work is queued;
+generation continues if the initiating browser closes. Live playback remains
+higher priority.
+
+## GET /api/offline/preparation/:bookId
+
+Return server preparation progress independently of any device-local download:
+
+```json
+{
+  "bookId": "book-123",
+  "state": "preparing",
+  "readyChapters": 4,
+  "totalChapters": 24,
+  "readyChunks": 18,
+  "totalChunks": 120,
+  "errorChapters": 0,
+  "percent": 17
+}
+```
+
+`state` is `not-requested`, `preparing`, `ready`, or `error`. Once `ready`, a
+client can transfer chapter audio into that browser/PWA’s Cache Storage while
+the server generates audio for other titles; device transfer does not consume
+the generation scheduler’s GPU slot.
 
 ---
 

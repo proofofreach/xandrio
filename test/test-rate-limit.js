@@ -60,7 +60,7 @@ test('default groups cover authentication, import, metadata, TTS, and voice uplo
   for (const path of [
     '/api/auth/login', '/api/search', '/api/upload', '/api/download',
     '/api/refresh-metadata/book', '/api/audio/book/0', '/api/audio-continuous/book/0',
-    '/api/chunks/book/0/prepare', '/api/chunks/book/0/1',
+    '/api/chunks/book/0/prepare', '/api/chunks/book/0/1', '/api/offline/preparation/book',
     '/api/voices/clone'
   ]) assert(covered(path), `${path} should be rate limited`);
 });

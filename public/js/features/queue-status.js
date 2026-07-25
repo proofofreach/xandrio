@@ -14,6 +14,7 @@ let pollScope = null;
 let currentStatus = { active: 0, queued: 0, books: [] };
 let currentServerStatus = { active: 0, queued: 0, books: [] };
 let currentDownloads = [];
+let currentPreparations = [];
 let lastBookCount = 0;
 
 function normalizedBooks(status) {
@@ -37,12 +38,33 @@ function normalizedDownloads(downloads) {
     }));
 }
 
+function normalizedPreparations(preparations) {
+  if (!Array.isArray(preparations)) return [];
+  return preparations
+    .filter(preparation => preparation && typeof preparation.id === 'string')
+    .map(preparation => ({
+      ...preparation,
+      kind: 'preparation',
+      active: 1,
+      queued: 0,
+      percent: Math.max(0, Math.min(99, Math.round(Number(preparation.percent) || 0))),
+      readyChapters: Math.max(0, Number(preparation.readyChapters) || 0),
+      totalChapters: Math.max(0, Number(preparation.totalChapters) || 0)
+    }));
+}
+
 function combinedBooks(status) {
   const downloads = normalizedDownloads(currentDownloads);
-  const downloadingIds = new Set(downloads.map(download => download.id));
+  const preparations = normalizedPreparations(currentPreparations)
+    .filter(preparation => !downloads.some(download => download.id === preparation.id));
+  const localActivityIds = new Set([
+    ...downloads.map(download => download.id),
+    ...preparations.map(preparation => preparation.id)
+  ]);
   return [
     ...downloads,
-    ...normalizedBooks(status).filter(book => !downloadingIds.has(book.id))
+    ...preparations,
+    ...normalizedBooks(status).filter(book => !localActivityIds.has(book.id))
   ];
 }
 
@@ -69,14 +91,17 @@ function renderActivityDetails(status = currentStatus) {
   if (!activityListEl || !activitySummaryEl) return;
   const books = normalizedBooks(status);
   const downloadingBooks = books.filter(book => book.kind === 'download').length;
-  const preparingBooks = books.length - downloadingBooks;
+  const offlinePreparingBooks = books.filter(book => book.kind === 'preparation').length;
+  const preparingBooks = books.length - downloadingBooks - offlinePreparingBooks;
   const activeBooks = books.filter(book => Number(book.active || 0) > 0).length;
   const waitingBooks = books.length - activeBooks;
 
-  if (downloadingBooks > 0 && preparingBooks > 0) {
-    activitySummaryEl.textContent = `${downloadingBooks} downloading, ${preparingBooks} preparing audio.`;
+  if (downloadingBooks > 0 && preparingBooks + offlinePreparingBooks > 0) {
+    activitySummaryEl.textContent = `${downloadingBooks} downloading, ${preparingBooks + offlinePreparingBooks} preparing audio.`;
   } else if (downloadingBooks > 0) {
     activitySummaryEl.textContent = `${downloadingBooks} ${downloadingBooks === 1 ? 'book is' : 'books are'} downloading.`;
+  } else if (offlinePreparingBooks > 0 && preparingBooks === 0) {
+    activitySummaryEl.textContent = `${offlinePreparingBooks} ${offlinePreparingBooks === 1 ? 'book is' : 'books are'} preparing audio.`;
   } else if (activeBooks > 0 && waitingBooks > 0) {
     activitySummaryEl.textContent = `${activeBooks} preparing, ${waitingBooks} waiting.`;
   } else if (activeBooks > 0) {
@@ -88,7 +113,9 @@ function renderActivityDetails(status = currentStatus) {
   activityListEl.innerHTML = books.map(book => {
     const active = Number(book.active || 0) > 0;
     const isDownload = book.kind === 'download';
+    const isPreparation = book.kind === 'preparation';
     const downloadState = `${book.phase || 'Downloading'} · ${book.percent}%`;
+    const preparationState = `Preparing audio · ${book.readyChapters}/${book.totalChapters}`;
     return `
       <article class="audio-activity-row" data-state="${active ? 'active' : 'queued'}">
         ${coverImageHTML(book, 'audio-activity-cover', '')}
@@ -97,7 +124,7 @@ function renderActivityDetails(status = currentStatus) {
           <span>${escapeHTML(book.author || 'Unknown Author')}</span>
           <span class="audio-activity-state">
             <span class="audio-activity-dot" aria-hidden="true"></span>
-            ${escapeHTML(isDownload ? downloadState : chapterSummary(book))}
+            ${escapeHTML(isDownload ? downloadState : isPreparation ? preparationState : chapterSummary(book))}
           </span>
           ${isDownload ? `
             <span class="audio-activity-progress" role="progressbar"
@@ -133,11 +160,12 @@ function renderQueueStatus(status) {
   const hasWork = bookCount > 0;
   const activeBooks = books.filter(book => Number(book.active || 0) > 0).length;
   const downloadingBooks = books.filter(book => book.kind === 'download').length;
+  const localPreparationBooks = books.filter(book => book.kind === 'preparation').length;
 
   announceBookCount(bookCount);
   lastBookCount = bookCount;
   currentStatus = {
-    active: Number(currentServerStatus.active || 0) + downloadingBooks,
+    active: Number(currentServerStatus.active || 0) + downloadingBooks + localPreparationBooks,
     queued: Number(currentServerStatus.queued || 0),
     books
   };
@@ -218,6 +246,10 @@ export function initQueueStatus(options = {}) {
   scope.listen(queueStatusEl, 'click', () => activitySheetController?.open());
   scope.listen(document, 'xandrio:downloadactivity', event => {
     currentDownloads = normalizedDownloads(event?.detail?.downloads);
+    renderQueueStatus(currentServerStatus);
+  });
+  scope.listen(document, 'xandrio:preparationactivity', event => {
+    currentPreparations = normalizedPreparations(event?.detail?.preparations);
     renderQueueStatus(currentServerStatus);
   });
   pollQueueStatus(scope);

@@ -1,10 +1,15 @@
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const GenerationScheduler = require('../lib/generation-scheduler');
+const GenerationJournal = require('../lib/generation-journal');
 const TTSQueue = require('../lib/tts-queue');
 const { createPlaybackOrchestrator } = require('../lib/playback-orchestrator');
-const { registerPlaybackRoutes } = require('../lib/routes/playback-routes');
+const {
+  registerPlaybackRoutes,
+  replayOfflinePreparations
+} = require('../lib/routes/playback-routes');
 
 function deferred() {
   let resolve;
@@ -124,6 +129,136 @@ async function testRoutePurpose() {
   assert.strictEqual(request.priority, 'download');
 }
 
+async function testBookPreparationRoutes() {
+  const handlers = new Map();
+  const app = {
+    get(path, ...routeHandlers) {
+      handlers.set(`GET ${path}`, routeHandlers.at(-1));
+    },
+    post(path, ...routeHandlers) {
+      handlers.set(`POST ${path}`, routeHandlers.at(-1));
+    }
+  };
+  const started = [];
+  const statuses = [
+    { ready: true, totalChunks: 2, readyChunks: 2, errorChunks: 0 },
+    { ready: false, totalChunks: 4, readyChunks: 1, errorChunks: 0 }
+  ];
+  let preparationIntent = null;
+  registerPlaybackRoutes(app, {
+    playbackOrchestrator: {
+      startChapterAudio: async request => {
+        started.push(request);
+        return statuses[request.chapterIndex];
+      },
+      chapterAudioStatus: async request => statuses[request.chapterIndex]
+    },
+    getBookChapters: async bookId => ({
+      book: { id: bookId, title: 'Prepared Book' },
+      chapters: [{}, {}]
+    }),
+    ttsForTier: () => ({}),
+    generationJournal: {
+      async putOfflinePreparation(record) {
+        preparationIntent = record;
+      },
+      async getOfflinePreparation() {
+        return preparationIntent;
+      }
+    },
+    chapterAudioStreamer: {},
+    hlsAudioStreamer: {},
+    serveAudioFile: async () => {},
+    sendServerError: (_res, error) => { throw error; },
+    fs: {}
+  });
+  let body = null;
+  const response = {
+    statusCode: 200,
+    status(code) {
+      this.statusCode = code;
+      return this;
+    },
+    json(value) {
+      body = value;
+    }
+  };
+
+  await handlers.get('GET /api/offline/preparation/:bookId')({
+    params: { bookId: 'book' },
+    query: {}
+  }, response);
+  assert.strictEqual(body.state, 'not-requested');
+
+  await handlers.get('POST /api/offline/preparation/:bookId')({
+    params: { bookId: 'book' },
+    query: {},
+    body: {}
+  }, response);
+
+  assert.strictEqual(response.statusCode, 202);
+  assert.strictEqual(preparationIntent.bookId, 'book');
+  assert.strictEqual(preparationIntent.totalChapters, 2);
+  assert.deepStrictEqual(started.map(request => request.chapterIndex), [0, 1]);
+  assert(started.every(request => request.priority === 'download'));
+  assert.deepStrictEqual(body, {
+    bookId: 'book',
+    state: 'preparing',
+    readyChapters: 1,
+    totalChapters: 2,
+    readyChunks: 3,
+    totalChunks: 6,
+    errorChapters: 0,
+    percent: 50
+  });
+}
+
+async function testDurableBookPreparationIntent() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'xandrio-offline-prep-'));
+  const journal = new GenerationJournal(path.join(dir, 'generation-state.json'));
+  await journal.putOfflinePreparation({
+    bookId: 'book',
+    totalChapters: 24,
+    requestedAt: 123
+  });
+  assert.deepStrictEqual(await journal.getOfflinePreparation('book'), {
+    bookId: 'book',
+    totalChapters: 24,
+    requestedAt: 123
+  });
+  assert.deepStrictEqual(await journal.listOfflinePreparations(), [{
+    bookId: 'book',
+    totalChapters: 24,
+    requestedAt: 123
+  }]);
+  await journal.removeChaptersForBook('book');
+  assert.strictEqual(await journal.getOfflinePreparation('book'), null);
+}
+
+async function testOfflinePreparationRecovery() {
+  const started = [];
+  const report = await replayOfflinePreparations({
+    generationJournal: {
+      listOfflinePreparations: async () => [
+        { bookId: 'book', totalChapters: 3, requestedAt: 123 }
+      ]
+    },
+    getBookChapters: async () => ({
+      book: { id: 'book' },
+      chapters: [{}, {}, {}]
+    }),
+    playbackOrchestrator: {
+      startChapterAudio: async request => {
+        started.push(request);
+        return { ready: false };
+      }
+    }
+  });
+  assert.deepStrictEqual(started.map(request => request.chapterIndex), [0, 1, 2]);
+  assert(started.every(request => request.priority === 'download'));
+  assert.deepStrictEqual(report, { resumedBooks: 1, resumedChapters: 3, failedBooks: [] });
+}
+
 function testChapterPreparationPropagation() {
   const serverSource = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
   assert.match(
@@ -149,9 +284,15 @@ function testChapterPreparationPropagation() {
   console.log('  ✓ download priority reaches chapter generation');
   await testRoutePurpose();
   console.log('  ✓ offline-download requests select download priority');
+  await testBookPreparationRoutes();
+  console.log('  ✓ full-title preparation queues every chapter and returns aggregate progress');
+  await testDurableBookPreparationIntent();
+  console.log('  ✓ full-title preparation intent survives outside the browser');
+  await testOfflinePreparationRecovery();
+  console.log('  ✓ full-title preparation intent replays every chapter after restart');
   testChapterPreparationPropagation();
   console.log('  ✓ download priority reaches every new or resumed chapter chunk');
-  console.log('\n5 passed, 0 failed');
+  console.log('\n8 passed, 0 failed');
 })().catch(error => {
   console.error(`  ✗ ${error.stack || error.message}`);
   console.log('\n0 passed, 1 failed');

@@ -61,7 +61,9 @@ function installBrowser({
   storage: sharedStorage = null,
   cacheStores = null,
   deletionResponse = { revision: 0, deletions: [] },
-  canClaimLegacy = true
+  canClaimLegacy = true,
+  preparationResponse = null,
+  preparationGate = null
 }) {
   const storage = sharedStorage || new Map();
   if (!storage.has('xandrio_offline_books')) {
@@ -121,11 +123,23 @@ function installBrowser({
   const audioRequests = [];
   const prepareCalls = [];
   const prepareBodies = [];
+  const preparationCalls = [];
   let remainingAudioFailures = transientAudioFailures;
   let remainingStreamFailures = transientStreamFailures;
   global.__offlineApiSend = async (method, requestPath, body) => {
     if (method === 'GET' && requestPath.startsWith('/api/offline/deletions')) {
       return deletionResponse;
+    }
+    if (requestPath.startsWith('/api/offline/preparation/')) {
+      preparationCalls.push({ method, requestPath });
+      if (preparationGate) await preparationGate;
+      return preparationResponse || {
+        bookId: book?.id,
+        state: 'ready',
+        readyChapters: chapters.length,
+        totalChapters: chapters.length,
+        percent: 100
+      };
     }
     if (method === 'POST' && requestPath.includes('/prepare-chapter-audio')) {
       prepareCalls.push(Number(requestPath.match(/\/(\d+)\/prepare-chapter-audio$/)?.[1]));
@@ -168,6 +182,7 @@ function installBrowser({
     audioRequests,
     prepareCalls,
     prepareBodies,
+    preparationCalls,
     documentEvents,
     persistenceCalls,
     titleCache,
@@ -483,6 +498,80 @@ function installBrowser({
     assert.deepStrictEqual(activityEvents.at(-1).detail.downloads, []);
   });
 
+  await test('separates durable server preparation from the device-local download', async () => {
+    const cache = makeCache();
+    let env = installBrowser({
+      book,
+      chapters,
+      cache,
+      preparationResponse: {
+        bookId: book.id,
+        state: 'preparing',
+        readyChapters: 1,
+        totalChapters: 2,
+        percent: 50
+      }
+    });
+    offline.initOffline(env.init);
+
+    assert.strictEqual(await offline.prepareBookForOffline(book, chapters), false);
+    assert.deepStrictEqual(env.audioRequests, []);
+    assert.deepStrictEqual(env.prepareCalls, []);
+    assert.strictEqual(offline.offlineStatusForBook(book.id).kind, 'preparing');
+    assert.strictEqual(offline.offlineStatusForBook(book.id).label, 'Preparing audio · 1/2');
+
+    env = installBrowser({
+      book,
+      chapters,
+      cache,
+      manifest: offline.getOfflineManifest(),
+      preparationResponse: {
+        bookId: book.id,
+        state: 'ready',
+        readyChapters: 2,
+        totalChapters: 2,
+        percent: 100
+      }
+    });
+    assert.strictEqual(await offline.refreshOfflinePreparation(book.id), true);
+    assert.strictEqual(offline.offlineStatusForBook(book.id).kind, 'ready-to-download');
+    assert.strictEqual(offline.offlineStatusForBook(book.id).label, 'Download to this device');
+
+    assert.strictEqual(await offline.downloadBookForOffline(book, chapters, {
+      requirePrepared: true
+    }), true);
+    assert.deepStrictEqual(env.prepareCalls, []);
+    assert.deepStrictEqual(env.audioRequests, [0, 1]);
+    assert.strictEqual(offline.offlineStatusForBook(book.id).kind, 'downloaded');
+  });
+
+  await test('downloads a prepared title while another title is still queueing generation', async () => {
+    const cache = makeCache();
+    let releasePreparation;
+    const preparationGate = new Promise(resolve => { releasePreparation = resolve; });
+    const env = installBrowser({
+      book,
+      chapters,
+      cache,
+      preparationGate
+    });
+    offline.initOffline(env.init);
+
+    const otherBook = { id: 'book-2', title: 'Still Generating' };
+    const preparation = offline.prepareBookForOffline(otherBook, [{}]);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.strictEqual(env.preparationCalls.length, 1);
+
+    const download = offline.downloadBookForOffline(book, chapters, {
+      requirePrepared: true
+    });
+    assert.strictEqual(await download, true);
+    assert.deepStrictEqual(env.audioRequests, [0, 1]);
+
+    releasePreparation();
+    await preparation;
+  });
+
   await test('reports absent, partial, active, and repair states without cache scans', async () => {
     const cache = makeCache();
     let env = installBrowser({ book, chapters, cache });
@@ -770,6 +859,21 @@ function installBrowser({
     assert.deepStrictEqual(env.audioRequests, []);
   });
 
+  await test('verified offline-library reads reject evicted titles before listing them', async () => {
+    const cache = makeCache();
+    const env = installBrowser({ book, chapters, cache });
+    offline.initOffline(env.init);
+    await offline.downloadCurrentBook();
+    await cache.delete(offlineAudioKey('book-1', 1));
+
+    assert.deepStrictEqual(
+      await offline.getVerifiedOfflineLibraryBooks(),
+      [],
+      'the Downloaded view must wait for cache-presence verification'
+    );
+    assert.strictEqual(offline.getOfflineManifest()[book.id].state, 'incomplete');
+  });
+
   await test('rolling cache keeps one chapter behind and two ahead', async () => {
     const cache = makeCache();
     const rollingChapters = [{}, {}, {}, {}, {}];
@@ -968,7 +1072,9 @@ function installBrowser({
     assert(appSource.includes('getOfflineBookData(bookId)'));
     assert(appSource.includes('clearDeletedBookFromPlayer'));
     assert(appSource.includes('currentBookOfflineFallback'));
-    assert(librarySource.includes('getOfflineLibraryBooks()'));
+    assert(librarySource.includes('await verifiedOfflineBooks'));
+    assert(librarySource.includes('getVerifiedOfflineLibraryBooks()'));
+    assert(librarySource.includes('${escapeHTML(status.label)} (Cancel)'));
     assert(librarySource.includes('onBookDeleted'));
     assert(librarySource.includes('await removeOfflineBook(id, { removePlaybackState: true })'));
     assert(workerSource.includes("const OFFLINE_TITLE_CACHE = 'xandrio-offline-titles';"));

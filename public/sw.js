@@ -1,5 +1,5 @@
 const APP_RELEASE = '1.1.0';
-const CACHE_VERSION = 'xandrio-v100';
+const CACHE_VERSION = 'xandrio-v101';
 const OFFLINE_AUDIO_CACHE = 'xandrio-offline-audio';
 const OFFLINE_TITLE_CACHE = 'xandrio-offline-titles';
 const OFFLINE_SCOPE_PARAM = 'xandrio-offline-scope';
@@ -11,7 +11,7 @@ const ASSET_VERSIONS = {
   '/style-v3.css': 89,
   '/js/lifecycle.js': 1,
   '/js/chunk-player.js': 21,
-  '/app.js': 98
+  '/app.js': 99
 };
 const versionedAsset = (path) => `${path}?v=${ASSET_VERSIONS[path]}`;
 const APP_SHELL = [
