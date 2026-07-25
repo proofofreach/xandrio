@@ -478,15 +478,16 @@ summary:focus-visible,
   width: var(--touch-min);
   height: var(--touch-min);
   padding: 0;
-  border: 0;
+  border: 1px solid var(--border);
   border-radius: 6px;
-  background: transparent;
-  color: var(--text-muted);
+  background: var(--surface-raised);
+  color: var(--text-secondary);
 }
 
 .book-overflow-trigger:hover,
 .book-overflow-trigger[aria-expanded="true"] {
-  background: oklch(94% 0.012 82 / 0.07);
+  border-color: var(--border-strong);
+  background: var(--surface-hover);
   color: var(--text);
 }
 .book-overflow-trigger svg { width: 20px; height: 20px; }

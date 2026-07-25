@@ -581,6 +581,19 @@ async function verifyLibraryActions(page) {
   if (await page.locator('.shelf-toggle, .queue-toggle, .library-offline-badge').count() !== 0) {
     throw new Error('Library card still renders the old action-pill cluster');
   }
+  const overflowTrigger = await page.locator('[data-book-menu-toggle]').evaluate(trigger => {
+    const styles = getComputedStyle(trigger);
+    const bounds = trigger.getBoundingClientRect();
+    return {
+      backgroundColor: styles.backgroundColor,
+      width: bounds.width,
+      height: bounds.height
+    };
+  });
+  if (overflowTrigger.backgroundColor === 'rgba(0, 0, 0, 0)' ||
+      overflowTrigger.width < 44 || overflowTrigger.height < 44) {
+    throw new Error(`Library overflow trigger is not persistently visible: ${JSON.stringify(overflowTrigger)}`);
+  }
   await page.click('[data-book-menu-toggle]');
   for (const label of ['Download', 'Save', 'Add to Up Next', 'Share', 'Delete']) {
     if (!await page.getByRole('menuitem', { name: label, exact: true }).isVisible()) {
