@@ -187,6 +187,18 @@ function fakeAudio() {
     assert.strictEqual(player.isContinuous, true);
   });
 
+  await test('iOS without native HLS skips open-ended MP3 and loads finite chapter audio', async () => {
+    const audio = fakeAudio();
+    audio.canPlayType = () => '';
+    const { player } = makePlayer(audio, { isIOSLike: () => true });
+    const load = player.loadChapter('book1', 0);
+
+    assert.strictEqual(audio.src, '/api/audio-ios/book1/0');
+    audio.emit('loadedmetadata');
+    await load;
+    assert.strictEqual(player.isContinuous, false);
+  });
+
   await test('playback session identity uses secure random bytes when randomUUID is unavailable', () => {
     const values = Array.from({ length: 16 }, (_value, index) => index);
     const { player } = makePlayer(fakeAudio(), {
