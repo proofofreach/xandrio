@@ -481,21 +481,9 @@ async function decodedDuration(filePath) {
     });
 
     await test('HLS session creation is rate-limited per account with Retry-After', async () => {
-      const firstPath = path.join(dir, 'hls-rate-first.mp3');
-      await createTone(firstPath, 1.5, 550);
-      const release = deferred();
-      const source = {
-        bookId: 'book_rate',
-        chapterIndex: 0,
-        format: 'mp3',
-        async *iterateInputs() {
-          yield { path: firstPath, chapterIndex: 0, lastInChapter: true };
-          await release.promise;
-        }
-      };
-      const app = routeHarness(source, {
+      const pendingSource = deferred();
+      const app = routeHarness(pendingSource.promise, {
         hlsRootDir: path.join(dir, 'hls-rate'),
-        hlsSegmentSeconds: 0.5,
         hlsOptions: {
           maxActiveSessions: 4,
           creationWindowMs: 60_000,
@@ -505,20 +493,26 @@ async function decodedDuration(filePath) {
       });
       const server = await listen(app);
       const origin = `http://127.0.0.1:${server.address().port}`;
+      const first = http.get(
+        `${origin}/api/audio-hls/rate_one/0/index.m3u8?session=rate-session-0001&owner=rate-owner-0001`
+      );
+      first.on('error', () => {});
       try {
-        const first = await fetch(
-          `${origin}/api/audio-hls/rate_one/0/index.m3u8?session=rate-session-0001&owner=rate-owner-0001`
+        await waitUntil(
+          () => app.locals.hlsAudioStreamer.sessionsById.size === 1,
+          'the first HLS session was never registered',
+          10_000
         );
         const limited = await fetch(
-          `${origin}/api/audio-hls/rate_two/0/index.m3u8?session=rate-session-0002&owner=rate-owner-0002`
+          `${origin}/api/audio-hls/rate_two/0/index.m3u8?session=rate-session-0002&owner=rate-owner-0002`,
+          { signal: AbortSignal.timeout(10_000) }
         );
-        assert.strictEqual(first.status, 200);
         assert.strictEqual(limited.status, 429);
         assert.strictEqual(limited.headers.get('retry-after'), '60');
         assert.match((await limited.json()).error, /too many/i);
         assert.strictEqual(app.locals.hlsAudioStreamer.sessionsById.size, 1);
       } finally {
-        release.resolve();
+        first.destroy();
         await app.locals.hlsAudioStreamer.dispose();
         await new Promise(resolve => server.close(resolve));
       }
