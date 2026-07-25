@@ -441,7 +441,7 @@ async function decodedDuration(filePath) {
         `default HLS capacity unexpectedly regressed to ${DEFAULT_MAX_ACTIVE_SESSIONS}`
       );
       const firstPath = path.join(dir, 'hls-capacity-first.mp3');
-      await createTone(firstPath, 1.5, 440);
+      await createTone(firstPath, 0.8, 440);
       const release = deferred();
       const source = {
         bookId: 'book_capacity',
@@ -454,7 +454,7 @@ async function decodedDuration(filePath) {
       };
       const app = routeHarness(source, {
         hlsRootDir: path.join(dir, 'hls-capacity'),
-        hlsSegmentSeconds: 0.5,
+        hlsSegmentSeconds: 0.25,
         hlsOptions: {
           maxActiveSessions: 2,
           maxCreationsPerAccount: 20,
@@ -464,15 +464,24 @@ async function decodedDuration(filePath) {
       const server = await listen(app);
       const origin = `http://127.0.0.1:${server.address().port}`;
       try {
-        const first = await fetch(
-          `${origin}/api/audio-hls/capacity_one/0/index.m3u8?session=capacity-session-1&owner=capacity-owner-1`
+        const firstPromise = fetch(
+          `${origin}/api/audio-hls/capacity_one/0/index.m3u8?session=capacity-session-1&owner=capacity-owner-1`,
+          { signal: AbortSignal.timeout(10_000) }
         );
-        const second = await fetch(
-          `${origin}/api/audio-hls/capacity_two/0/index.m3u8?session=capacity-session-2&owner=capacity-owner-2`
+        const secondPromise = fetch(
+          `${origin}/api/audio-hls/capacity_two/0/index.m3u8?session=capacity-session-2&owner=capacity-owner-2`,
+          { signal: AbortSignal.timeout(10_000) }
+        );
+        await waitUntil(
+          () => app.locals.hlsAudioStreamer.sessionsById.size === 2,
+          'two concurrent HLS sessions were never admitted',
+          10_000
         );
         const overloaded = await fetch(
-          `${origin}/api/audio-hls/capacity_three/0/index.m3u8?session=capacity-session-3&owner=capacity-owner-3`
+          `${origin}/api/audio-hls/capacity_three/0/index.m3u8?session=capacity-session-3&owner=capacity-owner-3`,
+          { signal: AbortSignal.timeout(10_000) }
         );
+        const [first, second] = await Promise.all([firstPromise, secondPromise]);
         assert.strictEqual(first.status, 200);
         assert.strictEqual(second.status, 200);
         assert.strictEqual(overloaded.status, 503);
