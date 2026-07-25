@@ -11,7 +11,7 @@
   <title>Xandrio - Audiobook Library</title>
   <link rel="preload" href="/fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin>
   <!-- ?v= values must match ASSET_VERSIONS in sw.js (single source of truth) -->
-  <link rel="stylesheet" href="style-v3.css?v=79">
+  <link rel="stylesheet" href="style-v3.css?v=82">
   <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=2">
 </head>
 <body>
@@ -43,7 +43,7 @@
       <header class="library-header">
         <h1>
           <img src="icon-xandrio-ankh.png" alt="Xandrio" class="header-logo">
-          Xandrio
+          <span class="header-wordmark">Xandrio</span>
         </h1>
         <div class="header-actions">
           <button id="stats-btn" class="btn-icon" aria-label="Listening stats" title="Your listening">
@@ -68,7 +68,7 @@
       </div>
 
       <div id="library-tabs" class="library-tabs" role="tablist" aria-label="Library scope">
-        <button data-library-tab="shelf" class="library-tab active" role="tab">My Shelf</button>
+        <button data-library-tab="shelf" class="library-tab active" role="tab">Saved</button>
         <button data-library-tab="all" class="library-tab" role="tab">All Books</button>
       </div>
 
@@ -91,7 +91,7 @@
       <div id="continue-rail" class="continue-rail" hidden></div>
       <section id="up-next-rail" class="up-next-rail" hidden aria-label="Up Next"></section>
 
-      <p id="shelf-empty-hint" class="shelf-empty-hint" hidden>Your shelf is empty — browse All Books and tap “+ Shelf” to add some.</p>
+      <p id="shelf-empty-hint" class="shelf-empty-hint" hidden>No saved books yet. Open a book’s menu in All Books and choose Save.</p>
 
       <div id="library-list" class="book-list">
         <div class="empty-state-modern">
@@ -628,10 +628,6 @@
           <!-- About this book -->
           <details class="player-details">
             <summary>About this book</summary>
-            <div class="player-offline-actions">
-              <button id="download-book-btn" class="btn-ghost btn-sm" type="button">Download for Offline</button>
-              <span id="offline-book-badge" class="offline-book-badge" hidden></span>
-            </div>
             <p id="book-description" class="player-details-desc"></p>
             <p id="book-details-text" class="player-details-meta"></p>
           </details>
@@ -642,6 +638,24 @@
           <div class="player-book-info">
             <h1 id="book-title" class="player-book-title">Book Title</h1>
             <p id="book-author-header" class="player-book-author"></p>
+            <div class="player-book-actions" aria-label="Book actions">
+              <button id="download-book-btn" class="player-book-action" type="button">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M12 3v12m0 0l4-4m-4 4l-4-4M5 20h14" />
+                </svg>
+                <span data-download-label>Download</span>
+              </button>
+              <button id="share-book-btn" class="player-book-action" type="button">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+                  <circle cx="18" cy="5" r="2.5" />
+                  <circle cx="6" cy="12" r="2.5" />
+                  <circle cx="18" cy="19" r="2.5" />
+                  <path stroke-linecap="round" d="m8.2 10.8 7.6-4.5M8.2 13.2l7.6 4.5" />
+                </svg>
+                <span>Share</span>
+              </button>
+              <span id="offline-book-badge" class="offline-book-badge" hidden></span>
+            </div>
           </div>
 
           <!-- Primary chapter selector -->
@@ -998,6 +1012,6 @@
 
   <script src="/js/lifecycle.js?v=1"></script>
   <script src="/js/chunk-player.js?v=20"></script>
-  <script type="module" src="app.js?v=90"></script>
+  <script type="module" src="app.js?v=91"></script>
 </body>
 </html>

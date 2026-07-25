@@ -3,7 +3,7 @@ import { formatDuration, escapeHTML, safeAttr, relativeTime, coverImageHTML, css
 import { readJSON, writeJSON, readText, writeText } from '../util/storage.js';
 import { confirmSheet } from '../ui/confirm.js';
 import { showToast, showUndoToast } from '../ui/toast.js';
-import { onActivate } from '../ui/keys.js';
+import { shareBook } from '../features/sharing.js';
 import {
   getOfflineLibraryBooks,
   offlineStatusForBook,
@@ -108,21 +108,59 @@ function progressMetaLine(progress) {
   return parts.join(' · ');
 }
 
-function shelfToggleHTML(id, title, onShelf) {
+function offlineControlContents(bookId, title) {
+  const status = offlineStatusForBook(bookId);
+  const icon = status.downloaded
+    ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M7 12.5 10.2 16 17 8.5"/><circle cx="12" cy="12" r="9"/></svg>'
+    : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v11m0 0 4-4m-4 4-4-4M5 20h14"/></svg>';
+  if (status.downloaded) {
+    return `<span class="book-local-state">${icon}<span>On device</span></span>`;
+  }
+  const label = status.kind === 'partial'
+    ? 'Download full'
+    : status.kind === 'downloading'
+      ? `Downloading ${status.cachedChapters}/${status.totalChapters}`
+      : status.kind === 'repair-needed'
+        ? 'Repair download'
+        : 'Download';
   return `
-    <button class="shelf-toggle${onShelf ? ' on-shelf' : ''}" data-shelf-toggle="${safeAttr(id)}"
-            aria-label="${onShelf ? `Remove ${safeAttr(title)} from my shelf` : `Add ${safeAttr(title)} to my shelf`}">
-      ${onShelf ? '✓ On shelf' : '+ Shelf'}
+    <button class="book-download-action" type="button" data-download-book="${safeAttr(bookId)}"
+            aria-label="${safeAttr(label)} ${safeAttr(title)}">
+      ${icon}<span>${escapeHTML(label)}</span>
     </button>`;
 }
 
-function queueToggleHTML(id, title) {
-  return `<button class="queue-toggle" data-queue-add="${safeAttr(id)}" aria-label="Add ${safeAttr(title)} to Up Next">+ Up Next</button>`;
+function offlineControlHTML(bookId, title) {
+  const status = offlineStatusForBook(bookId);
+  return `
+    <span class="book-local-control book-local-control--${safeAttr(status.kind)}"
+          data-offline-status="${safeAttr(bookId)}" data-book-title="${safeAttr(title)}">
+      ${offlineControlContents(bookId, title)}
+    </span>`;
 }
 
-function offlineBadgeHTML(bookId) {
-  const status = offlineStatusForBook(bookId);
-  return `<span class="library-offline-badge library-offline-badge--${safeAttr(status.kind)}" data-offline-status="${safeAttr(bookId)}">${escapeHTML(status.label)}</span>`;
+function bookMenuHTML(book, onShelf) {
+  const id = String(book.id || '');
+  const title = book.title || 'Untitled';
+  const author = book.author || 'Unknown Author';
+  return `
+    <div class="book-overflow">
+      <button class="book-overflow-trigger" type="button" data-book-menu-toggle aria-expanded="false"
+              aria-label="More actions for ${safeAttr(title)}">
+        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg>
+      </button>
+      <div class="book-overflow-menu" role="menu" hidden>
+        <button type="button" role="menuitem" data-shelf-toggle="${safeAttr(id)}">
+          <span data-saved-label>${onShelf ? 'Remove from Saved' : 'Save'}</span>
+        </button>
+        <button type="button" role="menuitem" data-queue-add="${safeAttr(id)}">Add to Up Next</button>
+        <button type="button" role="menuitem" data-book-share="${safeAttr(id)}"
+                data-book-title="${safeAttr(title)}" data-book-author="${safeAttr(author)}">Share</button>
+        <button type="button" role="menuitem" class="book-menu-danger"
+                data-delete-book-id="${safeAttr(id)}" data-delete-book-title="${safeAttr(title)}"
+                data-delete-book-author="${safeAttr(author)}">Delete</button>
+      </div>
+    </div>`;
 }
 
 function renderBookCard(book, position, onShelf = false) {
@@ -131,9 +169,8 @@ function renderBookCard(book, position, onShelf = false) {
   const title = book.title || 'Untitled';
   const author = book.author || 'Unknown Author';
   const metaLine = progress
-    ? `<span class="progress-meta">${escapeHTML(progressMetaLine(progress))}</span>`
-    : (book.totalDuration ? `<span class="duration-badge">${formatDuration(book.totalDuration)}</span>` : '');
-  const finishedBadge = progress?.finished ? '<span class="book-finished-badge">Finished</span>' : '';
+    ? `<span class="book-listening-meta">${escapeHTML(progressMetaLine(progress))}</span>`
+    : (book.totalDuration ? `<span class="book-listening-meta">${formatDuration(book.totalDuration)}</span>` : '');
   const progressBar = progress && progress.percent != null ? `
         <div class="book-progress" role="progressbar" aria-valuenow="${progress.percent}" aria-valuemin="0" aria-valuemax="100" aria-label="${progress.percent}% listened">
           <div class="book-progress-fill" style="width:${progress.percent}%"></div>
@@ -145,30 +182,27 @@ function renderBookCard(book, position, onShelf = false) {
          data-on-shelf="${onShelf ? '1' : '0'}"
          data-added="${safeAttr(book.addedAt || '')}"
          data-last-read="${safeAttr(position?.updatedAt || book.addedAt || '')}"
-         data-finished="${progress?.finished ? '1' : '0'}"
-         tabindex="0"
-         role="button"
-         aria-label="Open ${safeAttr(title)} by ${safeAttr(author)}">
+         data-finished="${progress?.finished ? '1' : '0'}">
       <div class="book-item-inner">
-        <div class="book-cover-wrap">
-          ${coverImageHTML(book, 'book-item-cover', `Cover of ${title}`)}
-        </div>
-        <div class="book-item-info">
-          <h3>${escapeHTML(title)}</h3>
-          <p>${escapeHTML(author)}</p>
-          ${metaLine}
-          ${finishedBadge}
-          ${offlineBadgeHTML(id)}
-          ${shelfToggleHTML(id, title, onShelf)}
-          ${queueToggleHTML(id, title)}
+        <button class="book-card-open" type="button" data-open-book="${safeAttr(id)}"
+                aria-label="Open ${safeAttr(title)} by ${safeAttr(author)}">
+          <span class="book-cover-wrap">
+            ${coverImageHTML(book, 'book-item-cover', `Cover of ${title}`)}
+          </span>
+          <span class="book-item-info">
+            <span class="book-title">${escapeHTML(title)}</span>
+            <span class="book-author">${escapeHTML(author)}</span>
+            ${metaLine}
+          </span>
+        </button>
+        <div class="book-card-tools">
+          ${offlineControlHTML(id, title)}
+          ${bookMenuHTML(book, onShelf)}
         </div>
         ${progressBar}
       </div>
       <button class="delete-btn-reveal" data-delete-book-id="${safeAttr(id)}" data-delete-book-title="${safeAttr(title)}" data-delete-book-author="${safeAttr(author)}" aria-label="Delete ${safeAttr(title)}">
         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="delete-icon"><path stroke-linecap="round" stroke-linejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0"/></svg>
-      </button>
-      <button class="delete-btn-desktop" data-delete-book-id="${safeAttr(id)}" data-delete-book-title="${safeAttr(title)}" data-delete-book-author="${safeAttr(author)}" aria-label="Delete ${safeAttr(title)}">
-        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" width="18" height="18"><path stroke-linecap="round" stroke-linejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0"/></svg>
       </button>
     </div>
   `;
@@ -298,8 +332,8 @@ export async function loadLibrary() {
 
   if ('ontouchstart' in window || navigator.maxTouchPoints > 0) document.body.classList.add('touch-device');
   currentShelf = new Set(Array.isArray(data.shelf) ? data.shelf : []);
-  // Default to "My shelf" per stored preference, but never open on an empty
-  // shelf — fall back to the shared pool.
+  // Default to "Saved" per stored preference, but never open on an empty
+  // saved list — fall back to the shared pool.
   const storedTab = readText(LIBRARY_TAB_KEY, 'shelf');
   currentTab = (storedTab === 'shelf' && currentShelf.size === 0) ? 'all' : storedTab;
   syncLibraryTabs();
@@ -321,26 +355,31 @@ export async function loadLibrary() {
 function refreshOfflineIndicators() {
   document.querySelectorAll('[data-offline-status]').forEach(element => {
     const status = offlineStatusForBook(element.dataset.offlineStatus);
-    element.className = `library-offline-badge library-offline-badge--${status.kind}`;
-    element.textContent = status.label;
+    element.className = `book-local-control book-local-control--${status.kind}`;
+    element.innerHTML = offlineControlContents(
+      element.dataset.offlineStatus,
+      element.dataset.bookTitle || 'book'
+    );
   });
 }
 
 function syncLibraryTabs() {
   document.querySelectorAll('[data-library-tab]').forEach(btn => {
-    btn.classList.toggle('active', btn.dataset.libraryTab === currentTab);
+    const active = btn.dataset.libraryTab === currentTab;
+    btn.classList.toggle('active', active);
+    btn.setAttribute('aria-selected', active ? 'true' : 'false');
   });
 }
 
 // A card is visible when it matches the search query AND the active tab
-// ("My shelf" vs "All books"). Both paths funnel through here so the two
+// ("Saved" vs "All books"). Both paths funnel through here so the two
 // filters can't fight over the hidden class.
 function filterLibrary() {
   const query = librarySearch?.value.toLowerCase().trim() || '';
   let visibleCount = 0;
   document.querySelectorAll('.book-item:not(.skeleton)').forEach(item => {
-    const title = item.querySelector('h3')?.textContent.toLowerCase() || '';
-    const author = item.querySelector('p')?.textContent.toLowerCase() || '';
+    const title = item.querySelector('.book-title')?.textContent.toLowerCase() || '';
+    const author = item.querySelector('.book-author')?.textContent.toLowerCase() || '';
     const matchesQuery = !query || title.includes(query) || author.includes(query);
     const matchesTab = currentTab === 'all' || item.dataset.onShelf === '1';
     const visible = matchesQuery && matchesTab;
@@ -372,12 +411,12 @@ async function toggleShelfMembership(bookId, button) {
     }
     const card = button.closest('.book-item');
     if (card) card.dataset.onShelf = currentShelf.has(bookId) ? '1' : '0';
-    button.classList.toggle('on-shelf', currentShelf.has(bookId));
-    button.textContent = currentShelf.has(bookId) ? '✓ On shelf' : '+ Shelf';
+    const label = button.querySelector('[data-saved-label]');
+    if (label) label.textContent = currentShelf.has(bookId) ? 'Remove from Saved' : 'Save';
     filterLibrary();
   } catch (err) {
     console.error('Shelf update failed:', err);
-    showToast('Could not update your shelf', 'error');
+    showToast('Could not update Saved', 'error');
   } finally {
     button.disabled = false;
   }
@@ -389,11 +428,11 @@ function sortLibrary() {
   libraryList.querySelectorAll('.library-divider').forEach(el => el.remove());
   const bookItems = Array.from(libraryList.querySelectorAll('.book-item'));
   bookItems.sort((a, b) => {
-    const aTitle = a.querySelector('h3')?.textContent || '';
-    const aAuthor = a.querySelector('p')?.textContent || '';
+    const aTitle = a.querySelector('.book-title')?.textContent || '';
+    const aAuthor = a.querySelector('.book-author')?.textContent || '';
     const aDate = a.dataset.added || '0';
-    const bTitle = b.querySelector('h3')?.textContent || '';
-    const bAuthor = b.querySelector('p')?.textContent || '';
+    const bTitle = b.querySelector('.book-title')?.textContent || '';
+    const bAuthor = b.querySelector('.book-author')?.textContent || '';
     const bDate = b.dataset.added || '0';
     switch(sortBy) {
       case 'last-read':
@@ -441,13 +480,39 @@ async function openBookFromLibrary(bookId) {
   let loadingTimer = null;
   if (card) loadingTimer = setTimeout(() => card.classList.add('loading'), 300);
   try {
-    await deps.openBook(bookId);
+    return await deps.openBook(bookId);
   } catch (err) {
     console.error('Error opening book:', err);
+    return false;
   } finally {
     if (loadingTimer) clearTimeout(loadingTimer);
     card?.classList.remove('loading');
   }
+}
+
+async function downloadBookFromLibrary(bookId) {
+  const opened = await openBookFromLibrary(bookId);
+  if (opened !== false) document.getElementById('download-book-btn')?.click();
+}
+
+function closeBookMenus(except = null) {
+  document.querySelectorAll('.book-overflow-menu:not([hidden])').forEach(menu => {
+    if (menu === except) return;
+    menu.hidden = true;
+    menu.closest('.book-item')?.classList.remove('menu-open');
+    menu.closest('.book-overflow')?.querySelector('[data-book-menu-toggle]')?.setAttribute('aria-expanded', 'false');
+  });
+}
+
+function toggleBookMenu(trigger) {
+  const menu = trigger.closest('.book-overflow')?.querySelector('.book-overflow-menu');
+  if (!menu) return;
+  const opening = menu.hidden;
+  closeBookMenus(opening ? menu : null);
+  menu.hidden = !opening;
+  menu.closest('.book-item')?.classList.toggle('menu-open', opening);
+  trigger.setAttribute('aria-expanded', opening ? 'true' : 'false');
+  if (opening) menu.querySelector('[role="menuitem"]')?.focus();
 }
 
 async function showDeleteModal(bookId, title) {
@@ -611,31 +676,63 @@ export function initLibrary(options = {}) {
       document.getElementById('add-book-btn')?.click();
       return;
     }
+    const menuTrigger = e.target.closest('[data-book-menu-toggle]');
+    if (menuTrigger) {
+      e.stopPropagation();
+      toggleBookMenu(menuTrigger);
+      return;
+    }
     const deleteBtn = e.target.closest('[data-delete-book-id]');
     if (deleteBtn) {
       e.stopPropagation();
+      closeBookMenus();
       showDeleteModal(deleteBtn.dataset.deleteBookId, deleteBtn.dataset.deleteBookTitle, deleteBtn.dataset.deleteBookAuthor);
       return;
     }
     const shelfBtn = e.target.closest('[data-shelf-toggle]');
     if (shelfBtn) {
       e.stopPropagation();
+      closeBookMenus();
       toggleShelfMembership(shelfBtn.dataset.shelfToggle, shelfBtn);
       return;
     }
     const queueBtn = e.target.closest('[data-queue-add]');
     if (queueBtn) {
       e.stopPropagation();
+      closeBookMenus();
       deps.addToListeningQueue?.(queueBtn.dataset.queueAdd);
       return;
     }
-    const bookItem = e.target.closest('.book-item');
-    if (bookItem) openBookFromLibrary(bookItem.dataset.bookId);
+    const shareBtn = e.target.closest('[data-book-share]');
+    if (shareBtn) {
+      e.stopPropagation();
+      closeBookMenus();
+      void shareBook({
+        id: shareBtn.dataset.bookShare,
+        title: shareBtn.dataset.bookTitle,
+        author: shareBtn.dataset.bookAuthor
+      });
+      return;
+    }
+    const downloadBtn = e.target.closest('[data-download-book]');
+    if (downloadBtn) {
+      e.stopPropagation();
+      void downloadBookFromLibrary(downloadBtn.dataset.downloadBook);
+      return;
+    }
+    const openBtn = e.target.closest('[data-open-book]');
+    if (openBtn) openBookFromLibrary(openBtn.dataset.openBook);
   });
-  onActivate(libraryList, (e) => {
-    const bookItem = e.target.closest('.book-item');
-    if (!bookItem) return;
-    openBookFromLibrary(bookItem.dataset.bookId);
+  document.addEventListener('click', (e) => {
+    if (!e.target.closest('.book-overflow')) closeBookMenus();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    const openMenu = document.querySelector('.book-overflow-menu:not([hidden])');
+    if (!openMenu) return;
+    const trigger = openMenu.closest('.book-overflow')?.querySelector('[data-book-menu-toggle]');
+    closeBookMenus();
+    trigger?.focus();
   });
   continueRail?.addEventListener('click', (e) => {
     const dismiss = e.target.closest('.rail-dismiss');
@@ -646,6 +743,13 @@ export function initLibrary(options = {}) {
       dismissRailEntryWithUndo(card);
       return;
     }
+    openBookFromLibrary(card.dataset.bookId);
+  });
+  continueRail?.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    const card = e.target.closest('.rail-card');
+    if (!card || e.target !== card) return;
+    e.preventDefault();
     openBookFromLibrary(card.dataset.bookId);
   });
 }

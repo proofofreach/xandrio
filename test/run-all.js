@@ -78,6 +78,7 @@ const tests = [
   'test-chunk-player-cancellation.js',
   'test-queue-status.js',
   'test-toast-actions.js',
+  'test-sharing.js',
   'test-offline-cache.js',
   'test-audio-streaming.js',
   'test-chapter-navigation.js',
