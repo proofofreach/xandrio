@@ -8,7 +8,7 @@ import { showToast } from './js/ui/toast.js';
 import { initKeys, onActivate } from './js/ui/keys.js';
 import { registerSheet } from './js/ui/sheets.js';
 import { initBookmarks, renderBookmarksSection, addBookmarkAtCurrentPosition } from './js/features/bookmarks.js';
-import { initOffline, renderOfflineState, queuePendingPosition, isChapterAvailableOffline, ensureRollingOfflineWindow, getOfflineBookData } from './js/features/offline.js';
+import { initOffline, prepareOfflineStorage, renderOfflineState, queuePendingPosition, isChapterAvailableOffline, ensureRollingOfflineWindow, getOfflineBookData, offlinePlaybackUrl } from './js/features/offline.js';
 import { initPronunciationRepair } from './js/features/pronunciations.js';
 import { initQueueStatus } from './js/features/queue-status.js';
 import { loadClientSettings, getSkipInterval, isSmartRewindEnabled, isRollingOfflineEnabled } from './js/client-settings.js';
@@ -517,6 +517,7 @@ function createSingleFileChapterEngine(options = {}) {
       const status = await apiGet(`/api/chunks/${encodeURIComponent(bookId)}/${chapterIndex}/status`);
       return status?.servedTier || null;
     },
+    resolveOfflineAudioUrl: offlinePlaybackUrl,
     ...options
   });
 }
@@ -642,6 +643,13 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
   initStats({ openBook });
   initQueueStatus();
+  await prepareOfflineStorage();
+  initOffline({
+    getCurrentBook: () => currentBook,
+    getChapters: () => chapters,
+    showAudioLoading,
+    hideAudioLoading
+  });
   loadLibrary();
   setupEventListeners();
   setupLifecycleHandlers();
@@ -676,12 +684,6 @@ document.addEventListener('DOMContentLoaded', async () => {
       buttons.forEach(button => button.classList.add('bookmark-saved-flash'));
       setTimeout(() => buttons.forEach(button => button.classList.remove('bookmark-saved-flash')), 900);
     },
-  });
-  initOffline({
-    getCurrentBook: () => currentBook,
-    getChapters: () => chapters,
-    showAudioLoading,
-    hideAudioLoading
   });
   initPronunciationRepair({
     getCurrentBook: () => currentBook,

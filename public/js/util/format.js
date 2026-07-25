@@ -145,6 +145,8 @@ export function coverImageHTML(book, className = '', alt = '') {
   const id = String(book?.id || '');
   const hasCover = Boolean(id) && Boolean(book?.hasCover || book?.coverPath);
   const placeholder = coverPlaceholderSrc(book?.title);
-  const src = hasCover ? `${API_BASE}/api/cover/${encodeURIComponent(id)}` : placeholder;
+  const src = hasCover
+    ? (book?.coverUrl || `${API_BASE}/api/cover/${encodeURIComponent(id)}`)
+    : placeholder;
   return `<img src="${safeAttr(src)}" alt="${safeAttr(alt)}" class="${className}" loading="lazy" onerror="this.onerror=null;this.src='${placeholder}'" />`;
 }

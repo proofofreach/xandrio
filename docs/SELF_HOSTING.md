@@ -218,7 +218,19 @@ For a systemd-managed source checkout, `scripts/deploy-prod.sh [ref]` performs t
 
 To roll back, stop Xandrio, check out the previous signed tag or select the previous image digest, restore the matching native directories or named-volume archive, and start the service. Do not run two versions against the same writable storage. The release workflow tests candidate restart persistence on both OCI architectures and, when a prior `stable` image exists, starts the prior image, candidate, and prior image again against the same disposable volumes.
 
-Browser offline data is separate from the server backup. Clear it through the browser's site-data controls when removing an instance. To remove local material, delete the book in Xandrio, clear browser site data, remove associated cached files and voice references, then remove backups under the operator's retention policy.
+Browser offline data is separate from the server backup and is local to that
+browser/PWA profile. Downloads are namespaced by account within a shared
+profile; they do not appear on another device. The browser is asked for
+eviction-resistant storage, but may still deny the request or clear data under
+storage pressure. A server-side deletion is recorded in
+`data/book-deletions.json`; connected devices, and offline devices when they
+next reconnect, remove local copies older than the deletion. Include that file
+with `data/` backups so deletion cursors remain monotonic after restore.
+
+Clear browser site data when removing an instance or immediately erasing a
+device that cannot reconnect. Then remove associated server cache files, voice
+references, and backups under the operator's retention policy. The deletion
+log currently has no automatic retention window.
 
 The first-run decision is stored in `data/settings.json`. Before it is accepted,
 uploads and providers with reported rights metadata remain available, while

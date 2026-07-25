@@ -7,8 +7,11 @@ import { shareBook } from '../features/sharing.js';
 import {
   cancelOfflineDownload,
   downloadBookForOffline,
-  getOfflineLibraryBooks,
+  getVerifiedOfflineLibraryBooks,
+  offlineDownloadsSupported,
   offlineStatusForBook,
+  prepareBookForOffline,
+  refreshOfflinePreparation,
   removeOfflineBook
 } from '../features/offline.js';
 
@@ -36,6 +39,7 @@ let currentViewMode = 'list';
 let continueRailHasEntries = false;
 let swipeListenersInstalled = false;
 const pendingBookDownloads = new Set();
+const checkingBookReadiness = new Set();
 
 function libraryTabStorageKey() {
   const accountId = getCurrentUser()?.id;
@@ -117,17 +121,8 @@ function progressMetaLine(progress) {
 }
 
 function offlineStateContents(bookId) {
-  const status = offlineStatusForBook(bookId);
-  const downloadIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v11m0 0 4-4m-4 4-4-4M5 20h14"/></svg>';
-  if (pendingBookDownloads.has(String(bookId))) {
-    return `${downloadIcon}<span>Preparing…</span>`;
-  }
-  if (status.kind === 'downloading') {
-    return `${downloadIcon}<span>Downloading ${status.cachedChapters}/${status.totalChapters}</span>`;
-  }
-  if (status.kind === 'repair-needed') {
-    return `${downloadIcon}<span>${status.label === 'Update download' ? 'Update needed' : 'Incomplete'}</span>`;
-  }
+  // Offline state belongs in the overflow menu and Audio Activity. Keeping
+  // the card itself quiet avoids turning local/device state into another pill.
   return '';
 }
 
@@ -143,20 +138,35 @@ function offlineStatusHTML(bookId) {
 
 function offlineMenuActionContents(bookId) {
   const status = offlineStatusForBook(bookId);
+  if (checkingBookReadiness.has(String(bookId))) {
+    return '<button type="button" role="menuitem" disabled aria-busy="true">Checking audio readiness…</button>';
+  }
   if (pendingBookDownloads.has(String(bookId))) {
-    return '<button type="button" role="menuitem" disabled aria-busy="true">Preparing…</button>';
+    return '<button type="button" role="menuitem" disabled aria-busy="true">Checking offline audio…</button>';
   }
   if (status.downloaded) {
     return `<button type="button" role="menuitem" data-remove-offline-book="${safeAttr(bookId)}">Remove download</button>`;
   }
-  const label = status.kind === 'downloading'
-    ? 'Cancel download'
+  if (status.kind === 'downloading') {
+    return `<button type="button" role="menuitem" data-download-book="${safeAttr(bookId)}">${escapeHTML(status.label)} (Cancel)</button>`;
+  }
+  if (status.kind === 'preparing') {
+    return `<button type="button" role="menuitem" disabled aria-busy="true">${escapeHTML(status.label)}</button>`;
+  }
+  if (status.kind === 'ready-to-download') {
+    return `<button type="button" role="menuitem" data-download-book="${safeAttr(bookId)}">Download to this device</button>`;
+  }
+  if (status.kind === 'download-unavailable' || status.kind === 'download-offline') {
+    return `<button type="button" role="menuitem" disabled>${escapeHTML(status.label)}</button>`;
+  }
+  const label = status.kind === 'preparation-error'
+    ? 'Retry audio preparation'
     : status.kind === 'partial'
-      ? 'Download full book'
+      ? 'Prepare full book for offline'
       : status.kind === 'repair-needed'
-        ? (status.label === 'Update download' ? 'Update download' : 'Repair download')
-        : 'Download';
-  return `<button type="button" role="menuitem" data-download-book="${safeAttr(bookId)}">${label}</button>`;
+        ? 'Prepare offline repair'
+        : 'Prepare for offline';
+  return `<button type="button" role="menuitem" data-prepare-offline-book="${safeAttr(bookId)}">${label}</button>`;
 }
 
 function bookMenuHTML(book, onShelf) {
@@ -306,18 +316,23 @@ export async function loadLibrary() {
   const hasRenderedBooks = !!libraryList?.querySelector('.book-item:not(.skeleton)');
   if (libraryList && !hasRenderedBooks) libraryList.innerHTML = skeletonCardsHTML(6);
 
+  const verifiedOfflineBooks = getVerifiedOfflineLibraryBooks().catch(error => {
+    console.warn('Could not verify local downloads:', error);
+    return [];
+  });
   let data, positions;
   let offlineFallback = false;
   try {
     const [libraryData, posData] = await Promise.all([
       apiGet('/api/library'),
-      apiGet('/api/positions').catch(() => ({}))
+      apiGet('/api/positions').catch(() => ({})),
+      verifiedOfflineBooks
     ]);
     data = libraryData;
     positions = posData.positions || {};
   } catch (err) {
     console.error('Failed to load library:', err);
-    const offlineBooks = getOfflineLibraryBooks();
+    const offlineBooks = await verifiedOfflineBooks;
     if (offlineBooks.length > 0) {
       offlineFallback = true;
       data = { books: offlineBooks, shelf: [] };
@@ -387,7 +402,9 @@ function refreshOfflineIndicators() {
     element.innerHTML = `<span class="book-local-state">${contents}</span>`;
   });
   document.querySelectorAll('[data-offline-menu-action]').forEach(element => {
+    const hadFocus = element.contains(document.activeElement);
     element.innerHTML = offlineMenuActionContents(element.dataset.offlineMenuAction);
+    if (hadFocus) element.querySelector('[role="menuitem"]')?.focus();
   });
   filterLibrary();
 }
@@ -401,6 +418,8 @@ function syncLibraryTabs() {
   });
   document.getElementById('library-panel')
     ?.setAttribute('aria-labelledby', `library-tab-${currentTab}`);
+  const deviceHint = document.getElementById('downloaded-device-hint');
+  if (deviceHint) deviceHint.hidden = currentTab !== 'downloaded';
 }
 
 // A card is visible when it matches the search query AND the active tab
@@ -527,6 +546,7 @@ async function openBookFromLibrary(bookId) {
 
 async function downloadBookFromLibrary(bookId) {
   const id = String(bookId);
+  if (!offlineDownloadsSupported() || !navigator.onLine) return;
   if (cancelOfflineDownload(id)) return;
   pendingBookDownloads.add(id);
   refreshOfflineIndicators();
@@ -537,10 +557,34 @@ async function downloadBookFromLibrary(bookId) {
     if (!data?.book || !Array.isArray(data.chapters) || data.chapters.length === 0) {
       throw new Error('Book has no downloadable chapters');
     }
-    await downloadBookForOffline(data.book, data.chapters, { showOverlay: false });
+    const ready = await refreshOfflinePreparation(id);
+    if (!ready) return;
+    await downloadBookForOffline(data.book, data.chapters, {
+      showOverlay: false,
+      requirePrepared: true
+    });
   } catch (error) {
     console.error('Could not start offline download:', error);
     showToast('Could not start download. Try again.', 'error');
+  } finally {
+    pendingBookDownloads.delete(id);
+    refreshOfflineIndicators();
+  }
+}
+
+async function prepareBookFromLibrary(bookId) {
+  const id = String(bookId);
+  pendingBookDownloads.add(id);
+  refreshOfflineIndicators();
+  try {
+    const data = await apiGet(`/api/book/${encodeURIComponent(id)}`);
+    if (!data?.book || !Array.isArray(data.chapters) || data.chapters.length === 0) {
+      throw new Error('Book has no chapters to prepare');
+    }
+    await prepareBookForOffline(data.book, data.chapters);
+  } catch (error) {
+    console.error('Could not prepare offline audio:', error);
+    showToast('Could not prepare offline audio. Try again.', 'error');
   } finally {
     pendingBookDownloads.delete(id);
     refreshOfflineIndicators();
@@ -575,7 +619,27 @@ function toggleBookMenu(trigger) {
   menu.hidden = !opening;
   menu.closest('.book-item')?.classList.toggle('menu-open', opening);
   trigger.setAttribute('aria-expanded', opening ? 'true' : 'false');
-  if (opening) menu.querySelector('[role="menuitem"]')?.focus();
+  if (opening) {
+    menu.querySelector('[role="menuitem"]')?.focus();
+    const bookId = trigger.closest('.book-item')?.dataset.bookId;
+    const localStatus = bookId ? offlineStatusForBook(bookId) : null;
+    if (
+      bookId &&
+      navigator.onLine &&
+      !checkingBookReadiness.has(bookId) &&
+      !localStatus?.downloaded &&
+      localStatus?.kind !== 'downloading'
+    ) {
+      checkingBookReadiness.add(bookId);
+      refreshOfflineIndicators();
+      void refreshOfflinePreparation(bookId)
+        .catch(() => false)
+        .finally(() => {
+          checkingBookReadiness.delete(bookId);
+          refreshOfflineIndicators();
+        });
+    }
+  }
 }
 
 async function showDeleteModal(bookId, title) {
@@ -812,6 +876,13 @@ export function initLibrary(options = {}) {
       e.stopPropagation();
       closeBookMenus();
       void downloadBookFromLibrary(downloadBtn.dataset.downloadBook);
+      return;
+    }
+    const prepareOfflineBtn = e.target.closest('[data-prepare-offline-book]');
+    if (prepareOfflineBtn) {
+      e.stopPropagation();
+      closeBookMenus();
+      void prepareBookFromLibrary(prepareOfflineBtn.dataset.prepareOfflineBook);
       return;
     }
     const openBtn = e.target.closest('[data-open-book]');

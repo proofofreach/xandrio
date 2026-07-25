@@ -114,6 +114,23 @@ function fakeAudio() {
     await load;
   });
 
+  await test('downloaded playback uses the account-scoped offline media URL', async () => {
+    const audio = fakeAudio();
+    const { player } = makePlayer(audio, {
+      preferStandardAudio: true,
+      resolveOfflineAudioUrl: (bookId, chapterIndex) =>
+        `/api/audio/${bookId}/${chapterIndex}?xandrio-offline-scope=account_a`
+    });
+
+    const load = player.loadChapter('book1', 2);
+    assert.strictEqual(
+      audio.src,
+      '/api/audio/book1/2?xandrio-offline-scope=account_a'
+    );
+    audio.emit('loadedmetadata');
+    await load;
+  });
+
   await test('continuous first listening needs only the original play call', async () => {
     const audio = fakeAudio();
     const { player } = makePlayer(audio);

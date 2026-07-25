@@ -204,6 +204,30 @@ function fakeElement({ hidden = false, classes = [] } = {}) {
     assert.match(elements['audio-activity-list'].innerHTML, /role="progressbar"/);
   });
 
+  await test('labels server preparation separately from device downloading', async () => {
+    document.dispatchEvent({
+      type: 'xandrio:downloadactivity',
+      detail: { downloads: [] }
+    });
+    document.dispatchEvent({
+      type: 'xandrio:preparationactivity',
+      detail: {
+        preparations: [{
+          id: 'book-preparing',
+          title: 'The Preparing Book',
+          author: 'A. Reader',
+          readyChapters: 4,
+          totalChapters: 24,
+          percent: 17
+        }]
+      }
+    });
+    await settle();
+    queueStatusElement.dispatch('click');
+    assert.match(elements['audio-activity-list'].innerHTML, /Preparing audio · 4\/24/);
+    assert.doesNotMatch(elements['audio-activity-list'].innerHTML, /Downloading · 17%/);
+  });
+
   await test('re-init without a status element still stops the old poller', () => {
     queueStatusElement = null;
     initQueueStatus();

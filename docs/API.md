@@ -26,6 +26,9 @@ The examples below omit authorization headers for readability.
 | POST | [/api/upload](#post-apiupload) | Upload a supported book file |
 | GET | [/api/library](#get-apilibrary) | List all books in library |
 | DELETE | [/api/book/:bookId](#delete-apibookbookid) | Delete a book and its files |
+| GET | [/api/offline/deletions](#get-apiofflinedeletions) | Reconcile device-local downloads with server deletions |
+| GET | [/api/offline/preparation/:bookId](#get-apiofflinepreparationbookid) | Get full-title audio preparation progress |
+| POST | [/api/offline/preparation/:bookId](#post-apiofflinepreparationbookid) | Start durable full-title audio preparation |
 | GET | [/api/book/:bookId](#get-apibookbookid) | Get book details and chapters |
 | GET | [/api/cover/:bookId](#get-apicoverbookid) | Get book cover image |
 | GET | [/api/audio-stream/:bookId/:chapterIndex](#get-apiaudio-streambookidchapterindex) | Stream generated chapter audio through one stable response |
@@ -76,6 +79,8 @@ Regenerated from `server.js` and `lib/routes/*.js` on 2026-07-12.
 | GET | `/api/chunks/:bookId/:chapterIndex/manifest` |
 | GET | `/api/chunks/:bookId/:chapterIndex/chapter-audio-status` |
 | POST | `/api/chunks/:bookId/:chapterIndex/prepare-chapter-audio` |
+| GET | `/api/offline/preparation/:bookId` |
+| POST | `/api/offline/preparation/:bookId` |
 | POST | `/api/chunks/:bookId/:chapterIndex/prepare` |
 | POST | `/api/chunks/:bookId/:chapterIndex/retry` |
 | GET | `/api/chunks/:bookId/:chapterIndex/status` |
@@ -665,6 +670,69 @@ Delete a book, its EPUB file, cached cover, all cached audio chapters, and playb
 3. All audio files matching `cache/{bookId}_chapter*.mp3`
 4. Entry in `data/books.json`
 5. Entry in `data/positions.json`
+
+Deletion also removes bookmarks, shelf and queue references, and commits a
+monotonic record to `data/book-deletions.json`. Devices use that record to
+remove older offline copies after reconnecting.
+
+---
+
+## GET /api/offline/deletions
+
+Return book deletions committed after a device cursor. This authenticated
+endpoint is intended for PWA reconciliation.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `since` | non-negative integer | Last successfully applied revision; defaults to `0` |
+
+```json
+{
+  "revision": 12,
+  "deletions": [
+    {
+      "bookId": "book-123",
+      "revision": 12,
+      "deletedAt": "2026-07-25T12:00:00.000Z"
+    }
+  ]
+}
+```
+
+The server resolves interrupted deletion transactions against `books.json`
+before returning the cursor. Clients advance their cursor only after applying
+the response.
+
+---
+
+## POST /api/offline/preparation/:bookId
+
+Record a durable full-title preparation intent and queue every chapter at
+`download` generation priority. The request returns after the work is queued;
+generation continues if the initiating browser closes. Live playback remains
+higher priority.
+
+## GET /api/offline/preparation/:bookId
+
+Return server preparation progress independently of any device-local download:
+
+```json
+{
+  "bookId": "book-123",
+  "state": "preparing",
+  "readyChapters": 4,
+  "totalChapters": 24,
+  "readyChunks": 18,
+  "totalChunks": 120,
+  "errorChapters": 0,
+  "percent": 17
+}
+```
+
+`state` is `not-requested`, `preparing`, `ready`, or `error`. Once `ready`, a
+client can transfer chapter audio into that browser/PWA’s Cache Storage while
+the server generates audio for other titles; device transfer does not consume
+the generation scheduler’s GPU slot.
 
 ---
 

@@ -93,6 +93,8 @@ async function startOfflineFixtureServer() {
   const state = {
     missingShellPath: null,
     replacementCacheVersion: null,
+    offlinePreparationRequested: false,
+    preparationStatusDelayMs: 0,
     operatorPolicy: { version: 1, acknowledged: false, acknowledgedAt: null, unverifiedSourcesEnabled: false }
   };
 
@@ -116,6 +118,22 @@ async function startOfflineFixtureServer() {
     if (pathname === '/api/positions') return jsonResponse(res, { positions: {} });
     if (pathname === '/api/settings/client') return jsonResponse(res, { settings: {} });
     if (pathname === '/api/book/smoke-offline') return jsonResponse(res, { book, chapters: [chapter] });
+    if (pathname === '/api/offline/preparation/smoke-offline') {
+      if (req.method === 'GET' && state.preparationStatusDelayMs > 0) {
+        await new Promise(resolve => setTimeout(resolve, state.preparationStatusDelayMs));
+      }
+      if (req.method === 'POST') state.offlinePreparationRequested = true;
+      return jsonResponse(res, {
+        bookId: book.id,
+        state: state.offlinePreparationRequested ? 'ready' : 'not-requested',
+        readyChapters: state.offlinePreparationRequested ? 1 : 0,
+        totalChapters: 1,
+        readyChunks: state.offlinePreparationRequested ? 1 : 0,
+        totalChunks: 1,
+        errorChapters: 0,
+        percent: state.offlinePreparationRequested ? 100 : 0
+      }, req.method === 'POST' ? 202 : 200);
+    }
     if (pathname === '/api/position/smoke-offline') return jsonResponse(res, { position: null });
     if (pathname === '/api/position') return jsonResponse(res, { success: true });
     if (pathname === '/api/bookmarks/smoke-offline') return jsonResponse(res, { bookmarks: [] });
@@ -191,6 +209,9 @@ async function startOfflineFixtureServer() {
     restoreShell() {
       state.replacementCacheVersion = null;
       state.missingShellPath = null;
+    },
+    setPreparationStatusDelay(delayMs) {
+      state.preparationStatusDelayMs = Math.max(0, Number(delayMs) || 0);
     },
     close: () => new Promise(resolve => server.close(resolve))
   };
@@ -724,7 +745,8 @@ async function verifyLibraryActions(page) {
     throw new Error(`Library overflow trigger is not persistently visible: ${JSON.stringify(overflowTrigger)}`);
   }
   await page.click('[data-book-menu-toggle]');
-  for (const label of ['Download', 'Save to My Shelf', 'Add to Up Next', 'Share', 'Delete']) {
+  await page.waitForSelector('[data-prepare-offline-book]', { state: 'visible' });
+  for (const label of ['Prepare for offline', 'Save to My Shelf', 'Add to Up Next', 'Share', 'Delete']) {
     if (!await page.getByRole('menuitem', { name: label, exact: true }).isVisible()) {
       throw new Error(`Library overflow menu is missing ${label}`);
     }
@@ -1139,17 +1161,34 @@ async function verifyRealServiceWorkerOffline(browser) {
     }
     await verifyAtomicServiceWorkerUpgrade(page, fixture);
 
-    // Exercise the library card's actual Download control. It must prepare
-    // and cache the full title without navigating into the player.
+    // Exercise the two-stage library workflow without navigating into the
+    // player: durable server preparation first, then device-local transfer.
     await page.goto(`${fixture.origin}/#/library`, { waitUntil: 'networkidle' });
+    fixture.setPreparationStatusDelay(250);
+    await page.click('[data-book-menu-toggle]');
+    const checkingAction = page.locator('[data-offline-menu-action="smoke-offline"] [role="menuitem"]');
+    if (!await checkingAction.isDisabled() ||
+        await checkingAction.textContent() !== 'Checking audio readiness…') {
+      throw new Error('Library menu exposes a stale download/preparation action while readiness is checked');
+    }
+    await page.waitForSelector('[data-prepare-offline-book="smoke-offline"]', { state: 'visible' });
+    fixture.setPreparationStatusDelay(0);
+    await page.click('[data-prepare-offline-book="smoke-offline"]');
+    await page.waitForFunction(() => {
+      const manifest = JSON.parse(localStorage.getItem('xandrio_offline_books:default') || '{}');
+      return manifest['smoke-offline']?.state === 'prepared';
+    });
     await page.click('[data-book-menu-toggle]');
     await page.waitForSelector('[data-download-book="smoke-offline"]', { state: 'visible' });
+    if (!await page.getByRole('menuitem', { name: 'Download to this device', exact: true }).isVisible()) {
+      throw new Error('Prepared title does not offer a device-local download');
+    }
     await page.click('[data-download-book="smoke-offline"]');
     if (await page.evaluate(() => location.hash) !== '#/library') {
       throw new Error('Library download navigated away from the library');
     }
     await page.waitForFunction(() => {
-      const manifest = JSON.parse(localStorage.getItem('xandrio_offline_books') || '{}');
+      const manifest = JSON.parse(localStorage.getItem('xandrio_offline_books:default') || '{}');
       const entry = manifest['smoke-offline'];
       return entry?.state === 'ready' &&
         entry?.chapters === 1 &&
@@ -1167,8 +1206,10 @@ async function verifyRealServiceWorkerOffline(browser) {
     }
     await page.keyboard.press('Escape');
     const cachedBytes = await page.evaluate(async () => {
-      const cache = await caches.open('xandrio-offline-audio');
-      const response = await cache.match(`${location.origin}/api/audio/smoke-offline/0`);
+      const cache = await caches.open('xandrio-offline-audio:default');
+      const response = await cache.match(
+        `${location.origin}/api/audio/smoke-offline/0?xandrio-offline-scope=default`
+      );
       return response ? (await response.arrayBuffer()).byteLength : 0;
     });
     if (cachedBytes !== fixture.audioBytes) {
@@ -1203,7 +1244,10 @@ async function verifyRealServiceWorkerOffline(browser) {
     await page.waitForFunction(() => document.getElementById('audio-player')?.currentTime >= 1.5);
 
     const range = await page.evaluate(async () => {
-      const response = await fetch('/api/audio/smoke-offline/0', { headers: { Range: 'bytes=100-199' } });
+      const response = await fetch(
+        '/api/audio/smoke-offline/0?xandrio-offline-scope=default',
+        { headers: { Range: 'bytes=100-199' } }
+      );
       return {
         status: response.status,
         contentRange: response.headers.get('Content-Range'),
@@ -1219,7 +1263,10 @@ async function verifyRealServiceWorkerOffline(browser) {
     }
 
     const unsatisfied = await page.evaluate(async () => {
-      const response = await fetch('/api/audio/smoke-offline/0', { headers: { Range: 'bytes=999999-' } });
+      const response = await fetch(
+        '/api/audio/smoke-offline/0?xandrio-offline-scope=default',
+        { headers: { Range: 'bytes=999999-' } }
+      );
       return { status: response.status, contentRange: response.headers.get('Content-Range') };
     });
     if (unsatisfied.status !== 416 || unsatisfied.contentRange !== `bytes */${fixture.audioBytes}`) {
@@ -1227,7 +1274,10 @@ async function verifyRealServiceWorkerOffline(browser) {
     }
 
     const malformed = await page.evaluate(async () => {
-      const response = await fetch('/api/audio/smoke-offline/0', { headers: { Range: 'bytes=broken' } });
+      const response = await fetch(
+        '/api/audio/smoke-offline/0?xandrio-offline-scope=default',
+        { headers: { Range: 'bytes=broken' } }
+      );
       return {
         status: response.status,
         contentRange: response.headers.get('Content-Range'),
@@ -1239,7 +1289,10 @@ async function verifyRealServiceWorkerOffline(browser) {
     }
 
     const suffix = await page.evaluate(async () => {
-      const response = await fetch('/api/audio/smoke-offline/0', { headers: { Range: 'bytes=-64' } });
+      const response = await fetch(
+        '/api/audio/smoke-offline/0?xandrio-offline-scope=default',
+        { headers: { Range: 'bytes=-64' } }
+      );
       return {
         status: response.status,
         contentLength: response.headers.get('Content-Length'),

@@ -18,7 +18,10 @@ document.cookie = 'xandrio_token=; path=/; max-age=0; SameSite=Lax';
 // Populated from /api/auth/status during boot and after login. When an
 // account session exists the server derives identity from the session
 // cookie; the legacy X-Xandrio-User-Id sync header is then omitted.
+const OFFLINE_ACCOUNT_SCOPE_KEY = 'xandrio_offline_account_scope';
+const LOCAL_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 let currentUser = null;
+let authenticationRequired = null;
 
 export function getCurrentUser() {
   return currentUser;
@@ -26,13 +29,24 @@ export function getCurrentUser() {
 
 export function setCurrentUser(user) {
   currentUser = user && user.id ? user : null;
+  if (currentUser && LOCAL_ID_PATTERN.test(String(currentUser.id))) {
+    // Retain the last authenticated account so an installed PWA can find
+    // that account's downloads when /api/auth/status is unreachable offline.
+    localStorage.setItem(OFFLINE_ACCOUNT_SCOPE_KEY, String(currentUser.id));
+  }
 }
 
 export async function fetchAuthStatus() {
   const response = await window.fetch(`${API_BASE}/api/auth/status`, { credentials: 'same-origin' });
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
   const status = await response.json();
+  authenticationRequired = Boolean(status.authenticationRequired);
   setCurrentUser(status.user);
+  if (status.authenticationRequired && !status.authenticated) {
+    localStorage.removeItem(OFFLINE_ACCOUNT_SCOPE_KEY);
+  } else if (!status.authenticationRequired && !status.user) {
+    localStorage.setItem(OFFLINE_ACCOUNT_SCOPE_KEY, getCurrentUserId());
+  }
   return status;
 }
 
@@ -66,6 +80,7 @@ export async function login(username, password) {
   });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data.error || 'Sign-in failed');
+  authenticationRequired = true;
   setCurrentUser(data.user);
   resetUnauthorizedSignal();
   return data.user || null;
@@ -80,12 +95,18 @@ export async function loginWithToken(token) {
     body: JSON.stringify({ token })
   });
   if (!response.ok) throw new Error('The access token was not accepted.');
+  authenticationRequired = false;
+  localStorage.setItem(OFFLINE_ACCOUNT_SCOPE_KEY, getCurrentUserId());
   resetUnauthorizedSignal();
 }
 
 export async function logout() {
-  await __originalFetch(`${API_BASE}/api/auth/logout`, { method: 'POST', credentials: 'same-origin' });
-  setCurrentUser(null);
+  try {
+    await __originalFetch(`${API_BASE}/api/auth/logout`, { method: 'POST', credentials: 'same-origin' });
+  } finally {
+    setCurrentUser(null);
+    localStorage.removeItem(OFFLINE_ACCOUNT_SCOPE_KEY);
+  }
 }
 
 // ---- Sync identity (user/device headers on every position/sync call) ----
@@ -108,15 +129,34 @@ function createLocalSyncId(prefix) {
 export function getCurrentUserId() {
   if (currentUser?.id) return currentUser.id;
   const stored = localStorage.getItem(SYNC_USER_KEY);
-  if (stored && /^[A-Za-z0-9_-]{1,64}$/.test(stored)) return stored;
+  if (stored && LOCAL_ID_PATTERN.test(stored)) return stored;
   localStorage.setItem(SYNC_USER_KEY, DEFAULT_SYNC_USER_ID);
   return DEFAULT_SYNC_USER_ID;
 }
 
 export function setCurrentUserId(userId) {
-  if (!/^[A-Za-z0-9_-]{1,64}$/.test(String(userId || ''))) return false;
+  if (!LOCAL_ID_PATTERN.test(String(userId || ''))) return false;
   localStorage.setItem(SYNC_USER_KEY, userId);
   return true;
+}
+
+export function getOfflineStorageScopeId() {
+  if (currentUser?.id && LOCAL_ID_PATTERN.test(String(currentUser.id))) {
+    return String(currentUser.id);
+  }
+  const rememberedAccount = localStorage.getItem(OFFLINE_ACCOUNT_SCOPE_KEY);
+  if (rememberedAccount && LOCAL_ID_PATTERN.test(rememberedAccount)) {
+    return rememberedAccount;
+  }
+  return getCurrentUserId();
+}
+
+export function canClaimLegacyOfflineStorage() {
+  return Boolean(
+    currentUser?.id ||
+    localStorage.getItem(OFFLINE_ACCOUNT_SCOPE_KEY) ||
+    authenticationRequired === false
+  );
 }
 
 // "Forget this device" — drop back to the default (unsynced) profile.
@@ -130,7 +170,7 @@ export function isDefaultSyncUser(profileId) {
 
 export function getCurrentDeviceId() {
   const stored = localStorage.getItem(SYNC_DEVICE_KEY);
-  if (stored && /^[A-Za-z0-9_-]{1,64}$/.test(stored)) return stored;
+  if (stored && LOCAL_ID_PATTERN.test(stored)) return stored;
   const deviceId = createLocalSyncId('dev');
   localStorage.setItem(SYNC_DEVICE_KEY, deviceId);
   return deviceId;

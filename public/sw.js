@@ -1,16 +1,17 @@
 const APP_RELEASE = '1.1.0';
-const CACHE_VERSION = 'xandrio-v98';
+const CACHE_VERSION = 'xandrio-v102';
 const OFFLINE_AUDIO_CACHE = 'xandrio-offline-audio';
 const OFFLINE_TITLE_CACHE = 'xandrio-offline-titles';
+const OFFLINE_SCOPE_PARAM = 'xandrio-offline-scope';
 // Single source of truth for the versioned shell assets. The <link>/<script>
 // tags in index.html must carry the SAME ?v= values — update both together,
 // and bump CACHE_VERSION whenever any APP_SHELL entry changes (including the
 // un-versioned js/ modules below, which only invalidate via CACHE_VERSION).
 const ASSET_VERSIONS = {
-  '/style-v3.css': 88,
+  '/style-v3.css': 89,
   '/js/lifecycle.js': 1,
   '/js/chunk-player.js': 21,
-  '/app.js': 97
+  '/app.js': 100
 };
 const versionedAsset = (path) => `${path}?v=${ASSET_VERSIONS[path]}`;
 const APP_SHELL = [
@@ -94,7 +95,13 @@ self.addEventListener('activate', event => {
     }
     const keys = await caches.keys();
     await Promise.all(keys
-      .filter(key => key !== CACHE_VERSION && key !== OFFLINE_AUDIO_CACHE && key !== OFFLINE_TITLE_CACHE)
+      .filter(key =>
+        key !== CACHE_VERSION &&
+        key !== OFFLINE_AUDIO_CACHE &&
+        key !== OFFLINE_TITLE_CACHE &&
+        !key.startsWith(`${OFFLINE_AUDIO_CACHE}:`) &&
+        !key.startsWith(`${OFFLINE_TITLE_CACHE}:`)
+      )
       .map(key => caches.delete(key)));
     await self.clients.claim();
   })());
@@ -124,13 +131,20 @@ function isOfflineTitleRequest(request) {
   return url.origin === self.location.origin && /^\/api\/cover\/[^/]+$/.test(url.pathname);
 }
 
+function scopedOfflineCacheName(baseName, request) {
+  const scope = new URL(request.url).searchParams.get(OFFLINE_SCOPE_PARAM);
+  return scope && /^[A-Za-z0-9_-]{1,64}$/.test(scope)
+    ? `${baseName}:${scope}`
+    : baseName;
+}
+
 async function cachedTitleResponse(request) {
-  const cache = await caches.open(OFFLINE_TITLE_CACHE);
+  const cache = await caches.open(scopedOfflineCacheName(OFFLINE_TITLE_CACHE, request));
   return (await cache.match(request.url)) || Response.error();
 }
 
 async function cachedAudioResponse(request) {
-  const cache = await caches.open(OFFLINE_AUDIO_CACHE);
+  const cache = await caches.open(scopedOfflineCacheName(OFFLINE_AUDIO_CACHE, request));
   // Offline downloads are stored under /api/audio/ (see offline.js). The iOS
   // single-file player requests /api/audio-ios/ — same chapter audio, different
   // encode — so fall back to the stored playback audio when the AAC path isn't cached.
