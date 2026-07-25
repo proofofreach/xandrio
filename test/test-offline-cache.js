@@ -212,6 +212,73 @@ function installBrowser({
   const book = { id: 'book-1', title: 'A Book' };
   const chapters = [{}, {}];
 
+  await test('reports whether this browser can store offline audio', async () => {
+    const cache = makeCache();
+    installBrowser({ book, chapters, cache });
+    assert.strictEqual(offline.offlineDownloadsSupported(), true);
+
+    delete global.caches;
+    delete global.window.caches;
+    assert.strictEqual(offline.offlineDownloadsSupported(), false);
+  });
+
+  await test('does not offer device download when browser storage is unavailable', async () => {
+    const cache = makeCache();
+    const prepared = {
+      bookId: book.id,
+      title: book.title,
+      chapters: chapters.length,
+      chapterEntries: chapters.map(() => null),
+      titleData: { book, chapters },
+      manifestVersion: 3,
+      mode: 'full',
+      state: 'prepared'
+    };
+    installBrowser({
+      book,
+      chapters,
+      cache,
+      manifest: { [book.id]: prepared }
+    });
+    delete global.caches;
+    delete global.window.caches;
+
+    assert.deepStrictEqual(
+      offline.offlineStatusForBook(book.id),
+      {
+        kind: 'download-unavailable',
+        label: 'Downloads unavailable in this browser',
+        downloaded: false,
+        cachedChapters: 0,
+        totalChapters: 2
+      }
+    );
+  });
+
+  await test('does not offer device download while the browser is offline', async () => {
+    const cache = makeCache();
+    const prepared = {
+      bookId: book.id,
+      title: book.title,
+      chapters: chapters.length,
+      chapterEntries: chapters.map(() => null),
+      titleData: { book, chapters },
+      manifestVersion: 3,
+      mode: 'full',
+      state: 'prepared'
+    };
+    installBrowser({
+      book,
+      chapters,
+      cache,
+      manifest: { [book.id]: prepared }
+    });
+    navigator.onLine = false;
+
+    assert.strictEqual(offline.offlineStatusForBook(book.id).kind, 'download-offline');
+    assert.strictEqual(offline.offlineStatusForBook(book.id).label, 'Connect to download');
+  });
+
   await test('requests persistent storage for a user-initiated full-book download', async () => {
     const cache = makeCache();
     const env = installBrowser({ book, chapters, cache });

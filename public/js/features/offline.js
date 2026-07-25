@@ -28,6 +28,12 @@ const rollingCompletions = new Map();
 const legacyCacheMigrations = new Map();
 const deletionReconciliations = new Map();
 
+export function offlineDownloadsSupported() {
+  return typeof window !== 'undefined' &&
+    'caches' in window &&
+    typeof window.caches?.open === 'function';
+}
+
 export function initOffline(options = {}) {
   deps = options;
   document.getElementById('offline-books-list')?.addEventListener('click', handleOfflineManagerClick);
@@ -296,6 +302,24 @@ export function offlineStatusForBook(bookId) {
     };
   }
   if (state === 'prepared') {
+    if (!offlineDownloadsSupported()) {
+      return {
+        kind: 'download-unavailable',
+        label: 'Downloads unavailable in this browser',
+        downloaded: false,
+        cachedChapters,
+        totalChapters
+      };
+    }
+    if (!navigator.onLine) {
+      return {
+        kind: 'download-offline',
+        label: 'Connect to download',
+        downloaded: false,
+        cachedChapters,
+        totalChapters
+      };
+    }
     return {
       kind: 'ready-to-download',
       label: 'Download to this device',
@@ -655,10 +679,7 @@ async function requestPersistentOfflineStorage() {
 
 export async function downloadBookForOffline(book, chapters, options = {}) {
   if (!book?.id || !Array.isArray(chapters) || chapters.length === 0) return false;
-  if (!('caches' in window)) {
-    showToast('Offline audio cache is unavailable', 'error');
-    return false;
-  }
+  if (!offlineDownloadsSupported()) return false;
   await requestPersistentOfflineStorage();
   rollingAbort?.abort();
   rollingAbort = null;
