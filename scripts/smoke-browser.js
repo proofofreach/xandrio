@@ -1184,6 +1184,7 @@ async function verifyRealServiceWorkerOffline(browser) {
       throw new Error('Prepared title does not offer a device-local download');
     }
     await page.click('[data-download-book="smoke-offline"]');
+    await page.getByRole('button', { name: 'Start download', exact: true }).click();
     if (await page.evaluate(() => location.hash) !== '#/library') {
       throw new Error('Library download navigated away from the library');
     }
