@@ -63,13 +63,13 @@
       </header>
 
       <div id="library-search-bar" class="library-search-bar collapsed">
-        <input type="text" id="library-search" placeholder="Filter your library..." aria-label="Filter library by title or author" />
+        <input type="text" id="library-search" placeholder="Filter books…" aria-label="Filter books by title or author" />
         <button id="library-search-close" class="library-search-close" aria-label="Close search"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="icon"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg></button>
       </div>
 
       <div id="library-tabs" class="library-tabs" role="tablist" aria-label="Library scope">
-        <button data-library-tab="shelf" class="library-tab active" role="tab">Saved</button>
-        <button data-library-tab="all" class="library-tab" role="tab">All Books</button>
+        <button data-library-tab="shelf" class="library-tab active" role="tab">My Shelf</button>
+        <button data-library-tab="all" class="library-tab" role="tab">Shared Library</button>
       </div>
 
       <div class="library-controls">
@@ -91,7 +91,16 @@
       <div id="continue-rail" class="continue-rail" hidden></div>
       <section id="up-next-rail" class="up-next-rail" hidden aria-label="Up Next"></section>
 
-      <p id="shelf-empty-hint" class="shelf-empty-hint" hidden>No saved books yet. Open a book’s menu in All Books and choose Save.</p>
+      <section id="shelf-empty-hint" class="shelf-empty-hint" aria-labelledby="shelf-empty-title" hidden>
+        <div class="shelf-empty-copy">
+          <h2 id="shelf-empty-title">Start Your Shelf</h2>
+          <p>Find a title to add, or save one that is already in the Shared Library.</p>
+        </div>
+        <div class="shelf-empty-actions">
+          <button class="btn-primary" type="button" data-add-book-shelf>Find a Book</button>
+          <button class="btn-secondary" type="button" data-browse-shared-library>Browse Shared Library</button>
+        </div>
+      </section>
 
       <div id="library-list" class="book-list">
         <div class="empty-state-modern">
