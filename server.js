@@ -2979,9 +2979,44 @@ app.post('/api/premium-prep/settings', async (req, res) => {
   }
 });
 
-// API: Get TTS queue status
-app.get('/api/queue/status', (req, res) => {
-  res.json(ttsQueue.getQueueStatus());
+// API: Get reader-facing audio activity. Raw global queue counts remain in
+// operator diagnostics; this endpoint only exposes books relevant to the
+// requesting account.
+app.get('/api/queue/status', async (req, res) => {
+  try {
+    const userId = positionUserId(req);
+    const [books, shelvesStore, positionsStore] = await Promise.all([
+      loadJSON(BOOKS_FILE, {}),
+      loadJSON(SHELVES_FILE, {}),
+      loadJSON(POSITIONS_FILE, {})
+    ]);
+    const relevantBookIds = new Set([
+      ...shelves.shelfForUser(shelvesStore, userId),
+      ...Object.keys(positionsForUser(positionsStore, userId))
+    ]);
+    const activity = ttsQueue.getQueueActivity({ bookIds: relevantBookIds });
+    res.json({
+      active: activity.active,
+      queued: activity.queued,
+      books: activity.books
+        .map(item => {
+          const book = books[item.bookId];
+          if (!book) return null;
+          return {
+            id: item.bookId,
+            title: book.title || 'Untitled',
+            author: book.author || 'Unknown Author',
+            hasCover: Boolean(book.coverPath),
+            active: item.active,
+            queued: item.queued,
+            chapters: item.chapters
+          };
+        })
+        .filter(Boolean)
+    });
+  } catch (err) {
+    sendServerError(res, err, 'Failed to load audio activity');
+  }
 });
 
 // =========================================================================

@@ -10,6 +10,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Replaced the permanently floating narration queue counter with a quiet
+  book-count activity control. Its sheet groups live work by book and chapter,
+  filters it to the signed-in reader's shelf and progress, and keeps raw global
+  chunk totals in operator diagnostics.
 - Mobile book search now uses compact horizontal shelf rows, sticky search and
   sort controls, and a focus-trapped filter sheet. Pixel-sized layouts expose
   several actionable results per viewport while preserving full desktop cards,

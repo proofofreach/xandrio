@@ -1081,23 +1081,39 @@ Returned when chunk generation failed:
 
 ## GET /api/queue/status
 
-Get the current status of the TTS generation queue.
+Get live narration activity for books relevant to the requesting account. A
+book is relevant when it is on that account's shelf or has reading progress
+for that account. Raw instance-wide queue totals are available only through
+operator diagnostics.
 
 ### Response (200)
 
 ```json
 {
-  "active": 2,
-  "queued": 5,
-  "completed": 42
+  "active": 1,
+  "queued": 2,
+  "books": [
+    {
+      "id": "abc123",
+      "title": "Example Book",
+      "author": "Example Author",
+      "hasCover": true,
+      "active": 1,
+      "queued": 2,
+      "chapters": [
+        { "chapterIndex": 4, "active": 1, "queued": 0 },
+        { "chapterIndex": 5, "active": 0, "queued": 2 }
+      ]
+    }
+  ]
 }
 ```
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `active` | integer | Number of TTS jobs currently generating |
-| `queued` | integer | Number of jobs waiting in the queue |
-| `completed` | integer | Total jobs completed since server start |
+| `active` | integer | Relevant narration chunks currently generating |
+| `queued` | integer | Relevant narration chunks waiting to generate |
+| `books` | array | Relevant books with live work, grouped into chapter activity |
 
 ---
 

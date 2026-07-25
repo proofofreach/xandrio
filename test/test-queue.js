@@ -266,6 +266,54 @@ async function runTests() {
     assert.strictEqual(final.completed, 4);
   });
 
+  await test('getQueueActivity groups live jobs and filters books', async () => {
+    const q = new TestableQueue({ maxConcurrent: 1, generateDelay: 40 });
+    const ids = [
+      await q.enqueue({
+        text: 'book-a-current',
+        outputPath: '/tmp/activity-a-current.mp3',
+        activity: { bookId: 'book-a', chapterIndex: 0, chunkIndex: 0 }
+      }),
+      await q.enqueue({
+        text: 'book-a-next',
+        outputPath: '/tmp/activity-a-next.mp3',
+        activity: { bookId: 'book-a', chapterIndex: 1, chunkIndex: 0 }
+      }),
+      await q.enqueue({
+        text: 'book-b',
+        outputPath: '/tmp/activity-b.mp3',
+        activity: { bookId: 'book-b', chapterIndex: 3, chunkIndex: 0 }
+      }),
+      await q.enqueue({
+        text: 'operator-only',
+        outputPath: '/tmp/activity-unscoped.mp3'
+      })
+    ];
+
+    await sleep(5);
+
+    assert.deepStrictEqual(q.getQueueActivity({ bookIds: ['book-a'] }), {
+      active: 1,
+      queued: 1,
+      books: [{
+        bookId: 'book-a',
+        active: 1,
+        queued: 1,
+        chapters: [
+          { chapterIndex: 0, active: 1, queued: 0 },
+          { chapterIndex: 1, active: 0, queued: 1 }
+        ]
+      }]
+    });
+
+    await Promise.all(ids.map(id => q.waitFor(id)));
+    assert.deepStrictEqual(q.getQueueActivity({ bookIds: ['book-a'] }), {
+      active: 0,
+      queued: 0,
+      books: []
+    });
+  });
+
   // ----- 9. Prioritize a queued job -----
   await test('prioritize moves a queued job ahead of lower-priority work', async () => {
     const q = new TestableQueue({ maxConcurrent: 1, generateDelay: 30 });
