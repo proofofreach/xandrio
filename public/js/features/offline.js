@@ -238,6 +238,14 @@ export function downloadCurrentBook(options = {}) {
   return downloadBookForOffline(book, chapters, options);
 }
 
+export function cancelOfflineDownload(bookId) {
+  if (downloadAbort && String(activeDownloadBookId) === String(bookId)) {
+    downloadAbort.abort();
+    return true;
+  }
+  return false;
+}
+
 export async function downloadBookForOffline(book, chapters, options = {}) {
   if (!book?.id || !Array.isArray(chapters) || chapters.length === 0) return false;
   if (!('caches' in window)) {

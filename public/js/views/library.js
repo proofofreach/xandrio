@@ -5,6 +5,7 @@ import { confirmSheet } from '../ui/confirm.js';
 import { showToast, showUndoToast } from '../ui/toast.js';
 import { shareBook } from '../features/sharing.js';
 import {
+  cancelOfflineDownload,
   downloadBookForOffline,
   getOfflineLibraryBooks,
   offlineStatusForBook,
@@ -110,42 +111,54 @@ function progressMetaLine(progress) {
   return parts.join(' · ');
 }
 
-function offlineControlContents(bookId, title) {
+function offlineStateContents(bookId) {
   const status = offlineStatusForBook(bookId);
-  const icon = status.downloaded
-    ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M7 12.5 10.2 16 17 8.5"/><circle cx="12" cy="12" r="9"/></svg>'
-    : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v11m0 0 4-4m-4 4-4-4M5 20h14"/></svg>';
+  const checkIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M7 12.5 10.2 16 17 8.5"/><circle cx="12" cy="12" r="9"/></svg>';
+  const downloadIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v11m0 0 4-4m-4 4-4-4M5 20h14"/></svg>';
   if (pendingBookDownloads.has(String(bookId))) {
-    return `
-      <button class="book-download-action" type="button" disabled aria-busy="true"
-              aria-label="Preparing download for ${safeAttr(title)}">
-        ${icon}<span>Preparing…</span>
-      </button>`;
+    return `${downloadIcon}<span>Preparing…</span>`;
   }
   if (status.downloaded) {
-    return `<span class="book-local-state">${icon}<span>On device</span></span>`;
+    return `${checkIcon}<span>On device</span>`;
   }
-  const label = status.kind === 'partial'
-    ? 'Download full'
-    : status.kind === 'downloading'
-      ? `Downloading ${status.cachedChapters}/${status.totalChapters}`
-      : status.kind === 'repair-needed'
-        ? 'Repair download'
-        : 'Download';
-  return `
-    <button class="book-download-action" type="button" data-download-book="${safeAttr(bookId)}"
-            aria-label="${safeAttr(label)} ${safeAttr(title)}">
-      ${icon}<span>${escapeHTML(label)}</span>
-    </button>`;
+  if (status.kind === 'downloading') {
+    return `${downloadIcon}<span>Downloading ${status.cachedChapters}/${status.totalChapters}</span>`;
+  }
+  if (status.kind === 'partial') {
+    return `${downloadIcon}<span>${status.cachedChapters}/${status.totalChapters} cached</span>`;
+  }
+  if (status.kind === 'repair-needed') {
+    return `${downloadIcon}<span>${status.label === 'Update download' ? 'Update needed' : 'Incomplete'}</span>`;
+  }
+  return '';
 }
 
-function offlineControlHTML(bookId, title) {
+function offlineStatusHTML(bookId) {
   const status = offlineStatusForBook(bookId);
+  const contents = offlineStateContents(bookId);
   return `
     <span class="book-local-control book-local-control--${safeAttr(status.kind)}"
-          data-offline-status="${safeAttr(bookId)}" data-book-title="${safeAttr(title)}">
-      ${offlineControlContents(bookId, title)}
+          data-offline-status="${safeAttr(bookId)}"${contents ? '' : ' hidden'}>
+      <span class="book-local-state">${contents}</span>
     </span>`;
+}
+
+function offlineMenuActionContents(bookId) {
+  const status = offlineStatusForBook(bookId);
+  if (pendingBookDownloads.has(String(bookId))) {
+    return '<button type="button" role="menuitem" disabled aria-busy="true">Preparing…</button>';
+  }
+  if (status.downloaded) {
+    return `<button type="button" role="menuitem" data-remove-offline-book="${safeAttr(bookId)}">Remove download</button>`;
+  }
+  const label = status.kind === 'downloading'
+    ? 'Cancel download'
+    : status.kind === 'partial'
+      ? 'Download full book'
+      : status.kind === 'repair-needed'
+        ? (status.label === 'Update download' ? 'Update download' : 'Repair download')
+        : 'Download';
+  return `<button type="button" role="menuitem" data-download-book="${safeAttr(bookId)}">${label}</button>`;
 }
 
 function bookMenuHTML(book, onShelf) {
@@ -159,6 +172,7 @@ function bookMenuHTML(book, onShelf) {
         <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg>
       </button>
       <div class="book-overflow-menu" role="menu" hidden>
+        <span role="none" data-offline-menu-action="${safeAttr(id)}">${offlineMenuActionContents(id)}</span>
         <button type="button" role="menuitem" data-shelf-toggle="${safeAttr(id)}">
           <span data-saved-label>${onShelf ? 'Remove from Saved' : 'Save'}</span>
         </button>
@@ -205,7 +219,7 @@ function renderBookCard(book, position, onShelf = false) {
           </span>
         </button>
         <div class="book-card-tools">
-          ${offlineControlHTML(id, title)}
+          ${offlineStatusHTML(id)}
           ${bookMenuHTML(book, onShelf)}
         </div>
         ${progressBar}
@@ -364,11 +378,13 @@ export async function loadLibrary() {
 function refreshOfflineIndicators() {
   document.querySelectorAll('[data-offline-status]').forEach(element => {
     const status = offlineStatusForBook(element.dataset.offlineStatus);
+    const contents = offlineStateContents(element.dataset.offlineStatus);
     element.className = `book-local-control book-local-control--${status.kind}`;
-    element.innerHTML = offlineControlContents(
-      element.dataset.offlineStatus,
-      element.dataset.bookTitle || 'book'
-    );
+    element.hidden = !contents;
+    element.innerHTML = `<span class="book-local-state">${contents}</span>`;
+  });
+  document.querySelectorAll('[data-offline-menu-action]').forEach(element => {
+    element.innerHTML = offlineMenuActionContents(element.dataset.offlineMenuAction);
   });
 }
 
@@ -501,6 +517,7 @@ async function openBookFromLibrary(bookId) {
 
 async function downloadBookFromLibrary(bookId) {
   const id = String(bookId);
+  if (cancelOfflineDownload(id)) return;
   pendingBookDownloads.add(id);
   refreshOfflineIndicators();
   try {
@@ -517,6 +534,17 @@ async function downloadBookFromLibrary(bookId) {
   } finally {
     pendingBookDownloads.delete(id);
     refreshOfflineIndicators();
+  }
+}
+
+async function removeDownloadedBookFromLibrary(bookId) {
+  const id = String(bookId);
+  try {
+    const result = await removeOfflineBook(id);
+    showToast(result.removed ? 'Download removed' : 'No download found');
+  } catch (error) {
+    console.error('Could not remove offline download:', error);
+    showToast('Could not remove download. Try again.', 'error');
   }
 }
 
@@ -739,9 +767,17 @@ export function initLibrary(options = {}) {
       });
       return;
     }
+    const removeOfflineBtn = e.target.closest('[data-remove-offline-book]');
+    if (removeOfflineBtn) {
+      e.stopPropagation();
+      closeBookMenus();
+      void removeDownloadedBookFromLibrary(removeOfflineBtn.dataset.removeOfflineBook);
+      return;
+    }
     const downloadBtn = e.target.closest('[data-download-book]');
     if (downloadBtn) {
       e.stopPropagation();
+      closeBookMenus();
       void downloadBookFromLibrary(downloadBtn.dataset.downloadBook);
       return;
     }

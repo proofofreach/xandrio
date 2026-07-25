@@ -575,14 +575,14 @@ async function verifyLibraryActions(page) {
   if (await page.locator('[data-library-tab="shelf"]').textContent() !== 'Saved') {
     throw new Error('Personal library subset is not labeled Saved');
   }
-  if (!await page.isVisible('[data-download-book="smoke"]')) {
-    throw new Error('Library card does not expose a full-title download action');
+  if (await page.locator('.book-card-tools > [data-download-book]').count() !== 0) {
+    throw new Error('Library card still exposes Download outside its overflow menu');
   }
   if (await page.locator('.shelf-toggle, .queue-toggle, .library-offline-badge').count() !== 0) {
     throw new Error('Library card still renders the old action-pill cluster');
   }
   await page.click('[data-book-menu-toggle]');
-  for (const label of ['Save', 'Add to Up Next', 'Share', 'Delete']) {
+  for (const label of ['Download', 'Save', 'Add to Up Next', 'Share', 'Delete']) {
     if (!await page.getByRole('menuitem', { name: label, exact: true }).isVisible()) {
       throw new Error(`Library overflow menu is missing ${label}`);
     }
@@ -1000,7 +1000,8 @@ async function verifyRealServiceWorkerOffline(browser) {
     // Exercise the library card's actual Download control. It must prepare
     // and cache the full title without navigating into the player.
     await page.goto(`${fixture.origin}/#/library`, { waitUntil: 'networkidle' });
-    await page.waitForSelector('[data-download-book="smoke-offline"]');
+    await page.click('[data-book-menu-toggle]');
+    await page.waitForSelector('[data-download-book="smoke-offline"]', { state: 'visible' });
     await page.click('[data-download-book="smoke-offline"]');
     if (await page.evaluate(() => location.hash) !== '#/library') {
       throw new Error('Library download navigated away from the library');

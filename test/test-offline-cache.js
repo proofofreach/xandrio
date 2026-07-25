@@ -582,8 +582,9 @@ function installBrowser({
     const download = offline.downloadCurrentBook();
     while (env.audioRequests.length === 0) await new Promise(resolve => setImmediate(resolve));
 
-    await offline.downloadCurrentBook();
-    await offline.downloadCurrentBook();
+    assert.strictEqual(offline.cancelOfflineDownload('other-book'), false);
+    assert.strictEqual(offline.cancelOfflineDownload(book.id), true);
+    assert.strictEqual(offline.cancelOfflineDownload(book.id), true);
     assert.deepStrictEqual(env.audioRequests, [0]);
 
     releaseAudio();
