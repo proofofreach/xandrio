@@ -170,6 +170,69 @@ console.log('\n━━━ Work-first search grouping ━━━');
 })();
 
 (() => {
+  const lewisResults = [
+    edition({
+      id: 'lewis-proper-annas', source: 'annas',
+      title: 'Out of the Silent Planet', author: 'C. S. Lewis'
+    }),
+    edition({
+      id: 'lewis-proper-zlibrary', source: 'zlibrary',
+      title: 'Out of the Silent Planet', author: 'C.S. Lewis'
+    }),
+    edition({
+      id: 'lewis-title-as-author', source: 'annas',
+      title: 'Out of the Silent Planet', author: 'Out of the Silent Planet'
+    }),
+    edition({
+      id: 'lewis-creator-prefixed-title', source: 'annas',
+      title: 'C. S. Lewis - Out of the Silent Planet', author: 'Out of the Silent Planet'
+    })
+  ];
+  const works = buildSearchWorks(lewisResults, { compareEditions: compareEdition });
+  equal(works.length, 1, 'Title-shaped creator metadata does not split duplicate cards from a uniquely identified work');
+  equal(works[0]?.versionCount, 4, 'Malformed title and creator-prefix records remain selectable on the resolved work');
+  equal(works[0]?.author, 'C. S. Lewis', 'Malformed creator repair retains the real creator display');
+  const reversedLewis = buildSearchWorks([...lewisResults].reverse(), { compareEditions: compareEdition });
+  equal(
+    JSON.stringify(reversedLewis.map(work => ({ id: work.id, hashes: work.editions.map(item => item.hash) }))),
+    JSON.stringify(works.map(work => ({ id: work.id, hashes: work.editions.map(item => item.hash) }))),
+    'Malformed creator repair is deterministic across provider response order'
+  );
+
+  const ambiguous = buildSearchWorks([
+    edition({
+      id: 'ambiguous-title-author-one', source: 'annas',
+      title: 'Shared Work', author: 'Author One'
+    }),
+    edition({
+      id: 'ambiguous-title-author-two', source: 'zlibrary',
+      title: 'Shared Work', author: 'Author Two'
+    }),
+    edition({
+      id: 'ambiguous-title-as-author', source: 'annas',
+      title: 'Shared Work', author: 'Shared Work'
+    })
+  ], { compareEditions: compareEdition });
+  equal(ambiguous.length, 3, 'A malformed creator is not assigned when an exact title has multiple plausible creators');
+
+  const eponymous = buildSearchWorks([
+    edition({
+      id: 'eponymous-subject-one', source: 'annas',
+      title: 'Steve Jobs', author: 'Walter Isaacson'
+    }),
+    edition({
+      id: 'eponymous-subject-two', source: 'zlibrary',
+      title: 'Steve Jobs', author: 'Walter Isaacson'
+    }),
+    edition({
+      id: 'eponymous-creator', source: 'annas',
+      title: 'Steve Jobs', author: 'Steve Jobs'
+    })
+  ], { compareEditions: compareEdition });
+  equal(eponymous.length, 2, 'A plausible person name shared by title and creator is not treated as corrupt metadata');
+})();
+
+(() => {
   const works = buildSearchWorks([
     edition({
       id: 'live-portrait-contents-labels', source: 'annas',

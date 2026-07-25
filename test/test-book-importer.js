@@ -173,6 +173,30 @@ section('Successful direct import');
     downloadedResult.book.sourceProvenance?.reportedLicense === 'CC BY 4.0',
   'records provider identity and strips query credentials from downloaded-book provenance');
 
+  let coverRecord;
+  const groupedIdentity = createFixture({
+    metadata: {
+      resolveIdentity: async () => {
+        throw new Error('trusted selected identity should bypass a second catalog lookup');
+      }
+    },
+    ensureBookCover: async record => {
+      coverRecord = record;
+    }
+  });
+  const groupedIdentityResult = await groupedIdentity.importer.import(command({
+    kind: 'download',
+    selectedIdentity: {
+      openLibraryWorkKey: '/works/OL12345W',
+      confidence: { score: 0.98, level: 'high' },
+      matchedFrom: 'search'
+    }
+  }));
+  assert(groupedIdentityResult.book.openLibraryWorkKey === '/works/OL12345W',
+    'persists the trusted grouped-work identity without re-resolving it');
+  assert(coverRecord?.openLibraryWorkKey === '/works/OL12345W',
+    'uses the trusted grouped-work identity during initial shelf cover selection');
+
   section('Validation cleanup');
   const invalid = createFixture({
     document: {
