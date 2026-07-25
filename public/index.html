@@ -11,7 +11,7 @@
   <title>Xandrio - Audiobook Library</title>
   <link rel="preload" href="/fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin>
   <!-- ?v= values must match ASSET_VERSIONS in sw.js (single source of truth) -->
-  <link rel="stylesheet" href="style-v3.css?v=82">
+  <link rel="stylesheet" href="style-v3.css?v=84">
   <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=2">
 </head>
 <body>
@@ -638,24 +638,6 @@
           <div class="player-book-info">
             <h1 id="book-title" class="player-book-title">Book Title</h1>
             <p id="book-author-header" class="player-book-author"></p>
-            <div class="player-book-actions" aria-label="Book actions">
-              <button id="download-book-btn" class="player-book-action" type="button">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
-                  <path stroke-linecap="round" stroke-linejoin="round" d="M12 3v12m0 0l4-4m-4 4l-4-4M5 20h14" />
-                </svg>
-                <span data-download-label>Download</span>
-              </button>
-              <button id="share-book-btn" class="player-book-action" type="button">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
-                  <circle cx="18" cy="5" r="2.5" />
-                  <circle cx="6" cy="12" r="2.5" />
-                  <circle cx="18" cy="19" r="2.5" />
-                  <path stroke-linecap="round" d="m8.2 10.8 7.6-4.5M8.2 13.2l7.6 4.5" />
-                </svg>
-                <span>Share</span>
-              </button>
-              <span id="offline-book-badge" class="offline-book-badge" hidden></span>
-            </div>
           </div>
 
           <!-- Primary chapter selector -->
@@ -1012,6 +994,6 @@
 
   <script src="/js/lifecycle.js?v=1"></script>
   <script src="/js/chunk-player.js?v=20"></script>
-  <script type="module" src="app.js?v=91"></script>
+  <script type="module" src="app.js?v=93"></script>
 </body>
 </html>

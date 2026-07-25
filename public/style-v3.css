@@ -442,8 +442,7 @@ summary:focus-visible,
   color: var(--text-muted);
 }
 
-.book-local-state,
-.book-download-action {
+.book-local-state {
   display: inline-flex;
   align-items: center;
   gap: 5px;
@@ -455,10 +454,7 @@ summary:focus-visible,
   white-space: nowrap;
 }
 
-.book-download-action:hover,
-.book-download-action:focus-visible { color: var(--accent-strong); }
-.book-local-state svg,
-.book-download-action svg { width: 17px; height: 17px; }
+.book-local-state svg { width: 17px; height: 17px; }
 
 .book-local-control--downloaded {
   color: var(--success);
@@ -508,6 +504,7 @@ summary:focus-visible,
   box-shadow: 0 14px 36px oklch(4% 0.01 255 / 0.6);
 }
 .book-overflow-menu[hidden] { display: none; }
+.book-overflow-menu [data-offline-menu-action] { display: block; }
 .book-overflow-menu button {
   display: flex;
   width: 100%;
@@ -524,6 +521,10 @@ summary:focus-visible,
 .book-overflow-menu button:hover,
 .book-overflow-menu button:focus-visible {
   background: var(--surface-hover);
+}
+.book-overflow-menu button:disabled {
+  color: var(--text-muted);
+  cursor: wait;
 }
 .book-overflow-menu .book-menu-danger { color: var(--danger); }
 
@@ -600,16 +601,14 @@ summary:focus-visible,
 .book-list.grid-view .book-local-control {
   min-width: 0;
 }
-.book-list.grid-view .book-local-state,
-.book-list.grid-view .book-download-action {
+.book-list.grid-view .book-local-state {
   width: 36px;
   min-height: 36px;
   justify-content: center;
   border-radius: 50%;
   background: oklch(10% 0.012 255 / 0.82);
 }
-.book-list.grid-view .book-local-state span,
-.book-list.grid-view .book-download-action span {
+.book-list.grid-view .book-local-state span {
   position: absolute;
   width: 1px;
   height: 1px;
@@ -2105,44 +2104,6 @@ summary:focus-visible,
   font-weight: 400;
 }
 
-.player-book-actions {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-wrap: wrap;
-  gap: 4px 16px;
-  margin-top: 10px;
-}
-
-.player-book-action {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 7px;
-  min-height: var(--touch-min);
-  padding: 6px 0;
-  border: 0;
-  background: transparent;
-  color: var(--text-secondary);
-  font: 650 13px var(--font);
-}
-
-.player-book-action:hover,
-.player-book-action:focus-visible {
-  color: var(--accent-strong);
-}
-
-.player-book-action:active { transform: translateY(1px); }
-.player-book-action svg { width: 19px; height: 19px; }
-
-.player-book-actions .offline-book-badge {
-  flex-basis: 100%;
-  margin-top: -4px;
-  color: var(--text-muted);
-  font-size: 11px;
-  text-align: center;
-}
-
 /* Chapter info */
 .player-chapter-info {
   text-align: center;
@@ -3560,12 +3521,6 @@ body.has-mini-player #settings-view {
     padding: 0 0 4px;
     text-align: left;
   }
-  .player-book-actions {
-    justify-content: flex-start;
-  }
-  .player-book-actions .offline-book-badge {
-    text-align: left;
-  }
   .player-book-title {
     font-size: 26px;
     -webkit-line-clamp: 3;
@@ -4407,20 +4362,14 @@ body.has-mini-player #settings-view {
   margin-top: 1px;
 }
 .clone-voice-actions,
-.player-offline-actions,
 .offline-book-row,
 .sync-device-row {
   display: flex;
   align-items: center;
   gap: 8px;
 }
-.clone-voice-actions,
-.player-offline-actions {
+.clone-voice-actions {
   flex-wrap: wrap;
-}
-.offline-book-badge {
-  color: var(--text-secondary);
-  font-size: 12px;
 }
 .offline-books-list,
 .sync-device-list {

@@ -63,9 +63,3 @@ export async function shareBook(book, options = {}) {
     return 'failed';
   }
 }
-
-export function initPlayerSharing(options = {}) {
-  document.getElementById('share-book-btn')?.addEventListener('click', () => {
-    void shareBook(options.getCurrentBook?.());
-  });
-}

@@ -486,11 +486,8 @@ async function verifyPlayback(page, fixtureState) {
     throw new Error('First-run operator acknowledgement did not persist the expected instance policy');
   }
   if (await page.textContent('#book-title') !== 'Smoke Book') throw new Error('Mock book did not open');
-  if (!await page.isVisible('#download-book-btn') || !await page.isVisible('#share-book-btn')) {
-    throw new Error('Player title actions do not expose Download and Share');
-  }
-  if (await page.locator('.player-details #download-book-btn, .player-details #share-book-btn').count() !== 0) {
-    throw new Error('Primary book actions are still hidden inside About this book');
+  if (await page.locator('#download-book-btn, #share-book-btn, .player-book-actions').count() !== 0) {
+    throw new Error('Player still duplicates title-level Download or Share actions');
   }
   if (!await page.isVisible('[data-progress-scope="book"]')) throw new Error('Measured book timeline did not enable book seeking');
   await page.click('[data-progress-scope="book"]');
@@ -578,14 +575,14 @@ async function verifyLibraryActions(page) {
   if (await page.locator('[data-library-tab="shelf"]').textContent() !== 'Saved') {
     throw new Error('Personal library subset is not labeled Saved');
   }
-  if (!await page.isVisible('[data-download-book="smoke"]')) {
-    throw new Error('Library card does not expose a full-title download action');
+  if (await page.locator('.book-card-tools > [data-download-book]').count() !== 0) {
+    throw new Error('Library card still exposes Download outside its overflow menu');
   }
   if (await page.locator('.shelf-toggle, .queue-toggle, .library-offline-badge').count() !== 0) {
     throw new Error('Library card still renders the old action-pill cluster');
   }
   await page.click('[data-book-menu-toggle]');
-  for (const label of ['Save', 'Add to Up Next', 'Share', 'Delete']) {
+  for (const label of ['Download', 'Save', 'Add to Up Next', 'Share', 'Delete']) {
     if (!await page.getByRole('menuitem', { name: label, exact: true }).isVisible()) {
       throw new Error(`Library overflow menu is missing ${label}`);
     }
@@ -1000,9 +997,15 @@ async function verifyRealServiceWorkerOffline(browser) {
     }
     await verifyAtomicServiceWorkerUpgrade(page, fixture);
 
-    // Exercise the product's actual Download for Offline control. It prepares
-    // chapter audio, fetches it, and stores it in xandrio-offline-audio.
-    await page.evaluate(() => document.getElementById('download-book-btn').click());
+    // Exercise the library card's actual Download control. It must prepare
+    // and cache the full title without navigating into the player.
+    await page.goto(`${fixture.origin}/#/library`, { waitUntil: 'networkidle' });
+    await page.click('[data-book-menu-toggle]');
+    await page.waitForSelector('[data-download-book="smoke-offline"]', { state: 'visible' });
+    await page.click('[data-download-book="smoke-offline"]');
+    if (await page.evaluate(() => location.hash) !== '#/library') {
+      throw new Error('Library download navigated away from the library');
+    }
     await page.waitForFunction(() => {
       const manifest = JSON.parse(localStorage.getItem('xandrio_offline_books') || '{}');
       const entry = manifest['smoke-offline'];
@@ -1023,6 +1026,9 @@ async function verifyRealServiceWorkerOffline(browser) {
     // media are native. Only the real public/sw.js can satisfy these requests.
     await context.setOffline(true);
     await page.waitForFunction(() => navigator.onLine === false);
+    await page.goto(`${fixture.origin}/#/player/smoke-offline`, { waitUntil: 'domcontentloaded' });
+    await page.waitForSelector('#player-view.active');
+    await page.waitForFunction(() => document.getElementById('audio-loading')?.style.display === 'none');
     await page.waitForFunction(() => !document.getElementById('offline-banner').hidden);
     await page.evaluate(() => {
       const select = document.getElementById('chapter-select');
