@@ -322,6 +322,7 @@ function fakeAudio() {
       renderChapterList() {},
       syncMiniPlayerInfo() {},
       showAudioLoading() {},
+      setPlaybackReliabilityState() {},
       syncMiniPlayerIcon() {},
       getCurrentPlaybackSpeed: () => 1
     };
@@ -384,6 +385,8 @@ function fakeAudio() {
       assert.strictEqual(unhandled.length, 0);
       assert.strictEqual(appImports.transitionRequests.length, 1);
       assert.strictEqual(appImports.transitionRequests[0].play, false);
+      assert.strictEqual(appImports.transitionRequests[0].engine, player);
+      assert.strictEqual(appImports.transitionRequests[0].backend, 'audio-stream');
       assert(player.calls.some(call => call[0] === 'play'));
       assert(uiElement.innerHTML.includes('M4.5 5.653'));
     } finally {

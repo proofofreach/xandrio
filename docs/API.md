@@ -28,6 +28,7 @@ The examples below omit authorization headers for readability.
 | DELETE | [/api/book/:bookId](#delete-apibookbookid) | Delete a book and its files |
 | GET | [/api/book/:bookId](#get-apibookbookid) | Get book details and chapters |
 | GET | [/api/cover/:bookId](#get-apicoverbookid) | Get book cover image |
+| GET | [/api/audio-stream/:bookId/:chapterIndex](#get-apiaudio-streambookidchapterindex) | Stream generated chapter audio through one stable response |
 | GET | [/api/audio/:bookId/:chapterIndex](#get-apiaudiobookidchapterindex) | Get or generate chapter audio |
 | GET | [/api/audio-chunked/:bookId/:chapterIndex](#get-apiaudio-chunkedbookidchapterindex) | Get chunked chapter audio (legacy) |
 | GET | [/api/serve-chunk/:filename](#get-apiserve-chunkfilename) | Redirect a legacy chunk filename to canonical playback access |
@@ -67,6 +68,7 @@ Regenerated from `server.js` and `lib/routes/*.js` on 2026-07-12.
 | GET | `/api/book/:bookId` |
 | POST | `/api/refresh-metadata/:bookId` |
 | GET | `/api/cover/:bookId` |
+| GET | `/api/audio-stream/:bookId/:chapterIndex` |
 | GET | `/api/audio/:bookId/:chapterIndex` |
 | GET | `/api/audio-ios/:bookId/:chapterIndex` |
 | GET | `/api/audio-chunked/:bookId/:chapterIndex` |
@@ -774,6 +776,39 @@ errors return `503` with the same failure headers.
 
 ---
 
+## GET /api/audio-stream/:bookId/:chapterIndex
+
+Stream a chapter through one stable native-media response while its chunks are
+generated. Ready MP3 chunks are appended in order. WAV chunks are normalized
+into one streaming RIFF container. The response remains open while later
+chunks generate, so a browser does not need to change media sources or call
+`play()` again at chunk boundaries.
+
+Once the finalized chapter artifact exists, the same URL serves that file and
+supports normal byte-range requests.
+
+### Parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `bookId` | string | Book identifier |
+| `chapterIndex` | integer | Zero-based chapter index |
+| `tier` | string | Optional playback tier pin |
+
+### Response — Progressive (200)
+
+- `Content-Type: audio/mpeg` or `audio/wav`
+- `Accept-Ranges: none`
+- `Cache-Control: no-store`
+- `X-Served-Tier` when tiered playback resolves a tier
+
+### Response — Finalized (200 or 206)
+
+Returns the completed chapter audio. Range requests receive `206 Partial
+Content` with `Accept-Ranges: bytes`.
+
+---
+
 ## GET /api/audio/:bookId/:chapterIndex
 
 Get or generate audio for a specific chapter. Serves a complete chapter MP3 with HTTP range request support. This endpoint is backward-compatible: under the hood, it now uses the chunked TTS system for generation.
@@ -832,7 +867,7 @@ The endpoint checks for audio in this order:
 - Subsequent requests are served from cache instantly.
 - The voice is automatically selected based on the book's `language` field.
 - TTS timeout is 120 seconds per chunk (not per chapter).
-- For faster first-audio playback, use the [chunk manifest API](#get-apichunksbookidchapterindexmanifest) instead — it returns chunks progressively as they're generated.
+- For faster first-audio playback without client-side source changes, use the [stable audio stream](#get-apiaudio-streambookidchapterindex).
 
 ---
 

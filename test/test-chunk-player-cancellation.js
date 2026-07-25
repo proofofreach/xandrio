@@ -32,6 +32,8 @@ class FakeAudio {
     this.volume = 1;
     this.playbackRate = 1;
     this.error = null;
+    this.src = '';
+    this.playCalls = 0;
   }
   addEventListener(type, fn) {
     if (!this.listeners.has(type)) this.listeners.set(type, new Set());
@@ -47,6 +49,10 @@ class FakeAudio {
     return this.listeners.get(type)?.size || 0;
   }
   pause() { this.paused = true; }
+  async play() {
+    this.playCalls += 1;
+    this.paused = false;
+  }
   load() {}
   removeAttribute() {}
 }
@@ -191,6 +197,42 @@ class FakeAudio {
       /timed out/i
     );
     assert.strictEqual(errors.length, 1);
+  });
+
+  await test('continues across chunk sources on the user-owned media element', async () => {
+    const audio = new FakeAudio();
+    global.fetch = async () => ({
+      ok: true,
+      async json() {
+        return {
+          totalChunks: 2,
+          servedTier: 'instant',
+          chunks: [
+            { status: 'ready', url: '/chunk-0.mp3' },
+            { status: 'ready', url: '/chunk-1.mp3' }
+          ]
+        };
+      }
+    });
+    const player = new ChunkPlayer({ audio, maxChunkLoadRetries: 0 });
+
+    const load = player.loadChapter('book-a', 1);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.strictEqual(audio.src, '/chunk-0.mp3');
+    audio.duration = 8;
+    audio.emit('loadedmetadata');
+    await load;
+    await player.play();
+
+    audio.emit('ended');
+    await new Promise(resolve => setImmediate(resolve));
+    assert.strictEqual(audio.src, '/chunk-1.mp3');
+    audio.duration = 9;
+    audio.emit('loadedmetadata');
+    await new Promise(resolve => setImmediate(resolve));
+
+    assert.strictEqual(player.currentChunk, 1);
+    assert.strictEqual(audio.playCalls, 2);
   });
 
   console.log(`\n${passed} passed, ${failed} failed`);

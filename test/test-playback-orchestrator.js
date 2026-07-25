@@ -1,4 +1,5 @@
 const assert = require('assert');
+const { EventEmitter } = require('events');
 const { createPlaybackOrchestrator } = require('../lib/playback-orchestrator');
 
 let passed = 0;
@@ -18,7 +19,7 @@ async function test(name, fn) {
 function harness(overrides = {}) {
   const calls = [];
   const manifest = { totalChunks: 2, textLength: 80, chunks: [{ index: 0, status: 'pending' }, { index: 1, status: 'pending' }] };
-  const tts = {
+  const tts = Object.assign(new EventEmitter(), {
     getChapterManifest: () => overrides.manifest === undefined ? null : overrides.manifest,
     generateChapter: async (...args) => { calls.push(['generate', ...args]); return manifest; },
     prioritizeChunk: (...args) => { calls.push(['prioritize', ...args]); return true; },
@@ -26,8 +27,10 @@ function harness(overrides = {}) {
       calls.push(['reconstruct', ...args]);
       return overrides.reconstructed || manifest;
     },
-    chunkPath: (...args) => `/cache/${args.join('-')}.mp3`
-  };
+    chunkPath: (...args) => `/cache/${args.join('-')}.mp3`,
+    chapterPath: (...args) => `/cache/${args.join('-')}.mp3`,
+    currentOutputFormat: () => 'mp3'
+  });
   const orchestrator = createPlaybackOrchestrator({
     isPremiumVoiceActive: () => overrides.premium ?? true,
     premiumChapterReady: async () => overrides.ready ?? false,
@@ -55,7 +58,7 @@ function harness(overrides = {}) {
       ]
     })
   });
-  return { orchestrator, calls, manifest };
+  return { orchestrator, calls, manifest, tts };
 }
 
 (async () => {
@@ -181,6 +184,54 @@ function harness(overrides = {}) {
     assert.strictEqual(result.targetChunk, 1);
     assert(calls.some(call => call[0] === 'warmRemaining') === false, 'two-chapter harness has no remainder');
     assert(calls.filter(call => call[0] === 'generate').length >= 2);
+  });
+
+  await test('stable stream source pins one tier and resolves sequential chunk events', async () => {
+    const existing = {
+      totalChunks: 2,
+      chunks: [{ index: 0, status: 'queued' }, { index: 1, status: 'queued' }]
+    };
+    const { orchestrator, calls, tts } = harness({ manifest: existing, ready: false });
+    const source = await orchestrator.prepareAudioStream({
+      bookId: 'book', chapterIndex: 0, requestedTier: 'instant'
+    });
+    assert.strictEqual(source.servedTier, 'instant');
+    assert.strictEqual(source.format, 'mp3');
+    assert.strictEqual(source.totalChunks, 2);
+    assert(calls.some(call => call[0] === 'ensureAudio' && call[3].priority === 'background'));
+
+    const waiting = source.waitForChunk(0);
+    existing.chunks[0].status = 'ready';
+    tts.emit('chunk:ready', {
+      bookId: 'book', chapterIndex: 0, chunkIndex: 0, path: '/cache/book-0-0.mp3'
+    });
+    assert.strictEqual(await waiting, '/cache/book-0-0.mp3');
+    assert.strictEqual(tts.listenerCount('chunk:ready'), 0);
+    source.prioritize(0);
+    assert(calls.some(call => call[0] === 'prioritize' && call[3] === 0 && call[4] === 'immediate'));
+  });
+
+  await test('stable stream bypasses generation when finalized audio is already ready', async () => {
+    const { orchestrator, calls } = harness({ audioReady: true, ready: false });
+    const source = await orchestrator.prepareAudioStream({ bookId: 'book', chapterIndex: 0 });
+    assert.strictEqual(source.finalPath, '/cache/book-0.mp3');
+    assert(!calls.some(call => call[0] === 'generate'));
+    assert(!calls.some(call => call[0] === 'ensureAudio'));
+  });
+
+  await test('an already-aborted stream wait rejects without retaining listeners', async () => {
+    const existing = {
+      totalChunks: 1,
+      chunks: [{ index: 0, status: 'queued' }]
+    };
+    const { orchestrator } = harness({ manifest: existing, ready: false });
+    const source = await orchestrator.prepareAudioStream({ bookId: 'book', chapterIndex: 0 });
+    const controller = new AbortController();
+    controller.abort();
+    await assert.rejects(Promise.race([
+      source.waitForChunk(0, controller.signal),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('abort was not observed')), 50))
+    ]), error => error?.name === 'AbortError');
   });
 
   console.log(`playback-orchestrator tests: ${passed} passed, ${failed} failed`);

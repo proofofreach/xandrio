@@ -21,9 +21,13 @@ export class SingleFileChapterPlayer {
     this.onPreparing = options.onPreparing || null;
     this.onPlaybackChange = options.onPlaybackChange || null;
     this.isIOSLike = options.isIOSLike || (() => false);
+    this.getEstimatedDuration = options.getEstimatedDuration || (() => 0);
+    this.resolveServedTier = options.resolveServedTier || null;
     this.preferStandardAudio = Boolean(options.preferStandardAudio);
     this.loadTimeoutMs = Number(options.loadTimeoutMs) > 0 ? Number(options.loadTimeoutMs) : LOAD_TIMEOUT_MS;
     this.backend = 'single-file';
+    this.activeSource = null;
+    this.servedTier = null;
     this.supportsNativeMediaSession = true;
     this.bookId = null;
     this.chapterIndex = null;
@@ -39,6 +43,7 @@ export class SingleFileChapterPlayer {
     this._generation = 0;
     // Tears down the in-flight loadChapter() wait, if any.
     this._loadWait = null;
+    this._isLoading = false;
     this._eventScope = null;
     this._playWait = null;
     this._pauseReason = null;
@@ -59,34 +64,73 @@ export class SingleFileChapterPlayer {
     this.totalChunks = 1;
     this._detach();
     this.audio.preload = 'auto';
-    this.audio.src = !this.preferStandardAudio && this.isIOSLike()
-      ? `/api/audio-ios/${encodeURIComponent(bookId)}/${chapterIndex}`
-      : `/api/audio/${encodeURIComponent(bookId)}/${chapterIndex}`;
     this.audio.volume = this._volume;
     this.audio.playbackRate = this.playbackRate;
     this._attach();
     this.onWaiting?.('Loading audio…');
-    const wait = waitForMediaEvents(this.audio, {
-      resolveEvents: ['loadedmetadata', 'canplay'],
-      rejectEvents: ['error'],
-      timeoutMs: this.loadTimeoutMs,
-      timeoutError: () => {
-        const error = this._audioError();
-        error.code = 'MEDIA_LOAD_TIMEOUT';
-        return error;
-      },
-      eventError: () => this._audioError(),
-      cancelledError: () => new LifecycleCancelledError('Chapter load cancelled')
-    });
-    this._loadWait = wait;
+    const encodedBookId = encodeURIComponent(bookId);
+    const standardUrl = this.isIOSLike() && !this.preferStandardAudio
+      ? `/api/audio-ios/${encodedBookId}/${chapterIndex}`
+      : `/api/audio/${encodedBookId}/${chapterIndex}`;
+    let tierQuery = '';
+    this.servedTier = null;
+    if (!this.preferStandardAudio && this.resolveServedTier) {
+      try {
+        const tier = await this.resolveServedTier(bookId, chapterIndex);
+        if (gen !== this._generation) return;
+        if (tier === 'instant' || tier === 'premium') {
+          this.servedTier = tier;
+          tierQuery = `?tier=${encodeURIComponent(tier)}`;
+        }
+      } catch {
+        // The stream can still resolve its own default tier.
+      }
+    }
+    const sourceCandidates = this.preferStandardAudio
+      ? [standardUrl]
+      : [
+          `/api/audio-stream/${encodedBookId}/${chapterIndex}${tierQuery}`,
+          `${standardUrl}${tierQuery}`
+        ];
+    let lastError = null;
+    this._isLoading = true;
     try {
-      this.audio.load();
-      await wait.promise;
+      for (const source of sourceCandidates) {
+        if (gen !== this._generation) return;
+        const wait = waitForMediaEvents(this.audio, {
+          resolveEvents: ['loadedmetadata', 'canplay'],
+          rejectEvents: ['error'],
+          timeoutMs: this.loadTimeoutMs,
+          timeoutError: () => {
+            const error = this._audioError();
+            error.code = 'MEDIA_LOAD_TIMEOUT';
+            return error;
+          },
+          eventError: () => this._audioError(),
+          cancelledError: () => new LifecycleCancelledError('Chapter load cancelled')
+        });
+        this._loadWait = wait;
+        this.audio.src = source;
+        try {
+          this.audio.load();
+          await wait.promise;
+          this.activeSource = source;
+          this.backend = source.startsWith('/api/audio-stream/') ? 'audio-stream' : 'single-file';
+          lastError = null;
+          break;
+        } catch (error) {
+          lastError = error;
+          if (error?.cancelled || gen !== this._generation) throw error;
+        } finally {
+          if (this._loadWait === wait) this._loadWait = null;
+        }
+      }
+      if (lastError) throw lastError;
     } catch (error) {
-      if (gen === this._generation && error?.code === 'MEDIA_LOAD_TIMEOUT') this.onError?.(error);
+      if (gen === this._generation && !error?.cancelled) this.onError?.(error);
       throw error;
     } finally {
-      if (this._loadWait === wait) this._loadWait = null;
+      if (gen === this._generation) this._isLoading = false;
     }
     if (gen !== this._generation) return;
     this.onReady?.();
@@ -132,7 +176,9 @@ export class SingleFileChapterPlayer {
       totalEstimatedTime: currentTime,
       progressPercent: this.getProgressPercent(),
       totalChunks: 1,
-      isPlaying: this._isPlaying
+      isPlaying: this.isPlaying,
+      backend: this.backend,
+      source: this.activeSource
     });
   }
 
@@ -142,6 +188,7 @@ export class SingleFileChapterPlayer {
   }
 
   _handleError() {
+    if (this._isLoading) return;
     this.onError?.(this._audioError());
   }
 
@@ -184,6 +231,7 @@ export class SingleFileChapterPlayer {
       await wait.promise;
     } catch (error) {
       this._isPlaying = false;
+      this.onPlaybackChange?.(false, { reason: 'app', error });
       throw error;
     } finally {
       wait.cancel();
@@ -209,7 +257,11 @@ export class SingleFileChapterPlayer {
   setVolume(volume) { this._volume = Math.max(0, Math.min(1, volume)); this.audio.volume = this._volume; }
   getVolume() { return this._volume; }
   getCurrentTime() { return this.audio.currentTime || 0; }
-  getTotalTime() { return Number.isFinite(this.audio.duration) ? this.audio.duration : 0; }
+  getTotalTime() {
+    if (Number.isFinite(this.audio.duration) && this.audio.duration > 0) return this.audio.duration;
+    const estimated = Number(this.getEstimatedDuration(this.bookId, this.chapterIndex));
+    return Number.isFinite(estimated) && estimated > 0 ? estimated : 0;
+  }
   getProgressPercent() {
     const total = this.getTotalTime();
     return total > 0 ? Math.min(100, (this.getCurrentTime() / total) * 100) : 0;
@@ -227,11 +279,15 @@ export class SingleFileChapterPlayer {
       totalEstimatedTime: currentTime,
       progressPercent: this.getProgressPercent(),
       totalChunks: 1,
-      isPlaying: this._isPlaying
+      isPlaying: this.isPlaying,
+      backend: this.backend,
+      source: this.activeSource,
+      servedTier: this.servedTier
     };
   }
   cancelPendingLoad() {
     this._generation++;
+    this._isLoading = false;
     this.pause();
     this._detach();
   }

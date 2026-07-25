@@ -10,6 +10,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- First listening now uses one persistent native media element and one stable
+  progressive chapter stream, avoiding background chunk-boundary `play()`
+  calls when a PWA is locked or another app is active.
 - Replaced the permanently floating narration queue counter with a quiet
   book-count activity control. Its sheet groups live work by book and chapter,
   filters it to the signed-in reader's shelf and progress, and keeps raw global

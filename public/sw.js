@@ -9,8 +9,8 @@ const OFFLINE_TITLE_CACHE = 'xandrio-offline-titles';
 const ASSET_VERSIONS = {
   '/style-v3.css': 87,
   '/js/lifecycle.js': 1,
-  '/js/chunk-player.js': 20,
-  '/app.js': 94
+  '/js/chunk-player.js': 21,
+  '/app.js': 95
 };
 const versionedAsset = (path) => `${path}?v=${ASSET_VERSIONS[path]}`;
 const APP_SHELL = [

@@ -33,6 +33,7 @@ function fakeAudio() {
     ended: false,
     error: null,
     loadCalls: 0,
+    playCalls: 0,
     addEventListener(type, fn) {
       if (!listeners.has(type)) listeners.set(type, new Set());
       listeners.get(type).add(fn);
@@ -48,7 +49,7 @@ function fakeAudio() {
     },
     load() { this.loadCalls += 1; },
     pause() { this.paused = true; },
-    async play() { this.paused = false; },
+    async play() { this.playCalls += 1; this.paused = false; },
     removeAttribute() { this.src = ''; }
   };
 }
@@ -87,6 +88,66 @@ function fakeAudio() {
     await Promise.all([firstCancelled, second]);
 
     assert.deepStrictEqual(ready, [1], 'only the current chapter reports ready');
+  });
+
+  await test('loads the stable chapter stream first and falls back on the same media element', async () => {
+    const audio = fakeAudio();
+    const { player } = makePlayer(audio);
+
+    const load = player.loadChapter('book 1', 2);
+    assert.strictEqual(audio.src, '/api/audio-stream/book%201/2');
+
+    audio.error = { message: 'stream unavailable' };
+    audio.emit('error');
+    await new Promise(resolve => setImmediate(resolve));
+
+    assert.strictEqual(audio.src, '/api/audio/book%201/2');
+    audio.error = null;
+    audio.emit('loadedmetadata');
+    await load;
+  });
+
+  await test('continuous first listening needs only the original play call', async () => {
+    const audio = fakeAudio();
+    const { player } = makePlayer(audio);
+    const load = player.loadChapter('book1', 0);
+    audio.emit('loadedmetadata');
+    await load;
+
+    const play = player.play();
+    audio.emit('playing');
+    await play;
+    audio.currentTime = 45;
+    audio.emit('timeupdate');
+    audio.currentTime = 90;
+    audio.emit('timeupdate');
+
+    assert.strictEqual(audio.src, '/api/audio-stream/book1/0');
+    assert.strictEqual(audio.playCalls, 1);
+    assert.deepStrictEqual(
+      { backend: player.getPosition().backend, isPlaying: player.getPosition().isPlaying },
+      { backend: 'audio-stream', isPlaying: true }
+    );
+  });
+
+  await test('streamed WAV uses chapter timing and preserves the resolved tier', async () => {
+    const audio = fakeAudio();
+    audio.duration = Infinity;
+    audio.currentTime = 30;
+    const { player } = makePlayer(audio, {
+      getEstimatedDuration: (_bookId, chapterIndex) => chapterIndex === 2 ? 120 : 0,
+      resolveServedTier: async () => 'instant'
+    });
+    const load = player.loadChapter('book1', 2);
+    await new Promise(resolve => setImmediate(resolve));
+    audio.emit('loadedmetadata');
+    await load;
+
+    assert.strictEqual(player.getTotalTime(), 120);
+    assert.strictEqual(player.getProgressPercent(), 25);
+    assert.strictEqual(player.servedTier, 'instant');
+    assert.strictEqual(player.getPosition().totalEstimatedTime, 30);
+    assert.strictEqual(audio.src, '/api/audio-stream/book1/2?tier=instant');
   });
 
   await test('the second load\'s events cannot resolve the first load', async () => {
@@ -157,6 +218,27 @@ function fakeAudio() {
     await assert.rejects(player.play(), /autoplay denied/);
     assert.strictEqual(audio.countFor('playing'), 1, 'only the engine-level playing listener should remain');
     assert.strictEqual(audio.countFor('error'), 1, 'only the engine-level error listener should remain');
+  });
+
+  await test('a rejected play reports paused state to the session UI', async () => {
+    const audio = fakeAudio();
+    const changes = [];
+    const { player } = makePlayer(audio, {
+      onPlaybackChange: (playing, detail) => changes.push([playing, detail.reason])
+    });
+    const load = player.loadChapter('book1', 0);
+    audio.emit('loadedmetadata');
+    await load;
+    audio.play = async () => {
+      const error = new Error('autoplay denied');
+      error.name = 'NotAllowedError';
+      throw error;
+    };
+
+    await assert.rejects(player.play(), error => error.name === 'NotAllowedError');
+
+    assert.strictEqual(player.isPlaying, false);
+    assert.deepStrictEqual(changes, [[false, 'app']]);
   });
 
   await test('distinguishes app controls from native playback interruptions', async () => {
