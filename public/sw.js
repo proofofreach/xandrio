@@ -1,5 +1,7 @@
+importScripts('/js/offline-range.js');
+
 const APP_RELEASE = '1.1.0';
-const CACHE_VERSION = 'xandrio-v102';
+const CACHE_VERSION = 'xandrio-v103';
 const OFFLINE_AUDIO_CACHE = 'xandrio-offline-audio';
 const OFFLINE_TITLE_CACHE = 'xandrio-offline-titles';
 const OFFLINE_SCOPE_PARAM = 'xandrio-offline-scope';
@@ -8,10 +10,10 @@ const OFFLINE_SCOPE_PARAM = 'xandrio-offline-scope';
 // and bump CACHE_VERSION whenever any APP_SHELL entry changes (including the
 // un-versioned js/ modules below, which only invalidate via CACHE_VERSION).
 const ASSET_VERSIONS = {
-  '/style-v3.css': 89,
+  '/style-v3.css': 90,
   '/js/lifecycle.js': 1,
   '/js/chunk-player.js': 21,
-  '/app.js': 100
+  '/app.js': 101
 };
 const versionedAsset = (path) => `${path}?v=${ASSET_VERSIONS[path]}`;
 const APP_SHELL = [
@@ -21,6 +23,8 @@ const APP_SHELL = [
   versionedAsset('/js/lifecycle.js'),
   versionedAsset('/js/chunk-player.js'),
   versionedAsset('/app.js'),
+  '/js/offline-range.js',
+  '/js/deployment-origin.js',
   '/js/router.js',
   '/js/api.js',
   '/js/client-settings.js',
@@ -74,7 +78,6 @@ self.addEventListener('install', event => {
       if (!await cacheContainsCompleteShell(CACHE_VERSION)) {
         throw new Error(`App shell ${CACHE_VERSION} is incomplete`);
       }
-      await self.skipWaiting();
     } catch (err) {
       // A newly-created, partial cache is never eligible for activation. If
       // the name already existed, retain it: it may be the complete cache
@@ -154,6 +157,11 @@ async function cachedAudioResponse(request) {
   const range = request.headers.get('Range');
   if (!range) return cached;
 
+  const streamed = await self.XandrioOfflineRange.createRangeResponse(cached.clone(), range);
+  if (streamed) return streamed;
+
+  // Legacy entries can lack Content-Length. Keep them playable until a
+  // manifest repair rewrites the cache entry with streaming metadata.
   const match = range.match(/^bytes=(\d*)-(\d*)$/);
   const buffer = await cached.arrayBuffer();
   const size = buffer.byteLength;

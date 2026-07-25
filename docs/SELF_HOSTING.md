@@ -185,6 +185,15 @@ The Umbrel package runs the published image behind Umbrel's app proxy and persis
 
 Tailscale is the simplest remote mode: bind Xandrio to localhost, use Tailscale Serve or a private reverse proxy, and require Tailscale identity/access controls. Do not treat `0.0.0.0` as private. For another reverse proxy, terminate TLS there, restrict the upstream to the proxy, configure the documented origin/authentication settings, and test library and audio access from an unauthorized client.
 
+Set `XANDRIO_CANONICAL_ORIGIN` to the one HTTPS origin users should install and
+open, for example `https://reader.example.com`. The browser treats every origin
+as a separate app with separate sign-in state and offline downloads; Xandrio
+shows a move link and does not register a service worker when opened through a
+different hostname. The value must be an origin only, without a path. Plain
+HTTP remains suitable only for localhost development because remote PWA
+installation, offline playback, and related platform APIs require a secure
+context.
+
 ## Backups, updates, rollback, and removal
 
 For a native installation, stop Xandrio and archive `data/` and `cache/`. For the standard Compose installation, stop writes and archive both named volumes:

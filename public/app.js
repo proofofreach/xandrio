@@ -27,6 +27,7 @@ import { initPlayerUI, paintChapterTimes, paintScrubPreview, toggleTimeDisplayMo
 import { findPreferredStartChapterIndex } from './js/util/chapter-labels.mjs';
 import { createSmartRewindController } from './js/smart-rewind.mjs';
 import { initListeningQueue, loadListeningQueue, addToListeningQueue, advanceListeningQueue, getBookPlaybackSettings, saveBookPlaybackSettings } from './js/features/listening-queue.js';
+import { initDeploymentGuard } from './js/deployment-origin.js';
 
 // SVG Icon constants
 const ICON_PLAY = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="icon"><path fill-rule="evenodd" d="M4.5 5.653c0-1.426 1.529-2.33 2.779-1.643l11.54 6.348c1.295.712 1.295 2.572 0 3.285L7.28 19.991c-1.25.687-2.779-.217-2.779-1.643V5.653z" clip-rule="evenodd"/></svg>';
@@ -545,6 +546,7 @@ function applyPlaybackSelection(selection) {
 // Initialize when DOM is ready
 document.addEventListener('DOMContentLoaded', async () => {
   console.log('Xandrio initialized');
+  const deployment = await initDeploymentGuard();
 
   // Sign-in gate. When a session later expires mid-playback (any 401), pause
   // so the local checkpoint survives, then the gate rises over the app.
@@ -654,7 +656,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   setupEventListeners();
   setupLifecycleHandlers();
   setupMediaSessionHandlers();
-  registerServiceWorker();
+  if (deployment.serviceWorkerAllowed) registerServiceWorker();
   setupPlaybackReportExport();
 
   // Hash routing (back button, deep links, reload-into-player). Runs last so
@@ -722,9 +724,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 
 function registerServiceWorker() {
   if (!('serviceWorker' in navigator)) return;
-  // An activated worker controls future requests immediately, but the current
-  // page keeps its already-loaded code and native media resource. Reloading on
-  // controllerchange would tear down lock-screen playback mid-chapter.
+  // Updates wait for active clients to close, so a new shell cannot take over
+  // a page with in-flight playback. Never reload on controllerchange either.
   navigator.serviceWorker.register('/sw.js')
     .then(registration => registration?.update?.().catch(() => {}))
     .catch(err => console.warn('Service worker registration failed:', err));

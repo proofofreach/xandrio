@@ -43,6 +43,15 @@ function element() {
 }
 
 (async () => {
+  await test('sleep timer distinguishes lock-screen reliable and best-effort modes', () => {
+    const indexSource = fs.readFileSync(
+      path.join(__dirname, '..', 'public', 'index.html'),
+      'utf8'
+    );
+    assert.match(indexSource, /End of chapter remains reliable when your screen is locked/i);
+    assert.match(indexSource, /Minute timers are best effort if iOS suspends Xandrio/i);
+  });
+
   const values = new Map();
   global.__sleepTimerValues = values;
   const timerButton = element();

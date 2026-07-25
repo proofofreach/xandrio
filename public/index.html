@@ -11,10 +11,11 @@
   <title>Xandrio - Audiobook Library</title>
   <link rel="preload" href="/fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin>
   <!-- ?v= values must match ASSET_VERSIONS in sw.js (single source of truth) -->
-  <link rel="stylesheet" href="style-v3.css?v=89">
+  <link rel="stylesheet" href="style-v3.css?v=90">
   <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=2">
 </head>
 <body>
+  <div id="deployment-banner" class="deployment-banner" role="alert" hidden></div>
   <!-- Global offline indicator -->
   <div id="offline-banner" class="offline-banner" role="status" aria-live="polite" hidden>
     <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="icon-inline" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M3 3l18 18M8.288 8.29A9.04 9.04 0 002.985 12M12 20h.01M8.53 16.11a6 6 0 016.94 0M5.5 12.55a11 11 0 013.4-2.02m11.6 2.02a10.99 10.99 0 00-6.53-3.32"/></svg>
@@ -88,7 +89,7 @@
                 role="tab" aria-selected="false" aria-controls="library-panel" tabindex="-1">Shared Library</button>
       </div>
       <p id="downloaded-device-hint" class="downloaded-device-hint" hidden>
-        Available offline only on this device in this browser.
+        Available offline only on this device in this browser. Keep Xandrio open while downloading; interrupted downloads can be repaired.
       </p>
 
       <div class="library-controls">
@@ -841,6 +842,9 @@
           <button class="timer-option" data-minutes="60">60 min</button>
           <button class="timer-option timer-option-wide" data-mode="chapter">End of chapter</button>
         </div>
+        <p class="timer-reliability-hint">
+          End of chapter remains reliable when your screen is locked. Minute timers are best effort if iOS suspends Xandrio.
+        </p>
         <button id="extend-timer-btn" class="btn-secondary" hidden>+5 min</button>
         <button id="cancel-timer-btn" class="btn-secondary">Cancel Timer</button>
         <button id="close-timer-modal-btn" class="btn-primary" style="margin-top:8px;">Close</button>
@@ -1052,6 +1056,6 @@
 
   <script src="/js/lifecycle.js?v=1"></script>
   <script src="/js/chunk-player.js?v=21"></script>
-  <script type="module" src="app.js?v=100"></script>
+  <script type="module" src="app.js?v=101"></script>
 </body>
 </html>
