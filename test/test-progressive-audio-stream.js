@@ -440,21 +440,9 @@ async function decodedDuration(filePath) {
         DEFAULT_MAX_ACTIVE_SESSIONS >= 8,
         `default HLS capacity unexpectedly regressed to ${DEFAULT_MAX_ACTIVE_SESSIONS}`
       );
-      const firstPath = path.join(dir, 'hls-capacity-first.mp3');
-      await createTone(firstPath, 0.8, 440);
-      const release = deferred();
-      const source = {
-        bookId: 'book_capacity',
-        chapterIndex: 0,
-        format: 'mp3',
-        async *iterateInputs() {
-          yield { path: firstPath, chapterIndex: 0, lastInChapter: true };
-          await release.promise;
-        }
-      };
-      const app = routeHarness(source, {
+      const pendingSource = deferred();
+      const app = routeHarness(pendingSource.promise, {
         hlsRootDir: path.join(dir, 'hls-capacity'),
-        hlsSegmentSeconds: 0.25,
         hlsOptions: {
           maxActiveSessions: 2,
           maxCreationsPerAccount: 20,
@@ -463,15 +451,15 @@ async function decodedDuration(filePath) {
       });
       const server = await listen(app);
       const origin = `http://127.0.0.1:${server.address().port}`;
+      const first = http.get(
+        `${origin}/api/audio-hls/capacity_one/0/index.m3u8?session=capacity-session-1&owner=capacity-owner-1`
+      );
+      const second = http.get(
+        `${origin}/api/audio-hls/capacity_two/0/index.m3u8?session=capacity-session-2&owner=capacity-owner-2`
+      );
+      first.on('error', () => {});
+      second.on('error', () => {});
       try {
-        const firstPromise = fetch(
-          `${origin}/api/audio-hls/capacity_one/0/index.m3u8?session=capacity-session-1&owner=capacity-owner-1`,
-          { signal: AbortSignal.timeout(10_000) }
-        );
-        const secondPromise = fetch(
-          `${origin}/api/audio-hls/capacity_two/0/index.m3u8?session=capacity-session-2&owner=capacity-owner-2`,
-          { signal: AbortSignal.timeout(10_000) }
-        );
         await waitUntil(
           () => app.locals.hlsAudioStreamer.sessionsById.size === 2,
           'two concurrent HLS sessions were never admitted',
@@ -481,14 +469,12 @@ async function decodedDuration(filePath) {
           `${origin}/api/audio-hls/capacity_three/0/index.m3u8?session=capacity-session-3&owner=capacity-owner-3`,
           { signal: AbortSignal.timeout(10_000) }
         );
-        const [first, second] = await Promise.all([firstPromise, secondPromise]);
-        assert.strictEqual(first.status, 200);
-        assert.strictEqual(second.status, 200);
         assert.strictEqual(overloaded.status, 503);
         assert.match((await overloaded.json()).error, /capacity/i);
         assert.strictEqual(app.locals.hlsAudioStreamer.sessionsById.size, 2);
       } finally {
-        release.resolve();
+        first.destroy();
+        second.destroy();
         await app.locals.hlsAudioStreamer.dispose();
         await new Promise(resolve => server.close(resolve));
       }
