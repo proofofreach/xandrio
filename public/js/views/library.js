@@ -118,19 +118,12 @@ function progressMetaLine(progress) {
 
 function offlineStateContents(bookId) {
   const status = offlineStatusForBook(bookId);
-  const checkIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M7 12.5 10.2 16 17 8.5"/><circle cx="12" cy="12" r="9"/></svg>';
   const downloadIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v11m0 0 4-4m-4 4-4-4M5 20h14"/></svg>';
   if (pendingBookDownloads.has(String(bookId))) {
     return `${downloadIcon}<span>Preparing…</span>`;
   }
-  if (status.downloaded) {
-    return `${checkIcon}<span>On device</span>`;
-  }
   if (status.kind === 'downloading') {
     return `${downloadIcon}<span>Downloading ${status.cachedChapters}/${status.totalChapters}</span>`;
-  }
-  if (status.kind === 'partial') {
-    return `${downloadIcon}<span>${status.cachedChapters}/${status.totalChapters} cached</span>`;
   }
   if (status.kind === 'repair-needed') {
     return `${downloadIcon}<span>${status.label === 'Update download' ? 'Update needed' : 'Incomplete'}</span>`;
@@ -194,6 +187,7 @@ function bookMenuHTML(book, onShelf) {
 function renderBookCard(book, position, onShelf = false) {
   const progress = bookProgressInfo(book, position);
   const id = String(book.id || '');
+  const downloaded = offlineStatusForBook(id).downloaded;
   const title = book.title || 'Untitled';
   const author = book.author || 'Unknown Author';
   const metaLine = progress
@@ -208,6 +202,7 @@ function renderBookCard(book, position, onShelf = false) {
     <div class="book-item${progress?.finished ? ' finished' : ''}"
          data-book-id="${safeAttr(id)}"
          data-on-shelf="${onShelf ? '1' : '0'}"
+         data-downloaded="${downloaded ? '1' : '0'}"
          data-added="${safeAttr(book.addedAt || '')}"
          data-last-read="${safeAttr(position?.updatedAt || book.addedAt || '')}"
          data-finished="${progress?.finished ? '1' : '0'}">
@@ -325,7 +320,7 @@ export async function loadLibrary() {
     const offlineBooks = getOfflineLibraryBooks();
     if (offlineBooks.length > 0) {
       offlineFallback = true;
-      data = { books: offlineBooks, shelf: offlineBooks.map(book => book.id) };
+      data = { books: offlineBooks, shelf: [] };
       positions = Object.fromEntries(offlineBooks.map(book => [
         book.id,
         readJSON(`xandrio_playback_checkpoint:${book.id}`, null)
@@ -363,7 +358,8 @@ export async function loadLibrary() {
   // A new account opens on its own shelf, even when the shared library
   // already contains books. Preserve an explicit tab choice on later visits.
   const storedTab = readText(libraryTabStorageKey(), 'shelf');
-  currentTab = storedTab === 'all' ? 'all' : 'shelf';
+  currentTab = ['shelf', 'downloaded', 'all'].includes(storedTab) ? storedTab : 'shelf';
+  if (offlineFallback) currentTab = 'downloaded';
   syncLibraryTabs();
   libraryList.innerHTML = data.books.map(book => renderBookCard(book, positions[book.id] || null, currentShelf.has(book.id))).join('');
   libraryList.classList.toggle('offline-library-fallback', offlineFallback);
@@ -384,6 +380,8 @@ function refreshOfflineIndicators() {
   document.querySelectorAll('[data-offline-status]').forEach(element => {
     const status = offlineStatusForBook(element.dataset.offlineStatus);
     const contents = offlineStateContents(element.dataset.offlineStatus);
+    const card = element.closest('.book-item');
+    if (card) card.dataset.downloaded = status.downloaded ? '1' : '0';
     element.className = `book-local-control book-local-control--${status.kind}`;
     element.hidden = !contents;
     element.innerHTML = `<span class="book-local-state">${contents}</span>`;
@@ -391,6 +389,7 @@ function refreshOfflineIndicators() {
   document.querySelectorAll('[data-offline-menu-action]').forEach(element => {
     element.innerHTML = offlineMenuActionContents(element.dataset.offlineMenuAction);
   });
+  filterLibrary();
 }
 
 function syncLibraryTabs() {
@@ -398,11 +397,14 @@ function syncLibraryTabs() {
     const active = btn.dataset.libraryTab === currentTab;
     btn.classList.toggle('active', active);
     btn.setAttribute('aria-selected', active ? 'true' : 'false');
+    btn.tabIndex = active ? 0 : -1;
   });
+  document.getElementById('library-panel')
+    ?.setAttribute('aria-labelledby', `library-tab-${currentTab}`);
 }
 
 // A card is visible when it matches the search query AND the active tab
-// ("My Shelf" vs "Shared Library"). Both paths funnel through here so the two
+// ("My Shelf", "Downloaded", or "Shared Library"). All paths funnel through here so the two
 // filters can't fight over the hidden class.
 function filterLibrary() {
   const query = librarySearch?.value.toLowerCase().trim() || '';
@@ -411,18 +413,21 @@ function filterLibrary() {
     const title = item.querySelector('.book-title')?.textContent.toLowerCase() || '';
     const author = item.querySelector('.book-author')?.textContent.toLowerCase() || '';
     const matchesQuery = !query || title.includes(query) || author.includes(query);
-    const matchesTab = currentTab === 'all' || item.dataset.onShelf === '1';
+    const matchesTab = currentTab === 'all' ||
+      (currentTab === 'downloaded' ? item.dataset.downloaded === '1' : item.dataset.onShelf === '1');
     const visible = matchesQuery && matchesTab;
     item.classList.toggle('hidden', !visible);
     if (visible) visibleCount++;
   });
-  if (continueRail) continueRail.hidden = query.length > 0 || !continueRailHasEntries;
+  if (continueRail) continueRail.hidden = currentTab === 'downloaded' || query.length > 0 || !continueRailHasEntries;
   const emptyShelfHint = document.getElementById('shelf-empty-hint');
   if (emptyShelfHint) emptyShelfHint.hidden = !(currentTab === 'shelf' && visibleCount === 0 && !query);
+  const emptyDownloadedHint = document.getElementById('downloaded-empty-hint');
+  if (emptyDownloadedHint) emptyDownloadedHint.hidden = !(currentTab === 'downloaded' && visibleCount === 0 && !query);
 }
 
 function setLibraryTab(tab) {
-  currentTab = tab === 'all' ? 'all' : 'shelf';
+  currentTab = ['shelf', 'downloaded', 'all'].includes(tab) ? tab : 'shelf';
   writeText(libraryTabStorageKey(), currentTab);
   syncLibraryTabs();
   filterLibrary();
@@ -724,12 +729,28 @@ export function initLibrary(options = {}) {
     const tabBtn = e.target.closest('[data-library-tab]');
     if (tabBtn) setLibraryTab(tabBtn.dataset.libraryTab);
   });
+  document.getElementById('library-tabs')?.addEventListener('keydown', (e) => {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) return;
+    const tabs = [...e.currentTarget.querySelectorAll('[data-library-tab]')];
+    const activeIndex = Math.max(0, tabs.indexOf(document.activeElement));
+    const nextIndex = e.key === 'Home'
+      ? 0
+      : e.key === 'End'
+        ? tabs.length - 1
+        : (activeIndex + (e.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
+    e.preventDefault();
+    tabs[nextIndex].focus();
+    setLibraryTab(tabs[nextIndex].dataset.libraryTab);
+  });
   document.getElementById('shelf-empty-hint')?.addEventListener('click', (e) => {
     if (e.target.closest('[data-add-book-shelf]')) {
       document.getElementById('add-book-btn')?.click();
       return;
     }
     if (e.target.closest('[data-browse-shared-library]')) setLibraryTab('all');
+  });
+  document.getElementById('downloaded-empty-hint')?.addEventListener('click', (e) => {
+    if (e.target.closest('[data-browse-shelf]')) setLibraryTab('shelf');
   });
   document.getElementById('view-toggle-btn')?.addEventListener('click', toggleView);
 

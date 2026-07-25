@@ -578,15 +578,36 @@ async function verifyPronunciations(page, fixtureState) {
 }
 
 async function verifyLibraryActions(page) {
+  await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(`${origin}/#/library`, { waitUntil: 'networkidle' });
   await page.waitForSelector('#shelf-empty-hint:not([hidden])');
   if (await page.locator('[data-library-tab="shelf"]').textContent() !== 'My Shelf' ||
+      await page.locator('[data-library-tab="downloaded"]').textContent() !== 'Downloaded' ||
       await page.locator('[data-library-tab="all"]').textContent() !== 'Shared Library') {
-    throw new Error('Library scopes are not labeled My Shelf and Shared Library');
+    throw new Error('Library scopes are not labeled My Shelf, Downloaded, and Shared Library');
   }
   if (await page.getAttribute('[data-library-tab="shelf"]', 'aria-selected') !== 'true') {
     throw new Error('A new account did not open on My Shelf');
   }
+  const tabBounds = await page.locator('#library-tabs').evaluate(element => ({
+    clientWidth: element.clientWidth,
+    scrollWidth: element.scrollWidth
+  }));
+  if (tabBounds.scrollWidth > tabBounds.clientWidth) {
+    throw new Error(`Library tabs overflow a 390px viewport: ${JSON.stringify(tabBounds)}`);
+  }
+  await page.focus('[data-library-tab="shelf"]');
+  await page.keyboard.press('ArrowRight');
+  await page.waitForSelector('#downloaded-empty-hint:not([hidden])');
+  if (await page.getAttribute('[data-library-tab="downloaded"]', 'aria-selected') !== 'true' ||
+      await page.getAttribute('[data-library-tab="downloaded"]', 'tabindex') !== '0') {
+    throw new Error('Downloaded tab does not support keyboard selection');
+  }
+  if (await page.evaluate(() => localStorage.getItem('xandrio_library_tab:user-smoke')) !== 'downloaded') {
+    throw new Error('Downloaded scope preference was not saved for the signed-in account');
+  }
+  await page.click('[data-browse-shelf]');
+  await page.waitForSelector('#shelf-empty-hint:not([hidden])');
   await page.click('[data-add-book-shelf]');
   await page.waitForSelector('#search-view.active');
   await page.goto(`${origin}/#/library`, { waitUntil: 'networkidle' });
@@ -605,6 +626,17 @@ async function verifyLibraryActions(page) {
   }
   if (await page.locator('.shelf-toggle, .queue-toggle, .library-offline-badge').count() !== 0) {
     throw new Error('Library card still renders the old action-pill cluster');
+  }
+  const hiddenGridStatus = await page.locator('[data-offline-status]').first().evaluate(element => {
+    const list = element.closest('.book-list');
+    list.classList.add('grid-view');
+    const bounds = element.getBoundingClientRect();
+    const display = getComputedStyle(element).display;
+    list.classList.remove('grid-view');
+    return { display, width: bounds.width, height: bounds.height };
+  });
+  if (hiddenGridStatus.display !== 'none' || hiddenGridStatus.width !== 0 || hiddenGridStatus.height !== 0) {
+    throw new Error(`Undownloaded grid card exposes an empty local-status control: ${JSON.stringify(hiddenGridStatus)}`);
   }
   const overflowTrigger = await page.locator('[data-book-menu-toggle]').evaluate(trigger => {
     const styles = getComputedStyle(trigger);
@@ -1051,6 +1083,17 @@ async function verifyRealServiceWorkerOffline(browser) {
         entry?.chapters === 1 &&
         entry?.chapterEntries?.length === 1;
     });
+    await page.waitForFunction(() => document.querySelector('[data-book-id="smoke-offline"]')?.dataset.downloaded === '1');
+    await page.click('[data-library-tab="downloaded"]');
+    await page.waitForSelector('[data-book-id="smoke-offline"]:not(.hidden)');
+    if (await page.locator('[data-offline-status="smoke-offline"]:visible').count() !== 0) {
+      throw new Error('Completed download still renders a persistent card status');
+    }
+    await page.click('[data-book-menu-toggle]');
+    if (!await page.getByRole('menuitem', { name: 'Remove download', exact: true }).isVisible()) {
+      throw new Error('Downloaded book menu does not offer Remove download');
+    }
+    await page.keyboard.press('Escape');
     const cachedBytes = await page.evaluate(async () => {
       const cache = await caches.open('xandrio-offline-audio');
       const response = await cache.match(`${location.origin}/api/audio/smoke-offline/0`);
