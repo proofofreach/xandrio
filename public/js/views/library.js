@@ -5,6 +5,7 @@ import { confirmSheet } from '../ui/confirm.js';
 import { showToast, showUndoToast } from '../ui/toast.js';
 import { shareBook } from '../features/sharing.js';
 import {
+  downloadBookForOffline,
   getOfflineLibraryBooks,
   offlineStatusForBook,
   removeOfflineBook
@@ -33,6 +34,7 @@ let continueRail = null;
 let currentViewMode = 'list';
 let continueRailHasEntries = false;
 let swipeListenersInstalled = false;
+const pendingBookDownloads = new Set();
 
 export function getCachedBookMeta(bookId) {
   return readJSON(BOOK_META_PREFIX + bookId, null);
@@ -113,6 +115,13 @@ function offlineControlContents(bookId, title) {
   const icon = status.downloaded
     ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M7 12.5 10.2 16 17 8.5"/><circle cx="12" cy="12" r="9"/></svg>'
     : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v11m0 0 4-4m-4 4-4-4M5 20h14"/></svg>';
+  if (pendingBookDownloads.has(String(bookId))) {
+    return `
+      <button class="book-download-action" type="button" disabled aria-busy="true"
+              aria-label="Preparing download for ${safeAttr(title)}">
+        ${icon}<span>Preparing…</span>
+      </button>`;
+  }
   if (status.downloaded) {
     return `<span class="book-local-state">${icon}<span>On device</span></span>`;
   }
@@ -491,8 +500,24 @@ async function openBookFromLibrary(bookId) {
 }
 
 async function downloadBookFromLibrary(bookId) {
-  const opened = await openBookFromLibrary(bookId);
-  if (opened !== false) document.getElementById('download-book-btn')?.click();
+  const id = String(bookId);
+  pendingBookDownloads.add(id);
+  refreshOfflineIndicators();
+  try {
+    const data = await apiGet(`/api/book/${encodeURIComponent(id)}`);
+    pendingBookDownloads.delete(id);
+    refreshOfflineIndicators();
+    if (!data?.book || !Array.isArray(data.chapters) || data.chapters.length === 0) {
+      throw new Error('Book has no downloadable chapters');
+    }
+    await downloadBookForOffline(data.book, data.chapters, { showOverlay: false });
+  } catch (error) {
+    console.error('Could not start offline download:', error);
+    showToast('Could not start download. Try again.', 'error');
+  } finally {
+    pendingBookDownloads.delete(id);
+    refreshOfflineIndicators();
+  }
 }
 
 function closeBookMenus(except = null) {

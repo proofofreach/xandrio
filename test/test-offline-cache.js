@@ -150,6 +150,32 @@ function installBrowser({
     });
   });
 
+  await test('downloads an explicit library title without depending on player state or its overlay', async () => {
+    const cache = makeCache();
+    const env = installBrowser({ book, chapters, cache });
+    let overlayCalls = 0;
+    offline.initOffline({
+      getCurrentBook: () => ({ id: 'different-player-book', title: 'Currently Playing' }),
+      getChapters: () => [{ title: 'Player Chapter' }],
+      showAudioLoading: () => { overlayCalls += 1; },
+      hideAudioLoading: () => { overlayCalls += 1; }
+    });
+
+    const completed = await offline.downloadBookForOffline(book, chapters, {
+      showOverlay: false,
+      voiceLabel: 'Library narrator'
+    });
+
+    const entry = offline.getOfflineManifest()[book.id];
+    assert.strictEqual(completed, true);
+    assert.strictEqual(entry.bookId, book.id);
+    assert.strictEqual(entry.voiceLabel, 'Library narrator');
+    assert.deepStrictEqual(entry.titleData.book, book);
+    assert.strictEqual(entry.titleData.chapters.length, chapters.length);
+    assert.strictEqual(overlayCalls, 0);
+    assert.deepStrictEqual(env.audioRequests, [0, 1]);
+  });
+
   await test('reports absent, partial, active, and repair states without cache scans', async () => {
     const cache = makeCache();
     let env = installBrowser({ book, chapters, cache });

@@ -2105,44 +2105,6 @@ summary:focus-visible,
   font-weight: 400;
 }
 
-.player-book-actions {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-wrap: wrap;
-  gap: 4px 16px;
-  margin-top: 10px;
-}
-
-.player-book-action {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 7px;
-  min-height: var(--touch-min);
-  padding: 6px 0;
-  border: 0;
-  background: transparent;
-  color: var(--text-secondary);
-  font: 650 13px var(--font);
-}
-
-.player-book-action:hover,
-.player-book-action:focus-visible {
-  color: var(--accent-strong);
-}
-
-.player-book-action:active { transform: translateY(1px); }
-.player-book-action svg { width: 19px; height: 19px; }
-
-.player-book-actions .offline-book-badge {
-  flex-basis: 100%;
-  margin-top: -4px;
-  color: var(--text-muted);
-  font-size: 11px;
-  text-align: center;
-}
-
 /* Chapter info */
 .player-chapter-info {
   text-align: center;
@@ -3560,12 +3522,6 @@ body.has-mini-player #settings-view {
     padding: 0 0 4px;
     text-align: left;
   }
-  .player-book-actions {
-    justify-content: flex-start;
-  }
-  .player-book-actions .offline-book-badge {
-    text-align: left;
-  }
   .player-book-title {
     font-size: 26px;
     -webkit-line-clamp: 3;
@@ -4407,20 +4363,14 @@ body.has-mini-player #settings-view {
   margin-top: 1px;
 }
 .clone-voice-actions,
-.player-offline-actions,
 .offline-book-row,
 .sync-device-row {
   display: flex;
   align-items: center;
   gap: 8px;
 }
-.clone-voice-actions,
-.player-offline-actions {
+.clone-voice-actions {
   flex-wrap: wrap;
-}
-.offline-book-badge {
-  color: var(--text-secondary);
-  font-size: 12px;
 }
 .offline-books-list,
 .sync-device-list {
