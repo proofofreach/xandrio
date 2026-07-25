@@ -279,9 +279,12 @@ export class SingleFileChapterPlayer {
     // Native HLS is the lock-screen transport on iOS. If it fails, fall back
     // directly to the finite chapter resource instead of probing a second
     // open-ended transport that iOS cannot reliably keep alive in background.
-    return this._supportsNativeHls()
-      ? [candidateFor('hls')]
-      : [candidateFor('progressive')];
+    if (this.isIOSLike()) {
+      return this._supportsNativeHls()
+        ? [candidateFor('hls')]
+        : [];
+    }
+    return [candidateFor('progressive')];
   }
 
   _startTimelinePolling() {
