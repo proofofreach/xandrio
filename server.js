@@ -40,6 +40,7 @@ const {
   createBookArtifactCleaner,
   createBookDeletionService
 } = require('./lib/book-deletion');
+const { createBookDeletionLog } = require('./lib/book-deletion-log');
 const {
   REFRESH_BOOK_RESULT,
   createBookMetadataRefreshService
@@ -329,6 +330,7 @@ const BOOKMARKS_FILE = path.join(DATA_DIR, 'bookmarks.json');
 const SHELVES_FILE = path.join(DATA_DIR, 'shelves.json');
 const CLIENT_SETTINGS_FILE = path.join(DATA_DIR, 'client-settings.json');
 const LISTENING_QUEUE_FILE = path.join(DATA_DIR, 'listening-queues.json');
+const BOOK_DELETIONS_FILE = path.join(DATA_DIR, 'book-deletions.json');
 const CUSTOM_VOICES_FILE = path.join(DATA_DIR, 'custom-voices.json');
 const PRONUNCIATIONS_FILE = path.join(DATA_DIR, 'pronunciations.json');
 const searchCoverService = createSearchCoverService({
@@ -2628,6 +2630,12 @@ app.delete('/api/shelf/:bookId', async (req, res) => {
   }
 });
 
+const bookDeletionLog = createBookDeletionLog({
+  filePath: BOOK_DELETIONS_FILE,
+  loadJSON,
+  updateJSON
+});
+
 const bookDeletionService = createBookDeletionService({
   booksFile: BOOKS_FILE,
   positionsFile: POSITIONS_FILE,
@@ -2636,6 +2644,9 @@ const bookDeletionService = createBookDeletionService({
   listeningQueueFile: LISTENING_QUEUE_FILE,
   updateJSON,
   skipSave: jsonStore.SKIP_SAVE,
+  beginBookDeletion: bookDeletionLog.begin,
+  commitBookDeletion: bookDeletionLog.commit,
+  abortBookDeletion: bookDeletionLog.abort,
   rememberDeletedBookId,
   cancelBookJobs: bookId => chunkedTTS.cancelBook(bookId) + instantChunkedTTS.cancelBook(bookId),
   stopPremiumPrep: bookId => premiumPrep.stopBook(bookId),
@@ -2645,6 +2656,26 @@ const bookDeletionService = createBookDeletionService({
   removeBookBookmarks,
   removeBookFromAllShelves: (shelvesStore, bookId) => shelves.removeBookFromAllShelves(shelvesStore, bookId),
   removeBookFromAllQueues
+});
+
+// Device-local offline copies reconcile against this monotonic feed. Pending
+// transactions are resolved from the authoritative catalog before a cursor is
+// returned, so an interrupted server process cannot hide a completed delete.
+app.get('/api/offline/deletions', async (req, res) => {
+  try {
+    const rawSince = req.query.since ?? '0';
+    if (!/^\d+$/.test(String(rawSince))) {
+      return res.status(400).json({ error: 'Invalid deletion cursor' });
+    }
+    const since = Number(rawSince);
+    if (!Number.isSafeInteger(since)) {
+      return res.status(400).json({ error: 'Invalid deletion cursor' });
+    }
+    await bookDeletionLog.reconcile(await loadJSON(BOOKS_FILE, {}));
+    res.json(await bookDeletionLog.listSince(since));
+  } catch (err) {
+    sendServerError(res, err, 'Failed to reconcile deleted books');
+  }
 });
 
 const bookMetadataRefreshService = createBookMetadataRefreshService({

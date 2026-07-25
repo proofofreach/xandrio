@@ -38,6 +38,12 @@ function makeCache() {
   };
 }
 
+function offlineAudioKey(bookId, chapterIndex, scope = 'default') {
+  const url = new URL(`https://reader.test/api/audio/${encodeURIComponent(bookId)}/${chapterIndex}`);
+  url.searchParams.set('xandrio-offline-scope', scope);
+  return url.toString();
+}
+
 function installBrowser({
   book,
   chapters,
@@ -48,10 +54,21 @@ function installBrowser({
   failStorageWrites = false,
   audioGate = null,
   transientAudioFailures = 0,
-  transientStreamFailures = 0
+  transientStreamFailures = 0,
+  storagePersisted = false,
+  persistResult = true,
+  scope = 'default',
+  storage: sharedStorage = null,
+  cacheStores = null,
+  deletionResponse = { revision: 0, deletions: [] },
+  canClaimLegacy = true
 }) {
-  const storage = new Map();
-  storage.set('xandrio_offline_books', JSON.stringify(manifest));
+  const storage = sharedStorage || new Map();
+  if (!storage.has('xandrio_offline_books')) {
+    storage.set('xandrio_offline_books', JSON.stringify(manifest));
+  }
+  global.__offlineScope = scope;
+  global.__canClaimLegacy = canClaimLegacy;
   const elements = new Map([
     ['player-voice-name', { textContent: 'Narrator' }]
   ]);
@@ -72,13 +89,33 @@ function installBrowser({
       return true;
     }
   };
+  const persistenceCalls = [];
   Object.defineProperty(global, 'navigator', {
     configurable: true,
     writable: true,
-    value: { onLine: true, storage: { estimate: async () => ({ quota: 1000000, usage: 0 }) } }
+    value: {
+      onLine: true,
+      storage: {
+        estimate: async () => ({ quota: 1000000, usage: 0 }),
+        persisted: async () => {
+          persistenceCalls.push('persisted');
+          return storagePersisted;
+        },
+        persist: async () => {
+          persistenceCalls.push('persist');
+          return persistResult;
+        }
+      }
+    }
   });
   global.caches = {
-    open: async name => name === 'xandrio-offline-titles' ? titleCache : cache
+    open: async name => {
+      if (cacheStores) {
+        if (!cacheStores.has(name)) cacheStores.set(name, makeCache());
+        return cacheStores.get(name);
+      }
+      return name.startsWith('xandrio-offline-titles') ? titleCache : cache;
+    }
   };
   global.window.caches = global.caches;
   const audioRequests = [];
@@ -87,6 +124,9 @@ function installBrowser({
   let remainingAudioFailures = transientAudioFailures;
   let remainingStreamFailures = transientStreamFailures;
   global.__offlineApiSend = async (method, requestPath, body) => {
+    if (method === 'GET' && requestPath.startsWith('/api/offline/deletions')) {
+      return deletionResponse;
+    }
     if (method === 'POST' && requestPath.includes('/prepare-chapter-audio')) {
       prepareCalls.push(Number(requestPath.match(/\/(\d+)\/prepare-chapter-audio$/)?.[1]));
       prepareBodies.push(body);
@@ -129,6 +169,7 @@ function installBrowser({
     prepareCalls,
     prepareBodies,
     documentEvents,
+    persistenceCalls,
     titleCache,
     init: { getCurrentBook: () => book, getChapters: () => chapters }
   };
@@ -140,7 +181,10 @@ function installBrowser({
   global.crypto = require('crypto').webcrypto;
   let source = fs.readFileSync(path.join(__dirname, '..', 'public', 'js', 'features', 'offline.js'), 'utf8');
   source = source
-    .replace("import { API_BASE, apiSend } from '../api.js';", "const API_BASE = window.location.origin; const apiSend = (...args) => globalThis.__offlineApiSend(...args);")
+    .replace(
+      "import { API_BASE, apiSend, canClaimLegacyOfflineStorage, getOfflineStorageScopeId } from '../api.js';",
+      "const API_BASE = window.location.origin; const apiSend = (...args) => globalThis.__offlineApiSend(...args); const canClaimLegacyOfflineStorage = () => globalThis.__canClaimLegacy !== false; const getOfflineStorageScopeId = () => globalThis.__offlineScope || 'default';"
+    )
     .replace("import { escapeHTML, formatDuration, relativeTime } from '../util/format.js';", "const escapeHTML = value => String(value); const relativeTime = () => ''; const formatDuration = () => '';")
     .replace("import { readJSON, writeJSON } from '../util/storage.js';", "const readJSON = (key, fallback = null) => { try { const value = localStorage.getItem(key); return value == null ? fallback : JSON.parse(value); } catch { return fallback; } }; const writeJSON = (key, value) => { try { localStorage.setItem(key, JSON.stringify(value)); return true; } catch { return false; } };")
     .replace("import { showToast, showUndoToast } from '../ui/toast.js';", "const showToast = () => {}; const showUndoToast = () => {};")
@@ -153,6 +197,233 @@ function installBrowser({
   const book = { id: 'book-1', title: 'A Book' };
   const chapters = [{}, {}];
 
+  await test('requests persistent storage for a user-initiated full-book download', async () => {
+    const cache = makeCache();
+    const env = installBrowser({ book, chapters, cache });
+    offline.initOffline(env.init);
+
+    assert.strictEqual(await offline.downloadCurrentBook(), true);
+    assert.deepStrictEqual(env.persistenceCalls, ['persisted', 'persist']);
+    assert.strictEqual(offline.offlineStatusForBook(book.id).downloaded, true);
+  });
+
+  await test('continues a download when persistent storage is denied', async () => {
+    const cache = makeCache();
+    const env = installBrowser({
+      book,
+      chapters,
+      cache,
+      persistResult: false
+    });
+    offline.initOffline(env.init);
+
+    assert.strictEqual(await offline.downloadCurrentBook(), true);
+    assert.deepStrictEqual(env.persistenceCalls, ['persisted', 'persist']);
+    assert.strictEqual(offline.offlineStatusForBook(book.id).downloaded, true);
+  });
+
+  await test('isolates downloaded titles and cached media by account in a shared browser', async () => {
+    const storage = new Map();
+    const cacheStores = new Map();
+    let env = installBrowser({
+      book,
+      chapters,
+      cache: makeCache(),
+      scope: 'account_a',
+      storage,
+      cacheStores
+    });
+    offline.initOffline(env.init);
+    assert.strictEqual(await offline.downloadCurrentBook(), true);
+    assert(offline.offlineEntryForBook(book.id));
+
+    env = installBrowser({
+      book,
+      chapters,
+      cache: makeCache(),
+      scope: 'account_b',
+      storage,
+      cacheStores
+    });
+    offline.initOffline(env.init);
+    assert.strictEqual(offline.offlineEntryForBook(book.id), null);
+    assert.strictEqual(await offline.isChapterAvailableOffline(book.id, 0), false);
+
+    env = installBrowser({
+      book,
+      chapters,
+      cache: makeCache(),
+      scope: 'account_a',
+      storage,
+      cacheStores
+    });
+    offline.initOffline(env.init);
+    assert(offline.offlineEntryForBook(book.id));
+    assert.strictEqual(await offline.isChapterAvailableOffline(book.id, 0), true);
+    assert(storage.has('xandrio_offline_books:account_a'));
+    assert(storage.has('xandrio_offline_books:account_b'));
+    assert(cacheStores.has('xandrio-offline-audio:account_a'));
+    assert(
+      [...cacheStores.get('xandrio-offline-audio:account_a').entries.keys()]
+        .every(key => key.includes('xandrio-offline-scope=account_a'))
+    );
+  });
+
+  await test('migrates legacy unscoped media into the owning account cache', async () => {
+    const storage = new Map();
+    const entry = {
+      bookId: book.id,
+      title: book.title,
+      chapters: 1,
+      chapterEntries: [{ size: 6, contentHash: 'legacy', variantKey: 'voice-a' }],
+      titleData: { book, chapters: [{}] },
+      downloadedAt: '2026-07-24T12:00:00.000Z',
+      manifestVersion: 3,
+      mode: 'full',
+      state: 'ready'
+    };
+    storage.set('xandrio_offline_books', JSON.stringify({ [book.id]: entry }));
+    const cacheStores = new Map();
+    const legacyCache = makeCache();
+    const legacyRequest = new Request('https://reader.test/api/audio/book-1/0');
+    await legacyCache.put(legacyRequest, new Response('legacy'));
+    cacheStores.set('xandrio-offline-audio', legacyCache);
+
+    const env = installBrowser({
+      book,
+      chapters: [{}],
+      cache: makeCache(),
+      scope: 'account_a',
+      storage,
+      cacheStores
+    });
+    offline.initOffline(env.init);
+
+    assert.strictEqual(await offline.isChapterAvailableOffline(book.id, 0), true);
+    assert.strictEqual(await legacyCache.match(legacyRequest), undefined);
+    assert(
+      await cacheStores.get('xandrio-offline-audio:account_a')
+        .match(offlineAudioKey(book.id, 0, 'account_a'))
+    );
+    assert(storage.has('xandrio_offline_books:account_a'));
+    assert.strictEqual(storage.has('xandrio_offline_books'), false);
+  });
+
+  await test('defers legacy ownership when account identity is unavailable offline', async () => {
+    const storage = new Map([[
+      'xandrio_offline_books',
+      JSON.stringify({ [book.id]: { bookId: book.id, title: book.title } })
+    ]]);
+    const env = installBrowser({
+      book,
+      chapters,
+      cache: makeCache(),
+      storage,
+      canClaimLegacy: false
+    });
+    offline.initOffline(env.init);
+
+    assert.strictEqual(offline.offlineEntryForBook(book.id), null);
+    assert(storage.has('xandrio_offline_books'));
+    assert.strictEqual(storage.has('xandrio_offline_books:default'), false);
+  });
+
+  await test('reconciles server title deletion into the active device account only', async () => {
+    const storage = new Map();
+    const cacheStores = new Map();
+    let env = installBrowser({
+      book,
+      chapters,
+      cache: makeCache(),
+      scope: 'account_a',
+      storage,
+      cacheStores
+    });
+    offline.initOffline(env.init);
+    assert.strictEqual(await offline.downloadCurrentBook(), true);
+
+    env = installBrowser({
+      book,
+      chapters,
+      cache: makeCache(),
+      scope: 'account_b',
+      storage,
+      cacheStores
+    });
+    offline.initOffline(env.init);
+    assert.strictEqual(await offline.downloadCurrentBook(), true);
+
+    env = installBrowser({
+      book,
+      chapters,
+      cache: makeCache(),
+      scope: 'account_a',
+      storage,
+      cacheStores,
+      deletionResponse: {
+        revision: 7,
+        deletions: [{
+          bookId: book.id,
+          revision: 7,
+          deletedAt: '2999-01-01T00:00:00.000Z'
+        }]
+      }
+    });
+    offline.initOffline(env.init);
+    assert.strictEqual(await offline.reconcileDeletedOfflineBooks(), true);
+    assert.strictEqual(offline.offlineEntryForBook(book.id), null);
+    assert.strictEqual(
+      storage.get('xandrio_offline_deletion_cursor:account_a'),
+      '7'
+    );
+
+    installBrowser({
+      book,
+      chapters,
+      cache: makeCache(),
+      scope: 'account_b',
+      storage,
+      cacheStores
+    });
+    assert(offline.offlineEntryForBook(book.id));
+    assert.notStrictEqual(
+      storage.get('xandrio_offline_deletion_cursor:account_b'),
+      '7'
+    );
+  });
+
+  await test('preserves a full-book re-download started after the deletion', async () => {
+    const entry = {
+      bookId: book.id,
+      title: book.title,
+      chapters: 1,
+      chapterEntries: [null],
+      titleData: { book, chapters: [{}] },
+      downloadedAt: null,
+      downloadStartedAt: '2026-07-25T13:00:00.000Z',
+      manifestVersion: 3,
+      mode: 'full',
+      state: 'repairing'
+    };
+    installBrowser({
+      book,
+      chapters: [{}],
+      cache: makeCache(),
+      manifest: { [book.id]: entry },
+      deletionResponse: {
+        revision: 8,
+        deletions: [{
+          bookId: book.id,
+          revision: 8,
+          deletedAt: '2026-07-25T12:00:00.000Z'
+        }]
+      }
+    });
+
+    assert.strictEqual(await offline.reconcileDeletedOfflineBooks(), false);
+    assert(offline.offlineEntryForBook(book.id));
+  });
+
   await test('writes verified per-chapter identities before marking a book ready', async () => {
     const cache = makeCache();
     const env = installBrowser({ book, chapters, cache });
@@ -162,6 +433,7 @@ function installBrowser({
     const entry = offline.getOfflineManifest()[book.id];
     assert.strictEqual(entry.state, 'ready');
     assert.strictEqual(entry.manifestVersion, 3);
+    assert(Number.isFinite(Date.parse(entry.downloadStartedAt)));
     assert.deepStrictEqual(entry.titleData.book, book);
     assert.deepStrictEqual(entry.titleData.chapters.map(chapter => chapter.index), [0, 1]);
     assert.deepStrictEqual(entry.titleData.chapters.map(chapter => chapter.title), ['Chapter 1', 'Chapter 2']);
@@ -337,7 +609,7 @@ function installBrowser({
     offline.initOffline(env.init);
     await offline.downloadCurrentBook();
     const initialManifest = offline.getOfflineManifest();
-    await cache.delete('https://reader.test/api/audio/book-1/1');
+    await cache.delete(offlineAudioKey('book-1', 1));
 
     env = installBrowser({ book, chapters, cache, manifest: initialManifest });
     offline.initOffline(env.init);
@@ -356,7 +628,7 @@ function installBrowser({
     offline.initOffline(env.init);
     await offline.downloadCurrentBook();
     const initialManifest = offline.getOfflineManifest();
-    await cache.put('https://reader.test/api/audio/book-1/0', new Response('corrupt-audio'));
+    await cache.put(offlineAudioKey('book-1', 0), new Response('corrupt-audio'));
 
     env = installBrowser({ book, chapters, cache, manifest: initialManifest });
     offline.initOffline(env.init);
@@ -385,7 +657,7 @@ function installBrowser({
 
   await test('adopts usable legacy cache entries during repair without deleting them', async () => {
     const cache = makeCache();
-    const key = 'https://reader.test/api/audio/book-1/0';
+    const key = offlineAudioKey('book-1', 0);
     const bytes = new TextEncoder().encode('legacy-audio');
     await cache.put(key, new Response(bytes, { headers: { ETag: '"legacy"' } }));
     const legacy = {
@@ -486,7 +758,7 @@ function installBrowser({
     const env = installBrowser({ book, chapters, cache });
     offline.initOffline(env.init);
     await offline.downloadCurrentBook();
-    await cache.delete('https://reader.test/api/audio/book-1/1');
+    await cache.delete(offlineAudioKey('book-1', 1));
     env.audioRequests.length = 0;
     env.prepareCalls.length = 0;
 
@@ -518,7 +790,7 @@ function installBrowser({
     await offline.ensureRollingOfflineWindow(book, rollingChapters, 3, { enabled: true });
     entry = offline.getOfflineManifest()[book.id];
     assert.deepStrictEqual(entry.chapterEntries.map((chapter, index) => chapter ? index : null).filter(index => index !== null), [2, 3, 4]);
-    assert.strictEqual(await cache.match('https://reader.test/api/audio/book-1/1'), undefined);
+    assert.strictEqual(await cache.match(offlineAudioKey('book-1', 1)), undefined);
   });
 
   await test('rolling cache repairs a voice change without deleting the replacement window', async () => {
@@ -551,7 +823,7 @@ function installBrowser({
     );
     assert(entry.chapterEntries.filter(Boolean).every(chapter => chapter.variantKey === 'voice-b'));
     for (const index of [1, 2, 3, 4]) {
-      assert(await cache.match(`https://reader.test/api/audio/book-1/${index}`));
+      assert(await cache.match(offlineAudioKey('book-1', index)));
     }
   });
 
@@ -585,7 +857,7 @@ function installBrowser({
     });
     offline.initOffline(env.init);
     await offline.ensureRollingOfflineWindow(book, rollingChapters, 1, { enabled: true });
-    await cache.delete('https://reader.test/api/audio/book-1/1');
+    await cache.delete(offlineAudioKey('book-1', 1));
 
     assert.strictEqual(await offline.isChapterAvailableOffline(book.id, 1), false);
     assert.strictEqual(offline.getOfflineManifest()[book.id].chapterEntries[1], null);

@@ -57,7 +57,7 @@ Chatterbox can use an operator-supplied voice reference. Use one only with autho
 
 ## Storage and privacy
 
-`data/` contains library metadata, settings, credentials or sessions, playback state, sync state, and custom-voice metadata. `cache/` contains imported material or extracted playback artifacts, covers, voice samples, and generated audio. A full offline download stores verified chapter audio plus a compact title/chapter snapshot in that browser, so the local library and player can reopen it after a cold offline launch. Library cards show whether each title is downloaded, partial, or needs repair. Deleting a title removes its server artifacts and the deleting browser's offline copy.
+`data/` contains library metadata, settings, credentials or sessions, playback state, sync state, deletion reconciliation state, and custom-voice metadata. `cache/` contains imported material or extracted playback artifacts, covers, voice samples, and generated audio. A full offline download stores verified chapter audio plus a compact title/chapter snapshot in that browser/PWA, scoped to the signed-in account. The Downloaded view therefore describes only the current device and browser profile. Xandrio asks the browser for eviction-resistant storage when a download starts, but browsers may deny it. Deleting a title removes its server artifacts and publishes a durable deletion record; each device removes an older local copy when it next reconnects.
 
 See [docs/PRIVACY.md](docs/PRIVACY.md) for the outbound-data matrix, retention, and disablement controls. See [docs/SELF_HOSTING.md](docs/SELF_HOSTING.md) for private deployment, backups, upgrades, and deletion.
 

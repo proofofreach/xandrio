@@ -28,6 +28,7 @@ const publicDir = path.join(__dirname, '..', 'public');
 const swSource = fs.readFileSync(path.join(publicDir, 'sw.js'), 'utf8');
 const indexSource = fs.readFileSync(path.join(publicDir, 'index.html'), 'utf8');
 const appSource = fs.readFileSync(path.join(publicDir, 'app.js'), 'utf8');
+const librarySource = fs.readFileSync(path.join(publicDir, 'js', 'views', 'library.js'), 'utf8');
 
 console.log('\n━━━ App shell versions ━━━');
 
@@ -64,6 +65,21 @@ const serviceWorkerRegistration = appSource.match(/function registerServiceWorke
 assert(
   serviceWorkerRegistration && !serviceWorkerRegistration.includes('location.reload'),
   'service-worker activation never reloads an actively playing client'
+);
+assert(
+  swSource.includes("key.startsWith(`${OFFLINE_AUDIO_CACHE}:`)") &&
+    swSource.includes("key.startsWith(`${OFFLINE_TITLE_CACHE}:`)"),
+  'service-worker activation preserves account-scoped offline caches'
+);
+assert(
+  swSource.includes('scopedOfflineCacheName(OFFLINE_AUDIO_CACHE, request)') &&
+    swSource.includes('scopedOfflineCacheName(OFFLINE_TITLE_CACHE, request)'),
+  'offline fallbacks resolve the cache namespace from the request scope'
+);
+assert(
+  indexSource.includes('id="downloaded-device-hint"') &&
+    librarySource.includes("deviceHint.hidden = currentTab !== 'downloaded'"),
+  'the populated Downloaded view explains that copies are device-local'
 );
 
 // APP_SHELL entries must exist on disk, or cache.addAll() rejects and the new

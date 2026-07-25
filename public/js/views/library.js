@@ -123,7 +123,7 @@ function offlineStateContents(bookId) {
     return `${downloadIcon}<span>Preparing…</span>`;
   }
   if (status.kind === 'downloading') {
-    return `${downloadIcon}<span>Downloading ${status.cachedChapters}/${status.totalChapters}</span>`;
+    return `${downloadIcon}<span>${escapeHTML(status.label.replace(' ·', ''))}</span>`;
   }
   if (status.kind === 'repair-needed') {
     return `${downloadIcon}<span>${status.label === 'Update download' ? 'Update needed' : 'Incomplete'}</span>`;
@@ -401,6 +401,8 @@ function syncLibraryTabs() {
   });
   document.getElementById('library-panel')
     ?.setAttribute('aria-labelledby', `library-tab-${currentTab}`);
+  const deviceHint = document.getElementById('downloaded-device-hint');
+  if (deviceHint) deviceHint.hidden = currentTab !== 'downloaded';
 }
 
 // A card is visible when it matches the search query AND the active tab

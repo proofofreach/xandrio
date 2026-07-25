@@ -28,6 +28,7 @@ export class SingleFileChapterPlayer {
     this.getChapterCount = options.getChapterCount || (() => 0);
     this.getContinuousEndChapter = options.getContinuousEndChapter || (() => null);
     this.resolveServedTier = options.resolveServedTier || null;
+    this.resolveOfflineAudioUrl = options.resolveOfflineAudioUrl || null;
     this.fetch = options.fetch || globalThis.fetch?.bind(globalThis) || null;
     this.preferStandardAudio = Boolean(options.preferStandardAudio);
     this.loadTimeoutMs = Number(options.loadTimeoutMs) > 0 ? Number(options.loadTimeoutMs) : LOAD_TIMEOUT_MS;
@@ -94,9 +95,11 @@ export class SingleFileChapterPlayer {
     this._attach();
     this.onWaiting?.('Loading audio…');
     const encodedBookId = encodeURIComponent(bookId);
-    const standardUrl = this.isIOSLike() && !this.preferStandardAudio
-      ? `/api/audio-ios/${encodedBookId}/${chapterIndex}`
-      : `/api/audio/${encodedBookId}/${chapterIndex}`;
+    const standardUrl = this.preferStandardAudio && this.resolveOfflineAudioUrl
+      ? this.resolveOfflineAudioUrl(bookId, chapterIndex)
+      : this.isIOSLike() && !this.preferStandardAudio
+        ? `/api/audio-ios/${encodedBookId}/${chapterIndex}`
+        : `/api/audio/${encodedBookId}/${chapterIndex}`;
     let tierQuery = '';
     this.servedTier = null;
     if (!this.preferStandardAudio && this.resolveServedTier) {

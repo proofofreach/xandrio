@@ -79,6 +79,18 @@ function deletionHarness(options = {}) {
     listeningQueueFile: 'listeningQueues',
     updateJSON,
     skipSave,
+    beginBookDeletion: options.trackDeletionLog
+      ? async bookId => {
+        operations.push(`tombstone:begin:${bookId}`);
+        return 'deletion-token';
+      }
+      : undefined,
+    commitBookDeletion: options.trackDeletionLog
+      ? async token => operations.push(`tombstone:commit:${token}`)
+      : undefined,
+    abortBookDeletion: options.trackDeletionLog
+      ? async token => operations.push(`tombstone:abort:${token}`)
+      : undefined,
     rememberDeletedBookId: bookId => operations.push(`remember:${bookId}`),
     cancelBookJobs: bookId => {
       operations.push(`cancel:${bookId}`);
@@ -289,8 +301,21 @@ function metadataHarness(options = {}) {
     );
   });
 
+  await test('deletion publishes its tombstone after the catalog write', async () => {
+    const harness = deletionHarness({ trackDeletionLog: true });
+    await harness.service.deleteBook({ bookId: 'book_1', actor: { role: 'admin' } });
+    assert(
+      harness.operations.indexOf('update:books:saved') <
+        harness.operations.indexOf('tombstone:commit:deletion-token')
+    );
+    assert(
+      harness.operations.indexOf('tombstone:commit:deletion-token') <
+        harness.operations.indexOf('cleanup:book_1:Example')
+    );
+  });
+
   await test('failed catalog persistence cannot remove artifacts from a live record', async () => {
-    const harness = deletionHarness({ failBookWrite: true });
+    const harness = deletionHarness({ failBookWrite: true, trackDeletionLog: true });
     await assert.rejects(
       harness.service.deleteBook({ bookId: 'book_1', actor: { role: 'admin' } }),
       /disk full/
@@ -299,6 +324,7 @@ function metadataHarness(options = {}) {
     assert(!harness.operations.some(operation =>
       /^(remember|cancel|stop|cleanup|sweep):/.test(operation)
     ));
+    assert(harness.operations.includes('tombstone:abort:deletion-token'));
   });
 
   await test('downstream deletion-store failures stop at a deterministic boundary', async () => {
@@ -487,6 +513,30 @@ function metadataHarness(options = {}) {
       assert.strictEqual(response.statusCode, 400);
       assert.deepStrictEqual(response.body, { error: 'Invalid book identifier' });
     }
+
+    const deletionFeed = app.router.stack.find(candidate =>
+      candidate.route?.path === '/api/offline/deletions' &&
+      candidate.route.methods.get
+    );
+    assert(deletionFeed, 'GET /api/offline/deletions must remain registered');
+    const response = {
+      statusCode: 200,
+      body: null,
+      status(code) {
+        this.statusCode = code;
+        return this;
+      },
+      json(body) {
+        this.body = body;
+        return this;
+      }
+    };
+    await deletionFeed.route.stack[0].handle(
+      { query: { since: '-1' } },
+      response
+    );
+    assert.strictEqual(response.statusCode, 400);
+    assert.deepStrictEqual(response.body, { error: 'Invalid deletion cursor' });
   });
 
   console.log(`book-lifecycle tests: ${passed} passed, ${failed} failed`);

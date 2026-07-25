@@ -1149,7 +1149,7 @@ async function verifyRealServiceWorkerOffline(browser) {
       throw new Error('Library download navigated away from the library');
     }
     await page.waitForFunction(() => {
-      const manifest = JSON.parse(localStorage.getItem('xandrio_offline_books') || '{}');
+      const manifest = JSON.parse(localStorage.getItem('xandrio_offline_books:default') || '{}');
       const entry = manifest['smoke-offline'];
       return entry?.state === 'ready' &&
         entry?.chapters === 1 &&
@@ -1167,8 +1167,10 @@ async function verifyRealServiceWorkerOffline(browser) {
     }
     await page.keyboard.press('Escape');
     const cachedBytes = await page.evaluate(async () => {
-      const cache = await caches.open('xandrio-offline-audio');
-      const response = await cache.match(`${location.origin}/api/audio/smoke-offline/0`);
+      const cache = await caches.open('xandrio-offline-audio:default');
+      const response = await cache.match(
+        `${location.origin}/api/audio/smoke-offline/0?xandrio-offline-scope=default`
+      );
       return response ? (await response.arrayBuffer()).byteLength : 0;
     });
     if (cachedBytes !== fixture.audioBytes) {
@@ -1203,7 +1205,10 @@ async function verifyRealServiceWorkerOffline(browser) {
     await page.waitForFunction(() => document.getElementById('audio-player')?.currentTime >= 1.5);
 
     const range = await page.evaluate(async () => {
-      const response = await fetch('/api/audio/smoke-offline/0', { headers: { Range: 'bytes=100-199' } });
+      const response = await fetch(
+        '/api/audio/smoke-offline/0?xandrio-offline-scope=default',
+        { headers: { Range: 'bytes=100-199' } }
+      );
       return {
         status: response.status,
         contentRange: response.headers.get('Content-Range'),
@@ -1219,7 +1224,10 @@ async function verifyRealServiceWorkerOffline(browser) {
     }
 
     const unsatisfied = await page.evaluate(async () => {
-      const response = await fetch('/api/audio/smoke-offline/0', { headers: { Range: 'bytes=999999-' } });
+      const response = await fetch(
+        '/api/audio/smoke-offline/0?xandrio-offline-scope=default',
+        { headers: { Range: 'bytes=999999-' } }
+      );
       return { status: response.status, contentRange: response.headers.get('Content-Range') };
     });
     if (unsatisfied.status !== 416 || unsatisfied.contentRange !== `bytes */${fixture.audioBytes}`) {
@@ -1227,7 +1235,10 @@ async function verifyRealServiceWorkerOffline(browser) {
     }
 
     const malformed = await page.evaluate(async () => {
-      const response = await fetch('/api/audio/smoke-offline/0', { headers: { Range: 'bytes=broken' } });
+      const response = await fetch(
+        '/api/audio/smoke-offline/0?xandrio-offline-scope=default',
+        { headers: { Range: 'bytes=broken' } }
+      );
       return {
         status: response.status,
         contentRange: response.headers.get('Content-Range'),
@@ -1239,7 +1250,10 @@ async function verifyRealServiceWorkerOffline(browser) {
     }
 
     const suffix = await page.evaluate(async () => {
-      const response = await fetch('/api/audio/smoke-offline/0', { headers: { Range: 'bytes=-64' } });
+      const response = await fetch(
+        '/api/audio/smoke-offline/0?xandrio-offline-scope=default',
+        { headers: { Range: 'bytes=-64' } }
+      );
       return {
         status: response.status,
         contentLength: response.headers.get('Content-Length'),
