@@ -220,6 +220,72 @@ async function installBrowserFixtures(page) {
       window.dispatchEvent(new Event(online ? 'online' : 'offline'));
     };
 
+    window.__smokeAudios = [];
+    const mediaState = new WeakMap();
+    const stateFor = element => {
+      if (!mediaState.has(element)) {
+        mediaState.set(element, {
+          src: '',
+          currentTime: 0,
+          duration: 30,
+          paused: true,
+          ended: false
+        });
+        window.__smokeAudios.push(element);
+      }
+      return mediaState.get(element);
+    };
+    const mediaPrototype = HTMLMediaElement.prototype;
+    const nativeRemoveAttribute = mediaPrototype.removeAttribute;
+    Object.defineProperties(mediaPrototype, {
+      src: {
+        configurable: true,
+        get() { return stateFor(this).src; },
+        set(value) { stateFor(this).src = String(value); }
+      },
+      currentTime: {
+        configurable: true,
+        get() { return stateFor(this).currentTime; },
+        set(value) { stateFor(this).currentTime = Number(value) || 0; }
+      },
+      duration: {
+        configurable: true,
+        get() { return stateFor(this).duration; }
+      },
+      paused: {
+        configurable: true,
+        get() { return stateFor(this).paused; }
+      },
+      ended: {
+        configurable: true,
+        get() { return stateFor(this).ended; }
+      }
+    });
+    mediaPrototype.load = function load() {
+      const state = stateFor(this);
+      queueMicrotask(() => {
+        this.dispatchEvent(new Event('loadedmetadata'));
+        if (this.autoplay && state.paused) void this.play();
+      });
+    };
+    mediaPrototype.play = async function play() {
+      const state = stateFor(this);
+      state.paused = false;
+      state.ended = false;
+      this.dispatchEvent(new Event('play'));
+      this.dispatchEvent(new Event('playing'));
+    };
+    mediaPrototype.pause = function pause() {
+      const state = stateFor(this);
+      const changed = !state.paused;
+      state.paused = true;
+      if (changed) this.dispatchEvent(new Event('pause'));
+    };
+    mediaPrototype.removeAttribute = function removeAttribute(name) {
+      if (name === 'src') stateFor(this).src = '';
+      return nativeRemoveAttribute.call(this, name);
+    };
+
     class FakeAudio extends EventTarget {
       constructor(src = '') {
         super();
@@ -248,7 +314,6 @@ async function installBrowserFixtures(page) {
       }
       removeAttribute(name) { if (name === 'src') this.src = ''; }
     }
-    window.__smokeAudios = [];
     window.Audio = FakeAudio;
   });
 
@@ -435,6 +500,9 @@ async function installBrowserFixtures(page) {
     if (pathname.startsWith('/api/voice-cache/')) return json(route, { voices: [] });
     if (pathname.startsWith('/api/premium-prep/')) return json(route, { premiumActive: false, chapters: [] }, 404);
     if (pathname.endsWith('/chapter-audio-status')) return json(route, { ready: false, variantKey: 'instant-fixture' });
+    if (/^\/api\/chunks\/smoke\/\d+\/status$/.test(pathname)) {
+      return json(route, { status: 'ready', servedTier: url.searchParams.get('tier') || 'instant' });
+    }
     if (pathname.endsWith('/prepare-chapter-audio')) return json(route, { success: true });
     if (/^\/api\/chunks\/smoke\/\d+\/\d+\/prioritize$/.test(pathname)) return json(route, { success: true });
     if (/^\/api\/chunks\/smoke\/\d+\/manifest$/.test(pathname)) {
@@ -504,7 +572,7 @@ async function verifyPlayback(page, fixtureState) {
   }
   await page.click('[data-progress-scope="chapter"]');
 
-  await page.waitForFunction(() => window.__smokeAudios.length >= 2);
+  await page.waitForFunction(() => window.__smokeAudios.length === 1);
   await page.click('#play-pause-btn');
   await page.waitForFunction(() => window.__smokeAudios.some(audio => !audio.paused));
   await page.click('#skip-forward-btn');
@@ -512,10 +580,9 @@ async function verifyPlayback(page, fixtureState) {
   await page.click('#play-pause-btn');
   await page.waitForFunction(() => window.__smokeAudios.every(audio => audio.paused));
 
-  await page.waitForTimeout(100);
-  const chapterZeroManifests = fixtureState.manifestUrls.filter(value => value.includes('/smoke/0/manifest'));
-  if (chapterZeroManifests.length < 2 || !chapterZeroManifests.slice(1).some(value => value.includes('tier=instant'))) {
-    throw new Error(`Playback tier was not pinned on manifest refresh: ${chapterZeroManifests.join(', ')}`);
+  const playbackSource = await page.evaluate(() => window.__smokeAudios[0]?.src || '');
+  if (!playbackSource.includes('/api/audio-stream/smoke/0?tier=instant')) {
+    throw new Error(`Playback tier was not pinned on the stable stream: ${playbackSource}`);
   }
 
   await page.evaluate(() => window.__setSmokeOnline(false));
