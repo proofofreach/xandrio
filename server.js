@@ -2821,7 +2821,9 @@ registerPlaybackRoutes(app, {
   hlsAudioStreamer,
   serveAudioFile,
   sendServerError,
-  fs
+  fs,
+  rateLimitWindowMs: RATE_LIMIT_WINDOW,
+  rateLimitMax: RATE_LIMIT_MAX
 });
 
 // =========================================================================
