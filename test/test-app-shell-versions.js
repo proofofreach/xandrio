@@ -91,7 +91,7 @@ assert(
   'the populated Downloaded view explains that copies are device-local'
 );
 assert(
-  indexSource.includes('Keep Xandrio open while downloading'),
+  indexSource.includes('Do not close Xandrio, switch apps, or lock the screen while downloading'),
   'the Downloaded view discloses the foreground download requirement'
 );
 

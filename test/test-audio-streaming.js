@@ -11,6 +11,7 @@
  */
 
 const assert = require('assert');
+const crypto = require('crypto');
 const express = require('express');
 const fs = require('fs');
 const fsp = fs.promises;
@@ -64,7 +65,20 @@ async function test(name, fn) {
     const response = await fetch(`${base}/ok`);
     assert.strictEqual(response.status, 200);
     assert.strictEqual(response.headers.get('content-type'), 'audio/mpeg');
-    assert.strictEqual((await response.arrayBuffer()).byteLength, 64 * 1024);
+    const bytes = Buffer.from(await response.arrayBuffer());
+    assert.strictEqual(bytes.byteLength, 64 * 1024);
+    assert.strictEqual(response.headers.get('x-xandrio-content-sha256'), null);
+  });
+
+  await test('adds a content identity only for an explicit offline download', async () => {
+    const response = await fetch(`${base}/ok`, {
+      headers: { 'X-Xandrio-Offline-Download': '1' }
+    });
+    const bytes = Buffer.from(await response.arrayBuffer());
+    assert.strictEqual(
+      response.headers.get('x-xandrio-content-sha256'),
+      `sha256-${crypto.createHash('sha256').update(bytes).digest('hex')}`
+    );
   });
 
   await test('serves a byte range as 206 with Content-Range', async () => {

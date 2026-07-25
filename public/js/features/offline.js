@@ -2,6 +2,7 @@ import { API_BASE, apiSend, canClaimLegacyOfflineStorage, getOfflineStorageScope
 import { escapeHTML, formatDuration, relativeTime } from '../util/format.js';
 import { readJSON, writeJSON } from '../util/storage.js';
 import { showToast, showUndoToast } from '../ui/toast.js';
+import { confirmSheet } from '../ui/confirm.js';
 import { planRollingOfflineWindow } from './rolling-offline.mjs';
 
 export const OFFLINE_AUDIO_CACHE = 'xandrio-offline-audio';
@@ -24,6 +25,10 @@ let rollingRequestKey = '';
 let activeDownloadBookId = '';
 let activeDownloadCompletion = null;
 let activeDownloadActivity = null;
+let downloadWakeLock = null;
+let downloadWakeLockRequest = null;
+let downloadWakeLockActive = false;
+let downloadWakeLockVisibilityHandler = null;
 let preparationPollTimer = null;
 const rollingCompletions = new Map();
 const legacyCacheMigrations = new Map();
@@ -681,13 +686,64 @@ async function requestPersistentOfflineStorage() {
   }
 }
 
+function requestDownloadWakeLock() {
+  if (downloadWakeLock) return Promise.resolve(true);
+  if (downloadWakeLockRequest) return downloadWakeLockRequest;
+  if (!downloadWakeLockActive || !navigator.wakeLock?.request || document.hidden) {
+    return Promise.resolve(false);
+  }
+  const pending = (async () => {
+    try {
+      const sentinel = await navigator.wakeLock.request('screen');
+      if (!downloadWakeLockActive) {
+        if (sentinel.release) await sentinel.release().catch(() => {});
+        return false;
+      }
+      downloadWakeLock = sentinel;
+      sentinel.addEventListener?.('release', () => {
+        if (downloadWakeLock === sentinel) downloadWakeLock = null;
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  })().finally(() => {
+    if (downloadWakeLockRequest === pending) downloadWakeLockRequest = null;
+  });
+  downloadWakeLockRequest = pending;
+  return pending;
+}
+
+async function holdDownloadWakeLock() {
+  if (!navigator.wakeLock?.request) return false;
+  downloadWakeLockActive = true;
+  if (!downloadWakeLockVisibilityHandler) {
+    downloadWakeLockVisibilityHandler = () => {
+      if (!document.hidden && downloadAbort && !downloadWakeLock) {
+        void requestDownloadWakeLock();
+      }
+    };
+    document.addEventListener('visibilitychange', downloadWakeLockVisibilityHandler);
+  }
+  return requestDownloadWakeLock();
+}
+
+async function releaseDownloadWakeLock() {
+  downloadWakeLockActive = false;
+  if (downloadWakeLockVisibilityHandler) {
+    document.removeEventListener('visibilitychange', downloadWakeLockVisibilityHandler);
+    downloadWakeLockVisibilityHandler = null;
+  }
+  await downloadWakeLockRequest?.catch(() => {});
+  const sentinel = downloadWakeLock;
+  downloadWakeLock = null;
+  if (!sentinel?.release) return;
+  await sentinel.release().catch(() => {});
+}
+
 export async function downloadBookForOffline(book, chapters, options = {}) {
   if (!book?.id || !Array.isArray(chapters) || chapters.length === 0) return false;
   if (!offlineDownloadsSupported()) return false;
-  await requestPersistentOfflineStorage();
-  rollingAbort?.abort();
-  rollingAbort = null;
-  rollingRequestKey = '';
   if (downloadAbort) {
     if (String(activeDownloadBookId) === String(book.id)) {
       downloadAbort.abort();
@@ -696,15 +752,22 @@ export async function downloadBookForOffline(book, chapters, options = {}) {
     }
     return false;
   }
-
+  if (options.confirmForeground !== false) {
+    const confirmed = await confirmSheet({
+      title: 'Keep Xandrio visible',
+      message: 'Do not close Xandrio, switch apps, or lock the screen until the download finishes. iOS may stop the transfer.',
+      confirmLabel: 'Start download',
+      danger: false
+    });
+    if (!confirmed) return false;
+    if (downloadAbort) {
+      showToast('Another book is already downloading', 'error');
+      return false;
+    }
+  }
   // Downloads are background activity. Callers may explicitly request the
   // legacy blocking overlay, but the normal surface is the Activity pane.
   const showOverlay = options.showOverlay === true;
-  downloadAbort = new AbortController();
-  activeDownloadBookId = book.id;
-  let resolveDownloadCompletion;
-  activeDownloadCompletion = new Promise(resolve => { resolveDownloadCompletion = resolve; });
-  const signal = downloadAbort.signal;
   const existing = offlineEntryForBook(book.id);
   const working = createWorkingEntry(
     book,
@@ -713,8 +776,18 @@ export async function downloadBookForOffline(book, chapters, options = {}) {
     options.voiceLabel || currentVoiceLabel()
   );
   const reportProgress = downloadProgressTracker(book, chapters, working, showOverlay);
+  downloadAbort = new AbortController();
+  activeDownloadBookId = book.id;
+  let resolveDownloadCompletion;
+  activeDownloadCompletion = new Promise(resolve => { resolveDownloadCompletion = resolve; });
+  const signal = downloadAbort.signal;
   let completed = false;
   try {
+    await holdDownloadWakeLock();
+    await requestPersistentOfflineStorage();
+    rollingAbort?.abort();
+    rollingAbort = null;
+    rollingRequestKey = '';
     reportProgress(-1, 0, 'Starting download');
     const manifest = getOfflineManifest();
     manifest[book.id] = working;
@@ -788,6 +861,7 @@ export async function downloadBookForOffline(book, chapters, options = {}) {
     showToast(err.message || 'Offline download failed', 'error');
   } finally {
     resolveDownloadCompletion();
+    await releaseDownloadWakeLock();
     downloadAbort = null;
     activeDownloadBookId = '';
     activeDownloadCompletion = null;
@@ -1222,21 +1296,23 @@ async function hashBytes(bytes) {
 }
 
 async function contentIdentity(response) {
-  const storedSize = Number(response.headers.get('Content-Length'));
-  const storedHash = response.headers.get(OFFLINE_CONTENT_HASH_HEADER) || '';
-  if (
-    Number.isInteger(storedSize) &&
-    storedSize > 0 &&
-    /^sha256-[a-f0-9]{64}$/.test(storedHash)
-  ) {
-    return {
-      size: storedSize,
-      contentHash: storedHash,
-      etag: response.headers.get('ETag') || ''
-    };
-  }
+  const storedIdentity = contentIdentityFromHeaders(response.headers);
+  if (storedIdentity) return storedIdentity;
   const bytes = new Uint8Array(await response.clone().arrayBuffer());
   return contentIdentityForBytes(bytes, response.headers.get('ETag') || '');
+}
+
+function contentIdentityFromHeaders(headers) {
+  const size = Number(headers.get('Content-Length'));
+  const contentHash = headers.get(OFFLINE_CONTENT_HASH_HEADER) || '';
+  if (!Number.isInteger(size) || size <= 0 || !/^sha256-[a-f0-9]{64}$/.test(contentHash)) {
+    return null;
+  }
+  return {
+    size,
+    contentHash,
+    etag: headers.get('ETag') || ''
+  };
 }
 
 async function backfillContentIdentity(cache, request, response, identity) {
@@ -1294,33 +1370,84 @@ async function responseBytesWithProgress(response, signal, onProgress) {
   return bytes;
 }
 
+function responseStreamWithProgress(response, signal, onProgress) {
+  if (!response.body?.getReader) return response;
+  const total = Math.max(0, Number(response.headers.get('Content-Length')) || 0);
+  const reader = response.body.getReader();
+  let received = 0;
+  const body = new ReadableStream({
+    async pull(controller) {
+      try {
+        throwIfDownloadAborted(signal);
+        const { done, value } = await reader.read();
+        if (done) {
+          if (total > 0 && received !== total) {
+            throw new Error('Audio download ended before the expected file size');
+          }
+          onProgress?.(0.9);
+          controller.close();
+          return;
+        }
+        received += value.byteLength;
+        if (total > 0) onProgress?.(Math.min(0.9, (received / total) * 0.9));
+        controller.enqueue(value);
+      } catch (error) {
+        controller.error(error);
+      }
+    },
+    cancel(reason) {
+      return reader.cancel(reason);
+    }
+  });
+  return new Response(body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers
+  });
+}
+
 async function downloadAndVerifyChapter(cache, cacheRequest, url, signal, chapterIndex, onProgress = null) {
-  const transfer = await retryDownloadOperation(async () => {
-    const response = await fetch(url, { signal });
+  return retryDownloadOperation(async () => {
+    const response = await fetch(url, {
+      signal,
+      headers: { 'X-Xandrio-Offline-Download': '1' }
+    });
     if (!response.ok) {
       const error = new Error(`Audio download failed for chapter ${chapterIndex + 1}`);
       error.status = response.status;
       throw error;
     }
-    return {
-      headers: new Headers(response.headers),
-      status: response.status,
-      bytes: await responseBytesWithProgress(response, signal, onProgress)
-    };
+    const serverIdentity = contentIdentityFromHeaders(response.headers);
+    if (serverIdentity) {
+      await cache.put(cacheRequest, responseStreamWithProgress(response, signal, onProgress));
+      const saved = await cache.match(cacheRequest);
+      const savedIdentity = saved ? await contentIdentity(saved) : null;
+      if (
+        !savedIdentity ||
+        savedIdentity.size !== serverIdentity.size ||
+        savedIdentity.contentHash !== serverIdentity.contentHash
+      ) {
+        throw new Error(`Offline cache verification failed for chapter ${chapterIndex + 1}`);
+      }
+      onProgress?.(1);
+      return serverIdentity;
+    }
+
+    const headers = new Headers(response.headers);
+    const bytes = await responseBytesWithProgress(response, signal, onProgress);
+    const identity = await contentIdentityForBytes(bytes, headers.get('ETag') || '');
+    if (identity.size <= 0) throw new Error(`Downloaded audio was empty for chapter ${chapterIndex + 1}`);
+    onProgress?.(0.9);
+    headers.set('Content-Length', String(identity.size));
+    headers.set(OFFLINE_CONTENT_HASH_HEADER, identity.contentHash);
+    await cache.put(cacheRequest, new Response(bytes, { status: response.status, headers }));
+    const saved = await cache.match(cacheRequest);
+    if (!saved) {
+      throw new Error(`Offline cache verification failed for chapter ${chapterIndex + 1}`);
+    }
+    onProgress?.(1);
+    return identity;
   }, signal);
-  const { headers, status, bytes } = transfer;
-  const identity = await contentIdentityForBytes(bytes, headers.get('ETag') || '');
-  if (identity.size <= 0) throw new Error(`Downloaded audio was empty for chapter ${chapterIndex + 1}`);
-  onProgress?.(0.9);
-  headers.set('Content-Length', String(identity.size));
-  headers.set(OFFLINE_CONTENT_HASH_HEADER, identity.contentHash);
-  await cache.put(cacheRequest, new Response(bytes, { status, headers }));
-  const saved = await cache.match(cacheRequest);
-  if (!saved) {
-    throw new Error(`Offline cache verification failed for chapter ${chapterIndex + 1}`);
-  }
-  onProgress?.(1);
-  return identity;
 }
 
 async function cacheOfflineCover(book, signal) {

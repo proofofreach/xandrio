@@ -734,6 +734,22 @@ client can transfer chapter audio into that browser/PWA’s Cache Storage while
 the server generates audio for other titles; device transfer does not consume
 the generation scheduler’s GPU slot.
 
+### Offline audio transfer headers
+
+For a full, same-origin audio response, the PWA sends
+`X-Xandrio-Offline-Download: 1`. The server then returns the normal
+`Content-Length` plus:
+
+```http
+X-Xandrio-Content-SHA256: sha256-<64 lowercase hexadecimal characters>
+```
+
+The server hashes and streams the same opened file. The PWA uses this identity
+to stream the response directly into Cache Storage without retaining and
+hashing a second browser copy. Normal playback and range responses do not
+request this work. Clients without the response header fall back to browser-side
+verification for compatibility with an older server.
+
 ---
 
 ## GET /api/book/:bookId
