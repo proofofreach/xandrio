@@ -50,6 +50,30 @@ async function createFixture() {
   return { directory, epubPath };
 }
 
+async function createOversizedAuthoredChapterFixture() {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'xandrio-epub-oversized-chapter-'));
+  const epubRoot = path.join(directory, 'book');
+  const oebps = path.join(epubRoot, 'OEBPS');
+  await fs.mkdir(path.join(epubRoot, 'META-INF'), { recursive: true });
+  await fs.mkdir(oebps, { recursive: true });
+  await fs.writeFile(path.join(epubRoot, 'mimetype'), 'application/epub+zip');
+  await fs.writeFile(path.join(epubRoot, 'META-INF', 'container.xml'), `<?xml version="1.0"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>`);
+  await fs.writeFile(path.join(oebps, 'content.opf'), `<?xml version="1.0" encoding="utf-8"?>
+<package version="2.0" xmlns="http://www.idpf.org/2007/opf"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>Long Authored Chapters</dc:title><dc:creator>Fixture Author</dc:creator><dc:language>en</dc:language></metadata><manifest><item id="chapter-1" href="chapter-1.xhtml" media-type="application/xhtml+xml"/><item id="chapter-2" href="chapter-2.xhtml" media-type="application/xhtml+xml"/><item id="chapter-3" href="chapter-3.xhtml" media-type="application/xhtml+xml"/><item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/></manifest><spine toc="ncx"><itemref idref="chapter-1"/><itemref idref="chapter-2"/><itemref idref="chapter-3"/></spine></package>`);
+  await fs.writeFile(path.join(oebps, 'toc.ncx'), `<?xml version="1.0" encoding="UTF-8"?>
+<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/"><navMap><navPoint id="nav-1" playOrder="1"><navLabel><text>Chapter 1: In Their Own Words</text></navLabel><content src="chapter-1.xhtml"/></navPoint><navPoint id="nav-2" playOrder="2"><navLabel><text>Chapter 2: The Next Chapter</text></navLabel><content src="chapter-2.xhtml"/></navPoint><navPoint id="nav-3" playOrder="3"><navLabel><text>Chapter 3: The Last Chapter</text></navLabel><content src="chapter-3.xhtml"/></navPoint></navMap></ncx>`);
+  const longProse = 'The authored chapter continues with readable prose and supporting analysis. '.repeat(1500);
+  await fs.writeFile(path.join(oebps, 'chapter-1.xhtml'), `<html><body><h1>Chapter 1: In Their Own Words</h1><p>${longProse}</p><h2>7601. Canvass of districts for taxable persons and objects</h2><p>${'Quoted statutory material remains part of the authored chapter. '.repeat(80)}</p><h2>INTERNAL REVENUE DISTRICTS</h2><p>${'This subsection also remains inside the authored chapter. '.repeat(80)}</p></body></html>`);
+  await fs.writeFile(path.join(oebps, 'chapter-2.xhtml'), `<html><body><h1>Chapter 2: The Next Chapter</h1><p>${'Second chapter prose. '.repeat(80)}</p></body></html>`);
+  await fs.writeFile(path.join(oebps, 'chapter-3.xhtml'), `<html><body><h1>Chapter 3: The Last Chapter</h1><p>${'Third chapter prose. '.repeat(80)}</p></body></html>`);
+
+  const epubPath = path.join(directory, 'fixture.epub');
+  execFileSync('zip', ['-qX0', epubPath, 'mimetype'], { cwd: epubRoot });
+  execFileSync('zip', ['-qr9', epubPath, 'META-INF', 'OEBPS'], { cwd: epubRoot });
+  return { directory, epubPath };
+}
+
 (async () => {
   const { directory, epubPath } = await createFixture();
   try {
@@ -76,6 +100,26 @@ async function createFixture() {
     console.log('Epub parser tests: 11 passed, 0 failed');
   } finally {
     await fs.rm(directory, { recursive: true, force: true });
+  }
+
+  const oversizedFixture = await createOversizedAuthoredChapterFixture();
+  try {
+    const document = createBookDocument({ log: { log() {}, error() {} } });
+    const chapters = await document.extractChapters(oversizedFixture.epubPath);
+    assert.deepEqual(
+      chapters.map(chapter => chapter.title),
+      [
+        'Chapter 1: In Their Own Words',
+        'Chapter 2: The Next Chapter',
+        'Chapter 3: The Last Chapter'
+      ],
+      'an oversized authored chapter keeps its TOC boundary instead of promoting subsections'
+    );
+    assert.match(chapters[0].text, /7601\. Canvass of districts/);
+    assert.match(chapters[0].text, /INTERNAL REVENUE DISTRICTS/);
+    console.log('Oversized authored chapter regression: 3 passed, 0 failed');
+  } finally {
+    await fs.rm(oversizedFixture.directory, { recursive: true, force: true });
   }
 })().catch(error => {
   console.error(error);

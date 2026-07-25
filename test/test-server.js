@@ -1018,6 +1018,32 @@ section('12. Preferred audio start chapter');
   assertEqual(trustedTocChapter.type, 'chapter',
     'Numbered EPUB TOC entry is classified as a chapter');
 
+  const trustedStructuralTitles = normalizeChapterSequence([
+    {
+      title: 'Chapter 9: Working the Marks',
+      type: 'chapter',
+      fromToc: true,
+      text: 'Chapter 9: Working the Marks\n1. First example\n2. Second example\n3. Third example\n' + 'x'.repeat(1200)
+    },
+    {
+      title: 'Chapter 12: Tricks of the Trade',
+      type: 'chapter',
+      fromToc: true,
+      text: 'Chapter 12: Tricks of the Trade\nSwami Example\nA prolific author and direct disciple who founded communities.\n' + 'x'.repeat(1200)
+    },
+    {
+      title: 'Index',
+      type: 'backmatter',
+      fromToc: true,
+      text: 'Index\n1. First reference\n2. Second reference\n3. Third reference\n' + 'x'.repeat(1200)
+    }
+  ]);
+  assertEqual(
+    trustedStructuralTitles.map(chapter => chapter.title).join('|'),
+    'Chapter 9: Working the Marks|Chapter 12: Tricks of the Trade|Index',
+    'Matching authored TOC titles survive incidental structural-looking body text'
+  );
+
   const prefatorySequence = normalizeChapterSequence([
     { title: 'Preface To The Second Edition', type: 'content', text: 'x'.repeat(1200) },
     { title: '1 - The Thinker & The Prover', type: 'content', fromToc: true, text: 'CHAPTER ONE\n' + 'x'.repeat(1200) }
