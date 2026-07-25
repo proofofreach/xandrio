@@ -112,7 +112,7 @@ async function startOfflineFixtureServer() {
       };
       return jsonResponse(res, state.operatorPolicy);
     }
-    if (pathname === '/api/library') return jsonResponse(res, { books: [book] });
+    if (pathname === '/api/library') return jsonResponse(res, { books: [book], shelf: [book.id] });
     if (pathname === '/api/positions') return jsonResponse(res, { positions: {} });
     if (pathname === '/api/settings/client') return jsonResponse(res, { settings: {} });
     if (pathname === '/api/book/smoke-offline') return jsonResponse(res, { book, chapters: [chapter] });
@@ -302,6 +302,14 @@ async function installBrowserFixtures(page) {
 
     if (pathname === '/api/legal/operator-policy' && method === 'GET') {
       return json(route, fixtureState.operatorPolicy);
+    }
+    if (pathname === '/api/auth/status') {
+      return json(route, {
+        authenticationRequired: false,
+        authenticated: true,
+        accountsConfigured: true,
+        user: { id: 'user-smoke', username: 'smoke', displayName: 'Smoke Reader', role: 'member' }
+      });
     }
     if (pathname === '/api/legal/operator-policy' && method === 'PUT') {
       const payload = request.postDataJSON();
@@ -571,9 +579,26 @@ async function verifyPronunciations(page, fixtureState) {
 
 async function verifyLibraryActions(page) {
   await page.goto(`${origin}/#/library`, { waitUntil: 'networkidle' });
+  await page.waitForSelector('#shelf-empty-hint:not([hidden])');
+  if (await page.locator('[data-library-tab="shelf"]').textContent() !== 'My Shelf' ||
+      await page.locator('[data-library-tab="all"]').textContent() !== 'Shared Library') {
+    throw new Error('Library scopes are not labeled My Shelf and Shared Library');
+  }
+  if (await page.getAttribute('[data-library-tab="shelf"]', 'aria-selected') !== 'true') {
+    throw new Error('A new account did not open on My Shelf');
+  }
+  await page.click('[data-add-book-shelf]');
+  await page.waitForSelector('#search-view.active');
+  await page.goto(`${origin}/#/library`, { waitUntil: 'networkidle' });
+  await page.waitForSelector('#shelf-empty-hint:not([hidden])');
+  await page.click('[data-browse-shared-library]');
   await page.waitForSelector('.book-item:not(.skeleton)');
-  if (await page.locator('[data-library-tab="shelf"]').textContent() !== 'Saved') {
-    throw new Error('Personal library subset is not labeled Saved');
+  if (await page.getAttribute('[data-library-tab="all"]', 'aria-selected') !== 'true') {
+    throw new Error('Empty-shelf action did not open Shared Library');
+  }
+  if (await page.evaluate(() => localStorage.getItem('xandrio_library_tab:user-smoke')) !== 'all' ||
+      await page.evaluate(() => localStorage.getItem('xandrio_library_tab')) !== null) {
+    throw new Error('Library scope preference is not isolated to the signed-in account');
   }
   if (await page.locator('.book-card-tools > [data-download-book]').count() !== 0) {
     throw new Error('Library card still exposes Download outside its overflow menu');
@@ -595,7 +620,7 @@ async function verifyLibraryActions(page) {
     throw new Error(`Library overflow trigger is not persistently visible: ${JSON.stringify(overflowTrigger)}`);
   }
   await page.click('[data-book-menu-toggle]');
-  for (const label of ['Download', 'Save', 'Add to Up Next', 'Share', 'Delete']) {
+  for (const label of ['Download', 'Save to My Shelf', 'Add to Up Next', 'Share', 'Delete']) {
     if (!await page.getByRole('menuitem', { name: label, exact: true }).isVisible()) {
       throw new Error(`Library overflow menu is missing ${label}`);
     }

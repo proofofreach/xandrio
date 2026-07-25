@@ -5117,10 +5117,49 @@ body.login-gate-open { overflow: hidden; }
   border-bottom-color: var(--accent);
 }
 .shelf-empty-hint {
-  padding: 20px 16px;
-  color: var(--text-muted);
-  font-size: 13px;
-  text-align: center;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 24px;
+  margin: 8px 0 20px;
+  background: var(--surface-inset);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.shelf-empty-hint[hidden] { display: none; }
+.shelf-empty-copy { max-width: 52ch; }
+.shelf-empty-copy h2 {
+  margin: 0 0 6px;
+  font-size: 18px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  text-wrap: balance;
+}
+.shelf-empty-copy p {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 14px;
+  line-height: 1.45;
+}
+.shelf-empty-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+@media (max-width: 600px) {
+  .shelf-empty-hint {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 18px;
+    padding: 20px;
+  }
+  .shelf-empty-actions { align-items: stretch; }
+  .shelf-empty-actions > button { flex: 1; }
+}
+@media (max-width: 390px) {
+  .shelf-empty-actions { flex-direction: column; }
 }
 /* ─── Admin account management ─────────────────────────────────────────── */
 .admin-account-row { align-items: center; }

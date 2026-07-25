@@ -1,4 +1,4 @@
-import { apiGet, apiSend } from '../api.js';
+import { apiGet, apiSend, getCurrentUser } from '../api.js';
 import { formatDuration, escapeHTML, safeAttr, relativeTime, coverImageHTML, cssEscape } from '../util/format.js';
 import { readJSON, writeJSON, readText, writeText } from '../util/storage.js';
 import { confirmSheet } from '../ui/confirm.js';
@@ -36,6 +36,11 @@ let currentViewMode = 'list';
 let continueRailHasEntries = false;
 let swipeListenersInstalled = false;
 const pendingBookDownloads = new Set();
+
+function libraryTabStorageKey() {
+  const accountId = getCurrentUser()?.id;
+  return accountId ? `${LIBRARY_TAB_KEY}:${accountId}` : LIBRARY_TAB_KEY;
+}
 
 export function getCachedBookMeta(bookId) {
   return readJSON(BOOK_META_PREFIX + bookId, null);
@@ -174,7 +179,7 @@ function bookMenuHTML(book, onShelf) {
       <div class="book-overflow-menu" role="menu" hidden>
         <span role="none" data-offline-menu-action="${safeAttr(id)}">${offlineMenuActionContents(id)}</span>
         <button type="button" role="menuitem" data-shelf-toggle="${safeAttr(id)}">
-          <span data-saved-label>${onShelf ? 'Remove from Saved' : 'Save'}</span>
+          <span data-saved-label>${onShelf ? 'Remove from My Shelf' : 'Save to My Shelf'}</span>
         </button>
         <button type="button" role="menuitem" data-queue-add="${safeAttr(id)}">Add to Up Next</button>
         <button type="button" role="menuitem" data-book-share="${safeAttr(id)}"
@@ -355,10 +360,10 @@ export async function loadLibrary() {
 
   if ('ontouchstart' in window || navigator.maxTouchPoints > 0) document.body.classList.add('touch-device');
   currentShelf = new Set(Array.isArray(data.shelf) ? data.shelf : []);
-  // Default to "Saved" per stored preference, but never open on an empty
-  // saved list — fall back to the shared pool.
-  const storedTab = readText(LIBRARY_TAB_KEY, 'shelf');
-  currentTab = (storedTab === 'shelf' && currentShelf.size === 0) ? 'all' : storedTab;
+  // A new account opens on its own shelf, even when the shared library
+  // already contains books. Preserve an explicit tab choice on later visits.
+  const storedTab = readText(libraryTabStorageKey(), 'shelf');
+  currentTab = storedTab === 'all' ? 'all' : 'shelf';
   syncLibraryTabs();
   libraryList.innerHTML = data.books.map(book => renderBookCard(book, positions[book.id] || null, currentShelf.has(book.id))).join('');
   libraryList.classList.toggle('offline-library-fallback', offlineFallback);
@@ -397,7 +402,7 @@ function syncLibraryTabs() {
 }
 
 // A card is visible when it matches the search query AND the active tab
-// ("Saved" vs "All books"). Both paths funnel through here so the two
+// ("My Shelf" vs "Shared Library"). Both paths funnel through here so the two
 // filters can't fight over the hidden class.
 function filterLibrary() {
   const query = librarySearch?.value.toLowerCase().trim() || '';
@@ -418,7 +423,7 @@ function filterLibrary() {
 
 function setLibraryTab(tab) {
   currentTab = tab === 'all' ? 'all' : 'shelf';
-  writeText(LIBRARY_TAB_KEY, currentTab);
+  writeText(libraryTabStorageKey(), currentTab);
   syncLibraryTabs();
   filterLibrary();
 }
@@ -437,11 +442,11 @@ async function toggleShelfMembership(bookId, button) {
     const card = button.closest('.book-item');
     if (card) card.dataset.onShelf = currentShelf.has(bookId) ? '1' : '0';
     const label = button.querySelector('[data-saved-label]');
-    if (label) label.textContent = currentShelf.has(bookId) ? 'Remove from Saved' : 'Save';
+    if (label) label.textContent = currentShelf.has(bookId) ? 'Remove from My Shelf' : 'Save to My Shelf';
     filterLibrary();
   } catch (err) {
     console.error('Shelf update failed:', err);
-    showToast('Could not update Saved', 'error');
+    showToast('Could not update My Shelf', 'error');
   } finally {
     button.disabled = false;
   }
@@ -718,6 +723,13 @@ export function initLibrary(options = {}) {
   document.getElementById('library-tabs')?.addEventListener('click', (e) => {
     const tabBtn = e.target.closest('[data-library-tab]');
     if (tabBtn) setLibraryTab(tabBtn.dataset.libraryTab);
+  });
+  document.getElementById('shelf-empty-hint')?.addEventListener('click', (e) => {
+    if (e.target.closest('[data-add-book-shelf]')) {
+      document.getElementById('add-book-btn')?.click();
+      return;
+    }
+    if (e.target.closest('[data-browse-shared-library]')) setLibraryTab('all');
   });
   document.getElementById('view-toggle-btn')?.addEventListener('click', toggleView);
 
