@@ -83,6 +83,7 @@ const tests = [
   'test-queue-status.js',
   'test-toast-actions.js',
   'test-sharing.js',
+  'test-service-worker-media-routing.js',
   'test-offline-range.js',
   'test-offline-cache.js',
   'test-audio-streaming.js',

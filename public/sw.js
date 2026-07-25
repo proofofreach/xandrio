@@ -1,7 +1,7 @@
 importScripts('/js/offline-range.js');
 
 const APP_RELEASE = '1.1.0';
-const CACHE_VERSION = 'xandrio-v104';
+const CACHE_VERSION = 'xandrio-v105';
 const OFFLINE_AUDIO_CACHE = 'xandrio-offline-audio';
 const OFFLINE_TITLE_CACHE = 'xandrio-offline-titles';
 const OFFLINE_SCOPE_PARAM = 'xandrio-offline-scope';
@@ -123,9 +123,14 @@ function isAppShell(request) {
 function isOfflineAudioRequest(request) {
   if (request.method !== 'GET') return false;
   const url = new URL(request.url);
-  // Both audio endpoints: /api/audio/ (chunked concat) and /api/audio-ios/
-  // (clean AAC used by SingleFileChapterPlayer on iOS).
-  return /^\/api\/audio(?:-ios)?\/[^/]+\/\d+$/.test(url.pathname);
+  const scope = url.searchParams.get(OFFLINE_SCOPE_PARAM);
+  // Do not proxy ordinary online media through the service worker. Mobile
+  // Safari can report `playing` while a service-worker-proxied Range response
+  // remains stalled at currentTime 0. Downloaded playback is explicitly
+  // account-scoped, so only those requests need the cache fallback.
+  return url.origin === self.location.origin
+    && /^[A-Za-z0-9_-]{1,64}$/.test(scope || '')
+    && /^\/api\/audio(?:-ios)?\/[^/]+\/\d+$/.test(url.pathname);
 }
 
 function isOfflineTitleRequest(request) {
