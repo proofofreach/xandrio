@@ -11,7 +11,6 @@ import { initBookmarks, renderBookmarksSection, addBookmarkAtCurrentPosition } f
 import { initOffline, renderOfflineState, queuePendingPosition, isChapterAvailableOffline, ensureRollingOfflineWindow, getOfflineBookData } from './js/features/offline.js';
 import { initPronunciationRepair } from './js/features/pronunciations.js';
 import { initQueueStatus } from './js/features/queue-status.js';
-import { initPlayerSharing } from './js/features/sharing.js';
 import { loadClientSettings, getSkipInterval, isSmartRewindEnabled, isRollingOfflineEnabled } from './js/client-settings.js';
 import { initLibrary, loadLibrary, cacheBookMeta } from './js/views/library.js';
 import { initSearch } from './js/views/search.js';
@@ -516,9 +515,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     getChapters: () => chapters,
     showAudioLoading,
     hideAudioLoading
-  });
-  initPlayerSharing({
-    getCurrentBook: () => currentBook
   });
   initPronunciationRepair({
     getCurrentBook: () => currentBook,
