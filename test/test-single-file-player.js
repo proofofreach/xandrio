@@ -29,9 +29,15 @@ function fakeAudio() {
     playbackRate: 1,
     currentTime: 0,
     duration: 10,
+    readyState: 4,
+    networkState: 1,
     paused: true,
     ended: false,
     error: null,
+    buffered: {
+      length: 1,
+      end() { return 10; }
+    },
     loadCalls: 0,
     playCalls: 0,
     addEventListener(type, fn) {
@@ -45,7 +51,7 @@ function fakeAudio() {
       return listeners.get(type)?.size || 0;
     },
     emit(type) {
-      for (const fn of [...(listeners.get(type) || [])]) fn();
+      for (const fn of [...(listeners.get(type) || [])]) fn({ type });
     },
     load() { this.loadCalls += 1; },
     pause() { this.paused = true; },
@@ -72,6 +78,7 @@ function fakeAudio() {
     const player = new SingleFileChapterPlayer(audio, {
       onReady: () => ready.push(player.chapterIndex),
       loadTimeoutMs: 50,
+      playTimeoutMs: 50,
       ...extra
     });
     return { player, ready };
@@ -90,12 +97,12 @@ function fakeAudio() {
     assert.deepStrictEqual(ready, [1], 'only the current chapter reports ready');
   });
 
-  await test('loads the stable chapter stream first and falls back on the same media element', async () => {
+  await test('loads one continuous book stream first and falls back on the same media element', async () => {
     const audio = fakeAudio();
     const { player } = makePlayer(audio);
 
     const load = player.loadChapter('book 1', 2);
-    assert.strictEqual(audio.src, '/api/audio-stream/book%201/2');
+    assert.match(audio.src, /^\/api\/audio-continuous\/book%201\/2\?session=/);
 
     audio.error = { message: 'stream unavailable' };
     audio.emit('error');
@@ -122,7 +129,7 @@ function fakeAudio() {
     audio.currentTime = 90;
     audio.emit('timeupdate');
 
-    assert.strictEqual(audio.src, '/api/audio-stream/book1/0');
+    assert.match(audio.src, /^\/api\/audio-continuous\/book1\/0\?session=/);
     assert.strictEqual(audio.playCalls, 1);
     assert.deepStrictEqual(
       { backend: player.getPosition().backend, isPlaying: player.getPosition().isPlaying },
@@ -147,7 +154,292 @@ function fakeAudio() {
     assert.strictEqual(player.getProgressPercent(), 25);
     assert.strictEqual(player.servedTier, 'instant');
     assert.strictEqual(player.getPosition().totalEstimatedTime, 30);
-    assert.strictEqual(audio.src, '/api/audio-stream/book1/2?tier=instant');
+    assert.match(audio.src, /^\/api\/audio-continuous\/book1\/2\?tier=instant&session=/);
+  });
+
+  await test('iOS-like native HLS is selected without an open-ended MP3 probe', async () => {
+    const audio = fakeAudio();
+    audio.canPlayType = type => type === 'application/vnd.apple.mpegurl' ? 'maybe' : '';
+    const { player } = makePlayer(audio, { isIOSLike: () => true });
+    const load = player.loadChapter('book1', 0);
+    assert.match(audio.src, /^\/api\/audio-hls\/book1\/0\/index\.m3u8\?session=/);
+    const hlsUrl = new URL(audio.src, 'https://xandrio.test');
+    assert.match(hlsUrl.searchParams.get('owner'), /^[A-Za-z0-9_-]{8,64}$/);
+    audio.emit('loadedmetadata');
+    await load;
+    assert.strictEqual(player.isContinuous, true);
+  });
+
+  await test('native HLS falls back directly to finite chapter audio', async () => {
+    const audio = fakeAudio();
+    audio.canPlayType = type => type === 'application/vnd.apple.mpegurl' ? 'maybe' : '';
+    const { player } = makePlayer(audio, { isIOSLike: () => true });
+    const load = player.loadChapter('book1', 0);
+    audio.error = { message: 'HLS unavailable' };
+    audio.emit('error');
+    await new Promise(resolve => setImmediate(resolve));
+
+    assert.strictEqual(audio.src, '/api/audio-ios/book1/0');
+    audio.error = null;
+    audio.emit('loadedmetadata');
+    await load;
+    assert.strictEqual(player.isContinuous, false);
+  });
+
+  await test('end-of-chapter transport limits reload with a stable HLS owner', async () => {
+    const audio = fakeAudio();
+    audio.canPlayType = type => type === 'application/vnd.apple.mpegurl' ? 'maybe' : '';
+    const { player } = makePlayer(audio, {
+      isIOSLike: () => true,
+      getChapterCount: () => 4,
+      getEstimatedDuration: () => 60
+    });
+    const load = player.loadChapter('book1', 1);
+    audio.emit('loadedmetadata');
+    await load;
+    const initial = new URL(audio.src, 'https://xandrio.test');
+    audio.paused = false;
+    player._isPlaying = true;
+
+    const arm = player.setContinuousEndChapter(1);
+    await new Promise(resolve => setImmediate(resolve));
+    const armed = new URL(audio.src, 'https://xandrio.test');
+    assert.strictEqual(armed.searchParams.get('endChapter'), '1');
+    assert.strictEqual(armed.searchParams.get('owner'), initial.searchParams.get('owner'));
+    audio.emit('loadedmetadata');
+    await arm;
+
+    const cancel = player.setContinuousEndChapter(null);
+    await new Promise(resolve => setImmediate(resolve));
+    const cancelled = new URL(audio.src, 'https://xandrio.test');
+    assert.strictEqual(cancelled.searchParams.has('endChapter'), false);
+    assert.strictEqual(cancelled.searchParams.get('owner'), initial.searchParams.get('owner'));
+    audio.emit('loadedmetadata');
+    await cancel;
+    assert.strictEqual(audio.playCalls, 2, 'arming and cancellation both preserve active playback');
+  });
+
+  await test('a nonseekable progressive stream reconnects at a server-side offset', async () => {
+    const audio = fakeAudio();
+    audio.seekable = { length: 0, start() { return 0; }, end() { return 0; } };
+    const { player } = makePlayer(audio, {
+      getEstimatedDuration: () => 60
+    });
+    const load = player.loadChapter('book1', 0);
+    audio.emit('loadedmetadata');
+    await load;
+    const originalSource = audio.src;
+
+    const seek = player.seek(18);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.notStrictEqual(audio.src, originalSource);
+    assert.match(audio.src, /offsetSeconds=18/);
+    audio.currentTime = 0;
+    audio.emit('loadedmetadata');
+    await seek;
+    assert.strictEqual(player.getCurrentTime(), 18);
+  });
+
+  await test('timeline polling replaces estimates with decoded chapter durations', async () => {
+    const audio = fakeAudio();
+    const fetchCalls = [];
+    const { player } = makePlayer(audio, {
+      getChapterCount: () => 2,
+      getEstimatedDuration: () => 10,
+      fetch: async url => {
+        fetchCalls.push(url);
+        return {
+          ok: true,
+          async json() {
+            return {
+              startChapterIndex: 0,
+              durations: [6, 8]
+            };
+          }
+        };
+      }
+    });
+    const load = player.loadChapter('book1', 0);
+    audio.emit('loadedmetadata');
+    await load;
+    await new Promise(resolve => setImmediate(resolve));
+    audio.currentTime = 6.5;
+    audio.emit('timeupdate');
+    assert.strictEqual(player.chapterIndex, 1);
+    assert.strictEqual(player.getCurrentTime(), 0.5);
+    assert.strictEqual(fetchCalls.length >= 1, true);
+    player.dispose();
+  });
+
+  await test('maps continuous stream time across chapters without replacing src', async () => {
+    const audio = fakeAudio();
+    audio.duration = Infinity;
+    const transitions = [];
+    const durations = [10, 20, 30];
+    const { player } = makePlayer(audio, {
+      getChapterCount: () => durations.length,
+      getEstimatedDuration: (_bookId, chapterIndex) => durations[chapterIndex],
+      onChapterTransition: detail => transitions.push(detail)
+    });
+    const load = player.loadChapter('book1', 1);
+    audio.emit('loadedmetadata');
+    await load;
+    const source = audio.src;
+    const loadCalls = audio.loadCalls;
+
+    audio.currentTime = 21;
+    audio.emit('timeupdate');
+
+    assert.strictEqual(audio.src, source);
+    assert.strictEqual(audio.loadCalls, loadCalls);
+    assert.strictEqual(player.chapterIndex, 2);
+    assert.strictEqual(player.getCurrentTime(), 1);
+    assert.strictEqual(player.getTotalTime(), 30);
+    assert.deepStrictEqual(transitions, [{
+      previousChapterIndex: 1,
+      chapterIndex: 2,
+      chapterTime: 1,
+      streamTime: 21
+    }]);
+  });
+
+  await test('skips zero-duration structural chapters in the continuous time map', async () => {
+    const audio = fakeAudio();
+    audio.duration = Infinity;
+    const transitions = [];
+    const durations = [10, 0, 20];
+    const { player } = makePlayer(audio, {
+      getChapterCount: () => durations.length,
+      getEstimatedDuration: (_bookId, chapterIndex) => durations[chapterIndex],
+      onChapterTransition: detail => transitions.push(detail)
+    });
+    const load = player.loadChapter('book1', 0);
+    audio.emit('loadedmetadata');
+    await load;
+
+    audio.currentTime = 11;
+    audio.emit('timeupdate');
+
+    assert.strictEqual(player.chapterIndex, 2);
+    assert.strictEqual(player.getCurrentTime(), 1);
+    assert.strictEqual(transitions.at(-1).chapterIndex, 2);
+  });
+
+  await test('treats premature continuous EOF as recoverable instead of finishing the book', async () => {
+    const audio = fakeAudio();
+    audio.duration = Infinity;
+    const errors = [];
+    let chapterEnds = 0;
+    const durations = [10, 20, 30];
+    const { player } = makePlayer(audio, {
+      getChapterCount: () => durations.length,
+      getEstimatedDuration: (_bookId, chapterIndex) => durations[chapterIndex],
+      onChapterEnd: () => { chapterEnds += 1; },
+      onError: error => errors.push(error)
+    });
+    const load = player.loadChapter('book1', 0);
+    audio.emit('loadedmetadata');
+    await load;
+
+    audio.currentTime = 15;
+    audio.ended = true;
+    audio.emit('ended');
+
+    assert.strictEqual(player.chapterIndex, 1);
+    assert.strictEqual(chapterEnds, 0);
+    assert.strictEqual(errors.length, 1);
+    assert.strictEqual(errors[0].code, 'CONTINUOUS_STREAM_EOF');
+    assert.strictEqual(errors[0].recoverable, true);
+  });
+
+  await test('continuous EOF finishes only after playback maps into the final chapter', async () => {
+    const audio = fakeAudio();
+    audio.duration = Infinity;
+    const errors = [];
+    let chapterEnds = 0;
+    const durations = [10, 20, 30];
+    const { player } = makePlayer(audio, {
+      getChapterCount: () => durations.length,
+      getEstimatedDuration: (_bookId, chapterIndex) => durations[chapterIndex],
+      onChapterEnd: () => { chapterEnds += 1; },
+      onError: error => errors.push(error)
+    });
+    const load = player.loadChapter('book1', 0);
+    audio.emit('loadedmetadata');
+    await load;
+
+    audio.currentTime = 55;
+    audio.ended = true;
+    audio.emit('ended');
+
+    assert.strictEqual(player.chapterIndex, 2);
+    assert.strictEqual(chapterEnds, 1);
+    assert.deepStrictEqual(errors, []);
+  });
+
+  await test('server EOF at an explicit chapter limit is intentional and never recoverable', async () => {
+    const audio = fakeAudio();
+    audio.duration = Infinity;
+    const errors = [];
+    const chapterEnds = [];
+    const { player } = makePlayer(audio, {
+      getChapterCount: () => 3,
+      getEstimatedDuration: () => 20,
+      getContinuousEndChapter: () => 1,
+      onChapterEnd: detail => chapterEnds.push(detail),
+      onError: error => errors.push(error)
+    });
+    const load = player.loadChapter('book1', 1);
+    assert.match(audio.src, /[?&]endChapter=1(?:&|$)/);
+    audio.emit('loadedmetadata');
+    await load;
+
+    audio.currentTime = 20;
+    audio.ended = true;
+    audio.emit('ended');
+
+    assert.deepStrictEqual(errors, []);
+    assert.deepStrictEqual(chapterEnds, [{
+      reason: 'continuous-limit',
+      endChapterIndex: 1
+    }]);
+  });
+
+  await test('offline playback keeps the per-chapter standard audio source', async () => {
+    const audio = fakeAudio();
+    const { player } = makePlayer(audio, {
+      isIOSLike: () => true
+    });
+    player.preferStandardAudio = true;
+
+    const load = player.loadChapter('book1', 2);
+    audio.emit('loadedmetadata');
+    await load;
+
+    assert.strictEqual(audio.src, '/api/audio/book1/2');
+    assert.strictEqual(player.isContinuous, false);
+  });
+
+  await test('reports media starvation and lifecycle-relevant events with bounded details', async () => {
+    const audio = fakeAudio();
+    const events = [];
+    const { player } = makePlayer(audio, {
+      onDiagnosticEvent: event => events.push(event)
+    });
+    const load = player.loadChapter('book1', 0);
+    audio.emit('loadedmetadata');
+    await load;
+
+    audio.currentTime = 2;
+    for (const type of ['waiting', 'stalled', 'suspend', 'abort', 'emptied']) audio.emit(type);
+    audio.emit('timeupdate');
+
+    assert.deepStrictEqual(
+      events.filter(event => ['waiting', 'stalled', 'suspend', 'abort', 'emptied'].includes(event.type))
+        .map(event => event.type),
+      ['waiting', 'stalled', 'suspend', 'abort', 'emptied']
+    );
+    assert(events.every(event => !Object.hasOwn(event, 'src')));
   });
 
   await test('the second load\'s events cannot resolve the first load', async () => {
@@ -241,6 +533,19 @@ function fakeAudio() {
     assert.deepStrictEqual(changes, [[false, 'app']]);
   });
 
+  await test('a play call that never reaches playing rejects instead of claiming success', async () => {
+    const audio = fakeAudio();
+    const { player } = makePlayer(audio);
+    const load = player.loadChapter('book1', 0);
+    audio.emit('loadedmetadata');
+    await load;
+    await assert.rejects(
+      player.play(),
+      error => error.code === 'MEDIA_PLAY_TIMEOUT'
+    );
+    assert.strictEqual(player.isPlaying, false);
+  });
+
   await test('distinguishes app controls from native playback interruptions', async () => {
     const audio = fakeAudio();
     const changes = [];
@@ -270,6 +575,24 @@ function fakeAudio() {
       [true, 'external'],
       [false, 'external']
     ]);
+  });
+
+  await test('preserves the explicit chapter sleep-timer pause reason', async () => {
+    const audio = fakeAudio();
+    const events = [];
+    const { player } = makePlayer(audio, {
+      onDiagnosticEvent: event => events.push(event)
+    });
+    const load = player.loadChapter('book1', 0);
+    audio.emit('loadedmetadata');
+    await load;
+    audio.paused = false;
+
+    player.pause('sleep-timer-chapter');
+    audio.emit('pause');
+
+    assert.strictEqual(events.at(-1).type, 'pause');
+    assert.strictEqual(events.at(-1).reason, 'sleep-timer-chapter');
   });
 
   await test('a rejected native play does not leave an unhandled media wait rejection', async () => {

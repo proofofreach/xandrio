@@ -59,7 +59,7 @@ test('default groups cover authentication, import, metadata, TTS, and voice uplo
   const covered = path => groups.some(group => group.match(path));
   for (const path of [
     '/api/auth/login', '/api/search', '/api/upload', '/api/download',
-    '/api/refresh-metadata/book', '/api/audio/book/0',
+    '/api/refresh-metadata/book', '/api/audio/book/0', '/api/audio-continuous/book/0',
     '/api/chunks/book/0/prepare', '/api/chunks/book/0/1',
     '/api/voices/clone'
   ]) assert(covered(path), `${path} should be rate limited`);

@@ -51,6 +51,8 @@ function element() {
   const extendButton = element();
   const option = element();
   option.dataset.minutes = '15';
+  const chapterOption = element();
+  chapterOption.dataset.mode = 'chapter';
   const elements = new Map([
     ['timer-modal', element()],
     ['timer-btn-inline', timerButton],
@@ -63,7 +65,7 @@ function element() {
   global.document = {
     body: element(),
     getElementById(id) { return elements.get(id) || null; },
-    querySelectorAll(selector) { return selector === '.timer-option' ? [option] : []; }
+    querySelectorAll(selector) { return selector === '.timer-option' ? [option, chapterOption] : []; }
   };
   const timers = new Map();
   let nextTimer = 1;
@@ -95,7 +97,7 @@ function element() {
           return () => el?.removeEventListener('keydown', listener);
         };`);
     const moduleUrl = `data:text/javascript;base64,${Buffer.from(source).toString('base64')}`;
-    const { initSleepTimer, restoreSleepTimer } = await import(moduleUrl);
+    const { clearSleepTimer, initSleepTimer, restoreSleepTimer } = await import(moduleUrl);
 
     await test('re-init replaces sleep timer view listeners', () => {
       initSleepTimer({ getCurrentBook: () => null, getCurrentChapter: () => 0, getChunkPlayer: () => null, updatePlaybackUI() {}, savePosition() {} });
@@ -103,7 +105,46 @@ function element() {
       assert.strictEqual(timerButton.count('click'), 1);
       assert.strictEqual(timerButton.count('keydown'), 1);
       assert.strictEqual(option.count('click'), 1);
+      assert.strictEqual(chapterOption.count('click'), 1);
       assert.strictEqual(extendButton.count('click'), 1);
+    });
+
+    await test('chapter target arm, restore, and cancel update the transport limit', async () => {
+      const changes = [];
+      const options = {
+        getCurrentBook: () => ({ id: 'book-a' }),
+        getCurrentChapter: () => 2,
+        getChunkPlayer: () => null,
+        updatePlaybackUI() {},
+        savePosition() {},
+        onChapterTargetChange(target, detail) {
+          changes.push({ target, reason: detail.reason });
+        }
+      };
+      initSleepTimer(options);
+      chapterOption.emit('click');
+      await Promise.resolve();
+      assert.deepStrictEqual(changes.at(-1), {
+        target: { bookId: 'book-a', chapterIndex: 2 },
+        reason: 'armed'
+      });
+      assert.strictEqual(values.get('xandrio_sleep_timer_mode'), 'chapter');
+
+      restoreSleepTimer();
+      await Promise.resolve();
+      assert.deepStrictEqual(changes.at(-1), {
+        target: { bookId: 'book-a', chapterIndex: 2 },
+        reason: 'restored'
+      });
+
+      cancelButton.emit('click');
+      await Promise.resolve();
+      assert.deepStrictEqual(changes.at(-1), {
+        target: null,
+        reason: 'cancelled'
+      });
+      assert.strictEqual(values.has('xandrio_sleep_timer_chapter_target'), false);
+      clearSleepTimer();
     });
 
     await test('restoring twice leaves exactly one countdown and expiry', () => {

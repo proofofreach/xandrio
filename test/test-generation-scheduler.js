@@ -155,7 +155,7 @@ async function run() {
     assert.deepStrictEqual(order, ['stream-next', 'other-next']);
   });
 
-  await test('aging prevents background starvation', async () => {
+  await test('aged background work never overtakes newly queued live playback', async () => {
     const scheduler = new GenerationScheduler({ capacities: { gpu: 1 }, backgroundAgingMs: 5 });
     const blocker = deferred();
     const order = [];
@@ -165,7 +165,7 @@ async function run() {
     const immediate = scheduler.run({ priority: 'immediate' }, async () => order.push('immediate'));
     blocker.resolve();
     await Promise.all([active, oldBackground, immediate]);
-    assert.deepStrictEqual(order, ['background', 'immediate']);
+    assert.deepStrictEqual(order, ['immediate', 'background']);
   });
 
   console.log(`\n${passed} passed, ${failed} failed`);

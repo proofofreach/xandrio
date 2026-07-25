@@ -27,6 +27,7 @@ function assert(condition, message) {
 const publicDir = path.join(__dirname, '..', 'public');
 const swSource = fs.readFileSync(path.join(publicDir, 'sw.js'), 'utf8');
 const indexSource = fs.readFileSync(path.join(publicDir, 'index.html'), 'utf8');
+const appSource = fs.readFileSync(path.join(publicDir, 'app.js'), 'utf8');
 
 console.log('\n━━━ App shell versions ━━━');
 
@@ -57,6 +58,12 @@ assert(
   indexSource.indexOf('/js/lifecycle.js') !== -1 &&
     indexSource.indexOf('/js/lifecycle.js') < indexSource.indexOf('/js/chunk-player.js'),
   'index.html loads lifecycle helpers before the classic chunk player'
+);
+
+const serviceWorkerRegistration = appSource.match(/function registerServiceWorker\(\) \{([\s\S]*?)\n\}/)?.[1] || '';
+assert(
+  serviceWorkerRegistration && !serviceWorkerRegistration.includes('location.reload'),
+  'service-worker activation never reloads an actively playing client'
 );
 
 // APP_SHELL entries must exist on disk, or cache.addAll() rejects and the new

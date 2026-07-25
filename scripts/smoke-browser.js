@@ -576,13 +576,18 @@ async function verifyPlayback(page, fixtureState) {
   await page.click('#play-pause-btn');
   await page.waitForFunction(() => window.__smokeAudios.some(audio => !audio.paused));
   await page.click('#skip-forward-btn');
-  await page.waitForFunction(() => window.__smokeAudios.some(audio => audio.currentTime >= 14));
+  // The continuous response is intentionally non-seekable. A forward skip
+  // reconnects at a server-side chapter offset, so the new media resource
+  // starts at native time zero while the player keeps the logical position.
+  await page.waitForFunction(() => (
+    Number(window.xandrioPlaybackReport?.().position?.currentTime) >= 14
+  ));
   await page.click('#play-pause-btn');
   await page.waitForFunction(() => window.__smokeAudios.every(audio => audio.paused));
 
   const playbackSource = await page.evaluate(() => window.__smokeAudios[0]?.src || '');
-  if (!playbackSource.includes('/api/audio-stream/smoke/0?tier=instant')) {
-    throw new Error(`Playback tier was not pinned on the stable stream: ${playbackSource}`);
+  if (!playbackSource.includes('/api/audio-continuous/smoke/0?tier=instant')) {
+    throw new Error(`Playback tier was not pinned on the continuous stream: ${playbackSource}`);
   }
 
   await page.evaluate(() => window.__setSmokeOnline(false));

@@ -23,6 +23,7 @@ const gutenberg = require('./lib/gutenberg');
 const { isSafeBookId: requestGuardIsSafeBookId, parseNonNegativeInteger } = require('./lib/request-guards');
 const { serveAudioFile } = require('./lib/audio-response');
 const { createChapterAudioStreamer } = require('./lib/chapter-audio-stream');
+const { createHlsAudioStreamer } = require('./lib/hls-audio-stream');
 const { registerPlaybackRoutes } = require('./lib/routes/playback-routes');
 const { getTtsOutputFormatForVoice } = require('./lib/tts-output-format');
 const { createNarrationEngineRegistry } = require('./lib/narration-engine-registry');
@@ -1835,6 +1836,7 @@ const playbackOrchestrator = createPlaybackOrchestrator({
   onBackgroundError: (error, context) => console.error(`Look-ahead generation failed for chapter ${context.chapterIndex}:`, error)
 });
 const chapterAudioStreamer = createChapterAudioStreamer({ serveAudioFile });
+const hlsAudioStreamer = createHlsAudioStreamer({ serveAudioFile });
 
 async function inspectChapterAudio(bookId, chapterIndex, options = {}) {
   const clean = Boolean(options.clean);
@@ -2816,6 +2818,7 @@ registerPlaybackRoutes(app, {
   ttsForTier,
   generationJournal,
   chapterAudioStreamer,
+  hlsAudioStreamer,
   serveAudioFile,
   sendServerError,
   fs
@@ -3620,6 +3623,7 @@ const shutdownController = createGracefulShutdown({
       console.warn(`Search-cover descriptor flush failed: ${err.message}`);
     }
     narrationEngines.stopAll();
+    await hlsAudioStreamer.dispose();
     // Give the scraper's Chromium a moment to close, but never block exit.
     try {
       await Promise.race([
