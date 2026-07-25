@@ -1,4 +1,5 @@
 const assert = require('assert');
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 
@@ -27,7 +28,13 @@ function makeCache() {
       return response ? response.clone() : undefined;
     },
     async put(input, response) {
-      entries.set(keyOf(input), response.clone());
+      const headers = new Headers(response.headers);
+      const bytes = await response.arrayBuffer();
+      entries.set(keyOf(input), new Response(bytes, {
+        status: response.status,
+        statusText: response.statusText,
+        headers
+      }));
     },
     async delete(input) {
       return entries.delete(keyOf(input));
@@ -63,7 +70,11 @@ function installBrowser({
   deletionResponse = { revision: 0, deletions: [] },
   canClaimLegacy = true,
   preparationResponse = null,
-  preparationGate = null
+  preparationGate = null,
+  serverContentHash = false,
+  confirmationResult = true,
+  wakeLockSupported = false,
+  persistenceGate = null
 }) {
   const storage = sharedStorage || new Map();
   if (!storage.has('xandrio_offline_books')) {
@@ -71,10 +82,29 @@ function installBrowser({
   }
   global.__offlineScope = scope;
   global.__canClaimLegacy = canClaimLegacy;
+  const confirmationCalls = [];
+  global.__offlineConfirmSheet = async options => {
+    confirmationCalls.push(options);
+    return confirmationResult;
+  };
+  let hashCalls = 0;
+  Object.defineProperty(global, 'crypto', {
+    configurable: true,
+    writable: true,
+    value: {
+      subtle: {
+        digest(...args) {
+          hashCalls += 1;
+          return crypto.webcrypto.subtle.digest(...args);
+        }
+      }
+    }
+  });
   const elements = new Map([
     ['player-voice-name', { textContent: 'Narrator' }]
   ]);
   const documentEvents = [];
+  const documentListeners = new Map();
   global.localStorage = {
     getItem: key => storage.get(key) || null,
     setItem: (key, value) => {
@@ -85,23 +115,52 @@ function installBrowser({
   };
   global.window = { location: { origin: 'https://reader.test' }, addEventListener() {} };
   global.document = {
+    hidden: false,
     documentElement: { dataset: {} },
     getElementById: id => elements.get(id) || null,
+    addEventListener(type, listener) {
+      if (!documentListeners.has(type)) documentListeners.set(type, new Set());
+      documentListeners.get(type).add(listener);
+    },
+    removeEventListener(type, listener) {
+      documentListeners.get(type)?.delete(listener);
+    },
     dispatchEvent(event) {
       documentEvents.push(event);
+      for (const listener of documentListeners.get(event.type) || []) listener(event);
       return true;
     }
   };
   const persistenceCalls = [];
+  const wakeLockCalls = [];
+  let wakeLockReleaseListener = null;
+  let wakeLockGate = null;
   Object.defineProperty(global, 'navigator', {
     configurable: true,
     writable: true,
     value: {
       onLine: true,
+      ...(wakeLockSupported ? {
+        wakeLock: {
+          async request(type) {
+            wakeLockCalls.push(`request:${type}`);
+            if (wakeLockGate) await wakeLockGate.promise;
+            return {
+              addEventListener(event, listener) {
+                if (event === 'release') wakeLockReleaseListener = listener;
+              },
+              async release() {
+                wakeLockCalls.push('release');
+              }
+            };
+          }
+        }
+      } : {}),
       storage: {
         estimate: async () => ({ quota: 1000000, usage: 0 }),
         persisted: async () => {
           persistenceCalls.push('persisted');
+          if (persistenceGate) await persistenceGate;
           return storagePersisted;
         },
         persist: async () => {
@@ -149,7 +208,7 @@ function installBrowser({
     return {};
   };
   global.fetch = async (input, options = {}) => {
-    const url = typeof input === 'string' ? input : input.url;
+    const url = typeof input === 'string' ? input : (input.url || String(input));
     const chapter = Number(url.match(/(?:\/api\/chunks\/[^/]+\/|\/api\/audio\/[^/]+\/)(\d+)/)?.[1]);
     if (url.includes('chapter-audio-status')) {
       return Response.json({ ready: true, variantKey: variants[chapter], url: `/api/audio/${book.id}/${chapter}` });
@@ -162,6 +221,14 @@ function installBrowser({
         return new Response('try again', { status: 503 });
       }
       const bytes = new TextEncoder().encode(`audio-${variants[chapter]}-${chapter}`);
+      const responseHeaders = {
+        'Content-Length': String(bytes.byteLength),
+        ETag: `\"${variants[chapter]}-${chapter}\"`
+      };
+      if (serverContentHash && options.headers?.['X-Xandrio-Offline-Download'] === '1') {
+        responseHeaders['X-Xandrio-Content-SHA256'] =
+          `sha256-${crypto.createHash('sha256').update(bytes).digest('hex')}`;
+      }
       if (remainingStreamFailures > 0) {
         remainingStreamFailures -= 1;
         const stream = new ReadableStream({
@@ -171,10 +238,10 @@ function installBrowser({
           }
         });
         return new Response(stream, {
-          headers: { 'Content-Length': String(bytes.byteLength), ETag: `\"${variants[chapter]}-${chapter}\"` }
+          headers: responseHeaders
         });
       }
-      return new Response(bytes, { headers: { 'Content-Length': String(bytes.byteLength), ETag: `\"${variants[chapter]}-${chapter}\"` } });
+      return new Response(bytes, { headers: responseHeaders });
     }
     throw new Error(`Unexpected fetch ${url}`);
   };
@@ -186,6 +253,29 @@ function installBrowser({
     preparationCalls,
     documentEvents,
     persistenceCalls,
+    confirmationCalls,
+    wakeLockCalls,
+    setDocumentHidden(hidden) {
+      document.hidden = hidden;
+      if (hidden) {
+        wakeLockReleaseListener?.();
+        wakeLockReleaseListener = null;
+      }
+      document.dispatchEvent(new Event('visibilitychange'));
+    },
+    deferNextWakeLock() {
+      let resolve;
+      const promise = new Promise(done => { resolve = done; });
+      wakeLockGate = {
+        promise,
+        resolve() {
+          wakeLockGate = null;
+          resolve();
+        }
+      };
+      return wakeLockGate;
+    },
+    get hashCalls() { return hashCalls; },
     titleCache,
     init: { getCurrentBook: () => book, getChapters: () => chapters }
   };
@@ -204,6 +294,7 @@ function installBrowser({
     .replace("import { escapeHTML, formatDuration, relativeTime } from '../util/format.js';", "const escapeHTML = value => String(value); const relativeTime = () => ''; const formatDuration = () => '';")
     .replace("import { readJSON, writeJSON } from '../util/storage.js';", "const readJSON = (key, fallback = null) => { try { const value = localStorage.getItem(key); return value == null ? fallback : JSON.parse(value); } catch { return fallback; } }; const writeJSON = (key, value) => { try { localStorage.setItem(key, JSON.stringify(value)); return true; } catch { return false; } };")
     .replace("import { showToast, showUndoToast } from '../ui/toast.js';", "const showToast = () => {}; const showUndoToast = () => {};")
+    .replace("import { confirmSheet } from '../ui/confirm.js';", "const confirmSheet = (...args) => globalThis.__offlineConfirmSheet(...args);")
     .replace(
       "import { planRollingOfflineWindow } from './rolling-offline.mjs';",
       "const planRollingOfflineWindow = ({ currentChapter, chapterCount, cachedChapters = [] }) => { const first = Math.max(0, currentChapter - 1); const last = Math.min(chapterCount - 1, currentChapter + 2); const retain = Array.from({ length: Math.max(0, last - first + 1) }, (_, index) => first + index); const cached = new Set(cachedChapters); const kept = new Set(retain); return { retain, prepare: retain.filter(index => !cached.has(index)), evict: [...cached].filter(index => !kept.has(index)).sort((a, b) => a - b) }; };"
@@ -292,6 +383,153 @@ function installBrowser({
     assert.strictEqual(await offline.downloadCurrentBook(), true);
     assert.deepStrictEqual(env.persistenceCalls, ['persisted', 'persist']);
     assert.strictEqual(offline.offlineStatusForBook(book.id).downloaded, true);
+  });
+
+  await test('requires an explicit keep-visible acknowledgement before transferring audio', async () => {
+    const cache = makeCache();
+    const env = installBrowser({
+      book,
+      chapters,
+      cache,
+      confirmationResult: false
+    });
+    offline.initOffline(env.init);
+
+    assert.strictEqual(await offline.downloadCurrentBook(), false);
+    assert.strictEqual(env.confirmationCalls.length, 1);
+    assert.strictEqual(env.confirmationCalls[0].title, 'Keep Xandrio visible');
+    assert.match(env.confirmationCalls[0].message, /do not close xandrio/i);
+    assert.match(env.confirmationCalls[0].message, /switch apps.*lock/i);
+    assert.deepStrictEqual(env.persistenceCalls, []);
+    assert.deepStrictEqual(env.audioRequests, []);
+  });
+
+  await test('reserves download ownership before asynchronous browser setup', async () => {
+    const cache = makeCache();
+    let releasePersistence;
+    const persistenceGate = new Promise(resolve => { releasePersistence = resolve; });
+    const env = installBrowser({
+      book,
+      chapters: [{}],
+      cache,
+      variants: ['voice-a'],
+      persistenceGate
+    });
+    offline.initOffline(env.init);
+
+    const firstDownload = offline.downloadBookForOffline(
+      book,
+      [{}],
+      { confirmForeground: false }
+    );
+    for (let attempt = 0; attempt < 20 && env.persistenceCalls.length === 0; attempt++) {
+      await new Promise(resolve => setImmediate(resolve));
+    }
+    const secondDownload = offline.downloadBookForOffline(
+      book,
+      [{}],
+      { confirmForeground: false }
+    );
+    await new Promise(resolve => setImmediate(resolve));
+
+    assert.deepStrictEqual(env.persistenceCalls, ['persisted']);
+    assert.strictEqual(await secondDownload, false);
+    releasePersistence();
+    assert.strictEqual(await firstDownload, false);
+    assert.deepStrictEqual(env.audioRequests, []);
+  });
+
+  await test('holds a screen wake lock for the active download and releases it afterwards', async () => {
+    const cache = makeCache();
+    let releaseAudio;
+    const audioGate = new Promise(resolve => { releaseAudio = resolve; });
+    const env = installBrowser({
+      book,
+      chapters: [{}],
+      cache,
+      variants: ['voice-a'],
+      audioGate,
+      wakeLockSupported: true
+    });
+    offline.initOffline(env.init);
+
+    const download = offline.downloadCurrentBook();
+    for (let attempt = 0; attempt < 20 && env.wakeLockCalls.length === 0; attempt++) {
+      await new Promise(resolve => setImmediate(resolve));
+    }
+    const callsWhileDownloading = [...env.wakeLockCalls];
+    releaseAudio();
+    assert.strictEqual(await download, true);
+    assert.deepStrictEqual(callsWhileDownloading, ['request:screen']);
+    assert.deepStrictEqual(env.wakeLockCalls, ['request:screen', 'release']);
+  });
+
+  await test('reacquires the screen wake lock if a live download returns to the foreground', async () => {
+    const cache = makeCache();
+    let releaseAudio;
+    const audioGate = new Promise(resolve => { releaseAudio = resolve; });
+    const env = installBrowser({
+      book,
+      chapters: [{}],
+      cache,
+      variants: ['voice-a'],
+      audioGate,
+      wakeLockSupported: true
+    });
+    offline.initOffline(env.init);
+
+    const download = offline.downloadCurrentBook();
+    for (let attempt = 0; attempt < 20 && env.wakeLockCalls.length < 1; attempt++) {
+      await new Promise(resolve => setImmediate(resolve));
+    }
+    env.setDocumentHidden(true);
+    env.setDocumentHidden(false);
+    for (let attempt = 0; attempt < 20 && env.wakeLockCalls.length < 2; attempt++) {
+      await new Promise(resolve => setImmediate(resolve));
+    }
+    const callsAfterReturn = [...env.wakeLockCalls];
+    releaseAudio();
+
+    assert.strictEqual(await download, true);
+    assert.deepStrictEqual(callsAfterReturn, ['request:screen', 'request:screen']);
+    assert.deepStrictEqual(env.wakeLockCalls, ['request:screen', 'request:screen', 'release']);
+  });
+
+  await test('deduplicates a late wake-lock request and releases it after the download finishes', async () => {
+    const cache = makeCache();
+    let releaseAudio;
+    const audioGate = new Promise(resolve => { releaseAudio = resolve; });
+    const env = installBrowser({
+      book,
+      chapters: [{}],
+      cache,
+      variants: ['voice-a'],
+      audioGate,
+      wakeLockSupported: true
+    });
+    offline.initOffline(env.init);
+
+    const download = offline.downloadCurrentBook();
+    for (let attempt = 0; attempt < 20 && env.wakeLockCalls.length < 1; attempt++) {
+      await new Promise(resolve => setImmediate(resolve));
+    }
+    env.setDocumentHidden(true);
+    const lateWakeLock = env.deferNextWakeLock();
+    env.setDocumentHidden(false);
+    document.dispatchEvent(new Event('visibilitychange'));
+    for (let attempt = 0; attempt < 20 && env.wakeLockCalls.length < 2; attempt++) {
+      await new Promise(resolve => setImmediate(resolve));
+    }
+    releaseAudio();
+    await new Promise(resolve => setImmediate(resolve));
+    lateWakeLock.resolve();
+
+    assert.strictEqual(await download, true);
+    assert.deepStrictEqual(env.wakeLockCalls, [
+      'request:screen',
+      'request:screen',
+      'release'
+    ]);
   });
 
   await test('continues a download when persistent storage is denied', async () => {
@@ -576,6 +814,25 @@ function installBrowser({
       }
     };
     assert.strictEqual(await offline.verifyOfflineEntry(metadataOnlyCache, entry), true);
+  });
+
+  await test('streams server-verified audio into Cache Storage without hashing a second browser copy', async () => {
+    const cache = makeCache();
+    const env = installBrowser({
+      book,
+      chapters: [{}],
+      cache,
+      variants: ['voice-a'],
+      serverContentHash: true
+    });
+    offline.initOffline(env.init);
+
+    assert.strictEqual(await offline.downloadCurrentBook(), true);
+    assert.strictEqual(env.hashCalls, 0);
+    assert.strictEqual(
+      await offline.verifyOfflineEntry(cache, offline.getOfflineManifest()[book.id]),
+      true
+    );
   });
 
   await test('a successful audit backfills legacy cache identity metadata', async () => {
@@ -915,7 +1172,7 @@ function installBrowser({
     const env = installBrowser({ book, chapters, cache });
     const normalFetch = global.fetch;
     global.fetch = async (input, options) => {
-      const url = typeof input === 'string' ? input : input.url;
+      const url = typeof input === 'string' ? input : (input.url || String(input));
       if (url.includes('/api/audio/book-1/1')) return new Response('nope', { status: 503 });
       return normalFetch(input, options);
     };
@@ -958,6 +1215,23 @@ function installBrowser({
     assert.strictEqual(await offline.downloadCurrentBook(), true);
     assert.deepStrictEqual(env.audioRequests, [0, 0]);
     assert.strictEqual(offline.getOfflineManifest()[book.id].state, 'ready');
+  });
+
+  await test('restarts a server-verified streaming cache write when the connection drops', async () => {
+    const cache = makeCache();
+    const env = installBrowser({
+      book,
+      chapters: [{}],
+      cache,
+      variants: ['voice-a'],
+      transientStreamFailures: 1,
+      serverContentHash: true
+    });
+    offline.initOffline(env.init);
+
+    assert.strictEqual(await offline.downloadCurrentBook(), true);
+    assert.deepStrictEqual(env.audioRequests, [0, 0]);
+    assert.strictEqual(env.hashCalls, 0);
   });
 
   await test('pipelines two chapters so transfer and generation can overlap', async () => {
