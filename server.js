@@ -22,6 +22,7 @@ const zlibrary = require('./lib/zlibrary');
 const gutenberg = require('./lib/gutenberg');
 const { isSafeBookId: requestGuardIsSafeBookId, parseNonNegativeInteger } = require('./lib/request-guards');
 const { serveAudioFile } = require('./lib/audio-response');
+const { createChapterAudioStreamer } = require('./lib/chapter-audio-stream');
 const { registerPlaybackRoutes } = require('./lib/routes/playback-routes');
 const { getTtsOutputFormatForVoice } = require('./lib/tts-output-format');
 const { createNarrationEngineRegistry } = require('./lib/narration-engine-registry');
@@ -1833,6 +1834,7 @@ const playbackOrchestrator = createPlaybackOrchestrator({
   },
   onBackgroundError: (error, context) => console.error(`Look-ahead generation failed for chapter ${context.chapterIndex}:`, error)
 });
+const chapterAudioStreamer = createChapterAudioStreamer({ serveAudioFile });
 
 async function inspectChapterAudio(bookId, chapterIndex, options = {}) {
   const clean = Boolean(options.clean);
@@ -2813,6 +2815,7 @@ registerPlaybackRoutes(app, {
   playbackOrchestrator,
   ttsForTier,
   generationJournal,
+  chapterAudioStreamer,
   serveAudioFile,
   sendServerError,
   fs

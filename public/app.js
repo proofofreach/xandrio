@@ -42,9 +42,9 @@ let currentChapter = 0;
 let chapters = [];
 let currentBookOfflineFallback = false;
 let currentBookFinished = false;
-let chunkPlayer = null; // Active playback engine — ChunkPlayer or SingleFileChapterPlayer
-let chunkedPlayer = null; // Chunked fallback/first-load engine
-let playbackBackend = 'chunked';
+let chunkPlayer = null; // Active adapter for the persistent #audio-player element
+let chunkedPlayer = null; // Persistent adapter retained under the legacy variable name
+let playbackBackend = 'audio-stream';
 let currentBookPlaybackSettings = {};
 const smartRewind = createSmartRewindController();
 
@@ -54,8 +54,6 @@ const CHECKPOINT_SAVE_MIN_INTERVAL_MS = 1000;
 let lastCheckpointSaveAt = 0;
 let lastServerPositionSaveAt = 0;
 let pendingServerPositionTimer = null;
-let reliableAudioStatusTimer = null;
-let reliableHandoffInProgress = false;
 const playbackSession = createPlaybackSession({
   onStateChange: (state) => {
     currentBook = state.book;
@@ -162,38 +160,6 @@ function handleChapterEnd() {
 }
 
 
-function stopReliableAudioStatusPolling() {
-  if (reliableAudioStatusTimer) {
-    clearInterval(reliableAudioStatusTimer);
-    reliableAudioStatusTimer = null;
-  }
-}
-
-function startReliableAudioStatusPolling(bookId, chapterIndex) {
-  if (!needsReliablePlayback()) return;
-  stopReliableAudioStatusPolling();
-  const check = async () => {
-    if (!currentBook || currentBook.id !== bookId || currentChapter !== chapterIndex) {
-      stopReliableAudioStatusPolling();
-      return;
-    }
-    const status = await getChapterAudioStatus(bookId, chapterIndex);
-    if (status && status.ready) {
-      stopReliableAudioStatusPolling();
-      if (playbackBackend === 'single-file') {
-        setPlaybackReliabilityState('active', 'Best for lock screen');
-      } else {
-        setPlaybackReliabilityState('ready', 'Ready for lock screen');
-        handoffToReliablePlayback();
-      }
-    } else if (playbackBackend !== 'single-file') {
-      setPlaybackReliabilityState('preparing', 'Preparing lock-screen playback');
-    }
-  };
-  check();
-  reliableAudioStatusTimer = setInterval(check, 12000);
-}
-
 function handleChunkError(error) {
   console.error('Chunk playback error:', error);
   if (error && (error.name === 'NotAllowedError' || error.name === 'AbortError')) {
@@ -233,7 +199,11 @@ function handleChunkReady() {
   hideAudioLoading();
   updatePlaybackUI();
   updateMediaSessionPosition();
-  if (needsReliablePlayback() && playbackBackend === 'single-file') setPlaybackReliabilityState('active', 'Best for lock screen');
+  if (chunkPlayer?.supportsNativeMediaSession) {
+    setPlaybackReliabilityState('active', playbackBackend === 'single-file'
+      ? 'Playing downloaded audio'
+      : 'Continuous lock-screen playback');
+  }
 }
 
 // Engine messages are paint-only input here — we relabel specific known
@@ -269,112 +239,33 @@ function createSingleFileChapterEngine(options = {}) {
   return new SingleFileChapterPlayer(audioPlayer, {
     ...makePlaybackCallbacks(),
     isIOSLike,
+    getEstimatedDuration: (_bookId, chapterIndex) => chapters[chapterIndex]?.estimatedDuration || 0,
+    resolveServedTier: async (bookId, chapterIndex) => {
+      const status = await apiGet(`/api/chunks/${encodeURIComponent(bookId)}/${chapterIndex}/status`);
+      return status?.servedTier || null;
+    },
     ...options
   });
 }
 
-function adaptChunkedEngine(engine) {
-  engine.backend = 'chunked';
-  engine.supportsNativeMediaSession = false;
-  engine.dispose = () => engine.destroy();
-  return engine;
-}
-
-async function getChapterAudioStatus(bookId, chapterIndex) {
-  try {
-    const clean = isIOSLike() ? '?clean=1' : '';
-    return await apiGet(`/api/chunks/${encodeURIComponent(bookId)}/${chapterIndex}/chapter-audio-status${clean}`);
-  } catch {
-    return null;
-  }
-}
-
-function prepareReliableChapterAudio(bookId, chapterIndex) {
-  if (bookId === currentBook?.id && chapterIndex === currentChapter) {
-    setPlaybackReliabilityState('preparing', 'Preparing lock-screen playback');
-    startReliableAudioStatusPolling(bookId, chapterIndex);
-  }
-  fetch(`/api/chunks/${encodeURIComponent(bookId)}/${chapterIndex}/prepare-chapter-audio${isIOSLike() ? '?clean=1' : ''}`, { method: 'POST' })
-    .catch(err => console.warn('Reliable chapter audio prepare failed:', err));
-}
-
 async function selectPlaybackEngineForChapter(bookId, chapterIndex, options = {}) {
+  chunkedPlayer.preferStandardAudio = Boolean(options.offlineMode && options.offlineChapterAvailable);
   if (options.offlineMode && options.offlineChapterAvailable) {
     return {
-      engine: createSingleFileChapterEngine({ preferStandardAudio: true }),
+      engine: chunkedPlayer,
       backend: 'single-file',
       reliability: ['active', 'Playing downloaded audio'],
-      stopPolling: true
     };
   }
-  if (!needsReliablePlayback()) {
-    return { engine: chunkedPlayer, backend: 'chunked' };
-  }
-  const status = await getChapterAudioStatus(bookId, chapterIndex);
-  if (status && status.ready) {
-    return {
-      engine: createSingleFileChapterEngine(),
-      backend: 'single-file',
-      reliability: ['active', 'Best for lock screen'],
-      stopPolling: true
-    };
-  } else {
-    return {
-      engine: chunkedPlayer,
-      backend: 'chunked',
-      reliability: ['preparing', 'Preparing lock-screen playback'],
-      prepareReliable: true
-    };
-  }
+  return {
+    engine: chunkedPlayer,
+    backend: 'audio-stream',
+    reliability: ['active', 'Continuous lock-screen playback']
+  };
 }
 
-function applyPlaybackSelection(selection, bookId, chapterIndex) {
-  if (selection.stopPolling) stopReliableAudioStatusPolling();
+function applyPlaybackSelection(selection) {
   if (selection.reliability) setPlaybackReliabilityState(...selection.reliability);
-  if (selection.prepareReliable) prepareReliableChapterAudio(bookId, chapterIndex);
-}
-
-
-async function handoffToReliablePlayback(options = {}) {
-  if (!needsReliablePlayback() || playbackBackend === 'single-file' || reliableHandoffInProgress || !currentBook || !chunkPlayer) return;
-  reliableHandoffInProgress = true;
-  const oldPlayer = chunkPlayer;
-  try {
-    const nextPlayer = createSingleFileChapterEngine();
-    nextPlayer.setSpeed(getCurrentPlaybackSpeed());
-    const result = await playbackSession.handoffTo({
-      engine: nextPlayer,
-      backend: 'single-file',
-      play: options.play,
-      disposePrevious: false
-    });
-    if (result.stale) return;
-    setResumePromptVisible(false);
-    setPlaybackReliabilityState('active', 'Best for lock screen');
-    checkpointPlayback();
-    updatePlaybackUI(Boolean(chunkPlayer?.isPlaying));
-  } catch (err) {
-    console.warn('Reliable playback handoff failed:', err);
-    playbackSession.adoptEngine(oldPlayer, 'chunked');
-    setPlaybackReliabilityState('ready', 'Ready for lock screen');
-  } finally {
-    reliableHandoffInProgress = false;
-  }
-}
-
-
-async function switchToReliableIfReadyForPause() {
-  if (!needsReliablePlayback() || playbackBackend === 'single-file' || !currentBook || !chunkPlayer) return false;
-  const status = await getChapterAudioStatus(currentBook.id, currentChapter);
-  if (!status || !status.ready) return false;
-  await handoffToReliablePlayback({ play: false });
-  return playbackBackend === 'single-file';
-}
-
-function maybePrepareUpcomingReliableAudio() {
-  if (!currentBook || !needsReliablePlayback()) return;
-  prepareReliableChapterAudio(currentBook.id, currentChapter);
-  if (currentChapter + 1 < chapters.length) prepareReliableChapterAudio(currentBook.id, currentChapter + 1);
 }
 
 // Initialize when DOM is ready
@@ -427,9 +318,11 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
   syncTimeDisplayModeFromClientSettings();
   
-  // Initialize chunked playback. iOS may switch per chapter to reliable single-file audio when ready.
-  chunkedPlayer = adaptChunkedEngine(new ChunkPlayer(makePlaybackCallbacks()));
-  playbackSession.adoptEngine(chunkedPlayer, 'chunked');
+  // The DOM media element is retained for the entire app lifetime. Every
+  // chapter changes this element's source; no background handoff calls play()
+  // on a newly-created element.
+  chunkedPlayer = createSingleFileChapterEngine();
+  playbackSession.adoptEngine(chunkedPlayer, 'audio-stream');
   
   // Restore language preference (check both old and new keys for migration)
   const savedLanguage = readText('xandrio_default_language', 'en');
@@ -731,9 +624,8 @@ function setupEventListeners() {
     }
   });
 
-  // NOTE: ChunkPlayer handles chunked playback via its callback system; the
-  // <audio id="audio-player"> element is the output for SingleFileChapterPlayer
-  // (iOS reliable/offline playback), which attaches its own listeners.
+  // The persistent <audio id="audio-player"> element owns every playback
+  // source, including online streams and downloaded chapters.
 
   chapterSelect.addEventListener('change', (e) => {
     const nextChapter = parseInt(e.target.value);
@@ -819,9 +711,6 @@ async function clearDeletedBookFromPlayer(bookId) {
   loadChapterToken++;
   clearTimeout(pendingServerPositionTimer);
   pendingServerPositionTimer = null;
-  stopReliableAudioStatusPolling();
-  reliableHandoffInProgress = false;
-
   const retiredEngines = new Set([chunkPlayer, chunkedPlayer].filter(Boolean));
   for (const engine of retiredEngines) {
     try { engine.cancelPendingLoad?.(); } catch {}
@@ -829,9 +718,9 @@ async function clearDeletedBookFromPlayer(bookId) {
     try { engine.dispose?.(); } catch {}
   }
 
-  chunkedPlayer = adaptChunkedEngine(new ChunkPlayer(makePlaybackCallbacks()));
+  chunkedPlayer = createSingleFileChapterEngine();
   playbackSession.setBook(null);
-  playbackSession.adoptEngine(chunkedPlayer, 'chunked');
+  playbackSession.adoptEngine(chunkedPlayer, 'audio-stream');
   chapters = [];
   currentBookPlaybackSettings = {};
   currentBookOfflineFallback = false;
@@ -1001,7 +890,7 @@ async function openBook(bookId) {
     restoreSleepTimer();
 
     await loadChapter(chapterToLoad);
-    // Seek to saved position (cross-chunk seek via ChunkPlayer)
+    // Seek to the saved chapter position on the persistent media element.
     if (chunkPlayer && restorePosition && typeof chunkPlayer.seekToChunk === 'function' && Number.isInteger(restorePosition.chunkIndex)) {
       await chunkPlayer.seekToChunk(restorePosition.chunkIndex, restorePosition.chunkTime || 0);
     } else if (chunkPlayer && seekTo) {
@@ -1013,7 +902,6 @@ async function openBook(bookId) {
       await savePosition({ allowBackward: true, force: true });
     }
     
-    // NOTE: Pre-generation no longer needed — ChunkPlayer handles chunk look-ahead
     return true;
   } catch (err) {
     console.error('Failed to open book:', err);
@@ -1096,11 +984,11 @@ async function loadChapter(index, options = {}) {
     backend: selection.backend,
     play: false,
     preservePosition: false,
-    disposePrevious: Boolean(chunkPlayer && chunkPlayer !== chunkedPlayer),
+    disposePrevious: false,
     commitImmediately: options.commitImmediately
   });
   if (transition.stale) return;
-  applyPlaybackSelection(selection, currentBook.id, index);
+  applyPlaybackSelection(selection);
   chunkPlayer?.setSpeed?.(getCurrentPlaybackSpeed());
   if (token !== loadChapterToken) return;
   if (Number.isFinite(options.seekToSeconds)) {
@@ -1108,13 +996,12 @@ async function loadChapter(index, options = {}) {
     if (token !== loadChapterToken) return;
   }
   if (!offlineMode) {
-    maybePrepareUpcomingReliableAudio();
     void ensureRollingOfflineWindow(currentBook, chapters, currentChapter, {
       enabled: currentBookPlaybackSettings.rollingOfflineEnabled ?? isRollingOfflineEnabled()
     }).catch(error => console.warn('Automatic chapter cache unavailable:', error));
   }
   checkpointPlayback();
-  // ChunkPlayer will call onReady/onWaiting callbacks
+  // The media adapter calls onReady/onWaiting callbacks.
 
   if (wasPlaying) {
     try {
@@ -1217,7 +1104,6 @@ async function togglePlayPause(forcePlay = false) {
       setResumePromptVisible(false);
       updatePlaybackUI(true);
     } else {
-      await switchToReliableIfReadyForPause();
       recordSmartRewindPause();
       chunkPlayer.pause();
       updatePlaybackUI(false);
@@ -1238,7 +1124,7 @@ async function togglePlayPause(forcePlay = false) {
 
 function updatePlaybackUI(forcePlaying = null) {
   let isPlaying = forcePlaying !== null ? forcePlaying : Boolean(chunkPlayer && chunkPlayer.isPlaying);
-  if (needsReliablePlayback() && playbackBackend === 'single-file' && audioPlayer) {
+  if (chunkPlayer?.supportsNativeMediaSession && audioPlayer) {
     isPlaying = forcePlaying !== null ? forcePlaying : !audioPlayer.paused;
   }
   if (playPauseBtn) playPauseBtn.innerHTML = isPlaying ? ICON_PAUSE : ICON_PLAY;
@@ -1344,15 +1230,14 @@ function updateMediaSessionPosition(data = null) {
       navigator.mediaSession.setPositionState({ duration, playbackRate: getCurrentPlaybackSpeed(), position: Math.min(position, duration) });
     } catch {}
   }
-  if (needsReliablePlayback() && duration > 0 && position / duration > 0.7) maybePrepareUpcomingReliableAudio();
 }
 
 function isNativeSingleFileReady() {
-  return needsReliablePlayback() &&
-    playbackBackend === 'single-file' &&
+  return Boolean(
     audioPlayer &&
     audioPlayer.src &&
-    Boolean(chunkPlayer?.supportsNativeMediaSession);
+    chunkPlayer?.supportsNativeMediaSession
+  );
 }
 
 async function resumeNativeSingleFileFromMediaSession() {
@@ -1396,7 +1281,7 @@ function setupMediaSessionHandlers() {
       if (pauseNativeSingleFileFromMediaSession()) return;
       if (chunkPlayer.isPlaying) {
         await togglePlayPause();
-      } else if (playbackBackend === 'single-file' && audioPlayer && !audioPlayer.paused) {
+      } else if (chunkPlayer.supportsNativeMediaSession && audioPlayer && !audioPlayer.paused) {
         recordSmartRewindPause();
         audioPlayer.pause();
         updatePlaybackUI(false);
@@ -1460,13 +1345,32 @@ async function handleAudioEnd() {
   }
   // Auto-advance to next chapter
   if (currentChapter < chapters.length - 1) {
-    await loadChapter(currentChapter + 1, { commitImmediately: true });
-    try {
-      await chunkPlayer.play();
-      updatePlaybackUI(true);
-    } catch (err) {
-      console.error('Auto-advance play failed:', err);
-      updatePlaybackUI(false);
+    if (chunkPlayer?.supportsNativeMediaSession && audioPlayer) {
+      // Let the already-authorized native element continue when its source
+      // changes. Calling play() here is rejected by mobile browsers once the
+      // PWA is backgrounded, even though the listener started playback.
+      const clearAutoplay = () => {
+        audioPlayer.autoplay = false;
+        audioPlayer.removeEventListener('playing', clearAutoplay);
+      };
+      audioPlayer.autoplay = true;
+      audioPlayer.addEventListener('playing', clearAutoplay, { once: true });
+      try {
+        await loadChapter(currentChapter + 1, { commitImmediately: true });
+      } catch (err) {
+        clearAutoplay();
+        console.error('Native auto-advance failed:', err);
+        updatePlaybackUI(false);
+      }
+    } else {
+      await loadChapter(currentChapter + 1, { commitImmediately: true });
+      try {
+        await chunkPlayer.play();
+        updatePlaybackUI(true);
+      } catch (err) {
+        console.error('Auto-advance play failed:', err);
+        updatePlaybackUI(false);
+      }
     }
   } else {
     setCurrentBookFinished(true);

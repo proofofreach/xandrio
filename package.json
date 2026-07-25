@@ -27,6 +27,7 @@
     "benchmark:pdf": "node scripts/benchmark-pdf-extraction.js",
     "benchmark:kindle": "node scripts/benchmark-kindle-extraction.js",
     "benchmark:tts": "node scripts/benchmark-tts.js",
+    "benchmark:first-play": "node scripts/verify-android-lockscreen.js",
     "verify:audio": "node scripts/verify-audio-quality.js",
     "verify:audio:ci": "node scripts/verify-audio-quality.js --calibration-fixtures",
     "audit:production": "npm audit --omit=dev",

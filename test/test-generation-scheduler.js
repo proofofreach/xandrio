@@ -128,6 +128,33 @@ async function run() {
     await active;
   });
 
+  await test('live priority promotes a TTS job waiting for GPU admission', async () => {
+    const scheduler = new GenerationScheduler({ capacities: { gpu: 1 } });
+    const blocker = deferred();
+    const order = [];
+    const active = scheduler.run({ resource: 'gpu' }, () => blocker.promise);
+    class PendingQueue extends TTSQueue {
+      async _generateTTS() { order.push('stream-next'); }
+    }
+    const queue = new PendingQueue({ generationScheduler: scheduler });
+    const id = await queue.enqueue({
+      text: 'next streamed chunk',
+      outputPath: '/tmp/promote-before-admission.mp3',
+      priority: 'background',
+      voice: 'kokoro:af_heart'
+    });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.strictEqual(queue.getStatus(id).status, 'generating');
+    assert.strictEqual(queue.prioritize(id, 'immediate'), true);
+    const competing = scheduler.run(
+      { resource: 'gpu', priority: 'next' },
+      async () => order.push('other-next')
+    );
+    blocker.resolve();
+    await Promise.all([active, queue.waitFor(id), competing]);
+    assert.deepStrictEqual(order, ['stream-next', 'other-next']);
+  });
+
   await test('aging prevents background starvation', async () => {
     const scheduler = new GenerationScheduler({ capacities: { gpu: 1 }, backgroundAgingMs: 5 });
     const blocker = deferred();

@@ -376,6 +376,35 @@ async function runTests() {
     assert.deepStrictEqual(order, ['active', 'target-immediate', 'old-immediate']);
   });
 
+  await test('prioritize refuses priority downgrades while allowing promotion', async () => {
+    const q = new TestableQueue({ maxConcurrent: 1, generateDelay: 30 });
+
+    const blockerId = await q.enqueue({ text: 'active', outputPath: '/tmp/priority-active.mp3', priority: 'immediate' });
+    await sleep(5);
+
+    const firstLiveId = await q.enqueue({ text: 'live-first', outputPath: '/tmp/priority-live-first.mp3', priority: 'next' });
+    const targetLiveId = await q.enqueue({ text: 'live-target', outputPath: '/tmp/priority-live-target.mp3', priority: 'next' });
+    const backgroundId = await q.enqueue({ text: 'background-prep', outputPath: '/tmp/priority-background.mp3', priority: 'background' });
+
+    assert.strictEqual(q.prioritize(targetLiveId, 'background'), false, 'background prep must not downgrade a live chunk');
+    assert.strictEqual(q.getStatus(firstLiveId).position, 0, 'the earlier live chunk remains first');
+    assert.strictEqual(q.getStatus(targetLiveId).position, 1, 'the target live chunk remains second');
+
+    assert.strictEqual(q.prioritize(backgroundId, 'immediate'), true, 'a genuine promotion should still succeed');
+
+    await Promise.all([
+      q.waitFor(blockerId),
+      q.waitFor(firstLiveId),
+      q.waitFor(targetLiveId),
+      q.waitFor(backgroundId)
+    ]);
+
+    assert.deepStrictEqual(
+      q.generationLog.map(entry => entry.text),
+      ['active', 'background-prep', 'live-first', 'live-target']
+    );
+  });
+
   // ----- 10. Voice snapshot -----
   await test('enqueue stores voice snapshot until generation starts', async () => {
     const q = new TestableQueue({ maxConcurrent: 1, generateDelay: 10 });

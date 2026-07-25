@@ -1,8 +1,8 @@
 /**
- * ChunkPlayer - Double-buffered chunked audio playback
+ * ChunkPlayer - single-element chunked audio playback fallback
  * 
- * Plays chapter audio as a sequence of pre-generated audio chunks with
- * seamless gapless transitions using two alternating Audio elements.
+ * Plays chapter audio as a sequence of pre-generated audio chunks while
+ * preserving the media element that received the user's original play gesture.
  * 
  * Usage:
  *   const player = new ChunkPlayer({
@@ -22,12 +22,9 @@ const { LifecycleCancelledError, waitForMediaEvents } = globalThis.XandrioLifecy
 
 class ChunkPlayer {
   constructor(options = {}) {
-    // Two audio elements for double-buffering
-    this.audioA = new Audio();
-    this.audioB = new Audio();
-
-    // Which player is currently active ('A' or 'B')
-    this.activePlayer = 'A';
+    this.audio = options.audio || new Audio();
+    this.backend = 'chunked';
+    this.supportsNativeMediaSession = true;
 
     // Current chapter state
     this.bookId = null;
@@ -69,8 +66,8 @@ class ChunkPlayer {
     this._manifestRefreshFailures = 0;
 
     // Preload state tracking
-    this._preloadedChunk = -1; // chunk index loaded in standby player
-    this._preloadReady = false; // whether standby player is ready to play
+    this._preloadedChunk = -1; // chunk index prepared by the server
+    this._preloadReady = false; // whether the next source is ready to load
     this._preloadToken = 0;
     // Incremented on every loadChapter()/destroy(). Async chains capture it
     // on entry and bail after each await if a newer chapter has taken over,
@@ -82,8 +79,7 @@ class ChunkPlayer {
     this._onActiveTimeUpdate = this._handleTimeUpdate.bind(this);
     this._onActiveError = this._handleError.bind(this);
 
-    this._setupAudioElement(this.audioA);
-    this._setupAudioElement(this.audioB);
+    this._setupAudioElement(this.audio);
   }
 
   // ---------------------------------------------------------------------------
@@ -110,21 +106,7 @@ class ChunkPlayer {
    * Get the currently active Audio element.
    */
   _getActive() {
-    return this.activePlayer === 'A' ? this.audioA : this.audioB;
-  }
-
-  /**
-   * Get the standby (preloading) Audio element.
-   */
-  _getStandby() {
-    return this.activePlayer === 'A' ? this.audioB : this.audioA;
-  }
-
-  /**
-   * Swap active ↔ standby.
-   */
-  _swap() {
-    this.activePlayer = this.activePlayer === 'A' ? 'B' : 'A';
+    return this.audio;
   }
 
   // ---------------------------------------------------------------------------
@@ -153,12 +135,9 @@ class ChunkPlayer {
     this._preloadReady = false;
     this._preloadToken++;
     this._manifestRefreshFailures = 0;
-    this.activePlayer = 'A';
     this.servedTier = null; // re-resolve tier at every chapter boundary
 
-    // Reset both audio elements
-    this._resetAudioElement(this.audioA);
-    this._resetAudioElement(this.audioB);
+    this._resetAudioElement(this.audio);
 
     try {
       const manifest = await this._fetchManifest(this._requestController.signal);
@@ -478,14 +457,7 @@ class ChunkPlayer {
 
     if (this._destroyed || preloadToken !== this._preloadToken || this.currentChunk >= chunkIndex) return;
 
-    try {
-      await this._loadChunkInto(this._getStandby(), chunkIndex);
-      if (this._destroyed || preloadToken !== this._preloadToken || this.currentChunk >= chunkIndex) return;
-      this._preloadReady = true;
-    } catch (err) {
-      console.warn(`Preload of chunk ${chunkIndex} failed:`, err);
-      this._preloadReady = false;
-    }
+    this._preloadReady = true;
   }
 
   async _waitForChunkReadyInBackground(chunkIndex, preloadToken) {
@@ -513,13 +485,9 @@ class ChunkPlayer {
   }
 
   _detachEvents() {
-    // Remove from both to be safe
-    this.audioA.removeEventListener('ended', this._onActiveEnded);
-    this.audioA.removeEventListener('timeupdate', this._onActiveTimeUpdate);
-    this.audioA.removeEventListener('error', this._onActiveError);
-    this.audioB.removeEventListener('ended', this._onActiveEnded);
-    this.audioB.removeEventListener('timeupdate', this._onActiveTimeUpdate);
-    this.audioB.removeEventListener('error', this._onActiveError);
+    this.audio.removeEventListener('ended', this._onActiveEnded);
+    this.audio.removeEventListener('timeupdate', this._onActiveTimeUpdate);
+    this.audio.removeEventListener('error', this._onActiveError);
   }
 
   /**
@@ -537,9 +505,9 @@ class ChunkPlayer {
       return;
     }
 
-    // Check if next chunk is preloaded and ready
+    // Check if the server has prepared the next source.
     if (this._preloadedChunk === nextChunk && this._preloadReady) {
-      this._transitionToNextChunk(nextChunk);
+      await this._transitionToNextChunk(nextChunk);
     } else {
       // Next chunk not ready — pause and wait
       this._prioritizeChunk(nextChunk);
@@ -552,37 +520,36 @@ class ChunkPlayer {
       }
       if (gen !== this._generation) return; // chapter changed while waiting
 
-      // Now load it into the standby player
-      try {
-        await this._loadChunkInto(this._getStandby(), nextChunk);
-      } catch (err) {
-        if (gen === this._generation) this._emitError(err);
-        return;
-      }
-      if (gen !== this._generation) return;
-      this._transitionToNextChunk(nextChunk);
+      await this._transitionToNextChunk(nextChunk);
     }
   }
 
   /**
-   * Seamlessly transition to the next chunk (already loaded in standby).
+   * Continue on the same media element by changing its source.
    */
-  _transitionToNextChunk(chunkIndex) {
+  async _transitionToNextChunk(chunkIndex) {
+    const gen = this._generation;
     this._detachEvents();
-
-    // Swap active ↔ standby
-    this._swap();
-    this.currentChunk = chunkIndex;
-
-    // Apply current settings to the now-active player
     const active = this._getActive();
-    active.volume = this._volume;
-    active.playbackRate = this.playbackRate;
+    try {
+      await this._loadChunkInto(active, chunkIndex);
+    } catch (err) {
+      if (gen === this._generation) this._emitError(err);
+      return;
+    }
+    if (gen !== this._generation) return;
 
+    this.currentChunk = chunkIndex;
     this._attachEvents();
 
     if (this._isPlaying) {
-      this._playActiveWithRetry().catch((err) => this._emitError(err));
+      try {
+        await this._playActiveWithRetry();
+      } catch (err) {
+        this._isPlaying = false;
+        this._emitError(err);
+        return;
+      }
     }
 
     if (this.onChunkChange) this.onChunkChange(chunkIndex);
@@ -637,7 +604,6 @@ class ChunkPlayer {
 
   async _playActiveWithRetry(retries = this._maxPlayRetries) {
     const active = this._getActive();
-    this._getStandby().pause();
 
     let lastError = null;
     for (let attempt = 0; attempt <= retries; attempt++) {
@@ -660,8 +626,7 @@ class ChunkPlayer {
    */
   pause() {
     this._isPlaying = false;
-    this.audioA.pause();
-    this.audioB.pause();
+    this.audio.pause();
   }
 
   /**
@@ -765,21 +730,19 @@ class ChunkPlayer {
   }
 
   /**
-   * Set playback speed on both audio elements.
+   * Set playback speed.
    */
   setSpeed(rate) {
     this.playbackRate = rate;
-    this.audioA.playbackRate = rate;
-    this.audioB.playbackRate = rate;
+    this.audio.playbackRate = rate;
   }
 
   /**
-   * Set volume on both audio elements (0.0–1.0).
+   * Set volume (0.0–1.0).
    */
   setVolume(vol) {
     this._volume = Math.max(0, Math.min(1, vol));
-    this.audioA.volume = this._volume;
-    this.audioB.volume = this._volume;
+    this.audio.volume = this._volume;
   }
 
   /**
@@ -807,11 +770,12 @@ class ChunkPlayer {
       progressPercent: this.getProgressPercent(),
       totalChunks: this.totalChunks,
       isPlaying: this._isPlaying,
+      backend: this.backend,
     };
   }
 
   /**
-   * Clean up both audio elements and stop all timers.
+   * Clean up the media element and stop all timers.
    */
   cancelPendingLoad() {
     this._generation++;
@@ -828,8 +792,7 @@ class ChunkPlayer {
     this._destroyed = true;
     this.cancelPendingLoad();
 
-    this._resetAudioElement(this.audioA);
-    this._resetAudioElement(this.audioB);
+    this._resetAudioElement(this.audio);
 
     this.manifest = null;
     this.chunkDurations = [];

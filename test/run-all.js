@@ -81,6 +81,7 @@ const tests = [
   'test-sharing.js',
   'test-offline-cache.js',
   'test-audio-streaming.js',
+  'test-progressive-audio-stream.js',
   'test-chapter-navigation.js',
   'test-chapter-structure.js',
   'test-search-ranking.js',
