@@ -85,6 +85,7 @@ function installBrowser({
   };
   global.window = { location: { origin: 'https://reader.test' }, addEventListener() {} };
   global.document = {
+    documentElement: { dataset: {} },
     getElementById: id => elements.get(id) || null,
     dispatchEvent(event) {
       documentEvents.push(event);
@@ -216,6 +217,10 @@ function installBrowser({
     const cache = makeCache();
     installBrowser({ book, chapters, cache });
     assert.strictEqual(offline.offlineDownloadsSupported(), true);
+
+    document.documentElement.dataset.pwaStorageAllowed = 'false';
+    assert.strictEqual(offline.offlineDownloadsSupported(), false);
+    delete document.documentElement.dataset.pwaStorageAllowed;
 
     delete global.caches;
     delete global.window.caches;
@@ -357,7 +362,11 @@ function installBrowser({
       bookId: book.id,
       title: book.title,
       chapters: 1,
-      chapterEntries: [{ size: 6, contentHash: 'legacy', variantKey: 'voice-a' }],
+      chapterEntries: [{
+        size: 6,
+        contentHash: 'sha256-c49fea7425fa7f8699897a97c159c6690267d9003bb78c53fafa8fc15c325d84',
+        variantKey: 'voice-a'
+      }],
       titleData: { book, chapters: [{}] },
       downloadedAt: '2026-07-24T12:00:00.000Z',
       manifestVersion: 3,
@@ -533,6 +542,75 @@ function installBrowser({
       cachedChapters: 2,
       totalChapters: 2
     });
+  });
+
+  await test('verifies downloaded chapters from cache metadata without rereading audio bytes', async () => {
+    const cache = makeCache();
+    const env = installBrowser({ book, chapters, cache });
+    offline.initOffline(env.init);
+    await offline.downloadCurrentBook();
+    const entry = offline.getOfflineManifest()[book.id];
+
+    for (let index = 0; index < chapters.length; index++) {
+      const response = await cache.match(offlineAudioKey(book.id, index));
+      assert.strictEqual(
+        response.headers.get('X-Xandrio-Content-SHA256'),
+        entry.chapterEntries[index].contentHash
+      );
+    }
+
+    const metadataOnlyCache = {
+      async match(input) {
+        const chapterIndex = Number(new URL(input.url || input).pathname.split('/').at(-1));
+        const expected = entry.chapterEntries[chapterIndex];
+        return {
+          headers: new Headers({
+            'Content-Length': String(expected.size),
+            'X-Xandrio-Content-SHA256': expected.contentHash,
+            'ETag': expected.etag
+          }),
+          clone() {
+            throw new Error('verified cache entries must not reread chapter bytes');
+          }
+        };
+      }
+    };
+    assert.strictEqual(await offline.verifyOfflineEntry(metadataOnlyCache, entry), true);
+  });
+
+  await test('a successful audit backfills legacy cache identity metadata', async () => {
+    const cache = makeCache();
+    const bytes = new TextEncoder().encode('legacy');
+    const entry = {
+      bookId: book.id,
+      title: book.title,
+      chapters: 1,
+      chapterEntries: [{
+        size: bytes.byteLength,
+        contentHash: 'sha256-c49fea7425fa7f8699897a97c159c6690267d9003bb78c53fafa8fc15c325d84',
+        variantKey: 'voice-a'
+      }],
+      titleData: { book, chapters: [{}] },
+      downloadedAt: '2026-07-24T12:00:00.000Z',
+      manifestVersion: 3,
+      mode: 'full',
+      state: 'ready'
+    };
+    await cache.put(offlineAudioKey(book.id, 0), new Response(bytes));
+    installBrowser({
+      book,
+      chapters: [{}],
+      cache,
+      manifest: { [book.id]: entry }
+    });
+
+    assert.strictEqual(await offline.auditOfflineManifest(), false);
+    const migrated = await cache.match(offlineAudioKey(book.id, 0));
+    assert.strictEqual(migrated.headers.get('Content-Length'), String(bytes.byteLength));
+    assert.strictEqual(
+      migrated.headers.get('X-Xandrio-Content-SHA256'),
+      entry.chapterEntries[0].contentHash
+    );
   });
 
   await test('downloads an explicit library title without depending on player state or its overlay', async () => {
@@ -939,6 +1017,24 @@ function installBrowser({
       'the Downloaded view must wait for cache-presence verification'
     );
     assert.strictEqual(offline.getOfflineManifest()[book.id].state, 'incomplete');
+  });
+
+  await test('rolling cache does not write on an unverified deployment origin', async () => {
+    const cache = makeCache();
+    const rollingChapters = [{}, {}, {}];
+    const env = installBrowser({
+      book,
+      chapters: rollingChapters,
+      cache,
+      variants: ['voice-a', 'voice-a', 'voice-a']
+    });
+    document.documentElement.dataset.pwaStorageAllowed = 'false';
+
+    await offline.ensureRollingOfflineWindow(book, rollingChapters, 1, { enabled: true });
+
+    assert.deepStrictEqual(env.audioRequests, []);
+    assert.strictEqual(cache.entries.size, 0);
+    assert.strictEqual(offline.offlineEntryForBook(book.id), null);
   });
 
   await test('rolling cache keeps one chapter behind and two ahead', async () => {

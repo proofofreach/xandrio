@@ -18,6 +18,7 @@ process.env.CORS_ORIGIN = 'https://reader.example.test';
 process.env.RATE_LIMIT_WINDOW = '60000';
 process.env.RATE_LIMIT_MAX = '60';
 process.env.XANDRIO_TRUST_PROXY = '1';
+process.env.XANDRIO_CANONICAL_ORIGIN = 'https://reader.example.test';
 process.env.ANNAS_SECRET_KEY = 'environment-test-secret';
 process.env.XANDRIO_CONCURRENCY_AUTH = '3';
 process.env.XANDRIO_CONCURRENCY_SEARCH = '2';
@@ -113,6 +114,16 @@ async function main() {
 
     const staticAsset = await request(server, { path: '/js/api.js' });
     test('static application assets stay public', () => assert.strictEqual(staticAsset.status, 200));
+
+    const deployment = await request(server, { path: '/api/deployment' });
+    test('PWA deployment metadata stays public and identifies the canonical origin', () => {
+      assert.strictEqual(deployment.status, 200);
+      assert.deepStrictEqual(JSON.parse(deployment.body), {
+        canonicalOrigin: 'https://reader.example.test',
+        pwaRequiresSecureContext: true
+      });
+      assert.strictEqual(deployment.headers['cache-control'], 'no-store');
+    });
 
     const library = await request(server, { path: '/api/library' });
     test('an unauthenticated client cannot list the library', () => {

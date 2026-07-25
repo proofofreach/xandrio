@@ -10,6 +10,7 @@ const OFFLINE_BOOKS_KEY = 'xandrio_offline_books';
 const OFFLINE_DELETION_CURSOR_KEY = 'xandrio_offline_deletion_cursor';
 const OFFLINE_LEGACY_CACHE_OWNER_KEY = 'xandrio_offline_legacy_cache_owner';
 const OFFLINE_SCOPE_PARAM = 'xandrio-offline-scope';
+const OFFLINE_CONTENT_HASH_HEADER = 'X-Xandrio-Content-SHA256';
 const OFFLINE_MANIFEST_VERSION = 3;
 const FULL_DOWNLOAD_CONCURRENCY = 2;
 const DOWNLOAD_PREPARE_TIMEOUT_MS = 30 * 60 * 1000;
@@ -30,6 +31,7 @@ const deletionReconciliations = new Map();
 
 export function offlineDownloadsSupported() {
   return typeof window !== 'undefined' &&
+    globalThis.document?.documentElement?.dataset?.pwaStorageAllowed !== 'false' &&
     'caches' in window &&
     typeof window.caches?.open === 'function';
 }
@@ -42,15 +44,16 @@ export function initOffline(options = {}) {
   window.addEventListener('online', refreshOfflinePreparations);
   window.addEventListener('online', updateOfflineBanner);
   window.addEventListener('offline', updateOfflineBanner);
-  renderOfflineState();
-  void prepareOfflineStorage();
+  renderOfflineState({ audit: false });
+  void prepareOfflineStorage({ waitForAudio: true })
+    .finally(() => scheduleOfflineManifestAudit());
   void refreshOfflinePreparations();
   updateOfflineBanner();
   flushPendingPositions();
   void reconcileDeletedOfflineBooks();
 }
 
-export async function prepareOfflineStorage() {
+export async function prepareOfflineStorage({ waitForAudio = false } = {}) {
   const manifest = getOfflineManifest();
   const scope = offlineScopeId();
   if (
@@ -63,9 +66,10 @@ export async function prepareOfflineStorage() {
   }
   // Audio can be large. Keep the first render responsive; playback awaits
   // this same migration promise before declaring a chapter unavailable.
-  void migrateLegacyOfflineCaches().catch(error => {
+  const audioMigration = migrateLegacyOfflineCaches().catch(error => {
     console.warn('Offline cache migration failed:', error);
   });
+  if (waitForAudio) await audioMigration;
 }
 
 function offlineScopeId() {
@@ -90,8 +94,8 @@ function updateOfflineBanner() {
   banner.hidden = navigator.onLine;
 }
 
-export function getOfflineManifest() {
-  const key = offlineManifestKey();
+export function getOfflineManifest(scopeId = offlineScopeId()) {
+  const key = offlineManifestKey(scopeId);
   const scoped = readJSON(key, null);
   if (scoped && typeof scoped === 'object') return scoped;
   if (!canClaimLegacyOfflineStorage()) return {};
@@ -103,15 +107,15 @@ export function getOfflineManifest() {
   const migrated = legacy && typeof legacy === 'object' ? legacy : {};
   if (writeJSON(key, migrated)) {
     if (Object.keys(migrated).length > 0) {
-      localStorage.setItem(OFFLINE_LEGACY_CACHE_OWNER_KEY, offlineScopeId());
+      localStorage.setItem(OFFLINE_LEGACY_CACHE_OWNER_KEY, scopeId);
     }
     localStorage.removeItem(OFFLINE_BOOKS_KEY);
   }
   return migrated;
 }
 
-function saveOfflineManifest(manifest) {
-  if (!writeJSON(offlineManifestKey(), manifest)) {
+function saveOfflineManifest(manifest, scopeId = offlineScopeId()) {
+  if (!writeJSON(offlineManifestKey(scopeId), manifest)) {
     throw new Error('Could not save offline download state');
   }
   if (typeof document?.dispatchEvent === 'function' && typeof globalThis.CustomEvent === 'function') {
@@ -395,11 +399,11 @@ export async function isChapterAvailableOffline(bookId, chapterIndex = 0) {
   return false;
 }
 
-export function renderOfflineState() {
+export function renderOfflineState({ audit = true } = {}) {
   migrateCurrentOfflineEntry();
   void auditCurrentOfflineVariant();
   renderOfflineManager();
-  void scheduleOfflineManifestAudit();
+  if (audit) void scheduleOfflineManifestAudit();
 }
 
 export function reconcileDeletedOfflineBooks() {
@@ -868,7 +872,7 @@ async function processFullDownloadChapter({
 
 export async function ensureRollingOfflineWindow(book, chapters, chapterIndex, options = {}) {
   if (!options.enabled || !book?.id || !Array.isArray(chapters) || chapters.length === 0) return;
-  if (!navigator.onLine || !('caches' in window) || navigator.connection?.saveData) return;
+  if (!offlineDownloadsSupported() || !navigator.onLine || navigator.connection?.saveData) return;
   const existing = offlineEntryForBook(book.id);
   if (downloadAbort || (existing && existing.mode !== 'rolling')) return;
 
@@ -1218,8 +1222,39 @@ async function hashBytes(bytes) {
 }
 
 async function contentIdentity(response) {
+  const storedSize = Number(response.headers.get('Content-Length'));
+  const storedHash = response.headers.get(OFFLINE_CONTENT_HASH_HEADER) || '';
+  if (
+    Number.isInteger(storedSize) &&
+    storedSize > 0 &&
+    /^sha256-[a-f0-9]{64}$/.test(storedHash)
+  ) {
+    return {
+      size: storedSize,
+      contentHash: storedHash,
+      etag: response.headers.get('ETag') || ''
+    };
+  }
   const bytes = new Uint8Array(await response.clone().arrayBuffer());
   return contentIdentityForBytes(bytes, response.headers.get('ETag') || '');
+}
+
+async function backfillContentIdentity(cache, request, response, identity) {
+  const storedSize = Number(response.headers.get('Content-Length'));
+  const storedHash = response.headers.get(OFFLINE_CONTENT_HASH_HEADER) || '';
+  if (
+    Number.isInteger(storedSize) &&
+    storedSize > 0 &&
+    /^sha256-[a-f0-9]{64}$/.test(storedHash)
+  ) return;
+  const headers = new Headers(response.headers);
+  headers.set('Content-Length', String(identity.size));
+  headers.set(OFFLINE_CONTENT_HASH_HEADER, identity.contentHash);
+  await cache.put(request, new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers
+  }));
 }
 
 async function contentIdentityForBytes(bytes, etag = '') {
@@ -1277,6 +1312,8 @@ async function downloadAndVerifyChapter(cache, cacheRequest, url, signal, chapte
   const identity = await contentIdentityForBytes(bytes, headers.get('ETag') || '');
   if (identity.size <= 0) throw new Error(`Downloaded audio was empty for chapter ${chapterIndex + 1}`);
   onProgress?.(0.9);
+  headers.set('Content-Length', String(identity.size));
+  headers.set(OFFLINE_CONTENT_HASH_HEADER, identity.contentHash);
   await cache.put(cacheRequest, new Response(bytes, { status, headers }));
   const saved = await cache.match(cacheRequest);
   if (!saved) {
@@ -1299,35 +1336,39 @@ async function cacheOfflineCover(book, signal) {
   return true;
 }
 
-export async function verifyOfflineEntry(cache, entry) {
+export async function verifyOfflineEntry(cache, entry, scopeId = offlineScopeId()) {
   if (offlineState(entry) === 'incomplete' || !Array.isArray(entry?.chapterEntries)) return false;
   if (entry.mode === 'full' && !validTitleData(entry)) return false;
   if (entry.chapterEntries.length !== Number(entry.chapters)) return false;
   for (let i = 0; i < entry.chapterEntries.length; i++) {
     const expected = entry.chapterEntries[i];
     if (!expected?.variantKey || !expected.contentHash || !Number.isFinite(expected.size) || expected.size <= 0) return false;
-    const response = await cache.match(offlineAudioRequest(entry.bookId, i));
-    if (!response || !canReuseChapter(expected, await contentIdentity(response), expected.variantKey)) return false;
+    const request = offlineAudioRequest(entry.bookId, i, scopeId);
+    const response = await cache.match(request);
+    if (!response) return false;
+    const identity = await contentIdentity(response);
+    if (!canReuseChapter(expected, identity, expected.variantKey)) return false;
+    await backfillContentIdentity(cache, request, response, identity).catch(() => {});
   }
   if (entry.titleData?.book?.hasCover) {
-    const titleCache = await caches.open(offlineCacheName(OFFLINE_TITLE_CACHE));
-    if (!await titleCache.match(offlineTitleRequest(entry.bookId))) return false;
+    const titleCache = await caches.open(offlineCacheName(OFFLINE_TITLE_CACHE, scopeId));
+    if (!await titleCache.match(offlineTitleRequest(entry.bookId, scopeId))) return false;
   }
   return true;
 }
 
-async function verifyOfflineEntryPresence(cache, entry) {
+async function verifyOfflineEntryPresence(cache, entry, scopeId = offlineScopeId()) {
   if (offlineState(entry) !== 'ready' || !Array.isArray(entry?.chapterEntries)) return false;
   if (entry.mode !== 'full' || !validTitleData(entry)) return false;
   if (entry.chapterEntries.length !== Number(entry.chapters)) return false;
   for (let i = 0; i < entry.chapterEntries.length; i++) {
-    if (!entry.chapterEntries[i] || !await cache.match(offlineAudioRequest(entry.bookId, i))) {
+    if (!entry.chapterEntries[i] || !await cache.match(offlineAudioRequest(entry.bookId, i, scopeId))) {
       return false;
     }
   }
   if (entry.titleData?.book?.hasCover) {
-    const titleCache = await caches.open(offlineCacheName(OFFLINE_TITLE_CACHE));
-    if (!await titleCache.match(offlineTitleRequest(entry.bookId))) return false;
+    const titleCache = await caches.open(offlineCacheName(OFFLINE_TITLE_CACHE, scopeId));
+    if (!await titleCache.match(offlineTitleRequest(entry.bookId, scopeId))) return false;
   }
   return true;
 }
@@ -1342,46 +1383,47 @@ function scheduleOfflineManifestAudit() {
 // manifests on render, but never download from the audit path.
 export async function auditOfflineManifest({ presenceOnly = false } = {}) {
   if (!('caches' in window)) return false;
-  const entries = Object.values(getOfflineManifest())
+  const scope = offlineScopeId();
+  const entries = Object.values(getOfflineManifest(scope))
     .filter(entry => offlineState(entry) === 'ready' || entry?.mode === 'rolling');
   if (entries.length === 0) return false;
-  const cache = await caches.open(offlineCacheName(OFFLINE_AUDIO_CACHE));
+  const cache = await caches.open(offlineCacheName(OFFLINE_AUDIO_CACHE, scope));
   let changed = false;
   for (const entry of entries) {
     if (entry.mode === 'rolling') {
-      const latestManifest = getOfflineManifest();
+      const latestManifest = getOfflineManifest(scope);
       const latest = latestManifest[entry.bookId];
       if (!latest || latest.mode !== 'rolling' || !Array.isArray(latest.chapterEntries)) continue;
       let rollingChanged = false;
       for (let index = 0; index < latest.chapterEntries.length; index++) {
         if (!latest.chapterEntries[index]) continue;
-        if (await cache.match(offlineAudioRequest(entry.bookId, index))) continue;
+        if (await cache.match(offlineAudioRequest(entry.bookId, index, scope))) continue;
         latest.chapterEntries[index] = null;
         rollingChanged = true;
       }
       if (rollingChanged) {
         latest.bytes = latest.chapterEntries.reduce((sum, chapter) => sum + (Number(chapter?.size) || 0), 0);
-        saveOfflineManifest(latestManifest);
+        saveOfflineManifest(latestManifest, scope);
         changed = true;
       }
       continue;
     }
     const valid = presenceOnly
-      ? await verifyOfflineEntryPresence(cache, entry)
-      : await verifyOfflineEntry(cache, entry);
+      ? await verifyOfflineEntryPresence(cache, entry, scope)
+      : await verifyOfflineEntry(cache, entry, scope);
     if (valid) continue;
-    const latestManifest = getOfflineManifest();
+    const latestManifest = getOfflineManifest(scope);
     const latest = latestManifest[entry.bookId];
     // Do not overwrite a repair that began after this audit captured the
     // manifest. That repair owns the state transition now.
     if (latest?.state === 'ready' && latest.downloadedAt === entry.downloadedAt) {
       latestManifest[entry.bookId] = { ...latest, state: 'incomplete' };
-      saveOfflineManifest(latestManifest);
+      saveOfflineManifest(latestManifest, scope);
       changed = true;
     }
   }
   if (changed) {
-    renderOfflineManager();
+    if (offlineScopeId() === scope) renderOfflineManager();
   }
   return changed;
 }

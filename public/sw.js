@@ -1,5 +1,7 @@
+importScripts('/js/offline-range.js');
+
 const APP_RELEASE = '1.1.0';
-const CACHE_VERSION = 'xandrio-v102';
+const CACHE_VERSION = 'xandrio-v105';
 const OFFLINE_AUDIO_CACHE = 'xandrio-offline-audio';
 const OFFLINE_TITLE_CACHE = 'xandrio-offline-titles';
 const OFFLINE_SCOPE_PARAM = 'xandrio-offline-scope';
@@ -8,10 +10,10 @@ const OFFLINE_SCOPE_PARAM = 'xandrio-offline-scope';
 // and bump CACHE_VERSION whenever any APP_SHELL entry changes (including the
 // un-versioned js/ modules below, which only invalidate via CACHE_VERSION).
 const ASSET_VERSIONS = {
-  '/style-v3.css': 89,
+  '/style-v3.css': 90,
   '/js/lifecycle.js': 1,
   '/js/chunk-player.js': 21,
-  '/app.js': 100
+  '/app.js': 102
 };
 const versionedAsset = (path) => `${path}?v=${ASSET_VERSIONS[path]}`;
 const APP_SHELL = [
@@ -21,6 +23,8 @@ const APP_SHELL = [
   versionedAsset('/js/lifecycle.js'),
   versionedAsset('/js/chunk-player.js'),
   versionedAsset('/app.js'),
+  '/js/offline-range.js',
+  '/js/deployment-origin.js',
   '/js/router.js',
   '/js/api.js',
   '/js/client-settings.js',
@@ -74,7 +78,6 @@ self.addEventListener('install', event => {
       if (!await cacheContainsCompleteShell(CACHE_VERSION)) {
         throw new Error(`App shell ${CACHE_VERSION} is incomplete`);
       }
-      await self.skipWaiting();
     } catch (err) {
       // A newly-created, partial cache is never eligible for activation. If
       // the name already existed, retain it: it may be the complete cache
@@ -120,9 +123,14 @@ function isAppShell(request) {
 function isOfflineAudioRequest(request) {
   if (request.method !== 'GET') return false;
   const url = new URL(request.url);
-  // Both audio endpoints: /api/audio/ (chunked concat) and /api/audio-ios/
-  // (clean AAC used by SingleFileChapterPlayer on iOS).
-  return /^\/api\/audio(?:-ios)?\/[^/]+\/\d+$/.test(url.pathname);
+  const scope = url.searchParams.get(OFFLINE_SCOPE_PARAM);
+  // Do not proxy ordinary online media through the service worker. Mobile
+  // Safari can report `playing` while a service-worker-proxied Range response
+  // remains stalled at currentTime 0. Downloaded playback is explicitly
+  // account-scoped, so only those requests need the cache fallback.
+  return url.origin === self.location.origin
+    && /^[A-Za-z0-9_-]{1,64}$/.test(scope || '')
+    && /^\/api\/audio(?:-ios)?\/[^/]+\/\d+$/.test(url.pathname);
 }
 
 function isOfflineTitleRequest(request) {
@@ -148,15 +156,31 @@ async function cachedAudioResponse(request) {
   // Offline downloads are stored under /api/audio/ (see offline.js). The iOS
   // single-file player requests /api/audio-ios/ — same chapter audio, different
   // encode — so fall back to the stored playback audio when the AAC path isn't cached.
-  let cached = await cache.match(request.url);
-  if (!cached) cached = await cache.match(request.url.replace('/api/audio-ios/', '/api/audio/'));
+  let cacheKey = request.url;
+  let cached = await cache.match(cacheKey);
+  if (!cached) {
+    cacheKey = request.url.replace('/api/audio-ios/', '/api/audio/');
+    cached = await cache.match(cacheKey);
+  }
   if (!cached) return Response.error();
   const range = request.headers.get('Range');
   if (!range) return cached;
 
+  const streamed = await self.XandrioOfflineRange.createRangeResponse(cached.clone(), range);
+  if (streamed) return streamed;
+
+  // Legacy entries can lack Content-Length. Keep them playable until a
+  // manifest repair rewrites the cache entry with streaming metadata.
   const match = range.match(/^bytes=(\d*)-(\d*)$/);
   const buffer = await cached.arrayBuffer();
   const size = buffer.byteLength;
+  const legacyHeaders = new Headers(cached.headers);
+  legacyHeaders.set('Content-Length', String(size));
+  await cache.put(cacheKey, new Response(buffer, {
+    status: cached.status,
+    statusText: cached.statusText,
+    headers: legacyHeaders
+  })).catch(() => {});
   const rangeError = () => new Response(null, {
     status: 416,
     headers: { 'Content-Range': `bytes */${size}`, 'Accept-Ranges': 'bytes' }

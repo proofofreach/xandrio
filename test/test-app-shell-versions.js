@@ -67,6 +67,10 @@ assert(
   'service-worker activation never reloads an actively playing client'
 );
 assert(
+  !swSource.includes('self.skipWaiting()'),
+  'service-worker updates wait for active playback clients to close'
+);
+assert(
   swSource.includes("key.startsWith(`${OFFLINE_AUDIO_CACHE}:`)") &&
     swSource.includes("key.startsWith(`${OFFLINE_TITLE_CACHE}:`)"),
   'service-worker activation preserves account-scoped offline caches'
@@ -77,9 +81,18 @@ assert(
   'offline fallbacks resolve the cache namespace from the request scope'
 );
 assert(
+  swSource.includes("legacyHeaders.set('Content-Length', String(size))") &&
+    swSource.includes('cache.put(cacheKey, new Response(buffer'),
+  'the first legacy Range request backfills streaming metadata'
+);
+assert(
   indexSource.includes('id="downloaded-device-hint"') &&
     librarySource.includes("deviceHint.hidden = currentTab !== 'downloaded'"),
   'the populated Downloaded view explains that copies are device-local'
+);
+assert(
+  indexSource.includes('Keep Xandrio open while downloading'),
+  'the Downloaded view discloses the foreground download requirement'
 );
 
 // APP_SHELL entries must exist on disk, or cache.addAll() rejects and the new

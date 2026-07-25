@@ -2786,6 +2786,13 @@ summary:focus-visible,
 .timer-option:hover { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
 .timer-option.active { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
 .timer-option-wide { grid-column: 1 / -1; }
+.timer-reliability-hint {
+  margin: -4px 0 16px;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.45;
+  text-align: left;
+}
 
 /* Delete modal */
 .delete-modal-text { font-size: 15px; font-weight: 500; margin-bottom: 4px; }
@@ -2828,6 +2835,30 @@ summary:focus-visible,
   text-align: center;
 }
 .offline-banner[hidden] { display: none; }
+.deployment-banner {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 2200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 10px 16px;
+  padding-top: calc(10px + env(safe-area-inset-top));
+  background: var(--surface-raised);
+  border-bottom: 1px solid var(--accent);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  text-align: center;
+}
+.deployment-banner a {
+  color: var(--accent-strong);
+  white-space: nowrap;
+}
+.deployment-banner[hidden] { display: none; }
 
 .audio-activity-trigger {
   position: relative;

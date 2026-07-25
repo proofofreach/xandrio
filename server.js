@@ -78,6 +78,10 @@ const { registerAccountRoutes } = require('./lib/routes/accounts-routes');
 const { createRateLimitMiddleware, positiveInteger } = require('./lib/rate-limit');
 const { createGracefulShutdown } = require('./lib/graceful-shutdown');
 const {
+  normalizeCanonicalOrigin,
+  registerDeploymentRoute
+} = require('./lib/deployment-origin');
+const {
   ConcurrencyGate,
   createConcurrencyLimitMiddleware,
   defaultConcurrencyGroups
@@ -220,6 +224,8 @@ const corsOptions = {
 app.use(securityHeaders);
 app.use(cors(corsOptions));
 app.use(bodyParser.json());
+const canonicalOrigin = normalizeCanonicalOrigin(process.env.XANDRIO_CANONICAL_ORIGIN);
+registerDeploymentRoute(app, { canonicalOrigin });
 
 // Set XANDRIO_TOKEN for private-instance mode. Without it, this is the
 // documented trusted-LAN mode: all API routes are reachable by anyone who can
