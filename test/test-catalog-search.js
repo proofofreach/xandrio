@@ -300,6 +300,78 @@ await (async () => {
   assertEqual(response.works[0].author, 'Francis Scott Fitzgerald', 'The trusted catalog author is displayed independently from the selected edition');
 })();
 
+section('11. malformed creator metadata and work covers resolve together');
+
+await (async () => {
+  const response = await buildCatalogSearchResponse({
+    query: 'Out of the Silent Planet',
+    results: [
+      result({
+        title: 'Out of the Silent Planet',
+        author: 'C. S. Lewis',
+        hash: 'lewis-majority-new',
+        publisher: 'HarperCollins, 2025'
+      }),
+      result({
+        title: 'Out of the Silent Planet',
+        author: 'CS Lewis',
+        hash: 'lewis-catalog',
+        publisher: 'HarperCollins, 2023',
+        openLibraryWorkKey: '/works/OL_LEWIS_W',
+        openLibraryTitle: 'Out of the Silent Planet',
+        openLibraryAuthor: 'C. S. Lewis',
+        metadataConfidence: { source: 'openlibrary', score: 0.98, level: 'high' }
+      }),
+      result({
+        title: 'Out of the Silent Planet',
+        author: 'Out of the Silent Planet',
+        hash: 'lewis-title-as-author'
+      }),
+      result({
+        title: 'C. S. Lewis - Out of the Silent Planet',
+        author: 'Out of the Silent Planet',
+        hash: 'lewis-creator-prefixed-title'
+      })
+    ],
+    sourceStatus: {},
+    projectEdition: edition => ({
+      ...edition,
+      coverUrl: edition.openLibraryWorkKey
+        ? '/api/search-cover/catalog-lewis'
+        : '/api/search-cover/generated-provider-card'
+    })
+  });
+
+  assertEqual(response.totalWorks, 1, 'Repairs title-shaped creator metadata when one creator cluster is unambiguous');
+  assertEqual(response.works[0]?.editionCount, 4, 'Keeps every C. S. Lewis version on one card');
+  assertEqual(response.works[0]?.bestEdition.hash, 'lewis-majority-new', 'Keeps file ranking independent from cover selection');
+  assertEqual(
+    response.works[0]?.coverUrl,
+    '/api/search-cover/catalog-lewis',
+    'Uses the grouped work catalog identity instead of a generated provider title card'
+  );
+  assertEqual(
+    response.works[0]?.bestEdition.coverUrl,
+    '/api/search-cover/catalog-lewis',
+    'Carries the representative work cover through the recommended import path'
+  );
+  assertEqual(
+    response.works[0]?.bestEdition.openLibraryWorkKey,
+    '/works/OL_LEWIS_W',
+    'Carries the representative work identity through the selected edition'
+  );
+  assertEqual(
+    response.recommended?.openLibraryWorkKey,
+    '/works/OL_LEWIS_W',
+    'Carries the representative work identity through the legacy download payload'
+  );
+  assertEqual(
+    response.works[0]?.editions.filter(edition => edition.openLibraryWorkKey === '/works/OL_LEWIS_W').length,
+    4,
+    'Carries the representative work identity through every selectable version'
+  );
+})();
+
 console.log(`\n${'═'.repeat(50)}`);
 console.log(`Catalog search tests: ${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

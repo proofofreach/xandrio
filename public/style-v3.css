@@ -441,6 +441,7 @@ summary:focus-visible,
   min-width: 84px;
   color: var(--text-muted);
 }
+.book-local-control[hidden] { display: none; }
 
 .book-local-state {
   display: inline-flex;
@@ -456,11 +457,7 @@ summary:focus-visible,
 
 .book-local-state svg { width: 17px; height: 17px; }
 
-.book-local-control--downloaded {
-  color: var(--success);
-}
-.book-local-control--downloading,
-.book-local-control--partial {
+.book-local-control--downloading {
   color: var(--accent);
 }
 .book-local-control--repair-needed {
@@ -603,8 +600,8 @@ summary:focus-visible,
   min-width: 0;
 }
 .book-list.grid-view .book-local-state {
-  width: 36px;
-  min-height: 36px;
+  width: var(--touch-min);
+  min-height: var(--touch-min);
   justify-content: center;
   border-radius: 50%;
   background: oklch(10% 0.012 255 / 0.82);
@@ -618,8 +615,8 @@ summary:focus-visible,
   white-space: nowrap;
 }
 .book-list.grid-view .book-overflow-trigger {
-  width: 36px;
-  height: 36px;
+  width: var(--touch-min);
+  height: var(--touch-min);
   border-radius: 50%;
   background: oklch(10% 0.012 255 / 0.82);
 }
@@ -5097,12 +5094,12 @@ body.login-gate-open { overflow: hidden; }
 /* ─── Library tabs + shelf ─────────────────────────────────────────────── */
 .library-tabs {
   display: flex;
-  gap: 22px;
+  gap: clamp(14px, 4vw, 22px);
   margin: 4px 0 12px;
   border-bottom: 1px solid var(--border);
 }
 .library-tab {
-  min-height: 38px;
+  min-height: var(--touch-min);
   padding: 6px 0 8px;
   font-size: 13px;
   font-weight: 600;

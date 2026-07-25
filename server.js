@@ -2243,6 +2243,24 @@ function downloadImportCommand(body, { download = searchProviders.download.bind(
     openLibraryWorkKey: body?.openLibraryWorkKey,
     metadataConfidence: body?.metadataConfidence
   };
+  const confidence = body?.metadataConfidence;
+  const confidenceLevel = String(confidence?.level || '').toLowerCase();
+  const openLibraryWorkKey = String(body?.openLibraryWorkKey || '').trim();
+  const selectedIdentity = (
+    String(confidence?.source || '').toLowerCase() === 'openlibrary' &&
+    (confidenceLevel === 'medium' || confidenceLevel === 'high') &&
+    /^\/?works\/[a-z0-9_-]{3,80}$/i.test(openLibraryWorkKey)
+  )
+    ? {
+        openLibraryWorkKey,
+        isbn: Array.isArray(body?.isbn) ? body.isbn.slice(0, 10) : undefined,
+        confidence: {
+          score: Number.isFinite(Number(confidence.score)) ? Number(confidence.score) : 0,
+          level: confidenceLevel
+        },
+        matchedFrom: 'search'
+      }
+    : undefined;
   const alternativeCandidates = (Array.isArray(alternatives) ? alternatives : []).map((alternative, index) => {
     const format = SUPPORTED_BOOK_FORMATS.has(String(alternative.format || '').toLowerCase())
       ? String(alternative.format).toLowerCase()
@@ -2292,6 +2310,7 @@ function downloadImportCommand(body, { download = searchProviders.download.bind(
     sourceFilePath: filePath,
     sourceProvenance: sourceProvenanceFromSelection(body),
     gutenbergId,
+    selectedIdentity,
     alternatives: alternativeCandidates,
     acquire: progress => acquireDownloadSource(body, path.join(CACHE_DIR, safeFilename), progress)
   };

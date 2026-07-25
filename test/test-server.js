@@ -1663,6 +1663,33 @@ pendingAsyncTests.push((async () => {
 })());
 
 pendingAsyncTests.push((async () => {
+  const trustedIdentity = serverTestHooks.downloadImportCommand({
+    hash: 'trusted-work-download',
+    filename: 'out-of-the-silent-planet.epub',
+    title: 'Out of the Silent Planet',
+    author: 'C. S. Lewis',
+    openLibraryWorkKey: '/works/OL12345W',
+    metadataConfidence: { source: 'openlibrary', score: 0.98, level: 'high' },
+    isbn: ['9780000000001']
+  });
+  assertEqual(
+    trustedIdentity.selectedIdentity?.openLibraryWorkKey,
+    '/works/OL12345W',
+    'Download import preserves a trusted grouped-work identity for cover resolution'
+  );
+  const untrustedIdentity = serverTestHooks.downloadImportCommand({
+    hash: 'untrusted-work-download',
+    filename: 'untrusted.epub',
+    title: 'Untrusted Work',
+    openLibraryWorkKey: '/works/OL99999W',
+    metadataConfidence: { source: 'openlibrary', score: 0.4, level: 'low' }
+  });
+  assertEqual(
+    untrustedIdentity.selectedIdentity,
+    undefined,
+    'Download import does not promote a low-confidence client work identity'
+  );
+
   const selected = hemingwayCrossSourceResults[0];
   const volume = hemingwayCrossSourceResults[6];
   const command = serverTestHooks.downloadImportCommand({
