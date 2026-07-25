@@ -3360,6 +3360,23 @@ body.sheet-open { overflow: hidden; }
   background: var(--accent);
   box-shadow: 0 0 0 4px var(--accent-dim);
 }
+.audio-activity-copy > .audio-activity-progress {
+  display: block;
+  width: 100%;
+  height: 4px;
+  margin-top: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--surface-inset);
+  white-space: normal;
+}
+.audio-activity-progress > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width 180ms ease;
+}
 
 @media (min-width: 760px) {
   .audio-activity-sheet .voice-sheet-backdrop {

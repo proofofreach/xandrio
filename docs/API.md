@@ -163,7 +163,7 @@ These endpoints are part of the current server surface but are newer than some o
 - `GET /api/voice-cache/:bookId/:chapterIndex`: returns cache status for available voices for the chapter.
 - `GET /api/audio-ios/:bookId/:chapterIndex`: serves the single-file chapter-audio path used for iOS reliability.
 - `GET /api/chunks/:bookId/:chapterIndex/chapter-audio-status`: returns clean single-file chapter-audio status.
-- `POST /api/chunks/:bookId/:chapterIndex/prepare-chapter-audio`: starts clean single-file chapter-audio generation.
+- `POST /api/chunks/:bookId/:chapterIndex/prepare-chapter-audio`: starts single-file chapter-audio generation. Send `{ "purpose": "offline-download" }` to prioritize a user-requested offline title ahead of speculative background preparation without overtaking live playback.
 - `POST /api/chunks/:bookId/:chapterIndex/prepare`: prepares chunked audio, optionally with `targetChunk`.
 - `POST /api/chunks/:bookId/:chapterIndex/:chunkIndex/prioritize`: prioritizes one chunk.
 - `POST /api/chunks/:bookId/:chapterIndex/retry`: explicit user retry that clears the selected variant's bounded-failure quarantine and restarts generation. Automatic startup recovery never clears quarantine.

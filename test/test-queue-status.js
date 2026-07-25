@@ -79,6 +79,10 @@ function fakeElement({ hidden = false, classes = [] } = {}) {
     },
     removeEventListener(type, fn) {
       listeners.get(type)?.delete(fn);
+    },
+    dispatchEvent(event) {
+      for (const listener of listeners.get(event.type) || []) listener(event);
+      return true;
     }
   };
   global.window = {
@@ -177,6 +181,27 @@ function fakeElement({ hidden = false, classes = [] } = {}) {
     assert.strictEqual(queueStatusElement.hidden, true);
     assert.strictEqual(elements['audio-activity-sheet'].classList.contains('active'), false);
     assert.strictEqual(elements['audio-activity-announcement'].textContent, 'Audio preparation complete.');
+  });
+
+  await test('shows browser download percentage in Activity without chapter-piece counts', async () => {
+    document.dispatchEvent({
+      type: 'xandrio:downloadactivity',
+      detail: {
+        downloads: [{
+          id: 'book-download',
+          title: 'The Download',
+          author: 'A. Reader',
+          percent: 42,
+          phase: 'Downloading'
+        }]
+      }
+    });
+    await settle();
+    assert.strictEqual(queueStatusElement.hidden, false);
+    queueStatusElement.dispatch('click');
+    assert.match(elements['audio-activity-list'].innerHTML, /42%/);
+    assert.doesNotMatch(elements['audio-activity-list'].innerHTML, /chapter/i);
+    assert.match(elements['audio-activity-list'].innerHTML, /role="progressbar"/);
   });
 
   await test('re-init without a status element still stops the old poller', () => {

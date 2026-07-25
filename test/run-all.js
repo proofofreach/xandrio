@@ -9,6 +9,7 @@ const path = require('path');
 
 const tests = [
   'test-generation-scheduler.js',
+  'test-download-background.js',
   'test-abortable-edge-tts.js',
   'test-premium-audio.js',
   'test-engine-registry.js',

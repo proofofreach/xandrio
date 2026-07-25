@@ -1527,7 +1527,17 @@ async function ensureChapterAudioPrepared(bookId, chapterIndex, options = {}) {
   const voice = options.voice || voiceForTier(tier);
   const jobs = clean ? cleanChapterAudioPrepareJobs : chapterAudioPrepareJobs;
   const key = `${bookId}:${chapterIndex}:${tts.variantKeyProvider()}`;
-  if (jobs.has(key)) return jobs.get(key);
+  if (jobs.has(key)) {
+    if (priority === 'download') {
+      const existingManifest = tts.getChapterManifest(bookId, chapterIndex);
+      existingManifest?.chunks?.forEach((chunk, index) => {
+        if (chunk.status !== 'ready') {
+          tts.prioritizeChunk(bookId, chapterIndex, index, 'download');
+        }
+      });
+    }
+    return jobs.get(key);
+  }
 
   const job = (async () => {
     const books = await loadJSON(BOOKS_FILE, {});
@@ -1547,16 +1557,29 @@ async function ensureChapterAudioPrepared(bookId, chapterIndex, options = {}) {
     } catch {}
 
     const bookLanguage = book.language || 'en';
-    const firstChunkPriority = priority === 'background' ? 'background' : 'immediate';
+    const firstChunkPriority = priority === 'background'
+      ? 'background'
+      : priority === 'download'
+        ? 'download'
+        : 'immediate';
     let manifest = tts.getChapterManifest(bookId, chapterIndex);
     if (!manifest || manifestNeedsResume(manifest)) {
       manifest = await tts.generateChapter(bookId, chapterIndex, chapter.text, bookLanguage, priority, {
-        priorityForChunk: priority === 'background' ? (() => 'background') : getChapterGenerationPriority(0),
+        priorityForChunk: priority === 'background' || priority === 'download'
+          ? (() => priority)
+          : getChapterGenerationPriority(0),
         voice
       });
     } else {
       manifest.chunks.forEach((chunk, index) => {
-        if (chunk.status !== 'ready') tts.prioritizeChunk(bookId, chapterIndex, index, index === 0 ? firstChunkPriority : 'background');
+        if (chunk.status !== 'ready') {
+          const chunkPriority = priority === 'download'
+            ? 'download'
+            : index === 0
+              ? firstChunkPriority
+              : 'background';
+          tts.prioritizeChunk(bookId, chapterIndex, index, chunkPriority);
+        }
       });
     }
 
