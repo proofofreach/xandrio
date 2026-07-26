@@ -183,7 +183,7 @@ function fakeElement({ hidden = false, classes = [] } = {}) {
     assert.strictEqual(elements['audio-activity-announcement'].textContent, 'Audio preparation complete.');
   });
 
-  await test('shows browser download percentage in Activity without chapter-piece counts', async () => {
+  await test('automatically reveals browser download progress without chapter-piece counts', async () => {
     document.dispatchEvent({
       type: 'xandrio:downloadactivity',
       detail: {
@@ -198,7 +198,7 @@ function fakeElement({ hidden = false, classes = [] } = {}) {
     });
     await settle();
     assert.strictEqual(queueStatusElement.hidden, false);
-    queueStatusElement.dispatch('click');
+    assert.strictEqual(elements['audio-activity-sheet'].classList.contains('active'), true);
     assert.match(elements['audio-activity-list'].innerHTML, /42%/);
     assert.doesNotMatch(elements['audio-activity-list'].innerHTML, /chapter/i);
     assert.match(elements['audio-activity-list'].innerHTML, /role="progressbar"/);
