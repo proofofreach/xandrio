@@ -37,7 +37,6 @@ let currentViewMode = 'list';
 let continueRailHasEntries = false;
 let swipeListenersInstalled = false;
 const pendingBookDownloads = new Set();
-const checkingBookReadiness = new Set();
 
 function libraryTabStorageKey() {
   const accountId = getCurrentUser()?.id;
@@ -136,9 +135,6 @@ function offlineStatusHTML(bookId) {
 
 function offlineMenuActionContents(bookId) {
   const status = offlineStatusForBook(bookId);
-  if (checkingBookReadiness.has(String(bookId))) {
-    return '<button type="button" role="menuitem" disabled aria-busy="true">Checking audio readiness…</button>';
-  }
   if (pendingBookDownloads.has(String(bookId))) {
     return '<button type="button" role="menuitem" disabled aria-busy="true">Checking offline audio…</button>';
   }
@@ -586,27 +582,7 @@ function toggleBookMenu(trigger) {
   menu.hidden = !opening;
   menu.closest('.book-item')?.classList.toggle('menu-open', opening);
   trigger.setAttribute('aria-expanded', opening ? 'true' : 'false');
-  if (opening) {
-    menu.querySelector('[role="menuitem"]')?.focus();
-    const bookId = trigger.closest('.book-item')?.dataset.bookId;
-    const localStatus = bookId ? offlineStatusForBook(bookId) : null;
-    if (
-      bookId &&
-      navigator.onLine &&
-      !checkingBookReadiness.has(bookId) &&
-      !localStatus?.downloaded &&
-      localStatus?.kind !== 'downloading'
-    ) {
-      checkingBookReadiness.add(bookId);
-      refreshOfflineIndicators();
-      void refreshOfflinePreparation(bookId)
-        .catch(() => false)
-        .finally(() => {
-          checkingBookReadiness.delete(bookId);
-          refreshOfflineIndicators();
-        });
-    }
-  }
+  if (opening) menu.querySelector('[role="menuitem"]')?.focus();
 }
 
 async function showDeleteModal(bookId, title) {

@@ -1,6 +1,7 @@
 const path = require('path');
 const fs = require('fs/promises');
 const http = require('http');
+const os = require('os');
 const { spawn } = require('child_process');
 const { chromium } = require('playwright');
 
@@ -94,7 +95,6 @@ async function startOfflineFixtureServer() {
     missingShellPath: null,
     replacementCacheVersion: null,
     offlinePreparationRequested: false,
-    preparationStatusDelayMs: 0,
     operatorPolicy: { version: 1, acknowledged: false, acknowledgedAt: null, unverifiedSourcesEnabled: false }
   };
 
@@ -119,9 +119,6 @@ async function startOfflineFixtureServer() {
     if (pathname === '/api/settings/client') return jsonResponse(res, { settings: {} });
     if (pathname === '/api/book/smoke-offline') return jsonResponse(res, { book, chapters: [chapter] });
     if (pathname === '/api/offline/preparation/smoke-offline') {
-      if (req.method === 'GET' && state.preparationStatusDelayMs > 0) {
-        await new Promise(resolve => setTimeout(resolve, state.preparationStatusDelayMs));
-      }
       if (req.method === 'POST') state.offlinePreparationRequested = true;
       return jsonResponse(res, {
         bookId: book.id,
@@ -210,9 +207,7 @@ async function startOfflineFixtureServer() {
       state.replacementCacheVersion = null;
       state.missingShellPath = null;
     },
-    setPreparationStatusDelay(delayMs) {
-      state.preparationStatusDelayMs = Math.max(0, Number(delayMs) || 0);
-    },
+    offlinePreparationRequested: () => state.offlinePreparationRequested,
     close: () => new Promise(resolve => server.close(resolve))
   };
 }
@@ -745,8 +740,11 @@ async function verifyLibraryActions(page) {
     throw new Error(`Library overflow trigger is not persistently visible: ${JSON.stringify(overflowTrigger)}`);
   }
   await page.click('[data-book-menu-toggle]');
-  await page.waitForSelector('[data-prepare-offline-book]', { state: 'visible' });
-  for (const label of ['Prepare for offline', 'Save to My Shelf', 'Add to Up Next', 'Share', 'Delete']) {
+  await page.waitForSelector('[data-download-book]', { state: 'visible' });
+  if (await page.locator('[data-prepare-offline-book]').count() !== 0) {
+    throw new Error('Library overflow menu still exposes the obsolete offline preparation step');
+  }
+  for (const label of ['Download to this device', 'Save to My Shelf', 'Add to Up Next', 'Share', 'Delete']) {
     if (!await page.getByRole('menuitem', { name: label, exact: true }).isVisible()) {
       throw new Error(`Library overflow menu is missing ${label}`);
     }
@@ -1161,30 +1159,19 @@ async function verifyRealServiceWorkerOffline(browser) {
     }
     await verifyAtomicServiceWorkerUpgrade(page, fixture);
 
-    // Exercise the two-stage library workflow without navigating into the
-    // player: durable server preparation first, then device-local transfer.
+    // Exercise the one-stage library workflow without navigating into the
+    // player: ingestion already produced audio, so the device only transfers it.
     await page.goto(`${fixture.origin}/#/library`, { waitUntil: 'networkidle' });
-    fixture.setPreparationStatusDelay(250);
-    await page.click('[data-book-menu-toggle]');
-    const checkingAction = page.locator('[data-offline-menu-action="smoke-offline"] [role="menuitem"]');
-    if (!await checkingAction.isDisabled() ||
-        await checkingAction.textContent() !== 'Checking audio readiness…') {
-      throw new Error('Library menu exposes a stale download/preparation action while readiness is checked');
-    }
-    await page.waitForSelector('[data-prepare-offline-book="smoke-offline"]', { state: 'visible' });
-    fixture.setPreparationStatusDelay(0);
-    await page.click('[data-prepare-offline-book="smoke-offline"]');
-    await page.waitForFunction(() => {
-      const manifest = JSON.parse(localStorage.getItem('xandrio_offline_books:default') || '{}');
-      return manifest['smoke-offline']?.state === 'prepared';
-    });
     await page.click('[data-book-menu-toggle]');
     await page.waitForSelector('[data-download-book="smoke-offline"]', { state: 'visible' });
     if (!await page.getByRole('menuitem', { name: 'Download to this device', exact: true }).isVisible()) {
-      throw new Error('Prepared title does not offer a device-local download');
+      throw new Error('Ingested title does not offer a device-local download');
     }
     await page.click('[data-download-book="smoke-offline"]');
     await page.getByRole('button', { name: 'Start download', exact: true }).click();
+    if (fixture.offlinePreparationRequested()) {
+      throw new Error('Device download unexpectedly requested server-side audio preparation');
+    }
     if (await page.evaluate(() => location.hash) !== '#/library') {
       throw new Error('Library download navigated away from the library');
     }
@@ -1312,12 +1299,16 @@ async function verifyRealServiceWorkerOffline(browser) {
 
 async function main() {
   await assertReferencedPwaAssets();
+  const smokeStateRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'xandrio-browser-smoke-'));
   const server = spawn(process.execPath, ['server.js'], {
     cwd: path.join(__dirname, '..'),
     env: {
       ...process.env,
       PORT: String(port), HOST: '127.0.0.1',
+      DATA_DIR: path.join(smokeStateRoot, 'data'),
+      CACHE_DIR: path.join(smokeStateRoot, 'cache'),
       KOKORO_AUTO_START: 'false', CHATTERBOX_AUTO_START: 'false',
+      XANDRIO_PREGENERATE_ON_IMPORT: 'false',
       XANDRIO_TOKEN: 'browser-smoke-token'
     },
     stdio: ['ignore', 'pipe', 'pipe']
@@ -1351,6 +1342,7 @@ async function main() {
       const timer = setTimeout(() => { server.kill('SIGKILL'); resolve(); }, 3000);
       server.once('exit', () => { clearTimeout(timer); resolve(); });
     });
+    await fs.rm(smokeStateRoot, { recursive: true, force: true });
   }
 }
 
