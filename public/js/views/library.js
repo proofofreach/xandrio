@@ -10,8 +10,6 @@ import {
   getVerifiedOfflineLibraryBooks,
   offlineDownloadsSupported,
   offlineStatusForBook,
-  prepareBookForOffline,
-  refreshOfflinePreparation,
   removeOfflineBook
 } from '../features/offline.js';
 
@@ -150,23 +148,13 @@ function offlineMenuActionContents(bookId) {
   if (status.kind === 'downloading') {
     return `<button type="button" role="menuitem" data-download-book="${safeAttr(bookId)}">${escapeHTML(status.label)} (Cancel)</button>`;
   }
-  if (status.kind === 'preparing') {
-    return `<button type="button" role="menuitem" disabled aria-busy="true">${escapeHTML(status.label)}</button>`;
-  }
   if (status.kind === 'ready-to-download') {
     return `<button type="button" role="menuitem" data-download-book="${safeAttr(bookId)}">Download to this device</button>`;
   }
   if (status.kind === 'download-unavailable' || status.kind === 'download-offline') {
     return `<button type="button" role="menuitem" disabled>${escapeHTML(status.label)}</button>`;
   }
-  const label = status.kind === 'preparation-error'
-    ? 'Retry audio preparation'
-    : status.kind === 'partial'
-      ? 'Prepare full book for offline'
-      : status.kind === 'repair-needed'
-        ? 'Prepare offline repair'
-        : 'Prepare for offline';
-  return `<button type="button" role="menuitem" data-prepare-offline-book="${safeAttr(bookId)}">${label}</button>`;
+  return `<button type="button" role="menuitem" data-download-book="${safeAttr(bookId)}">Download to this device</button>`;
 }
 
 function bookMenuHTML(book, onShelf) {
@@ -557,8 +545,6 @@ async function downloadBookFromLibrary(bookId) {
     if (!data?.book || !Array.isArray(data.chapters) || data.chapters.length === 0) {
       throw new Error('Book has no downloadable chapters');
     }
-    const ready = await refreshOfflinePreparation(id);
-    if (!ready) return;
     await downloadBookForOffline(data.book, data.chapters, {
       showOverlay: false,
       requirePrepared: true
@@ -566,25 +552,6 @@ async function downloadBookFromLibrary(bookId) {
   } catch (error) {
     console.error('Could not start offline download:', error);
     showToast('Could not start download. Try again.', 'error');
-  } finally {
-    pendingBookDownloads.delete(id);
-    refreshOfflineIndicators();
-  }
-}
-
-async function prepareBookFromLibrary(bookId) {
-  const id = String(bookId);
-  pendingBookDownloads.add(id);
-  refreshOfflineIndicators();
-  try {
-    const data = await apiGet(`/api/book/${encodeURIComponent(id)}`);
-    if (!data?.book || !Array.isArray(data.chapters) || data.chapters.length === 0) {
-      throw new Error('Book has no chapters to prepare');
-    }
-    await prepareBookForOffline(data.book, data.chapters);
-  } catch (error) {
-    console.error('Could not prepare offline audio:', error);
-    showToast('Could not prepare offline audio. Try again.', 'error');
   } finally {
     pendingBookDownloads.delete(id);
     refreshOfflineIndicators();
@@ -876,13 +843,6 @@ export function initLibrary(options = {}) {
       e.stopPropagation();
       closeBookMenus();
       void downloadBookFromLibrary(downloadBtn.dataset.downloadBook);
-      return;
-    }
-    const prepareOfflineBtn = e.target.closest('[data-prepare-offline-book]');
-    if (prepareOfflineBtn) {
-      e.stopPropagation();
-      closeBookMenus();
-      void prepareBookFromLibrary(prepareOfflineBtn.dataset.prepareOfflineBook);
       return;
     }
     const openBtn = e.target.closest('[data-open-book]');

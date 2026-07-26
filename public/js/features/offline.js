@@ -283,17 +283,37 @@ export async function getVerifiedOfflineLibraryBooks() {
   return getOfflineLibraryBooks();
 }
 
-export function offlineStatusForBook(bookId) {
-  const entry = offlineEntryForBook(bookId);
-  if (!entry) {
+function availableDownloadStatus(cachedChapters = 0, totalChapters = 0) {
+  if (!offlineDownloadsSupported()) {
     return {
-      kind: 'not-downloaded',
-      label: 'Not downloaded',
+      kind: 'download-unavailable',
+      label: 'Downloads unavailable in this browser',
       downloaded: false,
-      cachedChapters: 0,
-      totalChapters: 0
+      cachedChapters,
+      totalChapters
     };
   }
+  if (!navigator.onLine) {
+    return {
+      kind: 'download-offline',
+      label: 'Connect to download',
+      downloaded: false,
+      cachedChapters,
+      totalChapters
+    };
+  }
+  return {
+    kind: 'ready-to-download',
+    label: 'Download to this device',
+    downloaded: false,
+    cachedChapters,
+    totalChapters
+  };
+}
+
+export function offlineStatusForBook(bookId) {
+  const entry = offlineEntryForBook(bookId);
+  if (!entry) return availableDownloadStatus();
   const cachedChapters = Array.isArray(entry.chapterEntries)
     ? entry.chapterEntries.filter(Boolean).length
     : 0;
@@ -308,54 +328,8 @@ export function offlineStatusForBook(bookId) {
     };
   }
   const state = offlineState(entry);
-  if (state === 'preparing') {
-    const readyChapters = Math.max(0, Math.min(
-      totalChapters,
-      Number(entry.preparedChapters) || 0
-    ));
-    return {
-      kind: 'preparing',
-      label: `Preparing audio · ${readyChapters}/${totalChapters}`,
-      downloaded: false,
-      cachedChapters,
-      totalChapters
-    };
-  }
-  if (state === 'prepared') {
-    if (!offlineDownloadsSupported()) {
-      return {
-        kind: 'download-unavailable',
-        label: 'Downloads unavailable in this browser',
-        downloaded: false,
-        cachedChapters,
-        totalChapters
-      };
-    }
-    if (!navigator.onLine) {
-      return {
-        kind: 'download-offline',
-        label: 'Connect to download',
-        downloaded: false,
-        cachedChapters,
-        totalChapters
-      };
-    }
-    return {
-      kind: 'ready-to-download',
-      label: 'Download to this device',
-      downloaded: false,
-      cachedChapters,
-      totalChapters
-    };
-  }
-  if (state === 'preparation-error') {
-    return {
-      kind: 'preparation-error',
-      label: 'Audio preparation needs attention',
-      downloaded: false,
-      cachedChapters,
-      totalChapters
-    };
+  if (state === 'preparing' || state === 'prepared' || state === 'preparation-error') {
+    return availableDownloadStatus(cachedChapters, totalChapters);
   }
   if (state === 'ready') {
     return {
@@ -929,7 +903,7 @@ async function processFullDownloadChapter({
         'offline-download'
       );
     if (!status.ready) {
-      throw new Error(`Audio is still preparing for chapter ${chapterIndex + 1}`);
+      throw new Error(`Audio generation is not complete for chapter ${chapterIndex + 1}`);
     }
     variantKey = String(status.variantKey || 'default');
     const url = status.url || `/api/audio/${encodeURIComponent(book.id)}/${chapterIndex}`;

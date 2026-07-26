@@ -51,6 +51,7 @@ const tests = [
   'test-data-dir.js',
   'test-book-document.js',
   'test-book-importer.js',
+  'test-book-audio-preloader.js',
   'test-source-provenance.js',
   'test-epub-parser.js',
   'test-epub-parsing.js',

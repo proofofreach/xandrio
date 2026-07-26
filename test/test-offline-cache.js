@@ -318,6 +318,30 @@ function installBrowser({
     assert.strictEqual(offline.offlineDownloadsSupported(), false);
   });
 
+  await test('offers a direct device download for every ingested shelf book', async () => {
+    const cache = makeCache();
+    installBrowser({ book, chapters, cache });
+
+    assert.strictEqual(offline.offlineStatusForBook(book.id).kind, 'ready-to-download');
+    assert.strictEqual(
+      offline.offlineStatusForBook(book.id).label,
+      'Download to this device'
+    );
+  });
+
+  await test('downloads existing ingested audio without requesting server preparation', async () => {
+    const cache = makeCache();
+    const env = installBrowser({ book, chapters, cache });
+    offline.initOffline(env.init);
+
+    assert.strictEqual(await offline.downloadBookForOffline(book, chapters, {
+      requirePrepared: true
+    }), true);
+    assert.deepStrictEqual(env.preparationCalls, []);
+    assert.deepStrictEqual(env.prepareCalls, []);
+    assert.deepStrictEqual(env.audioRequests, [0, 1]);
+  });
+
   await test('does not offer device download when browser storage is unavailable', async () => {
     const cache = makeCache();
     const prepared = {
@@ -933,7 +957,7 @@ function installBrowser({
     assert.deepStrictEqual(activityEvents.at(-1).detail.downloads, []);
   });
 
-  await test('separates durable server preparation from the device-local download', async () => {
+  await test('legacy server preparation state does not block the device download action', async () => {
     const cache = makeCache();
     let env = installBrowser({
       book,
@@ -952,8 +976,8 @@ function installBrowser({
     assert.strictEqual(await offline.prepareBookForOffline(book, chapters), false);
     assert.deepStrictEqual(env.audioRequests, []);
     assert.deepStrictEqual(env.prepareCalls, []);
-    assert.strictEqual(offline.offlineStatusForBook(book.id).kind, 'preparing');
-    assert.strictEqual(offline.offlineStatusForBook(book.id).label, 'Preparing audio · 1/2');
+    assert.strictEqual(offline.offlineStatusForBook(book.id).kind, 'ready-to-download');
+    assert.strictEqual(offline.offlineStatusForBook(book.id).label, 'Download to this device');
 
     env = installBrowser({
       book,
@@ -1007,11 +1031,11 @@ function installBrowser({
     await preparation;
   });
 
-  await test('reports absent, partial, active, and repair states without cache scans', async () => {
+  await test('reports available, partial, active, and repair states without cache scans', async () => {
     const cache = makeCache();
     let env = installBrowser({ book, chapters, cache });
     offline.initOffline(env.init);
-    assert.strictEqual(offline.offlineStatusForBook(book.id).kind, 'not-downloaded');
+    assert.strictEqual(offline.offlineStatusForBook(book.id).kind, 'ready-to-download');
 
     const base = {
       bookId: book.id,
