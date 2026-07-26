@@ -44,6 +44,7 @@ export function offlineDownloadsSupported() {
 export function initOffline(options = {}) {
   deps = options;
   document.getElementById('offline-books-list')?.addEventListener('click', handleOfflineManagerClick);
+  document.addEventListener('xandrio:deploymentchange', refreshOfflineAvailability);
   window.addEventListener('online', flushPendingPositions);
   window.addEventListener('online', reconcileDeletedOfflineBooks);
   window.addEventListener('online', refreshOfflinePreparations);
@@ -56,6 +57,16 @@ export function initOffline(options = {}) {
   updateOfflineBanner();
   flushPendingPositions();
   void reconcileDeletedOfflineBooks();
+}
+
+function refreshOfflineAvailability() {
+  renderOfflineState({ audit: false });
+  if (
+    typeof document?.dispatchEvent === 'function' &&
+    typeof globalThis.CustomEvent === 'function'
+  ) {
+    document.dispatchEvent(new CustomEvent('xandrio:offlinechange'));
+  }
 }
 
 export async function prepareOfflineStorage({ waitForAudio = false } = {}) {

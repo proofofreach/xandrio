@@ -132,6 +132,14 @@ export async function initDeploymentGuard({
       globalThis.document.documentElement.dataset.pwaStorageAllowed = String(result.serviceWorkerAllowed);
     }
     renderDeploymentGuard(result);
+    if (
+      typeof globalThis.document?.dispatchEvent === 'function' &&
+      typeof globalThis.CustomEvent === 'function'
+    ) {
+      globalThis.document.dispatchEvent(new CustomEvent('xandrio:deploymentchange', {
+        detail: result
+      }));
+    }
   };
   const resolve = (requireFresh = false) => resolveDeploymentGuard({
     fetchImpl,
