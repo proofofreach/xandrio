@@ -150,6 +150,9 @@ async function startOfflineFixtureServer() {
       chunks: [{ index: 0, status: 'ready', textLength: chapter.text.length, url: '/api/chunks/smoke-offline/0/0?tier=instant' }]
     });
     if (pathname === '/api/chunks/smoke-offline/0/0' || pathname === '/api/audio/smoke-offline/0') {
+      if (req.headers['x-xandrio-offline-download'] === '1') {
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
       res.writeHead(200, {
         'Content-Type': 'audio/wav', 'Content-Length': audio.length,
         'Accept-Ranges': 'bytes', 'Cache-Control': 'no-store'
@@ -1169,6 +1172,10 @@ async function verifyRealServiceWorkerOffline(browser) {
     }
     await page.click('[data-download-book="smoke-offline"]');
     await page.getByRole('button', { name: 'Start download', exact: true }).click();
+    await page.waitForSelector('#audio-activity-sheet.active', { state: 'visible' });
+    if (!await page.getByRole('progressbar', { name: 'Download progress' }).isVisible()) {
+      throw new Error('Device download did not reveal visible progress');
+    }
     if (fixture.offlinePreparationRequested()) {
       throw new Error('Device download unexpectedly requested server-side audio preparation');
     }

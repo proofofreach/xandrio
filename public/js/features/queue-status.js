@@ -245,8 +245,12 @@ export function initQueueStatus(options = {}) {
   pollScope = scope;
   scope.listen(queueStatusEl, 'click', () => activitySheetController?.open());
   scope.listen(document, 'xandrio:downloadactivity', event => {
+    const hadActiveDownload = currentDownloads.length > 0;
     currentDownloads = normalizedDownloads(event?.detail?.downloads);
     renderQueueStatus(currentServerStatus);
+    if (!hadActiveDownload && currentDownloads.length > 0) {
+      activitySheetController?.open();
+    }
   });
   scope.listen(document, 'xandrio:preparationactivity', event => {
     currentPreparations = normalizedPreparations(event?.detail?.preparations);
