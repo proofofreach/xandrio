@@ -950,6 +950,16 @@ section('12. Preferred audio start chapter');
     'Chapter titles are not truncated at the vs. abbreviation'
   );
   assertEqual(
+    normalizeChapterTitleForDisplay('Chapter 4: Income v. Income'),
+    'Chapter 4 Income v. Income',
+    'Chapter subtitles are not truncated at the v. abbreviation'
+  );
+  assertEqual(
+    normalizeChapterTitleForDisplay('Chapter 4: Income v. Income. Body prose leaked into the title.'),
+    'Chapter 4 Income v. Income',
+    'Chapter subtitles still stop at a real sentence after an abbreviation'
+  );
+  assertEqual(
     normalizeChapterTitleForDisplay("Part Two : Gemstones in Christ's Teachings"),
     "Part Two: Gemstones in Christ's Teachings",
     'Chapter titles remove stray spaces before punctuation'
