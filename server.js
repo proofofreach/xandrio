@@ -51,6 +51,10 @@ const {
 const { chapterStructureKey, positionMatchesChapterStructure } = require('./lib/chapter-structure');
 const { parseEpub } = require('./lib/epub-parser');
 const { BookImportError, createBookImporter } = require('./lib/book-importer');
+const {
+  booksNeedingAudioBackfill,
+  createBookAudioPreloader
+} = require('./lib/book-audio-preloader');
 const { createUserLibraryState } = require('./lib/user-library-state');
 const { createSearchProviderRegistry } = require('./lib/search-providers');
 const { createSearchCoverService } = require('./lib/search-cover-service');
@@ -1308,9 +1312,9 @@ const bookImporter = createBookImporter({
   removeFile: removeFileIfExists,
   afterPersist: (record, bookPath) => {
     if (!PREGENERATE_ON_IMPORT) return;
-    console.log(`Pre-generating chapter 1 for ${record.id}`);
-    pregenerateChapter1(record.id, bookPath).catch(error => {
-      console.error(`Failed to pre-generate chapter 1:`, error);
+    console.log(`Generating complete audiobook for ${record.id}`);
+    pregenerateBookAudio(record.id, bookPath).catch(error => {
+      console.error(`Failed to generate complete audiobook:`, error);
     });
   }
 });
@@ -3352,53 +3356,63 @@ async function extractBookMetadata(bookPath) {
   return bookDocument.extractMetadata(bookPath);
 }
 
-// Helper: Pre-generate first content chapter for instant playback (uses chunked system)
-async function pregenerateChapter1(bookId, bookPath) {
-  try {
-    // Parse chapters (also warms the disk cache)
-    const chapters = await getChaptersCached(bookPath);
-    if (chapters.length === 0) return;
-    
-    // Most listeners skip epigraphs, author notes, introductions, and other
-    // frontmatter. Prefer explicit Chapter 1 variants before generic content.
-    const targetIndex = findPreferredAudioStartChapterIndex(chapters);
-    
-    // Pre-generate: the target chapter + one more after it (for seamless next-chapter)
-    const endIndex = Math.min(targetIndex + 1, chapters.length - 1);
-    
-    console.log(`[pre-gen] Pre-generating chapters ${targetIndex}-${endIndex} for "${chapters[targetIndex].title}" (skipping ${targetIndex} preceding sections)`);
-    
-    const books = await loadJSON(BOOKS_FILE, {});
-    const bookLanguage = books[bookId]?.language || 'en';
-    if (!books[bookId] || deletedBookIds.has(bookId)) return;
-    
-    // Use chunked TTS to pre-generate target chapters
-    for (let i = targetIndex; i <= endIndex; i++) {
-      if (deletedBookIds.has(bookId)) return;
-      const chapter = chapters[i];
-      if (chapter.text.length === 0) {
-        console.log(`  Skipping chapter ${i}: "${chapter.title}" (empty)`);
-        continue;
-      }
-      console.log(`  Queueing chapter ${i}: "${chapter.title}" (${chapter.text.length} chars)`);
-      await chunkedTTS.generateChapter(bookId, i, chapter.text, bookLanguage, 'immediate', {
-        voice: getActiveVoice()
+// Generate the complete audiobook as part of ingestion. The preferred content
+// chapter is generated first for fast playback; the remaining chapters follow
+// at background priority.
+async function pregenerateBookAudio(bookId, bookPath) {
+  const books = await loadJSON(BOOKS_FILE, {});
+  const book = books[bookId];
+  if (!book || deletedBookIds.has(bookId)) return;
+
+  const preloader = createBookAudioPreloader({
+    getChapters: getChaptersCached,
+    preferredStartIndex: findPreferredAudioStartChapterIndex,
+    generateChapter: async ({ chapterIndex, chapter, language, priority, voice }) => {
+      if (deletedBookIds.has(bookId)) throw new Error('Book was deleted during audio generation');
+      console.log(`[book-audio] Generating chapter ${chapterIndex}: "${chapter.title}"`);
+      await chunkedTTS.generateChapter(bookId, chapterIndex, chapter.text, language, priority, {
+        voice
       });
-    }
-    
-    // Update book status
-    if (!deletedBookIds.has(bookId)) {
-      await updateJSON(BOOKS_FILE, (current) => {
+    },
+    onProgress: async progress => {
+      if (deletedBookIds.has(bookId)) return;
+      await updateJSON(BOOKS_FILE, current => {
         const record = current[bookId];
         if (!record || deletedBookIds.has(bookId)) return jsonStore.SKIP_SAVE;
-        record.chapter1Ready = true;
-        record.preloadedThrough = endIndex;
+        record.audioGenerationState = progress.state;
+        record.audioGeneratedChapters = progress.generatedChapters;
+        record.audioGenerationTotal = progress.totalChapters;
+        record.audioGenerationUpdatedAt = new Date().toISOString();
+        if (progress.error) record.audioGenerationError = progress.error;
+        else delete record.audioGenerationError;
+        if (progress.state === 'ready') {
+          record.chapter1Ready = true;
+          record.preloadedThrough = Math.max(0, progress.totalChapters - 1);
+        }
       });
     }
-    
-    console.log(`[pre-gen] Queued through chapter ${endIndex} ("${chapters[endIndex].title}")`);
-  } catch (err) {
-    console.error(`[pre-gen] Failed for ${bookId}:`, err);
+  });
+
+  return preloader.generate({
+    bookId,
+    bookPath,
+    language: book.language || 'en',
+    voice: getActiveVoice()
+  });
+}
+
+async function backfillBookAudio() {
+  if (!PREGENERATE_ON_IMPORT) return;
+  const books = await loadJSON(BOOKS_FILE, {});
+  const pending = booksNeedingAudioBackfill(books, bookId => deletedBookIds.has(bookId));
+  if (pending.length === 0) return;
+  console.log(`[book-audio] Backfilling ${pending.length} existing title(s)`);
+  for (const book of pending) {
+    try {
+      await pregenerateBookAudio(book.id, book.path);
+    } catch (error) {
+      console.error(`[book-audio] Backfill failed for ${book.id}:`, error);
+    }
   }
 }
 
@@ -3695,6 +3709,8 @@ if (require.main === module) {
         .catch(err => console.error('Backfill failed:', err.message))
         .then(() => backfillChapterDurations())
         .catch(err => console.error('Chapter-duration backfill failed:', err.message));
+      backfillBookAudio()
+        .catch(err => console.error('Book-audio backfill failed:', err.message));
     });
   }).catch(err => {
     console.error('Failed to start Xandrio:', err.message);
