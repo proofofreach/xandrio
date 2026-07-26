@@ -51,10 +51,15 @@ async function test(name, fn) {
 
   await test('backfills existing books that never completed full audio generation', async () => {
     const books = {
-      old: { id: 'old', path: '/library/old.epub' },
+      old: {
+        id: 'old',
+        path: '/library/old.epub',
+        addedAt: '2025-01-01T00:00:00.000Z'
+      },
       interrupted: {
         id: 'interrupted',
         path: '/library/interrupted.epub',
+        addedAt: '2026-01-01T00:00:00.000Z',
         audioGenerationState: 'generating'
       },
       ready: {
@@ -67,7 +72,7 @@ async function test(name, fn) {
 
     assert.deepStrictEqual(
       booksNeedingAudioBackfill(books, id => id === 'deleted').map(book => book.id),
-      ['old', 'interrupted']
+      ['interrupted', 'old']
     );
   });
 
