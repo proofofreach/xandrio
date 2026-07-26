@@ -351,6 +351,39 @@ function installBrowser({
     );
   });
 
+  await test('refreshes Safari PWA download controls after deployment verification recovers', async () => {
+    const cache = makeCache();
+    const prepared = {
+      bookId: book.id,
+      title: book.title,
+      chapters: chapters.length,
+      chapterEntries: chapters.map(() => null),
+      titleData: { book, chapters },
+      manifestVersion: 3,
+      mode: 'full',
+      state: 'prepared'
+    };
+    installBrowser({
+      book,
+      chapters,
+      cache,
+      manifest: { [book.id]: prepared }
+    });
+    document.documentElement.dataset.pwaStorageAllowed = 'false';
+    offline.initOffline({ getCurrentBook: () => null, getChapters: () => [] });
+
+    let renderedKind = offline.offlineStatusForBook(book.id).kind;
+    document.addEventListener('xandrio:offlinechange', () => {
+      renderedKind = offline.offlineStatusForBook(book.id).kind;
+    });
+    document.documentElement.dataset.pwaStorageAllowed = 'true';
+    document.dispatchEvent(new CustomEvent('xandrio:deploymentchange', {
+      detail: { serviceWorkerAllowed: true }
+    }));
+
+    assert.strictEqual(renderedKind, 'ready-to-download');
+  });
+
   await test('does not offer device download while the browser is offline', async () => {
     const cache = makeCache();
     const prepared = {

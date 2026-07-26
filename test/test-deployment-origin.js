@@ -123,12 +123,23 @@ async function test(name, fn) {
       setItem(key, value) { values.set(key, String(value)); }
     };
     const dataset = {};
+    const deploymentChanges = [];
     let onlineHandler = null;
     let fetchCount = 0;
     const changes = [];
     global.document = {
       documentElement: { dataset },
-      getElementById() { return null; }
+      getElementById() { return null; },
+      dispatchEvent(event) {
+        deploymentChanges.push(event.detail);
+        return true;
+      }
+    };
+    global.CustomEvent = class CustomEvent extends Event {
+      constructor(type, options = {}) {
+        super(type);
+        this.detail = options.detail;
+      }
     };
     global.addEventListener = (type, handler) => {
       if (type === 'online') onlineHandler = handler;
@@ -151,6 +162,7 @@ async function test(name, fn) {
       await onlineHandler();
       assert.strictEqual(changes.at(-1).serviceWorkerAllowed, false);
       assert.strictEqual(dataset.pwaStorageAllowed, 'false');
+      assert.strictEqual(deploymentChanges.at(-1).serviceWorkerAllowed, false);
       assert.strictEqual(
         changes.at(-1).href,
         'https://reader.example.com/library'
@@ -158,6 +170,7 @@ async function test(name, fn) {
     } finally {
       delete global.document;
       delete global.addEventListener;
+      delete global.CustomEvent;
     }
   });
 
