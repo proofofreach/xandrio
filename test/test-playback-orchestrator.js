@@ -22,6 +22,7 @@ function harness(overrides = {}) {
   const tts = Object.assign(new EventEmitter(), {
     getChapterManifest: () => overrides.manifest === undefined ? null : overrides.manifest,
     generateChapter: async (...args) => { calls.push(['generate', ...args]); return manifest; },
+    claimChapter: async (...args) => { calls.push(['claim', ...args]); return 1; },
     prioritizeChunk: (...args) => { calls.push(['prioritize', ...args]); return true; },
     reconstructChapterManifest: async (...args) => {
       calls.push(['reconstruct', ...args]);
@@ -45,10 +46,13 @@ function harness(overrides = {}) {
     ensureChapterAudio: async (...args) => { calls.push(['ensureAudio', ...args]); return '/cache/chapter.mp3'; },
     inspectChapterAudio: async (...args) => {
       calls.push(['inspectAudio', ...args]);
-      return { ready: overrides.audioReady ?? false, variantKey: 'variant' };
+      return {
+        ready: overrides.audioReady ?? false,
+        variantKey: 'variant',
+        url: '/api/audio/book-explicit-tier/0'
+      };
     },
     prefetchNextChapter: (...args) => calls.push(['prefetch', ...args]),
-    warmRemainingChapters: args => calls.push(['warmRemaining', args]),
     getChapterContext: async () => ({
       book: { language: 'en' },
       chapter: { text: 'Current chapter narration text is long enough for testing.' },
@@ -117,25 +121,32 @@ function harness(overrides = {}) {
     const { orchestrator, calls } = harness({ manifest: existing, ready: false });
     await orchestrator.prepareManifest({ bookId: 'book', chapterIndex: 0, text: 'Narration text', targetChunk: 0 });
     assert.strictEqual(calls.filter(call => call[0] === 'prioritize').length, 2);
+    assert(calls.some(call =>
+      call[0] === 'claim' &&
+      call[1] === 'book' &&
+      call[2] === 0 &&
+      call[3].origin === 'playback-current' &&
+      call[4] === 'immediate'
+    ));
     assert(!calls.some(call => call[0] === 'generate'));
   });
 
-  await test('projects the complete playback manifest and starts look-ahead internally', async () => {
+  await test('projects playback without treating a view load as listening intent', async () => {
     const { orchestrator, calls } = harness({ ready: false });
     const response = await orchestrator.preparePlayback({ bookId: 'book', chapterIndex: 0 });
     assert.strictEqual(response.servedTier, 'instant');
     assert.strictEqual(response.chunks[0].url, '/api/chunks/book/0/0?tier=instant');
-    assert(calls.filter(call => call[0] === 'generate').length >= 2);
+    assert.strictEqual(calls.filter(call => call[0] === 'generate').length, 1);
   });
 
-  await test('single-file audio preparation uses the same fallback tier and prefetch policy', async () => {
+  await test('single-file audio preparation does not speculate beyond the requested chapter', async () => {
     const { orchestrator, calls } = harness({ ready: false });
     const result = await orchestrator.prepareChapterAudio({ bookId: 'book', chapterIndex: 0, clean: true });
     assert.strictEqual(result.servedTier, 'instant');
     assert.strictEqual(result.path, '/cache/chapter.mp3');
     const ensured = calls.find(call => call[0] === 'ensureAudio');
     assert.deepStrictEqual(ensured[3], { clean: true, priority: 'immediate', tier: 'instant' });
-    assert(calls.some(call => call[0] === 'prefetch' && call[3] === 'instant'));
+    assert(!calls.some(call => call[0] === 'prefetch'));
   });
 
   await test('chapter audio status honors an explicit premium pin', async () => {
@@ -147,6 +158,20 @@ function harness(overrides = {}) {
     assert.strictEqual(result.servedTier, 'premium');
     assert.strictEqual(result.premiumReady, false);
     assert.strictEqual(calls.find(call => call[0] === 'inspectAudio')[3].tier, 'active');
+  });
+
+  await test('explicit tier inspection does not start full-book premium preparation', async () => {
+    const { orchestrator, calls } = harness({ ready: false });
+
+    const result = await orchestrator.chapterAudioStatus({
+      bookId: 'book-explicit-tier',
+      chapterIndex: 0,
+      requestedTier: 'active'
+    });
+
+    assert.strictEqual(result.tier, 'active');
+    assert.strictEqual(result.url, '/api/audio/book-explicit-tier/0?tier=active');
+    assert.strictEqual(calls.filter(call => call[0] === 'prep').length, 0);
   });
 
   await test('status reconstructs the selected tier manifest after restart', async () => {
@@ -163,12 +188,18 @@ function harness(overrides = {}) {
 
   await test('seek priority and chunk access resolve through the pinned tier', async () => {
     const existing = { totalChunks: 2, chunks: [{ status: 'queued' }, { status: 'ready' }] };
-    const { orchestrator } = harness({ manifest: existing, ready: true });
+    const { orchestrator, calls } = harness({ manifest: existing, ready: true });
     const prioritized = await orchestrator.prioritizeChunk({
       bookId: 'book', chapterIndex: 0, chunkIndex: 1, requestedTier: 'instant'
     });
     assert.strictEqual(prioritized.prioritized, true);
     assert.strictEqual(prioritized.servedTier, 'instant');
+    assert(calls.some(call =>
+      call[0] === 'claim' &&
+      call[1] === 'book' &&
+      call[2] === 0 &&
+      call[3].origin === 'playback-current'
+    ));
     const access = await orchestrator.chunkAccess({
       bookId: 'book', chapterIndex: 0, chunkIndex: 1, requestedTier: 'instant'
     });
@@ -176,14 +207,13 @@ function harness(overrides = {}) {
     assert(access.path.endsWith('book-0-1.mp3'));
   });
 
-  await test('voice-change preparation warms both the next chapter and the remainder', async () => {
+  await test('voice-change preparation regenerates only the requested chapter', async () => {
     const { orchestrator, calls } = harness({ ready: false });
     const result = await orchestrator.prepareCurrentChapter({
       bookId: 'book', chapterIndex: 0, targetChunk: 99
     });
     assert.strictEqual(result.targetChunk, 1);
-    assert(calls.some(call => call[0] === 'warmRemaining') === false, 'two-chapter harness has no remainder');
-    assert(calls.filter(call => call[0] === 'generate').length >= 2);
+    assert.strictEqual(calls.filter(call => call[0] === 'generate').length, 1);
   });
 
   await test('stable stream source pins one tier and resolves sequential chunk events', async () => {
@@ -234,7 +264,7 @@ function harness(overrides = {}) {
     ]), error => error?.name === 'AbortError');
   });
 
-  await test('continuous stream pins one tier and warms the next chapter before current audio is ready', async () => {
+  await test('continuous stream pins one tier without creating an unowned look-ahead chain', async () => {
     const { orchestrator, calls, tts } = harness({ ready: false });
     const source = await orchestrator.prepareContinuousAudioStream({
       bookId: 'book',
@@ -250,9 +280,10 @@ function harness(overrides = {}) {
 
     const generations = calls.filter(call => call[0] === 'generate');
     assert(generations.some(call => call[2] === 0), 'current chapter generation starts');
-    const warmed = generations.find(call => call[2] === 1);
-    assert(warmed, 'next chapter generation starts before current chunk is ready');
-    assert.strictEqual(warmed[5], 'next');
+    assert(
+      !generations.some(call => call[2] === 1),
+      'sliding playback coordinator exclusively owns speculative chapters'
+    );
     assert.strictEqual(
       calls.filter(call => call[0] === 'tts').length,
       1,

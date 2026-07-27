@@ -105,6 +105,9 @@ async function main() {
           active: 2,
           queued: 3,
           completed: 4,
+          byPriority: { immediate: 1, lookahead: 2, 'private-priority': 99 },
+          byOrigin: { 'offline-download': 2, 'playback-lookahead': 1, 'private-origin': 99 },
+          oldestQueuedAgeMs: 12_345,
           title: 'Private Book Title',
           username: 'private-user',
           token: 'private-token'
@@ -134,7 +137,14 @@ async function main() {
       });
       const report = await collect();
       assert.strictEqual(report.quarantinedStoreCount, 1);
-      assert.deepStrictEqual(report.queue, { active: 2, queued: 3, completed: 4 });
+      assert.deepStrictEqual(report.queue, {
+        active: 2,
+        queued: 3,
+        completed: 4,
+        byPriority: { immediate: 1, lookahead: 2 },
+        byOrigin: { 'offline-download': 2, 'playback-lookahead': 1 },
+        oldestQueuedAgeMs: 12_345
+      });
       assert.deepStrictEqual(report.engines.kokoro, {
         available: true,
         status: 'online',

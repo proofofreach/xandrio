@@ -541,10 +541,7 @@ async function downloadBookFromLibrary(bookId) {
     if (!data?.book || !Array.isArray(data.chapters) || data.chapters.length === 0) {
       throw new Error('Book has no downloadable chapters');
     }
-    await downloadBookForOffline(data.book, data.chapters, {
-      showOverlay: false,
-      requirePrepared: true
-    });
+    await downloadBookForOffline(data.book, data.chapters, { showOverlay: false });
   } catch (error) {
     console.error('Could not start offline download:', error);
     showToast('Could not start download. Try again.', 'error');

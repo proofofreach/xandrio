@@ -167,6 +167,148 @@ async function runTests() {
     }
   });
 
+  await test('selective cancellation stops one download request without touching playback', async () => {
+    const q = new TestableQueue({ maxConcurrent: 1, generateDelay: 30 });
+    const firstDownload = await q.enqueue({
+      text: 'download-active',
+      outputPath: '/tmp/selective-download-active.mp3',
+      priority: 'download',
+      activity: {
+        bookId: 'book-download',
+        chapterIndex: 0,
+        origin: 'offline-download',
+        requestId: 'request-1'
+      }
+    });
+    const secondDownload = await q.enqueue({
+      text: 'download-queued',
+      outputPath: '/tmp/selective-download-queued.mp3',
+      priority: 'download',
+      activity: {
+        bookId: 'book-download',
+        chapterIndex: 0,
+        origin: 'offline-download',
+        requestId: 'request-1'
+      }
+    });
+    const playback = await q.enqueue({
+      text: 'playback',
+      outputPath: '/tmp/selective-playback.mp3',
+      priority: 'immediate',
+      activity: {
+        bookId: 'book-playing',
+        chapterIndex: 2,
+        origin: 'playback-current',
+        sessionId: 'session-1'
+      }
+    });
+    await sleep(5);
+
+    assert.strictEqual(q.cancelWhere({ requestId: 'request-1' }), 2);
+    await assert.rejects(q.waitFor(firstDownload), /cancel|Unknown/i);
+    await assert.rejects(q.waitFor(secondDownload), /cancel|Unknown/i);
+    await q.waitFor(playback);
+    assert(q.generationLog.some(entry => entry.text === 'playback'));
+  });
+
+  await test('deduplicated jobs retain every intent owner during selective cancellation', async () => {
+    const q = new TestableQueue({ maxConcurrent: 1, generateDelay: 25 });
+    const blocker = await q.enqueue({
+      text: 'blocker',
+      outputPath: '/tmp/multi-owner-blocker.mp3',
+      priority: 'immediate'
+    });
+    const outputPath = '/tmp/multi-owner-shared.mp3';
+    const download = await q.enqueue({
+      text: 'shared',
+      outputPath,
+      priority: 'download',
+      activity: {
+        bookId: 'shared-book',
+        chapterIndex: 3,
+        variantKey: 'variant-a',
+        origin: 'offline-download',
+        requestId: 'download-a'
+      }
+    });
+    const lookahead = await q.enqueue({
+      text: 'shared',
+      outputPath,
+      priority: 'lookahead',
+      activity: {
+        bookId: 'shared-book',
+        chapterIndex: 3,
+        variantKey: 'variant-a',
+        origin: 'playback-lookahead',
+        sessionId: 'session-a'
+      }
+    });
+    const current = await q.enqueue({
+      text: 'shared',
+      outputPath,
+      priority: 'immediate',
+      activity: {
+        bookId: 'shared-book',
+        chapterIndex: 3,
+        variantKey: 'variant-a',
+        origin: 'playback-current',
+        sessionId: 'session-b'
+      }
+    });
+
+    assert.strictEqual(lookahead, download);
+    assert.strictEqual(current, download);
+    assert.strictEqual(q.cancelWhere({ requestId: 'download-a' }), 0);
+    assert.strictEqual(q.cancelWhere(claim =>
+      claim.origin === 'playback-lookahead' && claim.priority === 'lookahead'
+    ), 0);
+
+    await q.waitFor(blocker);
+    await q.waitFor(download);
+    assert(q.generationLog.some(entry => entry.outputPath === outputPath));
+  });
+
+  await test('releasing a promoted claim restores the remaining owner priority', async () => {
+    const q = new TestableQueue({ maxConcurrent: 1, generateDelay: 40 });
+    const blocker = await q.enqueue({
+      text: 'blocker',
+      outputPath: '/tmp/priority-owner-blocker.mp3',
+      priority: 'immediate'
+    });
+    const shared = await q.enqueue({
+      text: 'shared',
+      outputPath: '/tmp/priority-owner-shared.mp3',
+      priority: 'download',
+      activity: {
+        bookId: 'shared-book',
+        chapterIndex: 2,
+        variantKey: 'variant-a',
+        origin: 'offline-download',
+        requestId: 'download-a'
+      }
+    });
+    await q.enqueue({
+      text: 'shared',
+      outputPath: '/tmp/priority-owner-shared.mp3',
+      priority: 'lookahead',
+      activity: {
+        bookId: 'shared-book',
+        chapterIndex: 2,
+        variantKey: 'variant-a',
+        origin: 'playback-lookahead',
+        sessionId: 'session-a'
+      }
+    });
+    assert.strictEqual(q.getQueueStatus().byPriority.lookahead, 1);
+
+    assert.strictEqual(q.cancelWhere({ sessionId: 'session-a' }), 0);
+    assert.strictEqual(q.getQueueStatus().byPriority.download, 1);
+    assert.strictEqual(q.getQueueStatus().byPriority.lookahead || 0, 0);
+
+    await q.waitFor(blocker);
+    await q.waitFor(shared);
+  });
+
   // ----- 5. getStatus returns correct position -----
   await test('getStatus returns correct queue position', async () => {
     const q = new TestableQueue({ maxConcurrent: 1, generateDelay: 100 });
@@ -241,6 +383,38 @@ async function runTests() {
       `Expected priority order but got: ${order.join(', ')}`);
   });
 
+  await test('queue priority matches capacity-one look-ahead and download fairness', async () => {
+    const q = new TestableQueue({
+      maxConcurrent: 1,
+      generateDelay: 5,
+      lookaheadBurst: 4,
+      downloadMaxWaitMs: 30_000
+    });
+    const ids = [];
+    for (let index = 0; index < 5; index += 1) {
+      ids.push(await q.enqueue({
+        text: `lookahead-${index}`,
+        outputPath: `/tmp/fair-lookahead-${index}.mp3`,
+        priority: 'lookahead'
+      }));
+    }
+    ids.push(await q.enqueue({
+      text: 'download',
+      outputPath: '/tmp/fair-download.mp3',
+      priority: 'download'
+    }));
+
+    await Promise.all(ids.map(id => q.waitFor(id)));
+    assert.deepStrictEqual(q.generationLog.map(entry => entry.text), [
+      'lookahead-0',
+      'lookahead-1',
+      'lookahead-2',
+      'lookahead-3',
+      'download',
+      'lookahead-4'
+    ]);
+  });
+
   // ----- 8. getQueueStatus accuracy -----
   await test('getQueueStatus returns accurate counts', async () => {
     const q = new TestableQueue({ maxConcurrent: 2, generateDelay: 50 });
@@ -266,18 +440,66 @@ async function runTests() {
     assert.strictEqual(final.completed, 4);
   });
 
+  await test('operator queue status reports safe priority, origin, and age diagnostics', async () => {
+    let now = 1_000;
+    const q = new TestableQueue({ maxConcurrent: 1, now: () => now });
+    q._drain = () => {};
+    const lookahead = await q.enqueue({
+      text: 'look ahead',
+      outputPath: '/tmp/status-lookahead.mp3',
+      priority: 'lookahead',
+      activity: {
+        bookId: 'private-book',
+        chapterIndex: 4,
+        origin: 'playback-lookahead'
+      }
+    });
+    now = 4_000;
+    const download = await q.enqueue({
+      text: 'download',
+      outputPath: '/tmp/status-download.mp3',
+      priority: 'download',
+      activity: {
+        bookId: 'another-private-book',
+        chapterIndex: 0,
+        origin: 'offline-download'
+      }
+    });
+
+    assert.deepStrictEqual(q.getQueueStatus(), {
+      active: 0,
+      queued: 2,
+      completed: 0,
+      byPriority: { lookahead: 1, download: 1 },
+      byOrigin: { 'playback-lookahead': 1, 'offline-download': 1 },
+      oldestQueuedAgeMs: 3_000
+    });
+    q.cancel(lookahead);
+    q.cancel(download);
+  });
+
   await test('getQueueActivity groups live jobs and filters books', async () => {
     const q = new TestableQueue({ maxConcurrent: 1, generateDelay: 40 });
     const ids = [
       await q.enqueue({
         text: 'book-a-current',
         outputPath: '/tmp/activity-a-current.mp3',
-        activity: { bookId: 'book-a', chapterIndex: 0, chunkIndex: 0 }
+        activity: {
+          bookId: 'book-a',
+          chapterIndex: 0,
+          chunkIndex: 0,
+          origin: 'playback-lookahead'
+        }
       }),
       await q.enqueue({
         text: 'book-a-next',
         outputPath: '/tmp/activity-a-next.mp3',
-        activity: { bookId: 'book-a', chapterIndex: 1, chunkIndex: 0 }
+        activity: {
+          bookId: 'book-a',
+          chapterIndex: 1,
+          chunkIndex: 0,
+          origin: 'playback-lookahead'
+        }
       }),
       await q.enqueue({
         text: 'book-b',
@@ -299,6 +521,7 @@ async function runTests() {
         bookId: 'book-a',
         active: 1,
         queued: 1,
+        origins: { 'playback-lookahead': 2 },
         chapters: [
           { chapterIndex: 0, active: 1, queued: 0 },
           { chapterIndex: 1, active: 0, queued: 1 }

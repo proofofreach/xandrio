@@ -92,11 +92,15 @@ function deletionHarness(options = {}) {
       ? async token => operations.push(`tombstone:abort:${token}`)
       : undefined,
     rememberDeletedBookId: bookId => operations.push(`remember:${bookId}`),
-    cancelBookJobs: bookId => {
+    cancelBookJobs: async bookId => {
       operations.push(`cancel:${bookId}`);
+      await options.cancelBookJobs?.(bookId, operations);
       return 3;
     },
-    stopPremiumPrep: bookId => operations.push(`stop:${bookId}`),
+    stopPremiumPrep: async bookId => {
+      operations.push(`stop:${bookId}`);
+      await options.stopPremiumPrep?.(bookId, operations);
+    },
     cleanupBookArtifacts: async (bookId, book) => {
       operations.push(`cleanup:${bookId}:${book.title}`);
       return artifactCleanup;
@@ -298,6 +302,68 @@ function metadataHarness(options = {}) {
     assert(
       harness.operations.indexOf('update:books:saved') < harness.operations.indexOf('cleanup:book_1:Example'),
       'catalog write must finish before irreversible cleanup'
+    );
+  });
+
+  await test('deletion waits for durable generation cleanup before removing artifacts', async () => {
+    let releaseCleanup;
+    const cleanupGate = new Promise(resolve => {
+      releaseCleanup = resolve;
+    });
+    const harness = deletionHarness({
+      cancelBookJobs: async (_bookId, operations) => {
+        operations.push('cancel:durable:begin');
+        await cleanupGate;
+        operations.push('cancel:durable:done');
+      }
+    });
+
+    let settled = false;
+    const deletion = harness.service
+      .deleteBook({ bookId: 'book_1', actor: { role: 'admin' } })
+      .finally(() => {
+        settled = true;
+      });
+    await new Promise(resolve => setImmediate(resolve));
+
+    assert.strictEqual(settled, false);
+    assert(!harness.operations.includes('cleanup:book_1:Example'));
+    releaseCleanup();
+    await deletion;
+    assert(
+      harness.operations.indexOf('cancel:durable:done') <
+        harness.operations.indexOf('cleanup:book_1:Example')
+    );
+  });
+
+  await test('deletion waits for premium intent removal before removing artifacts', async () => {
+    let releasePremiumCleanup;
+    const premiumCleanupGate = new Promise(resolve => {
+      releasePremiumCleanup = resolve;
+    });
+    const harness = deletionHarness({
+      stopPremiumPrep: async (_bookId, operations) => {
+        operations.push('stop:durable:begin');
+        await premiumCleanupGate;
+        operations.push('stop:durable:done');
+      }
+    });
+
+    let settled = false;
+    const deletion = harness.service
+      .deleteBook({ bookId: 'book_1', actor: { role: 'admin' } })
+      .finally(() => {
+        settled = true;
+      });
+    await new Promise(resolve => setImmediate(resolve));
+
+    assert.strictEqual(settled, false);
+    assert(!harness.operations.includes('cleanup:book_1:Example'));
+    releasePremiumCleanup();
+    await deletion;
+    assert(
+      harness.operations.indexOf('stop:durable:done') <
+        harness.operations.indexOf('cleanup:book_1:Example')
     );
   });
 

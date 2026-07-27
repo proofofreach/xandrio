@@ -28,17 +28,27 @@ Provider result labels communicate whether a result is an operator upload, carri
 
 ## Narration flow
 
-1. Xandrio extracts book text and splits it into chapter chunks.
-2. The TTS queue chooses the selected engine and generates audio.
-3. The server stores generated chunks in `cache/` under a voice/variant-specific key.
-4. The player streams chunks, supports Range requests, and can create a verified
+1. Xandrio extracts book text and splits it into chapter chunks. Import warms
+   only the preferred playable chapter; startup does not backfill the library.
+2. Meaningful playback maintains a three-playable-chapter look-ahead window.
+   Full-title downloads create durable intents and materialize one chapter per
+   title across at most two titles.
+3. The TTS queue chooses the selected engine and arbitrates current playback,
+   next-chapter playback, look-ahead, downloads, and background work in that
+   order. A waiting download receives bounded progress without overtaking live
+   playback.
+4. The server stores generated chunks in `cache/` under a voice/variant-specific key.
+5. The player streams chunks, supports Range requests, and can create a verified
    full-title browser download containing every chapter plus a compact
    title/chapter snapshot and cover.
-5. The service worker serves downloaded chapter audio and covers when the
+6. The service worker serves downloaded chapter audio and covers when the
    network is unavailable. The local snapshot rebuilds the library and player
-   after a cold offline launch.
-6. Title deletion removes server artifacts first, then the initiating browser
-   clears its audio, cover, manifest, checkpoint, and pending position records.
+   after a cold offline launch. Server preparation and generated narration are
+   shared across devices, but the Downloaded view and transferred Cache Storage
+   entries are scoped to the current account, browser profile, and device.
+7. Title deletion cancels its generation intents and removes server artifacts
+   first, then the initiating browser clears its audio, cover, manifest,
+   checkpoint, and pending position records.
 
 Edge sends narration text to Microsoft through an unofficial consumer-endpoint integration. Kokoro and Chatterbox send narration to the local host chosen by the operator. Chatterbox can read an operator-supplied voice reference. See [PRIVACY.md](PRIVACY.md) for the outbound-data table.
 

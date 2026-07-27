@@ -32,6 +32,12 @@ const { getTtsOutputFormatForVoice } = require('./lib/tts-output-format');
 const { createNarrationEngineRegistry } = require('./lib/narration-engine-registry');
 const { createNarrationRuntime } = require('./lib/narration-runtime');
 const { createPlaybackOrchestrator } = require('./lib/playback-orchestrator');
+const { createPlaybackPrefetchCoordinator } = require('./lib/playback-prefetch');
+const { createOfflinePreparationCoordinator } = require('./lib/offline-preparation-coordinator');
+const {
+  GENERATION_ORIGIN,
+  GENERATION_PRIORITY
+} = require('./lib/audio-generation-intent');
 const GenerationScheduler = require('./lib/generation-scheduler');
 const GenerationJournal = require('./lib/generation-journal');
 const { createPronunciationService, createCacheInvalidator } = require('./lib/pronunciation-repair');
@@ -51,10 +57,7 @@ const {
 const { chapterStructureKey, positionMatchesChapterStructure } = require('./lib/chapter-structure');
 const { parseEpub } = require('./lib/epub-parser');
 const { BookImportError, createBookImporter } = require('./lib/book-importer');
-const {
-  booksNeedingAudioBackfill,
-  createBookAudioPreloader
-} = require('./lib/book-audio-preloader');
+const { createImportAudioWarmup } = require('./lib/import-audio-warmup');
 const { createUserLibraryState } = require('./lib/user-library-state');
 const { createSearchProviderRegistry } = require('./lib/search-providers');
 const { createSearchCoverService } = require('./lib/search-cover-service');
@@ -1312,9 +1315,9 @@ const bookImporter = createBookImporter({
   removeFile: removeFileIfExists,
   afterPersist: (record, bookPath) => {
     if (!PREGENERATE_ON_IMPORT) return;
-    console.log(`Generating complete audiobook for ${record.id}`);
-    pregenerateBookAudio(record.id, bookPath).catch(error => {
-      console.error(`Failed to generate complete audiobook:`, error);
+    console.log(`Warming starting chapter for ${record.id}`);
+    warmImportedBookAudio(record.id, bookPath).catch(error => {
+      console.error(`Failed to warm starting chapter:`, error);
     });
   }
 });
@@ -1535,6 +1538,13 @@ function writeSseEvent(res, message) {
 }
 
 async function ensureChapterAudioPrepared(bookId, chapterIndex, options = {}) {
+  const throwIfAborted = () => {
+    if (!options.signal?.aborted) return;
+    const error = new Error('Generation intent was retired');
+    error.name = 'AbortError';
+    throw error;
+  };
+  throwIfAborted();
   const clean = Boolean(options.clean);
   const priority = options.priority || 'background';
   const tier = options.tier === 'instant' ? 'instant' : 'active';
@@ -1543,11 +1553,21 @@ async function ensureChapterAudioPrepared(bookId, chapterIndex, options = {}) {
   const jobs = clean ? cleanChapterAudioPrepareJobs : chapterAudioPrepareJobs;
   const key = `${bookId}:${chapterIndex}:${tts.variantKeyProvider()}`;
   if (jobs.has(key)) {
-    if (priority === 'download') {
+    throwIfAborted();
+    await tts.claimChapter?.(bookId, chapterIndex, {
+      origin: options.origin || (
+        priority === GENERATION_PRIORITY.DOWNLOAD
+          ? GENERATION_ORIGIN.OFFLINE_DOWNLOAD
+          : GENERATION_ORIGIN.PLAYBACK_CURRENT
+      ),
+      requestId: options.requestId || null,
+      sessionId: options.sessionId || null
+    }, priority, { signal: options.signal });
+    if (priority === 'download' || priority === 'lookahead') {
       const existingManifest = tts.getChapterManifest(bookId, chapterIndex);
       existingManifest?.chunks?.forEach((chunk, index) => {
         if (chunk.status !== 'ready') {
-          tts.prioritizeChunk(bookId, chapterIndex, index, 'download');
+          tts.prioritizeChunk(bookId, chapterIndex, index, priority);
         }
       });
     }
@@ -1556,10 +1576,12 @@ async function ensureChapterAudioPrepared(bookId, chapterIndex, options = {}) {
 
   const job = (async () => {
     const books = await loadJSON(BOOKS_FILE, {});
+    throwIfAborted();
     const book = books[bookId];
     if (!book) throw new Error('Book not found');
 
     const chapters = await getChaptersCached(book.path);
+    throwIfAborted();
     const chapter = chapters[chapterIndex];
     if (!chapter) throw new Error('Chapter not found');
 
@@ -1572,24 +1594,41 @@ async function ensureChapterAudioPrepared(bookId, chapterIndex, options = {}) {
     } catch {}
 
     const bookLanguage = book.language || 'en';
-    const firstChunkPriority = priority === 'background'
-      ? 'background'
-      : priority === 'download'
-        ? 'download'
-        : 'immediate';
+    const deferredPriority = priority === 'background' ||
+      priority === 'download' ||
+      priority === 'lookahead';
+    const firstChunkPriority = deferredPriority ? priority : 'immediate';
     let manifest = tts.getChapterManifest(bookId, chapterIndex);
     if (!manifest || manifestNeedsResume(manifest)) {
       manifest = await tts.generateChapter(bookId, chapterIndex, chapter.text, bookLanguage, priority, {
-        priorityForChunk: priority === 'background' || priority === 'download'
+        priorityForChunk: deferredPriority
           ? (() => priority)
           : getChapterGenerationPriority(0),
-        voice
+        voice,
+        origin: options.origin || (
+          priority === GENERATION_PRIORITY.DOWNLOAD
+            ? GENERATION_ORIGIN.OFFLINE_DOWNLOAD
+            : GENERATION_ORIGIN.PLAYBACK_CURRENT
+        ),
+        requestId: options.requestId || null,
+        sessionId: options.sessionId || null,
+        signal: options.signal
       });
     } else {
+      throwIfAborted();
+      await tts.claimChapter?.(bookId, chapterIndex, {
+        origin: options.origin || (
+          priority === GENERATION_PRIORITY.DOWNLOAD
+            ? GENERATION_ORIGIN.OFFLINE_DOWNLOAD
+            : GENERATION_ORIGIN.PLAYBACK_CURRENT
+        ),
+        requestId: options.requestId || null,
+        sessionId: options.sessionId || null
+      }, priority, { signal: options.signal });
       manifest.chunks.forEach((chunk, index) => {
         if (chunk.status !== 'ready') {
-          const chunkPriority = priority === 'download'
-            ? 'download'
+          const chunkPriority = deferredPriority
+            ? priority
             : index === 0
               ? firstChunkPriority
               : 'background';
@@ -1602,6 +1641,7 @@ async function ensureChapterAudioPrepared(bookId, chapterIndex, options = {}) {
       .filter(chunk => chunk.status !== 'ready' && chunk.jobId)
       .map(chunk => ttsQueue.waitFor(chunk.jobId).catch(() => {}));
     await Promise.all(pendingJobs);
+    throwIfAborted();
 
     const refreshed = tts.getChapterManifest(bookId, chapterIndex) || manifest;
     if (!refreshed.chunks.every(chunk => chunk.status === 'ready')) {
@@ -1615,39 +1655,6 @@ async function ensureChapterAudioPrepared(bookId, chapterIndex, options = {}) {
 
   jobs.set(key, job);
   return job;
-}
-
-// Feature: warm the NEXT chapter's audio in the background while chapter N
-// plays, so auto-advance never stalls. Fire-and-forget — generation is
-// coalesced and short-circuited by ensureChapterAudioPrepared (it returns
-// immediately when the chapter file is already on disk). A per-(book, next
-// chapter, variant, tier) guard stops repeated Range/manifest requests for
-// the same chapter from re-triggering the check (each re-trigger would
-// otherwise re-run an ffprobe on an already-complete file). The guard entry
-// is cleared on failure so a later request can retry (e.g. engine was down).
-const nextChapterPrefetchGuard = new Set();
-function prefetchNextChapterAudio(bookId, chapterIndex, tier) {
-  const resolvedTier = tier === 'instant' ? 'instant' : 'active';
-  const nextIndex = Number(chapterIndex) + 1;
-  if (!bookId || !Number.isInteger(nextIndex) || nextIndex < 1) return;
-  const tts = ttsForTier(resolvedTier);
-  let variantKey;
-  try { variantKey = tts.variantKeyProvider(); } catch { variantKey = 'default'; }
-  const guardKey = `${bookId}:${nextIndex}:${variantKey}:${resolvedTier}`;
-  if (nextChapterPrefetchGuard.has(guardKey)) return;
-  nextChapterPrefetchGuard.add(guardKey);
-
-  (async () => {
-    const books = await loadJSON(BOOKS_FILE, {});
-    const book = books[bookId];
-    if (!book) return;
-    const chapters = await getChaptersCached(book.path);
-    if (nextIndex >= chapters.length) return; // no next chapter to prepare
-    await ensureChapterAudioPrepared(bookId, nextIndex, { priority: 'background', tier: resolvedTier });
-  })().catch(err => {
-    nextChapterPrefetchGuard.delete(guardKey);
-    console.warn(`Next-chapter prefetch failed for ${bookId}:${nextIndex}: ${err.message}`);
-  });
 }
 
 /**
@@ -1720,7 +1727,8 @@ function createPremiumVariantWorker(variantKey) {
       return ensureChapterAudioPrepared(bookId, chapterIndex, {
         priority: 'background',
         tts: fixedTts,
-        voice
+        voice,
+        origin: GENERATION_ORIGIN.PREMIUM_PREP
       });
     },
     chapterReady: async (bookId, chapterIndex) => {
@@ -1743,7 +1751,11 @@ const premiumPrep = new PremiumAudioPrep({
   getBookInfo: getPremiumBookInfo,
   prepareChapter: (bookId, chapterIndex) => {
     narrationEngines.start(getActiveVoice());
-    return ensureChapterAudioPrepared(bookId, chapterIndex, { priority: 'background', tier: 'active' });
+    return ensureChapterAudioPrepared(bookId, chapterIndex, {
+      priority: 'background',
+      tier: 'active',
+      origin: GENERATION_ORIGIN.PREMIUM_PREP
+    });
   },
   chapterReady: premiumChapterReady,
   generationScheduler,
@@ -1840,20 +1852,6 @@ const playbackOrchestrator = createPlaybackOrchestrator({
   waitForJob: jobId => ttsQueue.waitFor(jobId),
   ensureChapterAudio: ensureChapterAudioPrepared,
   inspectChapterAudio,
-  prefetchNextChapter: prefetchNextChapterAudio,
-  warmRemainingChapters: ({ bookId, chapters, startChapterIndex, language, tier, voice }) => {
-    setTimeout(() => {
-      const tts = ttsForTier(tier);
-      for (let index = startChapterIndex; index < chapters.length; index++) {
-        if (deletedBookIds.has(bookId)) return;
-        if (tts.getChapterManifest(bookId, index)) continue;
-        tts.generateChapter(bookId, index, chapters[index].text, language, 'background', {
-          priorityForChunk: () => 'background',
-          voice
-        }).catch(error => console.error(`Background voice warmup failed for chapter ${index}:`, error));
-      }
-    }, 0);
-  },
   getChapterContext: async (bookId, chapterIndex) => {
     const books = await loadJSON(BOOKS_FILE, {});
     const book = books[bookId];
@@ -1873,6 +1871,64 @@ const playbackOrchestrator = createPlaybackOrchestrator({
   },
   onBackgroundError: (error, context) => console.error(`Look-ahead generation failed for chapter ${context.chapterIndex}:`, error)
 });
+
+const playbackPrefetch = createPlaybackPrefetchCoordinator({
+  getChapters: async bookId => {
+    const books = await loadJSON(BOOKS_FILE, {});
+    const book = books[bookId];
+    if (!book || deletedBookIds.has(bookId)) return [];
+    return getChaptersCached(book.path);
+  },
+  prepareChapter: request => ensureChapterAudioPrepared(request.bookId, request.chapterIndex, {
+    priority: request.priority,
+    origin: request.origin,
+    sessionId: request.sessionId,
+    tier: request.tier,
+    tts: ttsForTier(request.tier).workerForVariant(request.variantKey, {
+      voice: request.voice,
+      chunkSize: request.chunkSize
+    }),
+    voice: request.voice,
+    signal: request.signal
+  }),
+  cancelChapters: async request => {
+    const chapterIndexes = new Set(request.chapterIndexes);
+    const cancelled = ttsQueue.cancelWhere(claim =>
+      claim.origin === GENERATION_ORIGIN.PLAYBACK_LOOKAHEAD &&
+      claim.priority === GENERATION_PRIORITY.LOOKAHEAD &&
+      claim.bookId === request.bookId &&
+      claim.variantKey === request.variantKey &&
+      chapterIndexes.has(claim.chapterIndex)
+    );
+    await generationJournal.removeChaptersByIntent({
+      bookId: request.bookId,
+      variantKey: request.variantKey,
+      origin: GENERATION_ORIGIN.PLAYBACK_LOOKAHEAD,
+      priority: GENERATION_PRIORITY.LOOKAHEAD,
+      chapterIndexes: request.chapterIndexes
+    });
+    return cancelled;
+  },
+  isDeleted: bookId => deletedBookIds.has(bookId),
+  onError: (error, request) => {
+    console.warn(`Playback look-ahead failed for ${request.bookId}:${request.chapterIndex}: ${error.message}`);
+  }
+});
+
+function observePlaybackHorizon({ bookId, chapterIndex, sessionId }) {
+  const tier = 'active';
+  const voice = voiceForTier(tier);
+  const tts = ttsForTier(tier);
+  return playbackPrefetch.observe({
+    bookId,
+    chapterIndex,
+    sessionId,
+    tier,
+    variantKey: String(tts.variantKeyProvider() || 'default'),
+    voice,
+    chunkSize: getChunkSizeForVoice(voice)
+  });
+}
 const chapterAudioStreamer = createChapterAudioStreamer({ serveAudioFile });
 const hlsAudioStreamer = createHlsAudioStreamer({ serveAudioFile });
 
@@ -2661,7 +2717,14 @@ const bookDeletionService = createBookDeletionService({
   commitBookDeletion: bookDeletionLog.commit,
   abortBookDeletion: bookDeletionLog.abort,
   rememberDeletedBookId,
-  cancelBookJobs: bookId => chunkedTTS.cancelBook(bookId) + instantChunkedTTS.cancelBook(bookId),
+  cancelBookJobs: async bookId => {
+    const cancelledJobs = chunkedTTS.cancelBook(bookId) + instantChunkedTTS.cancelBook(bookId);
+    await Promise.all([
+      playbackPrefetch.removeBook(bookId),
+      offlinePreparationCoordinator.cancel(bookId, { remove: true })
+    ]);
+    return cancelledJobs;
+  },
   stopPremiumPrep: bookId => premiumPrep.stopBook(bookId),
   cleanupBookArtifacts: bookArtifactCleaner.cleanup,
   scheduleArtifactSweeps: bookArtifactCleaner.scheduleSweeps,
@@ -2894,16 +2957,46 @@ async function getOfflineBookChapters(bookId) {
   };
 }
 
+const offlinePreparationCoordinator = createOfflinePreparationCoordinator({
+  stateStore: generationJournal,
+  getBookChapters: getOfflineBookChapters,
+  // Offline preparation owns a bounded active-variant pipeline. Inspect it
+  // directly so progress checks cannot trigger the separate full-book premium
+  // preparation feature.
+  chapterStatus: request => inspectChapterAudio(request.bookId, request.chapterIndex, {
+    tier: 'active'
+  }),
+  prepareChapter: request => ensureChapterAudioPrepared(request.bookId, request.chapterIndex, {
+    priority: request.priority,
+    origin: request.origin,
+    requestId: request.requestId,
+    tier: 'active'
+  }),
+  cancelRequest: requestId => ttsQueue.cancelWhere({ requestId }),
+  discardRequest: requestId => generationJournal.removeChaptersForRequest(requestId),
+  onError: (error, request) => {
+    console.warn(`Offline preparation failed for ${request.bookId}: ${error.message}`);
+  }
+});
+
 registerPlaybackRoutes(app, {
   playbackOrchestrator,
   ttsForTier,
   generationJournal,
+  offlinePreparationCoordinator,
   chapterAudioStreamer,
   hlsAudioStreamer,
   serveAudioFile,
   sendServerError,
   fs,
   getBookChapters: getOfflineBookChapters,
+  onCurrentChapterPrepared: ({ req, bookId, chapterIndex }) => observePlaybackHorizon({
+    bookId,
+    chapterIndex,
+    sessionId: `${req.user?.id || 'legacy'}:${syncDeviceId(req)}`
+  }),
+  offlinePreparationOwner: req =>
+    `${req.user?.id || 'legacy'}:${syncDeviceId(req)}`,
   rateLimitWindowMs: RATE_LIMIT_WINDOW,
   rateLimitMax: RATE_LIMIT_MAX
 });
@@ -3099,6 +3192,7 @@ app.get('/api/queue/status', async (req, res) => {
             hasCover: Boolean(book.coverPath),
             active: item.active,
             queued: item.queued,
+            origins: item.origins || {},
             chapters: item.chapters
           };
         })
@@ -3270,6 +3364,20 @@ app.post('/api/position', async (req, res) => {
       });
       return outcome.ignored ? jsonStore.SKIP_SAVE : undefined;
     });
+    const prefetchSessionId = `${userId}:${syncDeviceId(req)}`;
+    if (!outcome.ignored && Boolean(wasPlaying) && !Boolean(finished)) {
+      observePlaybackHorizon({
+        bookId,
+        chapterIndex: parsedChapterIndex,
+        sessionId: prefetchSessionId
+      }).catch(error => {
+        console.warn(`Playback look-ahead observation failed for ${bookId}: ${error.message}`);
+      });
+    } else if (!outcome.ignored) {
+      playbackPrefetch.removeSession(prefetchSessionId).catch(error => {
+        console.warn(`Playback look-ahead retirement failed for ${bookId}: ${error.message}`);
+      });
+    }
     res.json(outcome);
   } catch (err) {
     sendServerError(res, err, "Failed to save position");
@@ -3356,22 +3464,24 @@ async function extractBookMetadata(bookPath) {
   return bookDocument.extractMetadata(bookPath);
 }
 
-// Generate the complete audiobook as part of ingestion. The preferred content
-// chapter is generated first for fast playback; the remaining chapters follow
-// at background priority.
-async function pregenerateBookAudio(bookId, bookPath) {
+// Warm one preferred content chapter after ingestion. Library membership alone
+// must never create full-title generation work.
+async function warmImportedBookAudio(bookId, bookPath) {
   const books = await loadJSON(BOOKS_FILE, {});
   const book = books[bookId];
   if (!book || deletedBookIds.has(bookId)) return;
 
-  const preloader = createBookAudioPreloader({
+  const preloader = createImportAudioWarmup({
     getChapters: getChaptersCached,
     preferredStartIndex: findPreferredAudioStartChapterIndex,
     generateChapter: async ({ chapterIndex, chapter, language, priority, voice }) => {
       if (deletedBookIds.has(bookId)) throw new Error('Book was deleted during audio generation');
       console.log(`[book-audio] Generating chapter ${chapterIndex}: "${chapter.title}"`);
-      await chunkedTTS.generateChapter(bookId, chapterIndex, chapter.text, language, priority, {
-        voice
+      await ensureChapterAudioPrepared(bookId, chapterIndex, {
+        priority,
+        voice,
+        origin: GENERATION_ORIGIN.IMPORT_WARMUP,
+        tier: 'active'
       });
     },
     onProgress: async progress => {
@@ -3385,9 +3495,9 @@ async function pregenerateBookAudio(bookId, bookPath) {
         record.audioGenerationUpdatedAt = new Date().toISOString();
         if (progress.error) record.audioGenerationError = progress.error;
         else delete record.audioGenerationError;
-        if (progress.state === 'ready') {
-          record.chapter1Ready = true;
-          record.preloadedThrough = Math.max(0, progress.totalChapters - 1);
+        if (progress.state === 'partial') {
+          record.chapter1Ready = progress.warmedChapterIndex === 0;
+          record.preloadedThrough = progress.warmedChapterIndex;
         }
       });
     }
@@ -3399,21 +3509,6 @@ async function pregenerateBookAudio(bookId, bookPath) {
     language: book.language || 'en',
     voice: getActiveVoice()
   });
-}
-
-async function backfillBookAudio() {
-  if (!PREGENERATE_ON_IMPORT) return;
-  const books = await loadJSON(BOOKS_FILE, {});
-  const pending = booksNeedingAudioBackfill(books, bookId => deletedBookIds.has(bookId));
-  if (pending.length === 0) return;
-  console.log(`[book-audio] Backfilling ${pending.length} existing title(s)`);
-  for (const book of pending) {
-    try {
-      await pregenerateBookAudio(book.id, book.path);
-    } catch (error) {
-      console.error(`[book-audio] Backfill failed for ${book.id}:`, error);
-    }
-  }
 }
 
 // Helper: Get appropriate voice for language
@@ -3674,6 +3769,27 @@ if (require.main === module) {
     narrationEngines.start('kokoro:af_heart');
     narrationEngines.start('chatterbox:brick-scott');
     startProviderServersForVoice(getActiveVoice());
+    const generationCleanup = await generationJournal.discardLegacySpeculativeChapters();
+    if (generationCleanup.discarded) {
+      console.log(`Discarded ${generationCleanup.discarded} transient chapter generation intent(s)`);
+    }
+    if (generationCleanup.discardedBookIds?.length) {
+      const affectedBooks = new Set(generationCleanup.discardedBookIds);
+      await updateJSON(BOOKS_FILE, books => {
+        let changed = false;
+        for (const bookId of affectedBooks) {
+          const book = books[bookId];
+          if (!book) continue;
+          book.audioGenerationState = 'partial';
+          book.chapter1Ready = false;
+          delete book.preloadedThrough;
+          delete book.audioGenerationError;
+          changed = true;
+        }
+        return changed ? undefined : jsonStore.SKIP_SAVE;
+      });
+      await generationJournal.acknowledgeBookMetadataResets([...affectedBooks]);
+    }
     await premiumPrep.restore().catch(err => console.warn(`Premium prep recovery failed: ${err.message}`));
     const ordinaryRecovery = await Promise.all([
       chunkedTTS.resumePendingChapters({ recoverAllVariants: true })
@@ -3687,9 +3803,7 @@ if (require.main === module) {
       console.log(`Chapter generation recovery: ${resumedChapters} resumed, ${failedChapters} failed`);
     }
     const offlineRecovery = await replayOfflinePreparations({
-      generationJournal,
-      getBookChapters: getOfflineBookChapters,
-      playbackOrchestrator
+      offlinePreparationCoordinator
     }).catch(err => {
       console.warn(`Offline preparation recovery failed: ${err.message}`);
       return { resumedBooks: 0, resumedChapters: 0, failedBooks: [] };
@@ -3709,8 +3823,6 @@ if (require.main === module) {
         .catch(err => console.error('Backfill failed:', err.message))
         .then(() => backfillChapterDurations())
         .catch(err => console.error('Chapter-duration backfill failed:', err.message));
-      backfillBookAudio()
-        .catch(err => console.error('Book-audio backfill failed:', err.message));
     });
   }).catch(err => {
     console.error('Failed to start Xandrio:', err.message);
