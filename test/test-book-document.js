@@ -2,6 +2,12 @@ const fs = require('fs/promises');
 const os = require('os');
 const path = require('path');
 const { createBookDocument } = require('../lib/book-document');
+const { createXBookStore } = require('../lib/xbook-store');
+const {
+  buildChapterIndexMap,
+  remapBookPositions,
+  remapBookBookmarks
+} = require('../lib/chapter-reprocess');
 
 let passed = 0;
 let failed = 0;
@@ -36,7 +42,14 @@ function createFixture(options = {}) {
     },
     extractPdfChapters: async source => {
       calls.push(`chapters:pdf:${source}`);
-      return [chapter('PDF chapter')];
+      const chapters = [chapter('PDF chapter')];
+      if (options.pdfSourceDocument) {
+        Object.defineProperty(chapters, 'sourceDocument', {
+          value: options.pdfSourceDocument,
+          enumerable: false
+        });
+      }
+      return chapters;
     },
     extractKindleChapters: async (source, format) => {
       calls.push(`chapters:${format}:${source}`);
@@ -88,6 +101,13 @@ section('Format dispatch, metadata, and covers');
     calls.includes('chapters:pdf:/library/book.pdf') &&
     calls.includes('chapters:azw3:/library/book.azw3'),
   'dispatches EPUB, PDF, and Kindle chapter extraction by extension');
+
+  const sourceDocumentFixture = createFixture({
+    pdfSourceDocument: { _pdfStructureVersion: 2, pages: [{ pageNumber: 1, text: 'Source page' }] }
+  });
+  const sourceDocumentChapters = await sourceDocumentFixture.document.extractChapters('/library/source-data.pdf');
+  assert(sourceDocumentChapters.sourceDocument?._pdfStructureVersion === 2,
+    'preserves PDF reprocessing data through chapter normalization');
 
   const metadata = await Promise.all([
     document.extractMetadata('/library/book.epub'),
@@ -153,6 +173,103 @@ section('Format dispatch, metadata, and covers');
     'reads chapters and metadata from XBook artifacts');
   assert(await xbookDocument.extractCover('/library/stored.xbook.json') && storedValidation.valid,
     'uses stored XBook cover state and validates stored chapters');
+
+  section('Versioned XBook PDF source data');
+  const xbookDir = await fs.mkdtemp(path.join(os.tmpdir(), 'xandrio-xbook-'));
+  try {
+    const store = createXBookStore({
+      cacheDir: xbookDir,
+      xbookVersion: 2,
+      deleteSourceAfterExtract: true,
+      getFileIdentity: async filePath => {
+        const stat = await fs.stat(filePath);
+        return { mtimeMs: stat.mtimeMs, size: stat.size };
+      },
+      invalidateFileIdentity() {},
+      extractBookMetadata: async () => ({}),
+      extractBookChapters: async () => [],
+      extractMobiCover: async () => false,
+      getBookFormatFromName: () => 'pdf',
+      reprocessPdfDocument: async sourceDocument => {
+        const chapters = [chapter('Reprocessed chapter')];
+        Object.defineProperty(chapters, 'sourceDocument', {
+          value: { ...sourceDocument, reprocessedAt: '2026-07-27T00:00:00.000Z' },
+          enumerable: false
+        });
+        return chapters;
+      }
+    });
+    const persistedChapters = [chapter('Persisted PDF chapter')];
+    Object.defineProperty(persistedChapters, 'sourceDocument', {
+      value: { _pdfStructureVersion: 2, pages: [{ pageNumber: 1, text: 'Persisted source text' }] },
+      enumerable: false
+    });
+    const written = await store.writeXBookArtifact('pdf-book', '/library/pdf-book.pdf', {
+      originalFormat: 'PDF',
+      chapters: persistedChapters
+    });
+    const reloaded = await store.readXBookArtifact(written.xbookPath);
+    assert(reloaded.sourceDocument?._pdfStructureVersion === 2,
+      'persists PDF page data separately from narrated chapters');
+    const reprocessedArtifact = await store.reprocessXBookArtifact(written.xbookPath);
+    assert(reprocessedArtifact.chapters[0].title === 'Reprocessed chapter' &&
+      reprocessedArtifact.sourceDocument.reprocessedAt,
+    'rewrites XBook chapters from persisted PDF page data');
+
+    const legacyPath = path.join(xbookDir, 'legacy.xbook.json');
+    await fs.writeFile(legacyPath, JSON.stringify({
+      _xbookVersion: 1,
+      id: 'legacy',
+      sourceFormat: 'PDF',
+      metadata: {},
+      chapters: [chapter('Legacy chapter')]
+    }));
+    assert((await store.readXBookArtifact(legacyPath)).id === 'legacy',
+      'keeps existing version-one XBook artifacts readable after the version bump');
+  } finally {
+    await fs.rm(xbookDir, { recursive: true, force: true });
+  }
+
+  section('PDF chapter state remapping');
+  const previousChapters = [
+    { title: 'Pages 1-20', pageStart: 1, pageEnd: 20 },
+    { title: 'Pages 21-40', pageStart: 21, pageEnd: 40 },
+    { title: 'Pages 41-60', pageStart: 41, pageEnd: 60 }
+  ];
+  const authoredChapters = [
+    { title: 'Introduction', pageStart: 5, pageEnd: 12 },
+    { title: 'Chapter 1: First Steps', pageStart: 13, pageEnd: 31 },
+    { title: 'Chapter 2: Going Further', pageStart: 32, pageEnd: 60 }
+  ];
+  const chapterIndexMap = buildChapterIndexMap(previousChapters, authoredChapters);
+  assert(JSON.stringify(chapterIndexMap) === JSON.stringify([0, 1, 2]),
+    'maps legacy page groups to authored chapter ranges');
+
+  const positions = {
+    users: {
+      reader: {
+        book: { chapterIndex: 1, timestamp: 120, chunkIndex: 3, chunkTime: 10 }
+      }
+    }
+  };
+  remapBookPositions(positions, 'book', chapterIndexMap, 'v1-new');
+  assert(positions.users.reader.book.chapterIndex === 1 &&
+    positions.users.reader.book.timestamp === 0 &&
+    positions.users.reader.book.chapterStructureKey === 'v1-new' &&
+    positions.users.reader.book.chunkIndex === undefined,
+  'remaps playback positions and clears stale within-chapter anchors');
+
+  const bookmarks = {
+    users: {
+      reader: {
+        book: [{ id: 'bm-1', chapterIndex: 2, timestamp: 15 }]
+      }
+    }
+  };
+  remapBookBookmarks(bookmarks, 'book', chapterIndexMap);
+  assert(bookmarks.users.reader.book[0].chapterIndex === 2 &&
+    bookmarks.users.reader.book[0].timestamp === 0,
+  'remaps bookmarks and clears stale within-chapter anchors');
 
   console.log(`\nBook Document tests: ${passed} passed, ${failed} failed`);
   if (failed) process.exit(1);

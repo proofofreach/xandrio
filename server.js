@@ -55,6 +55,11 @@ const {
   createBookMetadataRefreshService
 } = require('./lib/book-metadata-refresh');
 const { chapterStructureKey, positionMatchesChapterStructure } = require('./lib/chapter-structure');
+const {
+  buildChapterIndexMap,
+  remapBookPositions,
+  remapBookBookmarks
+} = require('./lib/chapter-reprocess');
 const { parseEpub } = require('./lib/epub-parser');
 const { BookImportError, createBookImporter } = require('./lib/book-importer');
 const { createImportAudioWarmup } = require('./lib/import-audio-warmup');
@@ -741,7 +746,7 @@ const VOICE_SAMPLES_DIR = path.join(CACHE_DIR, 'voice-samples');
 const MAX_BOOK_UPLOAD_SIZE = Number(process.env.MAX_BOOK_UPLOAD_SIZE_BYTES || 250 * 1024 * 1024);
 const LARGE_BOOK_WARNING_SIZE = Number(process.env.LARGE_BOOK_WARNING_SIZE_BYTES || 50 * 1024 * 1024);
 const XBOOK_DELETE_SOURCE_AFTER_EXTRACT = process.env.XBOOK_DELETE_SOURCE_AFTER_EXTRACT !== 'false';
-const XBOOK_VERSION = 1;
+const XBOOK_VERSION = 2;
 const SUPPORTED_BOOK_FORMATS = new Set([
   'epub',
   'mobi',
@@ -1011,7 +1016,8 @@ const {
   getXBookPath,
   invalidateXBookArtifactCache,
   writeXBookArtifact,
-  shouldDiscardSourceAfterExtract
+  shouldDiscardSourceAfterExtract,
+  reprocessXBookArtifact
 } = xbookStore;
 
 async function removeFileIfExists(filePath) {
@@ -1330,7 +1336,7 @@ const bookImporter = createBookImporter({
   },
   removeFile: removeFileIfExists,
   afterPersist: (record, bookPath) => {
-    if (!PREGENERATE_ON_IMPORT) return;
+    if (!PREGENERATE_ON_IMPORT || record.pdfExtraction?.status === 'review-needed') return;
     console.log(`Warming starting chapter for ${record.id}`);
     warmImportedBookAudio(record.id, bookPath).catch(error => {
       console.error(`Failed to warm starting chapter:`, error);
@@ -1443,6 +1449,7 @@ function quiescePronunciationWorkers(item, workers) {
   )));
 }
 
+const invalidateChapterAudioCache = createCacheInvalidator(CACHE_DIR);
 pronunciationService = createPronunciationService({
   storeFile: PRONUNCIATIONS_FILE,
   jsonStore,
@@ -1455,7 +1462,7 @@ pronunciationService = createPronunciationService({
     instantChunkedTTS,
     ...premiumVariantTtsWorkers.values()
   ]))),
-  invalidateCache: createCacheInvalidator(CACHE_DIR)
+  invalidateCache: invalidateChapterAudioCache
 });
 
 function ttsForTier(tier) {
@@ -2625,8 +2632,10 @@ function publicBookRecord(book) {
   if (!book || typeof book !== 'object') return book;
   const {
     path: _path,
+    sourcePath: _sourcePath,
     coverPath,
     extractedArtifact,
+    retainedSourcePath: _retainedSourcePath,
     sourceHash,
     importValidation,
     metadataRefreshReconciliation,
@@ -2895,10 +2904,93 @@ app.get('/api/book/:bookId', async (req, res) => {
 
     // Check if cover exists
     const publicBook = await publicBookRecordWithCoverArtifact(book);
+    const pdfExtraction = chapters.find(chapter => chapter?.pdfExtraction)?.pdfExtraction || book.pdfExtraction;
+    if (pdfExtraction) publicBook.pdfExtraction = pdfExtraction;
+    if (String(book.sourceFormat || '').toUpperCase() === 'PDF') {
+      publicBook.pdfReprocessable = Boolean(chapters.sourceDocument?.pages?.length);
+    }
     res.json({ book: publicBook, chapters: displayChapters, hasCover: publicBook.hasCover });
   } catch (err) {
     console.error('Book details error:', err);
     sendServerError(res, err, "Failed to load book");
+  }
+});
+
+app.post('/api/book/:bookId/reprocess-pdf', async (req, res) => {
+  try {
+    const { bookId } = req.params;
+    if (!isSafeBookId(bookId)) {
+      return res.status(400).json({ error: 'Invalid book identifier' });
+    }
+    const books = await loadJSON(BOOKS_FILE, {});
+    const book = books[bookId];
+    if (!book) return res.status(404).json({ error: 'Book not found' });
+    if (String(book.sourceFormat || '').toUpperCase() !== 'PDF' || !isXBookPath(book.path)) {
+      return res.status(409).json({ error: 'This book is not a reprocessable PDF artifact' });
+    }
+
+    const previousChapters = await getChaptersCached(book.path);
+    const artifact = await reprocessXBookArtifact(book.path);
+    const nextChapters = artifact.chapters || [];
+    const structureKey = chapterStructureKey(nextChapters) || undefined;
+    const indexMap = buildChapterIndexMap(previousChapters, nextChapters);
+    const extraction = nextChapters.find(chapter => chapter?.pdfExtraction)?.pdfExtraction;
+    const maxChapterCount = Math.max(previousChapters.length, nextChapters.length);
+
+    for (const tts of new Set([chunkedTTS, instantChunkedTTS, ...premiumVariantTtsWorkers.values()])) {
+      tts.cancelBook?.(bookId);
+    }
+    await invalidateChapterAudioCache(Array.from({ length: maxChapterCount }, (_, chapterIndex) => ({
+      bookId,
+      chapterIndex,
+      fromChunkIndex: 0
+    })));
+
+    await Promise.all([
+      updateJSON(POSITIONS_FILE, positions => remapBookPositions(positions, bookId, indexMap, structureKey)),
+      updateJSON(BOOKMARKS_FILE, bookmarks => remapBookBookmarks(bookmarks, bookId, indexMap))
+    ]);
+
+    let updatedBook;
+    await updateJSON(BOOKS_FILE, currentBooks => {
+      const current = currentBooks[bookId];
+      if (!current) return jsonStore.SKIP_SAVE;
+      const remainingWarnings = (current.validationWarnings || [])
+        .filter(warning => !/^PDF extraction(?: needs review|:)/i.test(warning));
+      updatedBook = {
+        ...current,
+        chapterCount: nextChapters.length,
+        totalDuration: nextChapters.reduce((sum, chapter) => sum + (chapter.estimatedDuration || 0), 0),
+        chapterStructureKey: structureKey,
+        pdfExtraction: extraction,
+        pdfReprocessable: true,
+        needsReview: extraction?.status === 'review-needed' || undefined,
+        validationWarnings: remainingWarnings.length ? remainingWarnings : undefined,
+        reprocessedAt: new Date().toISOString()
+      };
+      currentBooks[bookId] = updatedBook;
+    });
+
+    const displayChapters = nextChapters.map(chapter => ({
+      ...chapter,
+      rawTitle: chapter.rawTitle || chapter.title,
+      title: normalizeChapterTitleForDisplay(chapter.title || `Chapter ${chapter.index + 1}`)
+    }));
+    res.json({
+      success: true,
+      book: publicBookRecord(updatedBook),
+      chapters: displayChapters,
+      pdfExtraction: extraction
+    });
+  } catch (err) {
+    if (err.code === 'PDF_SOURCE_DATA_UNAVAILABLE') {
+      return res.status(409).json({
+        error: err.message,
+        suggestion: 'Re-upload the original PDF to rebuild its chapter structure.'
+      });
+    }
+    console.error('PDF reprocessing error:', err);
+    sendServerError(res, err, 'Failed to reprocess PDF chapters');
   }
 });
 

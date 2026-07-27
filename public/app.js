@@ -80,6 +80,7 @@ const playbackSession = createPlaybackSession({
 let libraryView, searchView, playerView;
 let addBookBtn, backToLibraryBtn, backBtn;
 let bookTitle, bookAuthorHeader, bookDetailsText, bookDescription;
+let pdfStructureReview, pdfStructureReviewDetail, pdfReprocessBtn;
 let bookCover, audioPlayer;
 let playPauseBtn, skipBackBtn, skipForwardBtn;
 let prevChapterBtn, nextChapterBtn;
@@ -110,6 +111,9 @@ function initializeDOMElements() {
   bookAuthorHeader = document.getElementById('book-author-header');
   bookDetailsText = document.getElementById('book-details-text');
   bookDescription = document.getElementById('book-description');
+  pdfStructureReview = document.getElementById('pdf-structure-review');
+  pdfStructureReviewDetail = document.getElementById('pdf-structure-review-detail');
+  pdfReprocessBtn = document.getElementById('pdf-reprocess-btn');
   bookCover = document.getElementById('book-cover');
   audioPlayer = document.getElementById('audio-player');
   playPauseBtn = document.getElementById('play-pause-btn');
@@ -916,6 +920,22 @@ function setupEventListeners() {
   bookmarkBtn?.addEventListener('click', () => {
     if (currentBook) addBookmarkAtCurrentPosition();
   });
+  pdfReprocessBtn?.addEventListener('click', async () => {
+    if (!currentBook?.id || !currentBook.pdfReprocessable) return;
+    const bookId = currentBook.id;
+    pdfReprocessBtn.disabled = true;
+    pdfReprocessBtn.textContent = 'Reprocessing…';
+    try {
+      await apiSend('POST', `/api/book/${encodeURIComponent(bookId)}/reprocess-pdf`);
+      showToast('PDF chapters were rebuilt. Existing audio was cleared.', 'success');
+      await openBook(bookId);
+    } catch (error) {
+      showToast(error.suggestion || error.message || 'Could not reprocess this PDF.', 'error');
+    } finally {
+      pdfReprocessBtn.disabled = false;
+      pdfReprocessBtn.textContent = 'Reprocess chapters';
+    }
+  });
 
   document.getElementById('utility-timer-btn')?.addEventListener('click', () => timerBtnInline?.click());
   document.getElementById('utility-chapters-btn')?.addEventListener('click', openChapterSheet);
@@ -1086,6 +1106,26 @@ async function openBook(bookId) {
     }
     if (currentBook.sourceFormat) {
       detailsParts.push(`Source: ${currentBook.sourceFormat}`);
+    }
+    const pdfStructure = currentBook.pdfExtraction?.structure;
+    if (pdfStructure?.mode) {
+      const modeLabel = {
+        outline: 'bookmarks',
+        toc: 'table of contents',
+        'detected-headings': 'detected headings',
+        'page-groups': 'page groups'
+      }[pdfStructure.mode] || pdfStructure.mode;
+      const confidence = Number(pdfStructure.confidence);
+      detailsParts.push(`PDF chapters: ${modeLabel}${Number.isFinite(confidence) ? ` (${Math.round(confidence * 100)}%)` : ''}`);
+    }
+    const pdfNeedsReview = currentBook.pdfExtraction?.status === 'review-needed';
+    if (pdfStructureReview) {
+      pdfStructureReview.hidden = !pdfNeedsReview;
+      if (pdfNeedsReview) {
+        pdfStructureReviewDetail.textContent = currentBook.pdfExtraction.statusReason ||
+          'Authored chapter boundaries could not be confirmed.';
+        pdfReprocessBtn.hidden = !currentBook.pdfReprocessable;
+      }
     }
     
     if (detailsParts.length > 0) {

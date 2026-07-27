@@ -2713,6 +2713,36 @@ summary:focus-visible,
   margin-top: 6px;
 }
 
+.pdf-structure-review {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 12px 14px;
+  border: 1px solid color-mix(in srgb, #d99535 55%, var(--border));
+  border-radius: 12px;
+  background: color-mix(in srgb, #d99535 10%, var(--surface));
+  color: var(--text);
+}
+
+.pdf-structure-review[hidden] { display: none; }
+.pdf-structure-review div { display: grid; gap: 3px; min-width: 0; }
+.pdf-structure-review strong { font-size: 13px; }
+.pdf-structure-review span { color: var(--text-secondary); font-size: 12px; line-height: 1.35; }
+.pdf-structure-review button {
+  flex: 0 0 auto;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  padding: 7px 11px;
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.pdf-structure-review button:disabled { cursor: wait; opacity: 0.6; }
+
 /* ==================== MODALS ==================== */
 
 .modal {
