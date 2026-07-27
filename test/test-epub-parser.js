@@ -9,6 +9,18 @@ const { extractChapters } = require('../lib/chapter-extraction');
 const { extractCover } = require('../lib/cover-service');
 const { createBookDocument } = require('../lib/book-document');
 
+const SCANNED_CHAPTER_TITLE_LINES = [
+  ['Remembering Our Ancient Past'],
+  ['The Secret of the Flower Unfolds'],
+  ['The Darker Side of Our Present and Past'],
+  ['The Aborted Evolution of Consciousness', 'and the Creation of the Christ Grid'],
+  ['Egypt’s Role in the Evolution of Consciousness'],
+  ['The Significance of Shape and Structure'],
+  ['The Measuring Stick of the Universe:', 'The Human Body and Its Geometries'],
+  ['Reconciling the Fibonacci-Binary Polarity']
+];
+const SCANNED_CHAPTER_TITLES = SCANNED_CHAPTER_TITLE_LINES.map(lines => lines.join(' '));
+
 function jpegFixture() {
   const image = Buffer.alloc(1400, 8);
   image[0] = 0xff;
@@ -102,26 +114,22 @@ async function createScannedChapterBundleFixture() {
   await fs.writeFile(path.join(oebps, 'toc.ncx'), `<?xml version="1.0" encoding="UTF-8"?>
 <ncx xmlns="http://www.daisy.org/z3986/2005/ncx/"><navMap>${navPoints}</navMap></ncx>`);
 
-  const chapterTitles = [
-    'Remembering an Ancient Past',
-    'The Secret Flower Unfolds',
-    'The Darker Side of the Past',
-    'An Interrupted Evolution',
-    'The Role of an Ancient Culture',
-    'The Significance of Structure',
-    'A Measuring Stick',
-    'Reconciling Opposing Patterns'
-  ];
+  const printedNumbers = ['ONE', 'TWO', 'THREE', 'FOUR', 'F I V E', 'S I X', 'SEVEN', 'EIGHT'];
   const chapterBody = 'Scanned chapter prose remains readable and belongs to its authored chapter. '.repeat(320);
   const scannedChapters = pages.map((pageNumber, index) => {
+    const openerImage = index === 3 ? '' : `<img src="index-${pageNumber}.jpg" />`;
     const malformedLead = index === 3
       ? `<p>${'OCR words displaced ahead of the title. '.repeat(12)}</p>`
       : '';
-    return `<img src="index-${pageNumber}.jpg" />${malformedLead}<p><b>${chapterTitles[index]}</b></p><p>${chapterBody}</p>`;
+    const titleMarkup = SCANNED_CHAPTER_TITLE_LINES[index]
+      .map(line => `<p><b>${line}</b></p>`)
+      .join('');
+    return `${openerImage}${malformedLead}<p>${printedNumbers[index]}</p>${titleMarkup}<p><b>First authored subsection</b></p><p>${chapterBody}</p>`;
   }).join('');
+  const afterword = `<p>AFTERWORD</p><p>${'Closing reflections belong to the authored afterword. '.repeat(20)}</p><p>REFERENCES</p><p>${'A cited source belongs to the reference section. '.repeat(20)}</p>`;
   await fs.writeFile(
     path.join(oebps, 'introduction.xhtml'),
-    `<html><body><h1>Introduction</h1><p>${'Introductory context. '.repeat(80)}</p>${scannedChapters}</body></html>`
+    `<html><body><h1>Introduction</h1><p>${'Introductory context. '.repeat(80)}</p>${scannedChapters}${afterword}</body></html>`
   );
   for (const pageNumber of pages) {
     await fs.writeFile(path.join(oebps, `index-${pageNumber}.jpg`), jpegFixture());
@@ -197,24 +205,23 @@ async function createScannedChapterBundleFixture() {
       chapters.map(chapter => chapter.title),
       [
         'Introduction',
-        'Chapter I',
-        'Chapter 2',
-        'Chapter 3',
-        'Chapter 4',
-        'Chapter 5',
-        'Chapter 6',
-        'Chapter 7',
-        'Chapter 8'
+        ...SCANNED_CHAPTER_TITLES,
+        'Afterword',
+        'References'
       ],
-      'a malformed scanned chapter bundle recovers authored chapter boundaries'
+      'a malformed scanned chapter bundle recovers printed titles and back matter boundaries'
     );
     assert.equal(
       chapters.some(chapter => / — Part \d+ of \d+$/.test(chapter.title)),
       false,
       'recovered chapters do not fall back to arbitrary oversized parts'
     );
-    assert.match(chapters[4].text, /OCR words displaced ahead of the title/);
-    console.log('Scanned chapter bundle regression: 3 passed, 0 failed');
+    assert.match(chapters[3].text, /OCR words displaced ahead of the title/);
+    assert.doesNotMatch(chapters[4].text, /OCR words displaced ahead of the title/);
+    assert.doesNotMatch(chapters[8].text, /AFTERWORD/);
+    assert.equal(chapters[9].type, 'backmatter');
+    assert.equal(chapters[10].type, 'backmatter');
+    console.log('Scanned chapter bundle regression: 7 passed, 0 failed');
   } finally {
     await fs.rm(scannedFixture.directory, { recursive: true, force: true });
   }
