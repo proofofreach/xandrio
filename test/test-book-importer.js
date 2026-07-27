@@ -84,6 +84,7 @@ function createFixture(overrides = {}) {
     document: { ...defaultDocument, ...documentOverrides },
     checkChapterQuality: async () => ({
       isGoodStructure: true,
+      structureVerified: true,
       reasons: [],
       contentChapters: 2,
       maxChapterSize: 20_000
@@ -296,8 +297,8 @@ section('Successful direct import');
       }
     },
     checkChapterQuality: async source => source.includes('alternative')
-      ? { isGoodStructure: true, reasons: [], contentChapters: 2, maxChapterSize: 20_000 }
-      : { isGoodStructure: false, reasons: ['weak structure'], contentChapters: 1, maxChapterSize: 20_000 }
+      ? { isGoodStructure: true, structureVerified: true, reasons: [], contentChapters: 2, maxChapterSize: 20_000 }
+      : { isGoodStructure: false, structureVerified: true, reasons: ['weak structure'], contentChapters: 1, maxChapterSize: 20_000 }
   });
   const alternativeFailureResult = await alternativeFailure.importer.import(command({
     alternatives: [{
@@ -307,11 +308,34 @@ section('Successful direct import');
     }]
   }));
   assert(alternativeFailureResult.book.id === 'book-1',
-    'continues importing the viable primary candidate after an alternative preparation failure');
+    'retains a verified short primary after an alternative preparation failure');
   assert(alternativeFailure.calls.includes('remove:/library/alternative.epub'),
     'cleans up a normalized alternative when its preparation throws');
   assert(!alternativeFailure.calls.includes('remove:/uploads/alternative.epub'),
     'does not delete an alternative command source path during cleanup');
+
+  const unverifiedStructure = createFixture({
+    checkChapterQuality: async () => ({
+      isGoodStructure: false,
+      structureVerified: false,
+      reasons: ['EPUB spine reading order could not be verified'],
+      contentChapters: 2,
+      maxChapterSize: 20_000
+    })
+  });
+  let unverifiedStructureError;
+  try {
+    await unverifiedStructure.importer.import(command());
+  } catch (error) {
+    unverifiedStructureError = error;
+  }
+  assert(
+    unverifiedStructureError instanceof BookImportError &&
+      unverifiedStructureError.response?.error === 'Downloaded book has unusable chapter structure',
+    'rejects a structurally unverified primary when no compatible alternative is available'
+  );
+  assert(unverifiedStructure.calls.includes('remove:/library/book-1.epub'),
+    'cleans up a structurally unverified normalized source');
 
   section('Late failure cleanup');
   const enrichmentFailure = createFixture({
@@ -419,6 +443,64 @@ section('Successful direct import');
     'reports the filtered automatic fallback count instead of counting unsafe versions');
   assert(!filteredAlternative.calls.some(call => call.includes('/uploads/unsafe.epub')),
     'does not prepare an automatic alternative that fails compatibility checks');
+
+  const verifiedShortAlternative = createFixture({
+    checkChapterQuality: async source => source.includes('primary')
+      ? {
+          isGoodStructure: false,
+          structureVerified: false,
+          reasons: ['EPUB spine reading order could not be verified'],
+          contentChapters: 5,
+          maxChapterSize: 20_000
+        }
+      : {
+          isGoodStructure: false,
+          structureVerified: true,
+          reasons: ['Only 1 content chapter'],
+          contentChapters: 1,
+          maxChapterSize: 20_000
+        }
+  });
+  const verifiedShortResult = await verifiedShortAlternative.importer.import(command({
+    id: 'primary',
+    sourcePath: '/uploads/primary.epub',
+    alternatives: [{
+      id: 'verified-short',
+      originalName: 'verified-short.epub',
+      sourcePath: '/uploads/verified-short.epub'
+    }]
+  }));
+  assert(verifiedShortResult.usedAlternative && verifiedShortResult.book.id === 'verified-short',
+    'prefers a verified short alternative over an unverified larger primary');
+
+  const unverifiedLargeAlternative = createFixture({
+    checkChapterQuality: async source => source.includes('primary')
+      ? {
+          isGoodStructure: false,
+          structureVerified: true,
+          reasons: ['Only 1 content chapter'],
+          contentChapters: 1,
+          maxChapterSize: 20_000
+        }
+      : {
+          isGoodStructure: false,
+          structureVerified: false,
+          reasons: ['EPUB spine reading order could not be verified'],
+          contentChapters: 5,
+          maxChapterSize: 20_000
+        }
+  });
+  const retainedVerifiedShort = await unverifiedLargeAlternative.importer.import(command({
+    id: 'primary',
+    sourcePath: '/uploads/primary.epub',
+    alternatives: [{
+      id: 'unverified-large',
+      originalName: 'unverified-large.epub',
+      sourcePath: '/uploads/unverified-large.epub'
+    }]
+  }));
+  assert(!retainedVerifiedShort.usedAlternative && retainedVerifiedShort.book.id === 'primary',
+    'does not replace a verified short primary with an unverified larger alternative');
 
   const alternative = createFixture({
     checkChapterQuality: async source => source.includes('primary')

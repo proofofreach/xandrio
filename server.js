@@ -3988,14 +3988,22 @@ async function checkChapterQuality(epubPath) {
     const chapters = await extractBookChapters(epubPath);
     let tocCount = 0;
     let conversionSource = false;
+    let spineLinearityVerified = true;
+    let nonLinearSpineIndexes = new Set();
     if (getBookFormatFromName(epubPath) === 'epub') {
       const epub = await parseEpub(epubPath);
+      spineLinearityVerified = epub.spineLinearityVerified === true;
       const toc = epub.toc ? epub.toc.length : 0;
       // Conversion fingerprint: spine files named like Calibre format
       // conversions ("…(RTF)_split_003.htm") combined with a TOC too
       // small to navigate by. Content is usually intact but structure,
       // titles and drop caps are degraded — prefer another edition.
       const spineHrefs = (epub.flow || []).map(item => String(item.href || '').toLowerCase());
+      nonLinearSpineIndexes = new Set(
+        (epub.flow || [])
+          .map((item, index) => item.linear === false ? index : -1)
+          .filter(index => index >= 0)
+      );
       const conversionMarkers = spineHrefs.filter(href =>
         /_split_\d+|\((rtf|doc|docx|txt|html?)\)/.test(href)
       ).length;
@@ -4005,7 +4013,12 @@ async function checkChapterQuality(epubPath) {
         toc <= 2;
     }
 
-    const quality = buildChapterQuality(chapters, tocCount);
+    const quality = buildChapterQuality(chapters, tocCount, { nonLinearSpineIndexes });
+    if (!spineLinearityVerified) {
+      quality.isGoodStructure = false;
+      quality.structureVerified = false;
+      quality.reasons.push('EPUB spine reading order could not be verified');
+    }
     if (conversionSource) {
       quality.isGoodStructure = false;
       quality.conversionSource = true;
@@ -4014,7 +4027,11 @@ async function checkChapterQuality(epubPath) {
     return quality;
   } catch (err) {
     console.error('Chapter quality check failed:', err);
-    return { isGoodStructure: true, reasons: ['Check failed, assuming OK'] }; // Don't block on errors
+    return {
+      isGoodStructure: false,
+      structureVerified: false,
+      reasons: ['Chapter quality check failed; edition was not structure-verified']
+    };
   }
 }
 
