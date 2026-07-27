@@ -145,6 +145,52 @@ section('Successful direct import');
   assert(progress.some(([step]) => step === 3) && progress.some(([step]) => step === 7),
     'reports import progress across the shared pipeline');
 
+  section('Review-needed PDF retention');
+  const reviewChapters = [readableChapter(), readableChapter()];
+  reviewChapters[0].pdfExtraction = {
+    status: 'review-needed',
+    score: 72,
+    structure: { mode: 'page-groups', confidence: 0 }
+  };
+  Object.defineProperty(reviewChapters, 'sourceDocument', {
+    value: { _pdfStructureVersion: 2, pages: [{ pageNumber: 1, text: 'Source text' }] },
+    enumerable: false
+  });
+  let artifactSourceInfo;
+  const reviewPdf = createFixture({
+    normalizeBook: async ({ id }) => ({
+      finalPath: `/library/${id}.pdf`,
+      filename: `${id}.pdf`,
+      originalFormat: 'PDF',
+      originalSize: 12 * 1024,
+      finalSize: 12 * 1024,
+      largeSource: false,
+      resized: false
+    }),
+    document: {
+      extractChapters: async () => reviewChapters
+    },
+    shouldDiscardSourceAfterExtract: () => true,
+    createArtifact: async (_id, _source, sourceInfo) => {
+      artifactSourceInfo = sourceInfo;
+      return {
+        xbookPath: '/library/book-1.xbook.json',
+        artifact: {
+          metadata: { title: 'Embedded title', author: 'Embedded author', language: 'en' },
+          chapters: reviewChapters
+        }
+      };
+    }
+  });
+  const reviewPdfResult = await reviewPdf.importer.import(command({
+    originalName: 'book.pdf'
+  }));
+  assert(!reviewPdf.calls.includes('remove:/library/book-1.pdf') &&
+    reviewPdfResult.book.sourceRetainedAfterExtract === true,
+  'retains a review-needed PDF source after creating its XBook artifact');
+  assert(artifactSourceInfo?.sourceDocument?._pdfStructureVersion === 2,
+    'passes versioned PDF page data into the XBook artifact');
+
   const normalizedAuthor = createFixture({
     document: {
       extractMetadata: async () => ({ title: 'Revelations of Christ', author: 'Yogananda, Paramhansa', language: 'en' })

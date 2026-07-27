@@ -5,7 +5,12 @@ const {
 const fs = require('fs/promises');
 const os = require('os');
 const path = require('path');
-const { extractPdfChapters, __test } = require('../lib/pdf-extraction');
+const {
+  extractPdfChapters,
+  extractPdfMetadata,
+  reprocessPdfSourceDocument,
+  __test
+} = require('../lib/pdf-extraction');
 
 let passed = 0;
 let failed = 0;
@@ -39,10 +44,9 @@ function repeatedLines(line, count) {
   return Array.from({ length: count }, () => line);
 }
 
-function buildSimplePdf(pages) {
+function buildSimplePdf(pages, options = {}) {
   const objects = [];
   const pageRefs = [];
-  writePdfObject(objects, 1, '<< /Type /Catalog /Pages 2 0 R >>');
   writePdfObject(objects, 3, '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>');
 
   pages.forEach((lines, index) => {
@@ -62,6 +66,32 @@ function buildSimplePdf(pages) {
   });
 
   writePdfObject(objects, 2, `<< /Type /Pages /Kids [${pageRefs.join(' ')}] /Count ${pageRefs.length} >>`);
+  const outlines = Array.isArray(options.outline) ? options.outline : [];
+  if (outlines.length > 0) {
+    const outlineRootId = 4 + pages.length * 2;
+    const itemIds = outlines.map((_, index) => outlineRootId + 1 + index);
+    writePdfObject(
+      objects,
+      outlineRootId,
+      `<< /Type /Outlines /First ${itemIds[0]} 0 R /Last ${itemIds[itemIds.length - 1]} 0 R /Count ${itemIds.length} >>`
+    );
+    outlines.forEach((item, index) => {
+      const pageIndex = Math.max(0, Math.min(pages.length - 1, Number(item.pageNumber || 1) - 1));
+      const pageId = 4 + pageIndex * 2;
+      const links = [
+        index > 0 ? `/Prev ${itemIds[index - 1]} 0 R` : '',
+        index + 1 < itemIds.length ? `/Next ${itemIds[index + 1]} 0 R` : ''
+      ].filter(Boolean).join(' ');
+      writePdfObject(
+        objects,
+        itemIds[index],
+        `<< /Title (${escapePdfText(item.title)}) /Parent ${outlineRootId} 0 R ${links} /Dest [${pageId} 0 R /Fit] >>`
+      );
+    });
+    writePdfObject(objects, 1, `<< /Type /Catalog /Pages 2 0 R /Outlines ${outlineRootId} 0 R >>`);
+  } else {
+    writePdfObject(objects, 1, '<< /Type /Catalog /Pages 2 0 R >>');
+  }
 
   let pdf = '%PDF-1.4\n';
   const offsets = [0];
@@ -79,10 +109,10 @@ function buildSimplePdf(pages) {
   return pdf;
 }
 
-async function withTempPdf(name, pages, fn) {
+async function withTempPdf(name, pages, fn, options = {}) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'xandrio-pdf-test-'));
   const pdfPath = path.join(dir, name);
-  await fs.writeFile(pdfPath, buildSimplePdf(pages));
+  await fs.writeFile(pdfPath, buildSimplePdf(pages, options));
   try {
     return await fn(pdfPath);
   } finally {
@@ -167,6 +197,8 @@ section('PDF Candidate Scoring');
   `);
   assert(bboxPages.length === 1, 'parses bbox-layout pages');
   assert(bboxPages[0].text === 'Chapter One', 'parses bbox-layout words into reading lines');
+  assert(bboxPages[0].width === 612 && bboxPages[0].lines[0].xMin === 1,
+    'preserves bbox page and line geometry for heading analysis');
 
   const good = {
     ok: true,
@@ -189,10 +221,43 @@ section('PDF Candidate Scoring');
   const scannedQuality = __test.scorePdfExtractionCandidate(scanned);
   const scannedStatus = __test.classifyPdfExtractionStatus({ ...scanned, quality: scannedQuality });
   assert(scannedStatus.status === 'ocr-required', 'classifies multi-page low-text PDFs as OCR-required');
+
+  const grouped = {
+    ok: true,
+    mode: 'pdftotext-layout-normalized',
+    stats: { pageCount: 100 },
+    chapters: Array.from({ length: 20 }, (_, index) => ({
+      title: `Pages ${index * 5 + 1}-${index * 5 + 5}`,
+      text: 'Readable prose with enough words. '.repeat(1200)
+    })),
+    structure: { mode: 'page-groups', confidence: 0 },
+    chapterValidation: { valid: false, reason: 'not enough detected sections' }
+  };
+  grouped.quality = __test.scorePdfExtractionCandidate(grouped);
+  assert(__test.classifyPdfExtractionStatus(grouped).status === 'review-needed' &&
+    grouped.quality.warnings.some(warning => /page groups/.test(warning)),
+  'marks page-group fallback as explicit low-confidence review work');
 }
 
 async function runFixtureTests() {
   section('Generated PDF Extraction');
+
+  await withTempPdf('title-page.pdf', [
+    [
+      'Ready, Fire, Aim',
+      '',
+      'Zero to $100 Million',
+      'in No Time Flat',
+      '',
+      'Michael Masterson'
+    ]
+  ], async pdfPath => {
+    const metadata = await extractPdfMetadata(pdfPath);
+    assert(metadata.title === 'Ready, Fire, Aim: Zero to $100 Million in No Time Flat',
+      'recovers a complete wrapped title from the title page');
+    assert(metadata.author === 'Michael Masterson',
+      'recovers the author from the title page');
+  });
 
   await withTempPdf('readable.pdf', [
     ['Reader Header', 'Page 1 of 6', '', 'Chapter One', ...repeatedLines('This is readable book prose for extraction and narration.', 12)],
@@ -208,6 +273,113 @@ async function runFixtureTests() {
     assert(extraction && ['ready', 'review-needed'].includes(extraction.status), 'records ready/review status for readable PDF');
     assert(extraction && extraction.pageCount === 6, 'records pdfinfo page count');
     assert(extraction && extraction.candidates.some(candidate => candidate.name === 'pdftotext-bbox-layout-normalized'), 'reports bbox-layout extraction candidate');
+  });
+
+  await withTempPdf('toc-structured.pdf', [
+    ['A Practical Book', '', 'Ada Author'],
+    [
+      'Contents',
+      '',
+      'PART ONE Learning the Work 1',
+      '',
+      'CHAPTER 1 First Steps 2',
+      '',
+      'CHAPTER 2 Going Further 5',
+      '',
+      'Afterword 8',
+      '',
+      'Notes 9'
+    ],
+    ['PART ONE', 'LEARNING THE WORK'],
+    ['CHAPTER ONE', 'FIRST STEPS', '', ...repeatedLines('The first chapter contains substantial readable prose for narration.', 22)],
+    repeatedLines('The first chapter continues with useful examples and explanations.', 24),
+    repeatedLines('The first chapter closes with a final practical exercise.', 24),
+    ['CHAPTER TWO', 'GOING FURTHER', '', ...repeatedLines('The second chapter contains substantial readable prose for narration.', 22)],
+    repeatedLines('The second chapter continues with useful examples and explanations.', 24),
+    repeatedLines('The second chapter closes with a final practical exercise.', 24),
+    ['AFTERWORD', '', ...repeatedLines('The afterword provides a concise conclusion to the complete book.', 20)],
+    ['NOTES', ...repeatedLines('A source note that should not become narrated chapter content.', 12)]
+  ], async pdfPath => {
+    const chapters = await extractPdfChapters(pdfPath, { warn: false });
+    assert(chapters.length === 3,
+      'uses authored TOC boundaries instead of arbitrary page groups');
+    assert(chapters.map(chapter => chapter.title).join('|') ===
+      'Chapter 1: First Steps|Chapter 2: Going Further|Afterword',
+    'uses TOC chapter names and skips part and notes pages');
+    assert(chapters[0].partTitle === 'Part One: Learning the Work' &&
+      chapters[1].partTitle === 'Part One: Learning the Work',
+    'preserves part hierarchy as chapter grouping metadata');
+    assert(chapters[0].pdfExtraction?.structure?.mode === 'toc',
+      'reports TOC-based structure recovery');
+    assert(chapters.sourceDocument?._pdfStructureVersion >= 2 &&
+      chapters.sourceDocument.pages.length === 11,
+    'returns versioned per-page source data for future reprocessing');
+    const reprocessed = await reprocessPdfSourceDocument(chapters.sourceDocument, {
+      sourceLabel: 'Reprocessed book'
+    });
+    assert(reprocessed.map(chapter => chapter.title).join('|') ===
+      chapters.map(chapter => chapter.title).join('|'),
+    'reprocesses authored chapters from persisted page data without the original PDF');
+    let lowQualityReprocessError;
+    try {
+      await reprocessPdfSourceDocument({
+        _pdfStructureVersion: 2,
+        pageCount: 6,
+        pages: Array.from({ length: 6 }, (_, index) => ({
+          pageNumber: index + 1,
+          text: 'x'
+        }))
+      });
+    } catch (error) {
+      lowQualityReprocessError = error;
+    }
+    assert(lowQualityReprocessError?.code === 'PDF_OCR_REQUIRED',
+      'refuses to overwrite an artifact when persisted PDF text is unusable');
+  });
+
+  await withTempPdf('outline-structured.pdf', [
+    ['An Outlined Book', '', 'Ada Author'],
+    ['INTRODUCTION', ...repeatedLines('The introduction contains substantial readable prose for narration.', 20)],
+    ['PART ONE', 'LEARNING THE WORK'],
+    ['CHAPTER ONE', 'FIRST STEPS', ...repeatedLines('The first chapter contains substantial readable prose for narration.', 20)],
+    repeatedLines('The first chapter continues with practical examples.', 24),
+    repeatedLines('The first chapter closes with a useful exercise.', 24),
+    ['CHAPTER TWO', 'GOING FURTHER', ...repeatedLines('The second chapter contains substantial readable prose for narration.', 20)],
+    repeatedLines('The second chapter continues with practical examples.', 24),
+    repeatedLines('The second chapter closes with a useful exercise.', 24),
+    ['NOTES', ...repeatedLines('A source note that should not be narrated.', 12)]
+  ], async pdfPath => {
+    const chapters = await extractPdfChapters(pdfPath, { warn: false });
+    assert(chapters.map(chapter => chapter.title).join('|') ===
+      'Introduction|Chapter 1: First Steps|Chapter 2: Going Further',
+    'uses semantic PDF bookmarks before inferred headings');
+    assert(chapters[0].pdfExtraction?.structure?.mode === 'outline',
+      'reports bookmark-based structure recovery');
+  }, {
+    outline: [
+      { title: 'Introduction', pageNumber: 2 },
+      { title: 'Part One: Learning the Work', pageNumber: 3 },
+      { title: 'Chapter 1: First Steps', pageNumber: 4 },
+      { title: 'Chapter 2: Going Further', pageNumber: 7 },
+      { title: 'Notes', pageNumber: 10 }
+    ]
+  });
+
+  await withTempPdf('numeric-headings.pdf', [
+    ['A Numbered Book', '', 'Ada Author'],
+    ['1', 'FIRST STEPS', '', ...repeatedLines('The first numbered chapter contains readable narration.', 24)],
+    repeatedLines('The first numbered chapter continues with practical details.', 24),
+    repeatedLines('The first numbered chapter ends with a useful exercise.', 24),
+    ['2', 'GOING FURTHER', '', ...repeatedLines('The second numbered chapter contains readable narration.', 24)],
+    repeatedLines('The second numbered chapter continues with practical details.', 24),
+    repeatedLines('The second numbered chapter ends with a useful exercise.', 24)
+  ], async pdfPath => {
+    const chapters = await extractPdfChapters(pdfPath, { warn: false });
+    assert(chapters.map(chapter => chapter.title).join('|') ===
+      'Chapter 1: First Steps|Chapter 2: Going Further',
+    'detects numeric multiline chapter headings before text normalization');
+    assert(chapters[0].pdfExtraction?.structure?.mode === 'detected-headings',
+      'reports positioned heading structure recovery');
   });
 
   await withTempPdf('scanned-like.pdf', [

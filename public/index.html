@@ -11,7 +11,7 @@
   <title>Xandrio - Audiobook Library</title>
   <link rel="preload" href="/fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin>
   <!-- ?v= values must match ASSET_VERSIONS in sw.js (single source of truth) -->
-  <link rel="stylesheet" href="style-v3.css?v=91">
+  <link rel="stylesheet" href="style-v3.css?v=92">
   <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=2">
 </head>
 <body>
@@ -681,6 +681,14 @@
             <p id="book-author-header" class="player-book-author"></p>
           </div>
 
+          <div id="pdf-structure-review" class="pdf-structure-review" role="status" aria-live="polite" hidden>
+            <div>
+              <strong>PDF chapters need review</strong>
+              <span id="pdf-structure-review-detail"></span>
+            </div>
+            <button id="pdf-reprocess-btn" type="button">Reprocess chapters</button>
+          </div>
+
           <!-- Primary chapter selector -->
           <div class="player-secondary">
             <button id="chapter-sheet-btn" class="player-chapter-trigger" type="button" aria-label="Open chapter list">
@@ -1056,6 +1064,6 @@
 
   <script src="/js/lifecycle.js?v=1"></script>
   <script src="/js/chunk-player.js?v=21"></script>
-  <script type="module" src="app.js?v=102"></script>
+  <script type="module" src="app.js?v=103"></script>
 </body>
 </html>
