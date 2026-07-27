@@ -7,8 +7,10 @@ const {
 } = require('../lib/book-deletion');
 const {
   REFRESH_BOOK_RESULT,
+  createBookAudioInvalidator,
   createBookMetadataRefreshService
 } = require('../lib/book-metadata-refresh');
+const { resolveMetadataSeed } = require('../lib/metadata-service');
 
 let passed = 0;
 let failed = 0;
@@ -137,10 +139,20 @@ function metadataHarness(options = {}) {
     books: {
       book_1: {
         id: 'book_1',
-        title: 'Old Title',
-        author: 'Old Author',
+        title: options.bookTitle || 'Old Title',
+        author: options.bookAuthor || 'Old Author',
+        searchedTitle: options.searchedTitle,
+        searchedAuthor: options.searchedAuthor,
+        filename: options.filename,
         path: options.bookPath || '/cache/book_1.epub',
         chapterStructureKey: options.chapterStructureKey,
+        chapterCount: options.chapterCount,
+        totalDuration: options.totalDuration,
+        chapterDurations: options.chapterDurations,
+        audioGenerationState: options.audioGenerationState,
+        audioGeneratedChapters: options.audioGeneratedChapters,
+        audioGenerationTotal: options.audioGenerationTotal,
+        audioGenerationUpdatedAt: options.audioGenerationUpdatedAt,
         retainedConcurrentField: true,
         chapter1Ready: true,
         preloadedThrough: 4
@@ -156,6 +168,8 @@ function metadataHarness(options = {}) {
     (options.failPositionsWrite ? Number.POSITIVE_INFINITY : 0);
   let coverFailuresRemaining = options.coverFailures ??
     (options.failCoverRemoval ? Number.POSITIVE_INFINITY : 0);
+  let audioFailuresRemaining = options.audioFailures ??
+    (options.failAudioInvalidation ? Number.POSITIVE_INFINITY : 0);
 
   const updateJSON = async (file, mutator) => {
     operations.push(`update:${file}:begin`);
@@ -189,7 +203,7 @@ function metadataHarness(options = {}) {
     invalidateXBookArtifactCache: file => operations.push(`invalidate:${file}`),
     extractBookMetadata: async file => {
       operations.push(`metadata:${file}`);
-      return {
+      return options.embeddedMetadata || {
         title: 'Fresh Title',
         author: 'Fresh Author',
         publisher: 'Embedded Publisher',
@@ -201,14 +215,14 @@ function metadataHarness(options = {}) {
     },
     getChaptersCached: async file => {
       operations.push(`chapters:${file}`);
-      return [{ title: 'One' }, { title: 'Two' }];
+      return options.refreshedChapters || [{ title: 'One' }, { title: 'Two' }];
     },
-    resolveMetadataSeed: metadata => ({
-      title: metadata.title,
-      author: metadata.author,
+    resolveMetadataSeed: options.resolveMetadataSeed || ((metadata, fallbackTitle, fallbackAuthor) => ({
+      title: metadata.title || fallbackTitle,
+      author: metadata.author || fallbackAuthor,
       embeddedLooksWrong: false
-    }),
-    enrichBookMetadata: async () => ({
+    })),
+    enrichBookMetadata: async () => options.enrichedMetadata || ({
       title: 'Provider Title',
       author: 'Provider Author',
       publisher: 'Provider Publisher',
@@ -236,6 +250,13 @@ function metadataHarness(options = {}) {
       openLibraryWorkKey: identity.openLibraryWorkKey
     }),
     canonicalWorkKey: (title, author) => `${title}:${author}`,
+    invalidateBookAudio: async (bookId, chapterCount) => {
+      operations.push(`invalidate-audio:${bookId}:${chapterCount}`);
+      if (audioFailuresRemaining > 0) {
+        audioFailuresRemaining--;
+        throw new Error('audio busy');
+      }
+    },
     removeFileIfExists: async file => {
       operations.push(`remove-cover:${file}`);
       if (coverFailuresRemaining > 0) {
@@ -465,8 +486,59 @@ function metadataHarness(options = {}) {
     assert.strictEqual(result.book.retainedConcurrentField, true);
     assert.deepStrictEqual(result.providerWarnings, ['one provider lookup timed out']);
     assert(harness.operations.includes('identity-timeout:5000'));
+    assert(harness.operations.includes('invalidate-audio:book_1:2'));
     assert(harness.operations.includes('remove-cover:/cache/book_1_cover.jpg'));
     assert(harness.operations.includes('remove-positions:book_1'));
+  });
+
+  await test('metadata refresh rejects a storage id title in favor of trusted search metadata', async () => {
+    const harness = metadataHarness({
+      bookTitle: 'book_1',
+      bookAuthor: 'Andrew Roberts',
+      searchedTitle: 'Napoleon',
+      searchedAuthor: 'Andrew Roberts',
+      filename: 'book_1.epub',
+      embeddedMetadata: {
+        title: 'book_1',
+        author: 'Untrusted Embedded Author',
+        publisher: 'Penguin Group US',
+        language: 'en',
+        description: 'Stored description'
+      },
+      enrichedMetadata: {},
+      resolveMetadataSeed,
+      chapterStructureKey: 'structure-new',
+      refreshedStructureKey: 'structure-new'
+    });
+    const result = await harness.service.refreshBook('book_1');
+    assert.strictEqual(result.book.title, 'Napoleon');
+    assert.strictEqual(result.book.author, 'Andrew Roberts');
+  });
+
+  await test('metadata refresh clears stale audio state when chapter totals disagree', async () => {
+    const harness = metadataHarness({
+      chapterStructureKey: 'structure-new',
+      refreshedStructureKey: 'structure-new',
+      chapterCount: 2,
+      totalDuration: 999,
+      chapterDurations: [99],
+      audioGenerationState: 'partial',
+      audioGeneratedChapters: 1,
+      audioGenerationTotal: 65,
+      audioGenerationUpdatedAt: '2026-07-27T05:48:38.717Z',
+      refreshedChapters: [
+        { title: 'One', estimatedDuration: 10 },
+        { title: 'Two', estimatedDuration: 20 }
+      ]
+    });
+    const result = await harness.service.refreshBook('book_1');
+    assert(harness.operations.includes('invalidate-audio:book_1:65'));
+    assert.strictEqual(result.book.totalDuration, 30);
+    assert.strictEqual(result.book.chapterDurations, undefined);
+    assert.strictEqual(result.book.audioGenerationState, undefined);
+    assert.strictEqual(result.book.audioGeneratedChapters, undefined);
+    assert.strictEqual(result.book.audioGenerationTotal, undefined);
+    assert.strictEqual(result.book.audioGenerationUpdatedAt, undefined);
   });
 
   await test('metadata refresh introduces a structure key without discarding position', async () => {
@@ -530,6 +602,61 @@ function metadataHarness(options = {}) {
     assert.strictEqual(harness.files.positions.owner.books.book_1, undefined);
     assert.strictEqual(harness.files.books.book_1.metadataRefreshReconciliation, undefined);
     assert.strictEqual(retry.book.metadataRefreshReconciliation, undefined);
+  });
+
+  await test('failed audio invalidation remains marked and succeeds on retry', async () => {
+    const harness = metadataHarness({
+      chapterStructureKey: 'structure-old',
+      audioFailures: 1
+    });
+    await assert.rejects(harness.service.refreshBook('book_1'), /audio busy/);
+    assert(harness.files.books.book_1.metadataRefreshReconciliation.audio);
+
+    const retry = await harness.service.refreshBook('book_1');
+    assert.strictEqual(retry.status, REFRESH_BOOK_RESULT.REFRESHED);
+    assert.strictEqual(harness.files.books.book_1.metadataRefreshReconciliation, undefined);
+    assert.strictEqual(
+      harness.operations.filter(operation => operation.startsWith('invalidate-audio:')).length,
+      2
+    );
+  });
+
+  await test('audio invalidation quiesces durable preparation before deleting cache files', async () => {
+    const operations = [];
+    const worker = {
+      quiesceChapterAllVariants: async (bookId, chapterIndex) => {
+        operations.push(`quiesce:${bookId}:${chapterIndex}`);
+      }
+    };
+    const invalidateBookAudio = createBookAudioInvalidator({
+      stopPremiumPrep: async bookId => operations.push(`stop-premium:${bookId}`),
+      waitForPremiumIdle: async bookId => operations.push(`premium-idle:${bookId}`),
+      removePlaybackPrefetch: async bookId => operations.push(`remove-prefetch:${bookId}`),
+      cancelOfflinePreparation: async bookId => operations.push(`cancel-offline:${bookId}`),
+      waitForOfflineIdle: async bookId => operations.push(`offline-idle:${bookId}`),
+      workers: () => [worker, worker],
+      removeGenerationJournalEntries: async bookId => operations.push(`remove-journal:${bookId}`),
+      invalidateCache: async affected => operations.push(`invalidate-cache:${affected.length}`)
+    });
+
+    await invalidateBookAudio('book_1', 2);
+
+    const offlineIdleIndex = operations.indexOf('offline-idle:book_1');
+    const firstQuiesceIndex = operations.indexOf('quiesce:book_1:0');
+    const premiumIdleIndex = operations.indexOf('premium-idle:book_1');
+    const journalIndex = operations.indexOf('remove-journal:book_1');
+    const cacheIndex = operations.indexOf('invalidate-cache:2');
+    assert(operations.includes('stop-premium:book_1'));
+    assert(operations.includes('remove-prefetch:book_1'));
+    assert(operations.includes('cancel-offline:book_1'));
+    assert(offlineIdleIndex < firstQuiesceIndex);
+    assert(firstQuiesceIndex < premiumIdleIndex);
+    assert(premiumIdleIndex < journalIndex);
+    assert(journalIndex < cacheIndex);
+    assert.strictEqual(
+      operations.filter(operation => operation.startsWith('quiesce:')).length,
+      2
+    );
   });
 
   await test('XBook metadata refresh invalidates the artifact before extraction', async () => {

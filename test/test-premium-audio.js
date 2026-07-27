@@ -6,6 +6,16 @@ const PremiumAudioPrep = require('../lib/premium-audio');
 const GenerationJournal = require('../lib/generation-journal');
 const GenerationScheduler = require('../lib/generation-scheduler');
 
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
 async function eventually(check, timeoutMs = 1000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -214,6 +224,57 @@ async function run() {
 
     assert(!events.includes('put:delete-me:after-stop'));
     assert.deepStrictEqual(events.slice(-1), ['remove:delete-me']);
+  });
+
+  await test('a stopped premium worker cannot prepare after a delayed readiness check', async () => {
+    const readiness = deferred();
+    let prepareCalls = 0;
+    const prep = new PremiumAudioPrep({
+      isEnabled: () => true,
+      isPremiumActive: () => true,
+      variantKey: () => 'premium:v1',
+      getBookInfo: async () => ({ chapterCount: 1 }),
+      prepareChapter: async () => { prepareCalls++; },
+      chapterReady: () => readiness.promise,
+      isEngineUp: async () => true
+    });
+
+    prep.ensureBookPrep('cancel-during-readiness', 0);
+    await new Promise(resolve => setImmediate(resolve));
+    await prep.stopBook('cancel-during-readiness');
+    readiness.resolve(false);
+    await prep.waitForIdle('cancel-during-readiness');
+
+    assert.strictEqual(prepareCalls, 0);
+  });
+
+  await test('premium idle waits for superseded and replacement runs', async () => {
+    const readinessChecks = [deferred(), deferred()];
+    let readinessCalls = 0;
+    const prep = new PremiumAudioPrep({
+      isEnabled: () => true,
+      isPremiumActive: () => true,
+      variantKey: () => 'premium:v1',
+      getBookInfo: async () => ({ chapterCount: 1 }),
+      prepareChapter: async () => {},
+      chapterReady: () => readinessChecks[readinessCalls++].promise,
+      isEngineUp: async () => true
+    });
+
+    prep.ensureBookPrep('retry-overlap', 0);
+    await eventually(() => readinessCalls === 1);
+    prep.retry('retry-overlap', 0);
+    await eventually(() => readinessCalls === 2);
+    await prep.stopBook('retry-overlap');
+
+    let idleSettled = false;
+    const idle = prep.waitForIdle('retry-overlap').then(() => { idleSettled = true; });
+    readinessChecks[1].resolve(true);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.strictEqual(idleSettled, false);
+    readinessChecks[0].resolve(true);
+    await idle;
+    assert.strictEqual(idleSettled, true);
   });
 
   await test('startup migration drops only unowned speculative chapter work', async () => {
