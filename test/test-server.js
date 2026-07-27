@@ -1405,6 +1405,16 @@ pendingAsyncTests.push((async () => {
     author: 'J. R. R. Tolkien'
   });
   assertEqual(conflict.level, 'conflict', 'Open Library wrong title/author match is marked conflict');
+  assertDeep(
+    serverTestHooks.bookRecordOpenLibraryFields({
+      source: 'openlibrary',
+      openLibraryWorkKey: '/works/OL3W',
+      openLibraryEditionKey: '/books/OL3M',
+      confidence: conflict
+    }),
+    {},
+    'Open Library conflict identities are not persisted as trusted book identities'
+  );
 
   const resolved = await resolveOpenLibraryIdentity({
     title: 'The Hobbit',
@@ -1854,6 +1864,36 @@ pendingAsyncTests.push((async () => {
     'Stable catalog identity supersedes the duplicate selected-search cover path');
   assertEqual(identifiedDownload[1], 'embedded',
     'Exact embedded cover is tried before generic metadata searches');
+  const conflictedIdentity = {
+    path: '/tmp/book.epub',
+    title: 'The Ancient Secret of the Flower of Life Volume l',
+    author: 'Drunvalo Melchizedek',
+    openLibraryWorkKey: '/works/OL19281205W',
+    metadataConfidence: { source: 'openlibrary', score: 0.1, level: 'conflict' },
+    coverSource: 'openlibrary-work'
+  };
+  const conflictedCoverSteps = serverTestHooks.coverSourceSteps(
+    conflictedIdentity,
+    'epub',
+    false
+  ).map(step => step.id);
+  assertEqual(
+    conflictedCoverSteps[0],
+    'embedded',
+    'A conflicting Open Library identity cannot outrank the embedded EPUB cover'
+  );
+  assert(
+    !conflictedCoverSteps.includes('openlibrary-work'),
+    'A conflicting Open Library work is excluded from cover resolution'
+  );
+  assert(
+    serverTestHooks.shouldRefreshCachedCover(
+      conflictedIdentity,
+      false,
+      { dimensions: { width: 348, height: 500 } }
+    ),
+    'A cached Open Library cover is refreshed when its persisted identity is conflicting'
+  );
 
   const unidentified = serverTestHooks.coverSourceSteps({
     path: '/tmp/book.epub',

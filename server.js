@@ -590,7 +590,8 @@ function normalizeSearchLanguage(value) {
 }
 
 function bookRecordOpenLibraryFields(identity) {
-  if (!identity || !identity.openLibraryWorkKey) return {};
+  const confidenceLevel = String(identity?.confidence?.level || '').toLowerCase();
+  if (!identity?.openLibraryWorkKey || !['high', 'medium'].includes(confidenceLevel)) return {};
   return {
     openLibraryWorkKey: identity.openLibraryWorkKey,
     openLibraryEditionKey: identity.openLibraryEditionKey,
@@ -603,6 +604,18 @@ function bookRecordOpenLibraryFields(identity) {
         }
       : undefined
   };
+}
+
+function trustedOpenLibraryWorkKey(book) {
+  const workKey = String(book?.openLibraryWorkKey || '').trim();
+  if (!workKey) return '';
+
+  const confidence = book?.metadataConfidence;
+  if (!confidence) return workKey;
+  if (String(confidence.source || '').toLowerCase() !== 'openlibrary') return '';
+  return ['high', 'medium'].includes(String(confidence.level || '').toLowerCase())
+    ? workKey
+    : '';
 }
 
 function openLibraryValidationPayload(identity) {
@@ -1153,7 +1166,7 @@ async function ensureBookCover(book, options = {}) {
     const existing = await readValidatedLibraryCover(coverPath);
     if (existing) {
       const hasAlternative = Boolean(
-        book?.gutenbergId || book?.openLibraryWorkKey ||
+        book?.gutenbergId || trustedOpenLibraryWorkKey(book) ||
         ((book?.sourceFormat || getBookFormatFromName(book?.path || book?.filename) || '').toLowerCase() === 'epub' && book?.path)
       );
       if (isDisplayQualityCover(existing) || !hasAlternative) return coverPath;
@@ -1213,8 +1226,8 @@ function selectedSearchCoverDescriptor(book) {
     sourcePageUrl: book.sourceProvenance?.sourceUrl,
     gutenbergId: book.gutenbergId,
     iaIdentifier: source === 'internetarchive' ? book.sourceProvenance?.itemId : undefined,
-    openLibraryWorkKey: book.openLibraryWorkKey,
-    openLibraryEditionKey: book.openLibraryEditionKey,
+    openLibraryWorkKey: trustedOpenLibraryWorkKey(book) || undefined,
+    openLibraryEditionKey: trustedOpenLibraryWorkKey(book) ? book.openLibraryEditionKey : undefined,
     isbn: book.isbn
   };
 }
@@ -1228,7 +1241,8 @@ async function copySelectedSearchCover(book, outputPath) {
 
 function coverSourceSteps(book, bookFormat, force = false) {
   const steps = [];
-  const hasCatalogIdentity = Boolean(book.gutenbergId || book.openLibraryWorkKey);
+  const openLibraryWorkKey = trustedOpenLibraryWorkKey(book);
+  const hasCatalogIdentity = Boolean(book.gutenbergId || openLibraryWorkKey);
   const preferCatalog = force || hasCatalogIdentity;
 
   const embedded = bookFormat === 'epub' && book.path
@@ -1241,8 +1255,8 @@ function coverSourceSteps(book, bookFormat, force = false) {
     book.gutenbergId
       ? { id: 'gutenberg', label: 'Project Gutenberg', fetch: outputPath => fetchCoverFromGutenbergId(book.gutenbergId, outputPath) }
       : null,
-    book.openLibraryWorkKey
-      ? { id: 'openlibrary-work', label: 'Open Library work', fetch: outputPath => fetchCoverByOpenLibraryWorkKey(book.openLibraryWorkKey, outputPath) }
+    openLibraryWorkKey
+      ? { id: 'openlibrary-work', label: 'Open Library work', fetch: outputPath => fetchCoverByOpenLibraryWorkKey(openLibraryWorkKey, outputPath) }
       : null
   ].filter(Boolean);
   const genericCatalog = [
@@ -1261,9 +1275,11 @@ function coverSourceSteps(book, bookFormat, force = false) {
 function shouldRefreshCachedCover(book, force = false, cachedCover = null) {
   if (force) return true;
   if (!book) return false;
-  const hasCatalogIdentity = Boolean(book.gutenbergId || book.openLibraryWorkKey);
-  if (!hasCatalogIdentity) return false;
+  const openLibraryWorkKey = trustedOpenLibraryWorkKey(book);
   const source = String(book.coverSource || '');
+  if (book.openLibraryWorkKey && !openLibraryWorkKey && source === 'openlibrary-work') return true;
+  const hasCatalogIdentity = Boolean(book.gutenbergId || openLibraryWorkKey);
+  if (!hasCatalogIdentity) return false;
   if (!source || source === 'embedded') return true;
   return Boolean(cachedCover && !isDisplayQualityCover(cachedCover));
 }
@@ -3961,6 +3977,7 @@ module.exports.__test = {
   cleanBookDescription,
   normalizeSearchLanguage,
   publishedYearFromMetadata,
+  bookRecordOpenLibraryFields,
   inferGutenbergIdFromBook,
   maybeRelaxMissingTocValidation,
   validateBook,
