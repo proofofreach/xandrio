@@ -86,6 +86,35 @@ async function createOversizedAuthoredChapterFixture() {
   return { directory, epubPath };
 }
 
+async function createNonLinearFootnoteFixture() {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'xandrio-epub-nonlinear-footnotes-'));
+  const epubRoot = path.join(directory, 'book');
+  const oebps = path.join(epubRoot, 'OEBPS');
+  await fs.mkdir(path.join(epubRoot, 'META-INF'), { recursive: true });
+  await fs.mkdir(oebps, { recursive: true });
+  await fs.writeFile(path.join(epubRoot, 'mimetype'), 'application/epub+zip');
+  await fs.writeFile(path.join(epubRoot, 'META-INF', 'container.xml'), `<?xml version="1.0"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>`);
+  await fs.writeFile(path.join(oebps, 'content.opf'), `<?xml version="1.0" encoding="utf-8"?>
+<package version="2.0" xmlns="http://www.idpf.org/2007/opf"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>Non-linear Footnotes</dc:title><dc:creator>Fixture Author</dc:creator><dc:language>en</dc:language></metadata><manifest><item id="introduction" href="introduction.xhtml" media-type="application/xhtml+xml"/><item id="chapter-bundle" href="chapter-bundle.xhtml" media-type="application/xhtml+xml"/><item id="photographs" href="photographs.xhtml" media-type="application/xhtml+xml"/><item id="notes" href="notes.xhtml" media-type="application/xhtml+xml"/><item id="bibliography" href="bibliography.xhtml" media-type="application/xhtml+xml"/><item id="index" href="index.xhtml" media-type="application/xhtml+xml"/><item id="chapter-fn1" href="chapter_fn1.xhtml" media-type="application/xhtml+xml"/><item id="chapter-fn2" href="chapter_fn2.xhtml" media-type="application/xhtml+xml"/><item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/></manifest><spine toc="ncx"><itemref idref="introduction"/><itemref idref="chapter-bundle"/><itemref idref="chapter-fn1" linear="no"/><itemref idref="chapter-fn2" linear="no"/><itemref idref="photographs"/><itemref idref="notes"/><itemref idref="bibliography"/><itemref idref="index"/></spine></package>`);
+  await fs.writeFile(path.join(oebps, 'toc.ncx'), `<?xml version="1.0" encoding="UTF-8"?>
+<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/"><navMap><navPoint id="nav-introduction" playOrder="1"><navLabel><text>Introduction</text></navLabel><content src="introduction.xhtml"/></navPoint><navPoint id="nav-chapter-1" playOrder="2"><navLabel><text>1. Opening</text></navLabel><content src="chapter-bundle.xhtml#opening"/></navPoint><navPoint id="nav-chapter-2" playOrder="3"><navLabel><text>2. Continuation</text></navLabel><content src="chapter-bundle.xhtml#continuation"/></navPoint><navPoint id="nav-chapter-3" playOrder="4"><navLabel><text>3. Conclusion</text></navLabel><content src="chapter-bundle.xhtml#conclusion"/></navPoint><navPoint id="nav-photographs" playOrder="5"><navLabel><text>Photographs</text></navLabel><content src="photographs.xhtml"/></navPoint><navPoint id="nav-notes" playOrder="6"><navLabel><text>Notes</text></navLabel><content src="notes.xhtml"/></navPoint><navPoint id="nav-bibliography" playOrder="7"><navLabel><text>Bibliography</text></navLabel><content src="bibliography.xhtml"/></navPoint><navPoint id="nav-index" playOrder="8"><navLabel><text>Index</text></navLabel><content src="index.xhtml"/></navPoint></navMap></ncx>`);
+  await fs.writeFile(path.join(oebps, 'introduction.xhtml'), `<html><body><h1>Introduction</h1><p>${'Introductory prose. '.repeat(80)}</p></body></html>`);
+  await fs.writeFile(path.join(oebps, 'chapter-bundle.xhtml'), `<html><body><section id="opening"><h1>1. Opening</h1><p>${'Opening chapter prose. '.repeat(120)}</p></section><section id="continuation"><h1>2. Continuation</h1><p>${'Continuation chapter prose. '.repeat(120)}</p></section><section id="conclusion"><h1>3. Conclusion</h1><p>${'Conclusion chapter prose. '.repeat(120)}</p></section></body></html>`);
+  await fs.writeFile(path.join(oebps, 'photographs.xhtml'), `<html><body><p>1. First authored plate caption</p><p>2. Second authored plate caption</p><p>3. Third authored plate caption</p><p>${'Additional plate description. '.repeat(40)}</p></body></html>`);
+  await fs.writeFile(path.join(oebps, 'notes.xhtml'), `<html><body><h1>Notes</h1><p>${'Authored source note. '.repeat(120)}</p></body></html>`);
+  await fs.writeFile(path.join(oebps, 'bibliography.xhtml'), `<html><body><h1>Bibliography</h1><p>${'Bibliographic entry. '.repeat(80)}</p></body></html>`);
+  await fs.writeFile(path.join(oebps, 'index.xhtml'), `<html><body><h1>Index</h1><p>${'Index entry. '.repeat(100)}</p></body></html>`);
+  const detachedFootnote = 'Detached popup footnote must not become sequential audiobook content. '.repeat(700);
+  await fs.writeFile(path.join(oebps, 'chapter_fn1.xhtml'), `<html><body><aside>${detachedFootnote}</aside></body></html>`);
+  await fs.writeFile(path.join(oebps, 'chapter_fn2.xhtml'), `<html><body><aside>${detachedFootnote}</aside></body></html>`);
+
+  const epubPath = path.join(directory, 'fixture.epub');
+  execFileSync('zip', ['-qX0', epubPath, 'mimetype'], { cwd: epubRoot });
+  execFileSync('zip', ['-qr9', epubPath, 'META-INF', 'OEBPS'], { cwd: epubRoot });
+  return { directory, epubPath };
+}
+
 async function createScannedChapterBundleFixture() {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'xandrio-epub-scanned-bundle-'));
   const epubRoot = path.join(directory, 'book');
@@ -195,6 +224,31 @@ async function createScannedChapterBundleFixture() {
     console.log('Oversized authored chapter regression: 3 passed, 0 failed');
   } finally {
     await fs.rm(oversizedFixture.directory, { recursive: true, force: true });
+  }
+
+  const nonLinearFixture = await createNonLinearFootnoteFixture();
+  try {
+    const epub = await parseEpub(nonLinearFixture.epubPath);
+    assert.equal(epub.spineLinearityVerified, true, 'the EPUB adapter verifies OPF reading order');
+    assert.equal(epub.flow[2].linear, false, 'the EPUB adapter preserves OPF linear="no"');
+
+    const document = createBookDocument({ log: { log() {}, error() {} } });
+    const chapters = await document.extractChapters(nonLinearFixture.epubPath);
+    assert.deepEqual(
+      chapters.map(chapter => chapter.title),
+      ['Introduction', '1. Opening', '2. Continuation', '3. Conclusion', 'Photographs', 'Notes', 'Bibliography', 'Index'],
+      'interleaved non-linear popup documents do not leak into anchor-based chapter ranges'
+    );
+    assert.equal(chapters[4].type, 'content', 'a trusted Photographs title is not rewritten as Contents');
+    assert.equal(chapters.find(chapter => chapter.title === 'Notes').type, 'backmatter');
+    assert.equal(
+      chapters.some(chapter => chapter.text.includes('Detached popup footnote')),
+      false,
+      'terminal TOC ranges exclude non-linear spine text'
+    );
+    console.log('Non-linear EPUB spine regression: 6 passed, 0 failed');
+  } finally {
+    await fs.rm(nonLinearFixture.directory, { recursive: true, force: true });
   }
 
   const scannedFixture = await createScannedChapterBundleFixture();

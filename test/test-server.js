@@ -884,6 +884,34 @@ section('11. Extracted chapter validation');
   assert(quality.isGoodStructure, 'Normal extracted chapters have good structure');
   assertEqual(quality.contentChapters, 5, 'Quality counts content chapters');
 
+  const nonLinearLeakQuality = buildChapterQuality(
+    substantialChapters.map((chapter, index) => ({ ...chapter, originalIndex: index })),
+    2,
+    { nonLinearSpineIndexes: new Set([3]) }
+  );
+  assert(!nonLinearLeakQuality.isGoodStructure, 'Extracted non-linear spine content fails chapter quality');
+  assert(!nonLinearLeakQuality.structureVerified, 'Non-linear spine leakage marks structure unverified');
+  assertEqual(nonLinearLeakQuality.nonLinearLeakCount, 1, 'Quality reports leaked non-linear documents');
+  assert(
+    nonLinearLeakQuality.reasons.some(reason => reason.includes('non-linear spine')),
+    'Non-linear spine leak reason is reported'
+  );
+
+  const largeBackMatterQuality = buildChapterQuality([
+    ...substantialChapters.map(chapter => ({ ...chapter, type: 'chapter' })),
+    { title: 'Notes', text: 'x'.repeat(160000), type: 'backmatter' },
+    { title: 'Index', text: 'x'.repeat(140000), type: 'backmatter' }
+  ], 7);
+  assert(largeBackMatterQuality.isGoodStructure, 'Large authored back matter does not reject healthy narrative chapters');
+  assert(largeBackMatterQuality.structureVerified, 'Healthy authored structure is verified');
+  assertEqual(largeBackMatterQuality.maxChapterSize, 12000, 'Narrative size excludes authored back matter');
+
+  const shortBookQuality = buildChapterQuality([
+    { title: 'Essay', text: 'x'.repeat(12000), type: 'content' }
+  ], 1);
+  assert(!shortBookQuality.isGoodStructure && shortBookQuality.structureVerified,
+    'A valid short book can be verified without being preferred over fuller alternatives');
+
   const giantQuality = buildChapterQuality([{ title: 'Whole Book', text: 'x'.repeat(120000) }], 0);
   assert(!giantQuality.isGoodStructure, 'Giant single chapter is marked poor structure');
   assert(giantQuality.reasons.some(r => r.includes('Giant chapter')), 'Giant chapter reason is reported');
