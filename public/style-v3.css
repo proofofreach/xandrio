@@ -3408,6 +3408,21 @@ body.sheet-open { overflow: hidden; }
   background: var(--accent);
   transition: width 180ms ease;
 }
+.audio-activity-cancel {
+  align-self: flex-start;
+  margin-top: 8px;
+  padding: 3px 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 650;
+  cursor: pointer;
+}
+.audio-activity-cancel:hover {
+  color: var(--text);
+}
 
 @media (min-width: 760px) {
   .audio-activity-sheet .voice-sheet-backdrop {

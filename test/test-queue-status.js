@@ -45,8 +45,8 @@ function fakeElement({ hidden = false, classes = [] } = {}) {
     removeEventListener(type, fn) {
       listeners.get(type)?.delete(fn);
     },
-    dispatch(type) {
-      for (const listener of listeners.get(type) || []) listener({ target: this });
+    dispatch(type, target = this) {
+      for (const listener of listeners.get(type) || []) listener({ target });
     }
   };
 }
@@ -154,6 +154,7 @@ function fakeElement({ hidden = false, classes = [] } = {}) {
         author: 'A. Reader',
         active: 1,
         queued: 2,
+        origins: { 'playback-lookahead': 3 },
         chapters: [
           { chapterIndex: 3, active: 1, queued: 0 },
           { chapterIndex: 4, active: 0, queued: 2 }
@@ -170,7 +171,7 @@ function fakeElement({ hidden = false, classes = [] } = {}) {
     queueStatusElement.dispatch('click');
     assert.strictEqual(elements['audio-activity-sheet'].classList.contains('active'), true);
     assert.match(elements['audio-activity-list'].innerHTML, /A Long Book/);
-    assert.match(elements['audio-activity-list'].innerHTML, /Chapter 4 · Generating · 1 next/);
+    assert.match(elements['audio-activity-list'].innerHTML, /Preparing chapters ahead · Chapter 4 · 1 next/);
   });
 
   await test('hides the activity affordance when user-relevant work completes', async () => {
@@ -184,6 +185,10 @@ function fakeElement({ hidden = false, classes = [] } = {}) {
   });
 
   await test('automatically reveals browser download progress without chapter-piece counts', async () => {
+    let cancelledBookId = null;
+    document.addEventListener('xandrio:cancelofflinedownload', event => {
+      cancelledBookId = event.detail.bookId;
+    });
     document.dispatchEvent({
       type: 'xandrio:downloadactivity',
       detail: {
@@ -202,6 +207,11 @@ function fakeElement({ hidden = false, classes = [] } = {}) {
     assert.match(elements['audio-activity-list'].innerHTML, /42%/);
     assert.doesNotMatch(elements['audio-activity-list'].innerHTML, /chapter/i);
     assert.match(elements['audio-activity-list'].innerHTML, /role="progressbar"/);
+    assert.match(elements['audio-activity-list'].innerHTML, />Cancel</);
+    elements['audio-activity-list'].dispatch('click', {
+      closest: () => ({ dataset: { cancelOfflineBook: 'book-download' } })
+    });
+    assert.strictEqual(cancelledBookId, 'book-download');
   });
 
   await test('labels server preparation separately from device downloading', async () => {

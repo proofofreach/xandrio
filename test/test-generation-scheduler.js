@@ -168,6 +168,62 @@ async function run() {
     assert.deepStrictEqual(order, ['immediate', 'background']);
   });
 
+  await test('capacity-one fairness admits a waiting download after four look-ahead chunks', async () => {
+    const scheduler = new GenerationScheduler({
+      capacities: { gpu: 1 },
+      lookaheadBurst: 4,
+      downloadMaxWaitMs: 30_000
+    });
+    const blocker = deferred();
+    const order = [];
+    const active = scheduler.run({ resource: 'gpu', priority: 'background' }, () => blocker.promise);
+    const lookahead = Array.from({ length: 5 }, (_, index) => scheduler.run(
+      { resource: 'gpu', priority: 'lookahead' },
+      async () => order.push(`lookahead-${index}`)
+    ));
+    const download = scheduler.run(
+      { resource: 'gpu', priority: 'download' },
+      async () => order.push('download')
+    );
+
+    blocker.resolve();
+    await Promise.all([active, ...lookahead, download]);
+    assert.deepStrictEqual(order, [
+      'lookahead-0',
+      'lookahead-1',
+      'lookahead-2',
+      'lookahead-3',
+      'download',
+      'lookahead-4'
+    ]);
+  });
+
+  await test('capacity-one fairness admits a download after thirty seconds of waiting', async () => {
+    let clock = 0;
+    const scheduler = new GenerationScheduler({
+      capacities: { gpu: 1 },
+      lookaheadBurst: 100,
+      downloadMaxWaitMs: 30_000,
+      now: () => clock
+    });
+    const blocker = deferred();
+    const order = [];
+    const active = scheduler.run({ resource: 'gpu', priority: 'background' }, () => blocker.promise);
+    const download = scheduler.run(
+      { resource: 'gpu', priority: 'download' },
+      async () => order.push('download')
+    );
+    const lookahead = scheduler.run(
+      { resource: 'gpu', priority: 'lookahead' },
+      async () => order.push('lookahead')
+    );
+
+    clock = 30_000;
+    blocker.resolve();
+    await Promise.all([active, download, lookahead]);
+    assert.deepStrictEqual(order, ['download', 'lookahead']);
+  });
+
   console.log(`\n${passed} passed, ${failed} failed`);
   if (failed) process.exitCode = 1;
 }

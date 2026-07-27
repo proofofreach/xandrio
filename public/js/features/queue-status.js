@@ -72,11 +72,21 @@ function chapterSummary(book) {
   const chapters = Array.isArray(book?.chapters) ? book.chapters : [];
   const active = chapters.filter(chapter => Number(chapter?.active || 0) > 0);
   const waiting = chapters.filter(chapter => Number(chapter?.active || 0) === 0 && Number(chapter?.queued || 0) > 0);
+  const origins = book?.origins || {};
+  const purpose = Number(origins['offline-download']) > 0
+    ? 'Preparing for download'
+    : Number(origins['playback-lookahead']) > 0
+      ? 'Preparing chapters ahead'
+      : Number(origins['import-warmup']) > 0
+        ? 'Preparing starting chapter'
+        : Number(origins['playback-current']) > 0
+          ? 'Preparing current chapter'
+          : 'Generating';
 
   if (active.length > 0) {
     const chapterNumber = Number(active[0].chapterIndex) + 1;
     const nextCount = Math.max(0, chapters.length - active.length);
-    return `Chapter ${chapterNumber} · Generating${nextCount ? ` · ${nextCount} next` : ''}`;
+    return `${purpose} · Chapter ${chapterNumber}${nextCount ? ` · ${nextCount} next` : ''}`;
   }
   if (waiting.length === 1) {
     return `Chapter ${Number(waiting[0].chapterIndex) + 1} · Waiting to prepare`;
@@ -132,6 +142,10 @@ function renderActivityDetails(status = currentStatus) {
                   aria-valuenow="${book.percent}">
               <span style="width: ${book.percent}%"></span>
             </span>
+          ` : ''}
+          ${isDownload || isPreparation ? `
+            <button type="button" class="audio-activity-cancel"
+                    data-cancel-offline-book="${escapeHTML(book.id)}">Cancel</button>
           ` : ''}
         </div>
       </article>
@@ -255,6 +269,14 @@ export function initQueueStatus(options = {}) {
   scope.listen(document, 'xandrio:preparationactivity', event => {
     currentPreparations = normalizedPreparations(event?.detail?.preparations);
     renderQueueStatus(currentServerStatus);
+  });
+  scope.listen(activityListEl, 'click', event => {
+    const button = event.target.closest?.('[data-cancel-offline-book]');
+    const bookId = button?.dataset?.cancelOfflineBook;
+    if (!bookId || typeof globalThis.CustomEvent !== 'function') return;
+    document.dispatchEvent(new CustomEvent('xandrio:cancelofflinedownload', {
+      detail: { bookId }
+    }));
   });
   pollQueueStatus(scope);
   scope.interval(() => pollQueueStatus(scope), intervalMs, window);

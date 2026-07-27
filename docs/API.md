@@ -29,6 +29,7 @@ The examples below omit authorization headers for readability.
 | GET | [/api/offline/deletions](#get-apiofflinedeletions) | Reconcile device-local downloads with server deletions |
 | GET | [/api/offline/preparation/:bookId](#get-apiofflinepreparationbookid) | Get full-title audio preparation progress |
 | POST | [/api/offline/preparation/:bookId](#post-apiofflinepreparationbookid) | Start durable full-title audio preparation |
+| DELETE | [/api/offline/preparation/:bookId](#delete-apiofflinepreparationbookid) | Pause full-title audio preparation |
 | GET | [/api/book/:bookId](#get-apibookbookid) | Get book details and chapters |
 | GET | [/api/cover/:bookId](#get-apicoverbookid) | Get book cover image |
 | GET | [/api/audio-stream/:bookId/:chapterIndex](#get-apiaudio-streambookidchapterindex) | Stream generated chapter audio through one stable response |
@@ -81,6 +82,7 @@ Regenerated from `server.js` and `lib/routes/*.js` on 2026-07-12.
 | POST | `/api/chunks/:bookId/:chapterIndex/prepare-chapter-audio` |
 | GET | `/api/offline/preparation/:bookId` |
 | POST | `/api/offline/preparation/:bookId` |
+| DELETE | `/api/offline/preparation/:bookId` |
 | POST | `/api/chunks/:bookId/:chapterIndex/prepare` |
 | POST | `/api/chunks/:bookId/:chapterIndex/retry` |
 | GET | `/api/chunks/:bookId/:chapterIndex/status` |
@@ -707,10 +709,14 @@ the response.
 
 ## POST /api/offline/preparation/:bookId
 
-Record a durable full-title preparation intent and queue every chapter at
-`download` generation priority. The request returns after the work is queued;
-generation continues if the initiating browser closes. Live playback remains
-higher priority.
+Record or resume a durable full-title preparation intent for the requesting
+account and device. Multiple devices share generated server audio while each
+retains its own preparation claim and local transfer. The coordinator
+materializes at most one chapter per title and works on at most two titles at a
+time. The request returns `202` after the intent is recorded; generation
+continues if the initiating browser closes. Live playback remains higher
+priority, while a waiting download is admitted after four look-ahead chunks or
+30 seconds, whichever comes first.
 
 ## GET /api/offline/preparation/:bookId
 
@@ -729,10 +735,18 @@ Return server preparation progress independently of any device-local download:
 }
 ```
 
-`state` is `not-requested`, `preparing`, `ready`, or `error`. Once `ready`, a
-client can transfer chapter audio into that browser/PWA’s Cache Storage while
-the server generates audio for other titles; device transfer does not consume
-the generation scheduler’s GPU slot.
+`state` is `not-requested`, `preparing`, `paused`, `ready`, or `error`. A
+client can transfer each ready chapter into that browser/PWA’s Cache Storage
+while later chapters are still being prepared; device transfer does not
+consume the generation scheduler’s GPU slot.
+
+## DELETE /api/offline/preparation/:bookId
+
+Release the requesting account/device's preparation claim. If no other device
+still claims the title, pause preparation, cancel only queued or active
+generation tagged with its request id, and discard those recoverable chapter
+jobs. The durable title intent remains paused so a later `POST` can resume it.
+This does not delete already generated server audio or any device-local copy.
 
 ### Offline audio transfer headers
 

@@ -1163,7 +1163,8 @@ async function verifyRealServiceWorkerOffline(browser) {
     await verifyAtomicServiceWorkerUpgrade(page, fixture);
 
     // Exercise the one-stage library workflow without navigating into the
-    // player: ingestion already produced audio, so the device only transfers it.
+    // player. Every full-title download records durable server intent first,
+    // even when the fixture reports its existing audio ready immediately.
     await page.goto(`${fixture.origin}/#/library`, { waitUntil: 'networkidle' });
     await page.click('[data-book-menu-toggle]');
     await page.waitForSelector('[data-download-book="smoke-offline"]', { state: 'visible' });
@@ -1176,8 +1177,8 @@ async function verifyRealServiceWorkerOffline(browser) {
     if (!await page.getByRole('progressbar', { name: 'Download progress' }).isVisible()) {
       throw new Error('Device download did not reveal visible progress');
     }
-    if (fixture.offlinePreparationRequested()) {
-      throw new Error('Device download unexpectedly requested server-side audio preparation');
+    if (!fixture.offlinePreparationRequested()) {
+      throw new Error('Device download bypassed durable server-side audio preparation');
     }
     if (await page.evaluate(() => location.hash) !== '#/library') {
       throw new Error('Library download navigated away from the library');

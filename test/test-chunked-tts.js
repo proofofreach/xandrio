@@ -791,6 +791,36 @@ section('Variant-scoped cache paths');
     'Variant output tag controls chapter extension');
   assert(providerWavVoice.chunkPath('book1', 0, 0).endsWith('.wav'),
     'Output format provider controls extension when variant has no output tag');
+
+  let activeVariant = 'voice-a:profilebalanced';
+  const coordinator = new ChunkedTTS('/tmp/test-cache', new MockQueue(), {
+    variantKeyProvider: () => activeVariant
+  });
+  const pinned = coordinator.workerForVariant(activeVariant, { chunkSize: 1800 });
+  activeVariant = 'voice-b:profilebalanced';
+  assertEqual(
+    pinned.currentVariantSegment(),
+    coordinator.variantSegment('voice-a:profilebalanced'),
+    'Pinned playback worker keeps its captured voice variant'
+  );
+})();
+
+(() => {
+  const coordinator = new ChunkedTTS('/tmp/test-cache', new MockQueue());
+  const cancelled = [];
+  coordinator._recoveryWorkers.set('historical-voice', {
+    cancelBook(bookId) {
+      cancelled.push(bookId);
+      return 2;
+    }
+  });
+
+  assertEqual(
+    coordinator.cancelBook('deleted-book'),
+    2,
+    'Title deletion cancels restored variant workers'
+  );
+  assertDeep(cancelled, ['deleted-book'], 'Title deletion reaches every restored variant worker');
 })();
 
 // ─── Summary ─────────────────────────────────────────────────────────────────

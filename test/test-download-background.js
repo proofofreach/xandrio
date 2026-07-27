@@ -94,6 +94,9 @@ async function testRoutePurpose() {
     },
     post(path, ...routeHandlers) {
       handlers.set(`POST ${path}`, routeHandlers.at(-1));
+    },
+    delete(path, ...routeHandlers) {
+      handlers.set(`DELETE ${path}`, routeHandlers.at(-1));
     }
   };
   let request = null;
@@ -137,35 +140,49 @@ async function testBookPreparationRoutes() {
     },
     post(path, ...routeHandlers) {
       handlers.set(`POST ${path}`, routeHandlers.at(-1));
+    },
+    delete(path, ...routeHandlers) {
+      handlers.set(`DELETE ${path}`, routeHandlers.at(-1));
     }
   };
-  const started = [];
-  const statuses = [
-    { ready: true, totalChunks: 2, readyChunks: 2, errorChunks: 0 },
-    { ready: false, totalChunks: 4, readyChunks: 1, errorChunks: 0 }
-  ];
-  let preparationIntent = null;
+  const requested = [];
   registerPlaybackRoutes(app, {
     playbackOrchestrator: {
-      startChapterAudio: async request => {
-        started.push(request);
-        return statuses[request.chapterIndex];
-      },
-      chapterAudioStatus: async request => statuses[request.chapterIndex]
+      startChapterAudio: async () => ({ ready: false })
     },
     getBookChapters: async bookId => ({
       book: { id: bookId, title: 'Prepared Book' },
       chapters: [{}, {}]
     }),
-    ttsForTier: () => ({}),
-    generationJournal: {
-      async putOfflinePreparation(record) {
-        preparationIntent = record;
-      },
-      async getOfflinePreparation() {
-        return preparationIntent;
+    offlinePreparationCoordinator: {
+      status: async bookId => ({
+        bookId,
+        state: 'not-requested',
+        readyChapters: 0,
+        totalChapters: 2,
+        readyChunks: 0,
+        totalChunks: 0,
+        errorChapters: 0,
+        nextChapter: 0,
+        percent: 0
+      }),
+      request: async bookId => {
+        requested.push(bookId);
+        return {
+          bookId,
+          state: 'preparing',
+          readyChapters: 1,
+          totalChapters: 2,
+          readyChunks: 3,
+          totalChunks: 6,
+          errorChapters: 0,
+          nextChapter: 1,
+          percent: 50
+        };
       }
     },
+    ttsForTier: () => ({}),
+    generationJournal: {},
     chapterAudioStreamer: {},
     hlsAudioStreamer: {},
     serveAudioFile: async () => {},
@@ -197,10 +214,7 @@ async function testBookPreparationRoutes() {
   }, response);
 
   assert.strictEqual(response.statusCode, 202);
-  assert.strictEqual(preparationIntent.bookId, 'book');
-  assert.strictEqual(preparationIntent.totalChapters, 2);
-  assert.deepStrictEqual(started.map(request => request.chapterIndex), [0, 1]);
-  assert(started.every(request => request.priority === 'download'));
+  assert.deepStrictEqual(requested, ['book']);
   assert.deepStrictEqual(body, {
     bookId: 'book',
     state: 'preparing',
@@ -209,6 +223,7 @@ async function testBookPreparationRoutes() {
     readyChunks: 3,
     totalChunks: 6,
     errorChapters: 0,
+    nextChapter: 1,
     percent: 50
   });
 }
@@ -236,43 +251,17 @@ async function testDurableBookPreparationIntent() {
 }
 
 async function testOfflinePreparationRecovery() {
-  const started = [];
+  let restored = 0;
   const report = await replayOfflinePreparations({
-    generationJournal: {
-      listOfflinePreparations: async () => [
-        { bookId: 'book', totalChapters: 3, requestedAt: 123 }
-      ]
-    },
-    getBookChapters: async () => ({
-      book: { id: 'book' },
-      chapters: [{}, {}, {}]
-    }),
-    playbackOrchestrator: {
-      startChapterAudio: async request => {
-        started.push(request);
-        return { ready: false };
+    offlinePreparationCoordinator: {
+      restore: async () => {
+        restored += 1;
+        return { resumedBooks: 1, failedBooks: [] };
       }
     }
   });
-  assert.deepStrictEqual(started.map(request => request.chapterIndex), [0, 1, 2]);
-  assert(started.every(request => request.priority === 'download'));
-  assert.deepStrictEqual(report, { resumedBooks: 1, resumedChapters: 3, failedBooks: [] });
-}
-
-function testChapterPreparationPropagation() {
-  const serverSource = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
-  assert.match(
-    serverSource,
-    /priority === 'background' \|\| priority === 'download'[\s\S]*?\(\(\) => priority\)/
-  );
-  assert.match(
-    serverSource,
-    /const chunkPriority = priority === 'download'[\s\S]*?'download'/
-  );
-  assert.match(
-    serverSource,
-    /if \(jobs\.has\(key\)\)[\s\S]*?priority === 'download'[\s\S]*?prioritizeChunk\(bookId, chapterIndex, index, 'download'\)/
-  );
+  assert.strictEqual(restored, 1);
+  assert.deepStrictEqual(report, { resumedBooks: 1, resumedChapters: 0, failedBooks: [] });
 }
 
 (async () => {
@@ -285,14 +274,12 @@ function testChapterPreparationPropagation() {
   await testRoutePurpose();
   console.log('  ✓ offline-download requests select download priority');
   await testBookPreparationRoutes();
-  console.log('  ✓ full-title preparation queues every chapter and returns aggregate progress');
+  console.log('  ✓ full-title preparation delegates to the bounded durable coordinator');
   await testDurableBookPreparationIntent();
   console.log('  ✓ full-title preparation intent survives outside the browser');
   await testOfflinePreparationRecovery();
-  console.log('  ✓ full-title preparation intent replays every chapter after restart');
-  testChapterPreparationPropagation();
-  console.log('  ✓ download priority reaches every new or resumed chapter chunk');
-  console.log('\n8 passed, 0 failed');
+  console.log('  ✓ full-title preparation recovery delegates to the bounded durable coordinator');
+  console.log('\n7 passed, 0 failed');
 })().catch(error => {
   console.error(`  ✗ ${error.stack || error.message}`);
   console.log('\n0 passed, 1 failed');

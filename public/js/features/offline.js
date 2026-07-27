@@ -45,18 +45,34 @@ export function initOffline(options = {}) {
   deps = options;
   document.getElementById('offline-books-list')?.addEventListener('click', handleOfflineManagerClick);
   document.addEventListener('xandrio:deploymentchange', refreshOfflineAvailability);
+  document.removeEventListener('xandrio:cancelofflinedownload', handleOfflineDownloadCancel);
+  document.addEventListener('xandrio:cancelofflinedownload', handleOfflineDownloadCancel);
   window.addEventListener('online', flushPendingPositions);
   window.addEventListener('online', reconcileDeletedOfflineBooks);
   window.addEventListener('online', refreshOfflinePreparations);
+  window.addEventListener('online', resumeInterruptedOfflineDownloads);
   window.addEventListener('online', updateOfflineBanner);
   window.addEventListener('offline', updateOfflineBanner);
   renderOfflineState({ audit: false });
   void prepareOfflineStorage({ waitForAudio: true })
+    .then(() => resumeInterruptedOfflineDownloads())
     .finally(() => scheduleOfflineManifestAudit());
   void refreshOfflinePreparations();
   updateOfflineBanner();
   flushPendingPositions();
   void reconcileDeletedOfflineBooks();
+}
+
+async function handleOfflineDownloadCancel(event) {
+  const bookId = String(event?.detail?.bookId || '');
+  if (!bookId) return;
+  if (cancelOfflineDownload(bookId)) return;
+  try {
+    await apiSend('DELETE', `/api/offline/preparation/${encodeURIComponent(bookId)}`);
+    setOfflineEntryState(bookId, 'incomplete');
+  } catch {
+    showToast('Could not cancel audio preparation', 'error');
+  }
 }
 
 function refreshOfflineAvailability() {
@@ -483,7 +499,7 @@ async function auditCurrentOfflineVariant() {
     !entry.chapterEntries?.[0]
   ) return;
   try {
-    const status = await getChapterAudioStatus(book.id, 0);
+    const status = await getChapterAudioStatus(book.id, 0, undefined, 'active');
     if (!status.variantKey || !entry.variantKey || status.variantKey === entry.variantKey) return;
     if (offlineEntryForBook(book.id)?.state === 'ready') setOfflineEntryState(book.id, 'stale');
   } catch {}
@@ -653,9 +669,40 @@ export async function refreshOfflinePreparations() {
 export function cancelOfflineDownload(bookId) {
   if (downloadAbort && String(activeDownloadBookId) === String(bookId)) {
     downloadAbort.abort();
+    if (navigator.onLine) {
+      void apiSend('DELETE', `/api/offline/preparation/${encodeURIComponent(bookId)}`)
+        .catch(() => {});
+    }
     return true;
   }
   return false;
+}
+
+export async function resumeInterruptedOfflineDownloads() {
+  if (
+    downloadAbort ||
+    !navigator.onLine ||
+    document.hidden ||
+    !offlineDownloadsSupported()
+  ) {
+    return false;
+  }
+  const candidate = Object.values(getOfflineManifest())
+    .filter(entry =>
+      entry?.autoResume === true &&
+      entry?.mode === 'full' &&
+      validTitleData(entry) &&
+      (offlineState(entry) === 'repairing' || offlineState(entry) === 'incomplete')
+    )
+    .sort((left, right) =>
+      String(left.downloadStartedAt || '').localeCompare(String(right.downloadStartedAt || ''))
+    )[0];
+  if (!candidate) return false;
+  return downloadBookForOffline(
+    candidate.titleData.book,
+    candidate.titleData.chapters,
+    { confirmForeground: false, showOverlay: false }
+  );
 }
 
 async function requestPersistentOfflineStorage() {
@@ -778,6 +825,15 @@ export async function downloadBookForOffline(book, chapters, options = {}) {
     manifest[book.id] = working;
     saveOfflineManifest(manifest);
     renderOfflineState();
+    const preparation = await apiSend(
+      'POST',
+      `/api/offline/preparation/${encodeURIComponent(book.id)}`,
+      null,
+      { signal }
+    );
+    if (preparation?.state === 'error') {
+      throw new Error('Audio preparation needs attention before this title can download');
+    }
     if (showOverlay) {
       deps.showAudioLoading?.('Downloading book for offline', {
         detail: 'Checking storage...',
@@ -809,8 +865,7 @@ export async function downloadBookForOffline(book, chapters, options = {}) {
           working,
           cache,
           signal,
-          reportProgress,
-          requirePrepared: options.requirePrepared === true
+          reportProgress
         });
         } catch (error) {
           firstError ||= error;
@@ -830,6 +885,7 @@ export async function downloadBookForOffline(book, chapters, options = {}) {
     }
     if (signal.aborted) throw new Error('Download cancelled');
     working.state = 'ready';
+    working.autoResume = false;
     working.progressPercent = 100;
     working.progressPhase = 'Downloaded';
     working.downloadedAt = new Date().toISOString();
@@ -839,6 +895,7 @@ export async function downloadBookForOffline(book, chapters, options = {}) {
     showToast(existing ? 'Offline download repaired' : 'Book downloaded for offline');
   } catch (err) {
     working.state = 'incomplete';
+    working.autoResume = !signal.aborted;
     working.progressPhase = err?.name === 'AbortError' ? 'Cancelled' : 'Interrupted';
     try {
       persistWorkingEntry(book.id, working);
@@ -864,8 +921,7 @@ async function processFullDownloadChapter({
   working,
   cache,
   signal,
-  reportProgress,
-  requirePrepared = false
+  reportProgress
 }) {
   throwIfDownloadAborted(signal);
   reportProgress(chapterIndex, 0.01, 'Preparing download');
@@ -880,7 +936,7 @@ async function processFullDownloadChapter({
 
   if (cacheIsValid || legacyCacheIsUsable) {
     try {
-      status = await getChapterAudioStatus(book.id, chapterIndex, signal);
+      status = await getChapterAudioStatus(book.id, chapterIndex, signal, 'active');
       variantKey = String(status.variantKey || '');
     } catch (error) {
       if (!cacheIsValid) throw error;
@@ -893,15 +949,12 @@ async function processFullDownloadChapter({
   } else if (legacyCacheIsUsable && variantKey) {
     working.chapterEntries[chapterIndex] = { ...cachedIdentity, variantKey };
   } else {
-    status = requirePrepared
-      ? await getChapterAudioStatus(book.id, chapterIndex, signal)
-      : await prepareChapter(
-        book.id,
-        chapterIndex,
-        signal,
-        fraction => reportProgress(chapterIndex, Math.min(0.88, fraction * 0.88), 'Preparing audio'),
-        'offline-download'
-      );
+    status = await waitForPreparedChapter(
+      book.id,
+      chapterIndex,
+      signal,
+      fraction => reportProgress(chapterIndex, Math.min(0.88, fraction * 0.88), 'Preparing audio')
+    );
     if (!status.ready) {
       throw new Error(`Audio generation is not complete for chapter ${chapterIndex + 1}`);
     }
@@ -962,7 +1015,7 @@ export async function ensureRollingOfflineWindow(book, chapters, chapterIndex, o
 
   try {
     const cache = await caches.open(offlineCacheName(OFFLINE_AUDIO_CACHE));
-    const currentStatus = await getChapterAudioStatus(book.id, chapterIndex, signal);
+    const currentStatus = await getChapterAudioStatus(book.id, chapterIndex, signal, 'active');
     const currentVariantKey = String(currentStatus.variantKey || '');
     const variantChanged = Boolean(working.variantKey && currentVariantKey && working.variantKey !== currentVariantKey);
     const staleChapters = variantChanged
@@ -1094,7 +1147,7 @@ async function prepareChapter(bookId, chapterIndex, signal, onProgress = null, p
   let recoveryAttempts = 0;
   while (Date.now() < deadline) {
     throwIfDownloadAborted(signal);
-    const status = await getChapterAudioStatus(bookId, chapterIndex, signal);
+    const status = await getChapterAudioStatus(bookId, chapterIndex, signal, 'active');
     const total = Math.max(0, Number(status.totalChunks) || 0);
     const ready = Math.max(0, Number(status.readyChunks) || 0);
     if (total > 0) onProgress?.(Math.min(1, ready / total));
@@ -1115,8 +1168,29 @@ async function prepareChapter(bookId, chapterIndex, signal, onProgress = null, p
   throw new Error(`Timed out preparing chapter ${chapterIndex + 1}`);
 }
 
-async function getChapterAudioStatus(bookId, chapterIndex, signal) {
-  const url = `${API_BASE}/api/chunks/${encodeURIComponent(bookId)}/${chapterIndex}/chapter-audio-status`;
+async function waitForPreparedChapter(bookId, chapterIndex, signal, onProgress = null) {
+  const deadline = Date.now() + DOWNLOAD_PREPARE_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    throwIfDownloadAborted(signal);
+    const status = await getChapterAudioStatus(bookId, chapterIndex, signal, 'active');
+    const total = Math.max(0, Number(status.totalChunks) || 0);
+    const ready = Math.max(0, Number(status.readyChunks) || 0);
+    if (total > 0) onProgress?.(Math.min(1, ready / total));
+    if (status.ready) {
+      onProgress?.(1);
+      return status;
+    }
+    if (Number(status.errorChunks) > 0) {
+      throw new Error(`Audio generation failed for chapter ${chapterIndex + 1}`);
+    }
+    await waitForDownloadRetry(1500, signal);
+  }
+  throw new Error(`Timed out preparing chapter ${chapterIndex + 1}`);
+}
+
+async function getChapterAudioStatus(bookId, chapterIndex, signal, tier = null) {
+  const tierQuery = tier ? `?tier=${encodeURIComponent(tier)}` : '';
+  const url = `${API_BASE}/api/chunks/${encodeURIComponent(bookId)}/${chapterIndex}/chapter-audio-status${tierQuery}`;
   return retryDownloadOperation(async () => {
     const response = await fetch(url, { signal });
     if (!response.ok) {
@@ -1144,6 +1218,7 @@ function createWorkingEntry(book, chapters, existing, voiceLabel) {
     downloadStartedAt: new Date().toISOString(),
     progressPercent: 0,
     progressPhase: 'Starting',
+    autoResume: true,
     manifestVersion: OFFLINE_MANIFEST_VERSION,
     mode: 'full',
     state: 'repairing'
