@@ -52,6 +52,7 @@ const {
 const { createBookDeletionLog } = require('./lib/book-deletion-log');
 const {
   REFRESH_BOOK_RESULT,
+  createBookAudioInvalidator,
   createBookMetadataRefreshService
 } = require('./lib/book-metadata-refresh');
 const { chapterStructureKey, positionMatchesChapterStructure } = require('./lib/chapter-structure');
@@ -2804,6 +2805,21 @@ const bookMetadataRefreshService = createBookMetadataRefreshService({
   bookRecordOpenLibraryFields,
   canonicalWorkKey,
   removeFileIfExists,
+  invalidateBookAudio: createBookAudioInvalidator({
+    stopPremiumPrep: bookId => premiumPrep.stopBook(bookId),
+    waitForPremiumIdle: bookId => premiumPrep.waitForIdle(bookId),
+    removePlaybackPrefetch: bookId => playbackPrefetch.removeBook(bookId),
+    cancelOfflinePreparation: bookId =>
+      offlinePreparationCoordinator.cancel(bookId, { remove: true }),
+    waitForOfflineIdle: bookId => offlinePreparationCoordinator.waitForIdle(bookId),
+    workers: () => [
+      chunkedTTS,
+      instantChunkedTTS,
+      ...premiumVariantTtsWorkers.values()
+    ],
+    removeGenerationJournalEntries: bookId => generationJournal.removeChaptersForBook(bookId),
+    invalidateCache: invalidateChapterAudioCache
+  }),
   removeBookPositions: (positions, bookId) => removeBookPositions(positions, bookId),
   setBookPositionsStructureKey: (positions, bookId, structureKey) =>
     setBookPositionsStructureKey(positions, bookId, structureKey)
