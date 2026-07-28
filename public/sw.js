@@ -1,7 +1,7 @@
 importScripts('/js/offline-range.js');
 
 const APP_RELEASE = '1.1.0';
-const CACHE_VERSION = 'xandrio-v112';
+const CACHE_VERSION = 'xandrio-v113';
 const OFFLINE_AUDIO_CACHE = 'xandrio-offline-audio';
 const OFFLINE_TITLE_CACHE = 'xandrio-offline-titles';
 const OFFLINE_SCOPE_PARAM = 'xandrio-offline-scope';
@@ -12,8 +12,8 @@ const OFFLINE_SCOPE_PARAM = 'xandrio-offline-scope';
 const ASSET_VERSIONS = {
   '/style-v3.css': 92,
   '/js/lifecycle.js': 1,
-  '/js/chunk-player.js': 21,
-  '/app.js': 103
+  '/js/chunk-player.js': 22,
+  '/app.js': 104
 };
 const versionedAsset = (path) => `${path}?v=${ASSET_VERSIONS[path]}`;
 const APP_SHELL = [

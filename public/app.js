@@ -20,7 +20,7 @@ import { initSleepTimer, restoreSleepTimer, isSleepTimerChapterTarget, expireSle
 import { loadVoices, refreshVoicePrepPanel, closeVoiceSheetDirect } from './js/views/voices.js';
 import { initPlaybackSpeed, getCurrentPlaybackSpeed, closeSpeedSheet, loadPlaybackSpeed, applyPlaybackSpeed, applySkipIntervalLabels, stepPlaybackSpeed } from './js/views/playback-speed.js';
 import { readJSON, writeJSON, readText } from './js/util/storage.js';
-import { createPlaybackSession } from './js/playback-session.js';
+import { createPlaybackSession, restorePlaybackPosition } from './js/playback-session.js';
 import { navigateChapterSelection, positionMatchesChapterStructure, shouldAllowBackwardReconciliation } from './js/chapter-navigation.mjs';
 import { SingleFileChapterPlayer } from './js/single-file-chapter-player.js';
 import { initPlayerUI, paintChapterTimes, paintScrubPreview, toggleTimeDisplayMode, syncTimeDisplayModeFromClientSettings, getPlaybackProgressScope, getBookSeekTarget, syncPlaybackProgressScope, setPlaybackReliabilityState, setResumePromptVisible, maybeShowIphonePlaybackTip, dismissIphonePlaybackTip, handleChunkWaiting, handleChunkPreparing, setChunkOverlayState, displayChapterTitle, updateChapterTrigger, updateBookProgress, updatePlayerAmbient, renderChapterList, openChapterSheet, closeChapterSheet, dismissChapterSheet, showAudioLoading, hideAudioLoading, updateMiniPlayer, syncMiniPlayerInfo, syncMiniPlayerIcon } from './js/views/player-ui.js';
@@ -1176,11 +1176,9 @@ async function openBook(bookId) {
       shouldAllowBackwardReconciliation(localCheckpoint, serverCheckpoint);
     currentBookFinished = Boolean(restorePosition?.finished);
     let chapterToLoad = 0;
-    let seekTo = 0;
 
     if (restorePosition) {
       chapterToLoad = restorePosition.chapterIndex;
-      seekTo = restorePosition.timestamp || 0;
     } else {
       const firstChapterIndex = findPreferredStartChapterIndex(chapters);
       console.log(`Starting at chapter ${firstChapterIndex}: "${chapters[firstChapterIndex].title}" (type: ${chapters[firstChapterIndex].type})`);
@@ -1212,11 +1210,7 @@ async function openBook(bookId) {
 
     await loadChapter(chapterToLoad);
     // Seek to the saved chapter position on the persistent media element.
-    if (chunkPlayer && restorePosition && typeof chunkPlayer.seekToChunk === 'function' && Number.isInteger(restorePosition.chunkIndex)) {
-      await chunkPlayer.seekToChunk(restorePosition.chunkIndex, restorePosition.chunkTime || 0);
-    } else if (chunkPlayer && seekTo) {
-      await chunkPlayer.seek(seekTo);
-    }
+    await restorePlaybackPosition(chunkPlayer, restorePosition);
     checkpointPlayback();
     updatePlaybackUI();
     if (reconcileBackward) {
@@ -1439,12 +1433,12 @@ async function togglePlayPause(forcePlay = false) {
     checkpointPlayback();
     scheduleServerPositionSave();
   } catch (err) {
-    console.error('Playback error:', err);
     updatePlaybackUI(false);
     if (needsReliablePlayback() && (err.name === 'NotAllowedError' || err.name === 'AbortError')) {
+      console.error('Playback error:', err);
       setResumePromptVisible(true);
     } else {
-      setPlaybackReliabilityState('resume', 'Audio needs attention');
+      handleChunkError(err);
     }
   }
 }

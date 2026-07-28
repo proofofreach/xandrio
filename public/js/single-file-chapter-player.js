@@ -36,6 +36,7 @@ export class SingleFileChapterPlayer {
     this.backend = 'single-file';
     this.activeSource = null;
     this.servedTier = null;
+    this.supportsChunkPositionRestore = false;
     this.supportsNativeMediaSession = true;
     this.bookId = null;
     this.chapterIndex = null;
@@ -585,14 +586,18 @@ export class SingleFileChapterPlayer {
 
   _canSeekTo(streamTime) {
     if (!Number.isFinite(streamTime) || streamTime < 0) return false;
+    const tolerance = 0.05;
     try {
-      for (let index = 0; index < this.audio.seekable.length; index++) {
-        if (streamTime >= this.audio.seekable.start(index) && streamTime <= this.audio.seekable.end(index)) {
+      for (let index = 0; index < this.audio.buffered.length; index++) {
+        if (
+          streamTime >= this.audio.buffered.start(index) - tolerance
+          && streamTime <= this.audio.buffered.end(index) + tolerance
+        ) {
           return true;
         }
       }
     } catch {}
-    return streamTime === Number(this.audio.currentTime);
+    return Math.abs(streamTime - Number(this.audio.currentTime)) <= tolerance;
   }
 
   async _reloadContinuousAtOffset(chapterTime) {
