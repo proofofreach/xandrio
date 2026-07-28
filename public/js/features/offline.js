@@ -282,9 +282,18 @@ function validTitleData(entry) {
   );
 }
 
+function isPlayableFullEntry(entry) {
+  if (entry?.mode !== 'full' || !validTitleData(entry)) return false;
+  return ['ready', 'repairing', 'incomplete'].includes(offlineState(entry));
+}
+
+function hasCachedChapter(entry) {
+  return Array.isArray(entry?.chapterEntries) && entry.chapterEntries.some(Boolean);
+}
+
 export function getOfflineBookData(bookId) {
   const entry = offlineEntryForBook(bookId);
-  if (offlineState(entry) !== 'ready' || entry?.mode !== 'full' || !validTitleData(entry)) return null;
+  if (!isPlayableFullEntry(entry) || !hasCachedChapter(entry)) return null;
   const data = structuredClone(entry.titleData);
   if (data.book.hasCover) data.book.coverUrl = offlineTitleRequest(bookId).url;
   return data;
@@ -292,7 +301,7 @@ export function getOfflineBookData(bookId) {
 
 export function getOfflineLibraryBooks() {
   return Object.values(getOfflineManifest())
-    .filter(entry => offlineState(entry) === 'ready' && entry?.mode === 'full' && validTitleData(entry))
+    .filter(entry => isPlayableFullEntry(entry) && hasCachedChapter(entry))
     .sort((a, b) => String(b.downloadedAt || '').localeCompare(String(a.downloadedAt || '')))
     .map(entry => {
       const book = structuredClone(entry.titleData.book);
@@ -365,10 +374,18 @@ export function offlineStatusForBook(bookId) {
     };
   }
   if (state === 'repairing') {
-    const percent = Math.max(0, Math.min(99, Math.round(Number(entry.progressPercent) || 0)));
     return {
       kind: 'downloading',
-      label: `Downloading · ${percent}%`,
+      label: `Downloading · ${cachedChapters} of ${totalChapters} chapters`,
+      downloaded: false,
+      cachedChapters,
+      totalChapters
+    };
+  }
+  if (state === 'incomplete' && isPlayableFullEntry(entry) && cachedChapters > 0) {
+    return {
+      kind: 'partial-download',
+      label: `${cachedChapters} of ${totalChapters} chapters downloaded`,
       downloaded: false,
       cachedChapters,
       totalChapters
@@ -390,7 +407,7 @@ export function isBookDownloadedForOffline(bookId, chapterIndex = 0) {
     entry?.state === 'ready' &&
     Array.isArray(entry?.chapterEntries);
   return Boolean(
-    entry && (offlineState(entry) === 'ready' || entry.mode === 'rolling' || legacyReady) &&
+    entry && (isPlayableFullEntry(entry) || entry.mode === 'rolling' || legacyReady) &&
     Array.isArray(entry.chapterEntries) &&
     chapterIndex >= 0 && chapterIndex < entry.chapterEntries.length &&
     entry.chapterEntries[chapterIndex]
@@ -502,15 +519,17 @@ async function auditCurrentOfflineVariant() {
   const entry = offlineEntryForBook(book.id);
   const sampleChapterIndex = entry?.chapterEntries?.findIndex(Boolean) ?? -1;
   if (
-    entry?.mode !== 'full' ||
-    offlineState(entry) !== 'ready' ||
+    !isPlayableFullEntry(entry) ||
     !entry.variantKey ||
     sampleChapterIndex < 0
   ) return;
   try {
     const status = await getChapterAudioStatus(book.id, sampleChapterIndex, undefined, 'active');
     if (!status.variantKey || !entry.variantKey || status.variantKey === entry.variantKey) return;
-    if (offlineEntryForBook(book.id)?.state === 'ready') setOfflineEntryState(book.id, 'stale');
+    const latest = offlineEntryForBook(book.id);
+    if (latest?.state === entry.state && latest?.variantKey === entry.variantKey) {
+      setOfflineEntryState(book.id, 'stale');
+    }
   } catch {}
 }
 
@@ -782,6 +801,19 @@ async function releaseDownloadWakeLock() {
   await sentinel.release().catch(() => {});
 }
 
+async function discardWorkingAudioForChangedVariant(bookId, existing, working, signal) {
+  const sampleChapterIndex = existing?.chapterEntries?.findIndex(Boolean) ?? -1;
+  if (!existing?.variantKey || sampleChapterIndex < 0) return false;
+  const status = await getChapterAudioStatus(bookId, sampleChapterIndex, signal, 'active');
+  const activeVariantKey = String(status?.variantKey || '');
+  if (!activeVariantKey || activeVariantKey === existing.variantKey) return false;
+  working.variantKey = '';
+  working.chapterEntries.fill(null);
+  working.bytes = 0;
+  working.downloadedAt = null;
+  return true;
+}
+
 export async function downloadBookForOffline(book, chapters, options = {}) {
   if (!book?.id || !Array.isArray(chapters) || chapters.length === 0) return false;
   if (!offlineDownloadsSupported()) return false;
@@ -829,6 +861,7 @@ export async function downloadBookForOffline(book, chapters, options = {}) {
     rollingAbort?.abort();
     rollingAbort = null;
     rollingRequestKey = '';
+    await discardWorkingAudioForChangedVariant(book.id, existing, working, signal);
     reportProgress(-1, 0, 'Starting download');
     const manifest = getOfflineManifest();
     manifest[book.id] = working;
@@ -904,9 +937,10 @@ export async function downloadBookForOffline(book, chapters, options = {}) {
     completed = true;
     showToast(existing ? 'Offline download repaired' : 'Book downloaded for offline');
   } catch (err) {
+    const cancelled = err?.name === 'AbortError' || err?.message === 'Download cancelled';
     working.state = 'incomplete';
-    working.autoResume = !signal.aborted;
-    working.progressPhase = err?.name === 'AbortError' ? 'Cancelled' : 'Interrupted';
+    working.autoResume = !cancelled;
+    working.progressPhase = cancelled ? 'Cancelled' : 'Interrupted';
     try {
       persistWorkingEntry(book.id, working);
     } catch {}
@@ -1238,16 +1272,19 @@ async function getChapterAudioStatus(bookId, chapterIndex, signal, tier = null) 
 
 function createWorkingEntry(book, chapters, existing, voiceLabel) {
   const chapterCount = chapters.length;
-  const oldEntries = Array.isArray(existing?.chapterEntries) ? existing.chapterEntries : [];
+  const canReuseExisting = offlineState(existing) !== 'stale';
+  const oldEntries = canReuseExisting && Array.isArray(existing?.chapterEntries)
+    ? existing.chapterEntries
+    : [];
   return {
     bookId: book.id,
     title: book.title,
     voiceLabel,
-    variantKey: existing?.variantKey || '',
+    variantKey: canReuseExisting ? (existing?.variantKey || '') : '',
     chapters: chapterCount,
     chapterEntries: Array.from({ length: chapterCount }, (_, index) => oldEntries[index] || null),
     titleData: offlineTitleData(book, chapters),
-    bytes: Number(existing?.bytes) || 0,
+    bytes: canReuseExisting ? (Number(existing?.bytes) || 0) : 0,
     downloadedAt: existing?.downloadedAt || null,
     downloadStartedAt: new Date().toISOString(),
     progressPercent: 0,
@@ -1363,9 +1400,19 @@ function offlineStateLabel(entry) {
     case 'prepared': return 'Ready to download to this device';
     case 'preparation-error': return 'Audio preparation needs attention';
     case 'ready': return `Offline ready · ${entry.voiceLabel || 'Voice'}`;
-    case 'repairing': return `Downloading · ${Math.max(0, Math.min(99, Math.round(Number(entry.progressPercent) || 0)))}%`;
+    case 'repairing': {
+      const cached = entry.chapterEntries?.filter(Boolean).length || 0;
+      const total = Number(entry.chapters) || 0;
+      return `Downloading · ${cached}/${total} chapters`;
+    }
     case 'stale': return 'Offline audio · current voice changed';
-    default: return 'Offline audio · repair needed';
+    default: {
+      const cached = entry?.chapterEntries?.filter(Boolean).length || 0;
+      const total = Number(entry?.chapters) || 0;
+      return cached > 0
+        ? `Partial download · ${cached}/${total} chapters`
+        : 'Offline audio · repair needed';
+    }
   }
 }
 
@@ -1596,6 +1643,35 @@ async function verifyOfflineEntryPresence(cache, entry, scopeId = offlineScopeId
   return true;
 }
 
+async function pruneUnavailableChapterEntries(
+  cache,
+  bookId,
+  scopeId,
+  { presenceOnly = false } = {}
+) {
+  const manifest = getOfflineManifest(scopeId);
+  const entry = manifest[bookId];
+  if (!entry || !Array.isArray(entry.chapterEntries)) return false;
+  let changed = false;
+  for (let index = 0; index < entry.chapterEntries.length; index++) {
+    const expected = entry.chapterEntries[index];
+    if (!expected) continue;
+    const response = await cache.match(offlineAudioRequest(bookId, index, scopeId));
+    const identity = response && !presenceOnly ? await contentIdentity(response) : null;
+    if (response && (presenceOnly || canReuseChapter(expected, identity, expected.variantKey))) continue;
+    entry.chapterEntries[index] = null;
+    changed = true;
+  }
+  if (!changed) return false;
+  entry.bytes = entry.chapterEntries.reduce(
+    (sum, chapter) => sum + (Number(chapter?.size) || 0),
+    0
+  );
+  if (entry.mode === 'full' && entry.state === 'ready') entry.state = 'incomplete';
+  saveOfflineManifest(manifest, scopeId);
+  return true;
+}
+
 function scheduleOfflineManifestAudit() {
   if (manifestAudit) return manifestAudit;
   manifestAudit = auditOfflineManifest().catch(() => {}).finally(() => { manifestAudit = null; });
@@ -1608,27 +1684,21 @@ export async function auditOfflineManifest({ presenceOnly = false } = {}) {
   if (!('caches' in window)) return false;
   const scope = offlineScopeId();
   const entries = Object.values(getOfflineManifest(scope))
-    .filter(entry => offlineState(entry) === 'ready' || entry?.mode === 'rolling');
+    .filter(entry =>
+      entry?.mode === 'rolling' ||
+      (isPlayableFullEntry(entry) && hasCachedChapter(entry))
+    );
   if (entries.length === 0) return false;
   const cache = await caches.open(offlineCacheName(OFFLINE_AUDIO_CACHE, scope));
   let changed = false;
   for (const entry of entries) {
-    if (entry.mode === 'rolling') {
-      const latestManifest = getOfflineManifest(scope);
-      const latest = latestManifest[entry.bookId];
-      if (!latest || latest.mode !== 'rolling' || !Array.isArray(latest.chapterEntries)) continue;
-      let rollingChanged = false;
-      for (let index = 0; index < latest.chapterEntries.length; index++) {
-        if (!latest.chapterEntries[index]) continue;
-        if (await cache.match(offlineAudioRequest(entry.bookId, index, scope))) continue;
-        latest.chapterEntries[index] = null;
-        rollingChanged = true;
-      }
-      if (rollingChanged) {
-        latest.bytes = latest.chapterEntries.reduce((sum, chapter) => sum + (Number(chapter?.size) || 0), 0);
-        saveOfflineManifest(latestManifest, scope);
-        changed = true;
-      }
+    if (entry.mode === 'rolling' || offlineState(entry) !== 'ready') {
+      changed = await pruneUnavailableChapterEntries(
+        cache,
+        entry.bookId,
+        scope,
+        { presenceOnly }
+      ) || changed;
       continue;
     }
     const valid = presenceOnly
@@ -1643,6 +1713,12 @@ export async function auditOfflineManifest({ presenceOnly = false } = {}) {
       latestManifest[entry.bookId] = { ...latest, state: 'incomplete' };
       saveOfflineManifest(latestManifest, scope);
       changed = true;
+      changed = await pruneUnavailableChapterEntries(
+        cache,
+        entry.bookId,
+        scope,
+        { presenceOnly }
+      ) || changed;
     }
   }
   if (changed) {
