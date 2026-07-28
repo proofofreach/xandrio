@@ -1179,8 +1179,9 @@ function installBrowser({
     };
     for (const [entry, kind, label] of [
       [{ ...base, mode: 'rolling', state: 'partial' }, 'partial', '1 chapter cached'],
-      [{ ...base, mode: 'full', state: 'repairing', progressPercent: 42 }, 'downloading', 'Downloading · 42%'],
-      [{ ...base, mode: 'full', state: 'incomplete' }, 'repair-needed', 'Download incomplete'],
+      [{ ...base, mode: 'full', state: 'repairing', progressPercent: 42 }, 'downloading', 'Downloading · 1 of 2 chapters'],
+      [{ ...base, mode: 'full', state: 'repairing', chapterEntries: [null, null], progressPercent: 0 }, 'downloading', 'Downloading · 0 of 2 chapters'],
+      [{ ...base, mode: 'full', state: 'incomplete' }, 'partial-download', '1 of 2 chapters downloaded'],
       [{ ...base, mode: 'full', state: 'stale' }, 'repair-needed', 'Update download']
     ]) {
       env = installBrowser({ book, chapters, cache, manifest: { [book.id]: entry } });
@@ -1358,13 +1359,16 @@ function installBrowser({
     assert.strictEqual(await offline.verifyOfflineEntry(cache, entry), true);
   });
 
-  await test('keeps a failed repair resumable instead of claiming readiness', async () => {
+  await test('keeps completed chapters playable while a full download is incomplete', async () => {
     const cache = makeCache();
     const env = installBrowser({ book, chapters, cache });
     const normalFetch = global.fetch;
+    let secondChapterUnavailable = true;
     global.fetch = async (input, options) => {
       const url = typeof input === 'string' ? input : (input.url || String(input));
-      if (url.includes('/api/audio/book-1/1')) return new Response('nope', { status: 503 });
+      if (secondChapterUnavailable && url.includes('/api/audio/book-1/1')) {
+        return new Response('nope', { status: 503 });
+      }
       return normalFetch(input, options);
     };
     offline.initOffline(env.init);
@@ -1372,9 +1376,195 @@ function installBrowser({
 
     const entry = offline.getOfflineManifest()[book.id];
     assert.strictEqual(entry.state, 'incomplete');
+    assert.strictEqual(entry.autoResume, true);
     assert.strictEqual(entry.chapterEntries[0].size > 0, true, 'completed audio remains available for resume');
     assert.strictEqual(entry.chapterEntries[1], null);
-    assert.strictEqual(offline.isBookDownloadedForOffline(book.id), false);
+    assert.strictEqual(offline.isBookDownloadedForOffline(book.id, 0), true);
+    assert.strictEqual(offline.isBookDownloadedForOffline(book.id, 1), false);
+    assert.strictEqual(await offline.isChapterAvailableOffline(book.id, 0), true);
+    assert.strictEqual(await offline.isChapterAvailableOffline(book.id, 1), false);
+    assert.deepStrictEqual(offline.getOfflineBookData(book.id), entry.titleData);
+    assert.deepStrictEqual(offline.getOfflineLibraryBooks(), [book]);
+    assert.deepStrictEqual(offline.offlineStatusForBook(book.id), {
+      kind: 'partial-download',
+      label: '1 of 2 chapters downloaded',
+      downloaded: false,
+      cachedChapters: 1,
+      totalChapters: 2
+    });
+
+    secondChapterUnavailable = false;
+    assert.strictEqual(await offline.resumeInterruptedOfflineDownloads(), true);
+    assert.strictEqual(offline.getOfflineManifest()[book.id].state, 'ready');
+  });
+
+  await test('stops exposing an incomplete download after the active voice changes', async () => {
+    const cache = makeCache();
+    let env = installBrowser({
+      book,
+      chapters,
+      cache,
+      variants: ['voice-a', 'voice-a']
+    });
+    offline.initOffline(env.init);
+    assert.strictEqual(await offline.downloadCurrentBook(), true);
+    const incomplete = structuredClone(offline.getOfflineManifest());
+    incomplete[book.id].state = 'incomplete';
+
+    env = installBrowser({
+      book,
+      chapters,
+      cache,
+      manifest: incomplete,
+      variants: ['voice-b', 'voice-b']
+    });
+    offline.initOffline(env.init);
+    for (
+      let attempt = 0;
+      attempt < 20 && offline.getOfflineManifest()[book.id].state !== 'stale';
+      attempt++
+    ) {
+      await new Promise(resolve => setImmediate(resolve));
+    }
+
+    assert.strictEqual(offline.getOfflineManifest()[book.id].state, 'stale');
+    assert.strictEqual(offline.isBookDownloadedForOffline(book.id, 0), false);
+  });
+
+  await test('does not re-expose stale voice audio while its replacement downloads', async () => {
+    const cache = makeCache();
+    let env = installBrowser({
+      book,
+      chapters,
+      cache,
+      variants: ['voice-a', 'voice-a']
+    });
+    offline.initOffline(env.init);
+    assert.strictEqual(await offline.downloadCurrentBook(), true);
+    const stale = structuredClone(offline.getOfflineManifest());
+    stale[book.id].state = 'stale';
+
+    let releaseReplacement;
+    const replacementGate = new Promise(resolve => { releaseReplacement = resolve; });
+    env = installBrowser({
+      book,
+      chapters,
+      cache,
+      manifest: stale,
+      variants: ['voice-b', 'voice-b'],
+      audioGate: replacementGate
+    });
+    offline.initOffline(env.init);
+    const replacement = offline.downloadCurrentBook();
+    let replacementCompleted;
+    try {
+      while (env.audioRequests.length === 0) {
+        await new Promise(resolve => setImmediate(resolve));
+      }
+      assert(
+        offline.getOfflineManifest()[book.id].chapterEntries.every(entry => entry === null),
+        'stale chapter pointers must be hidden before replacement audio is cached'
+      );
+      assert.strictEqual(offline.isBookDownloadedForOffline(book.id, 0), false);
+    } finally {
+      releaseReplacement();
+      replacementCompleted = await replacement;
+    }
+
+    assert.strictEqual(replacementCompleted, true);
+    assert.deepStrictEqual(env.audioRequests.sort(), [0, 1]);
+    assert.strictEqual(offline.getOfflineManifest()[book.id].state, 'ready');
+  });
+
+  await test('validates an incomplete download voice before reusing cached chapters', async () => {
+    const cache = makeCache();
+    let env = installBrowser({
+      book,
+      chapters,
+      cache,
+      variants: ['voice-a', 'voice-a']
+    });
+    offline.initOffline(env.init);
+    assert.strictEqual(await offline.downloadCurrentBook(), true);
+    const incomplete = structuredClone(offline.getOfflineManifest());
+    incomplete[book.id].state = 'incomplete';
+    incomplete[book.id].autoResume = false;
+
+    let releaseReplacement;
+    const replacementGate = new Promise(resolve => { releaseReplacement = resolve; });
+    env = installBrowser({
+      book,
+      chapters,
+      cache,
+      manifest: incomplete,
+      variants: ['voice-b', 'voice-b'],
+      audioGate: replacementGate
+    });
+    offline.initOffline({ getCurrentBook: () => null, getChapters: () => [] });
+    const replacement = offline.downloadBookForOffline(book, chapters);
+    let replacementCompleted;
+    try {
+      while (env.audioRequests.length === 0) {
+        await new Promise(resolve => setImmediate(resolve));
+      }
+      assert(
+        offline.getOfflineManifest()[book.id].chapterEntries.every(entry => entry === null),
+        'cached chapters from a different voice must be hidden before replacement'
+      );
+    } finally {
+      releaseReplacement();
+      replacementCompleted = await replacement;
+    }
+
+    assert.strictEqual(replacementCompleted, true);
+    assert.strictEqual(offline.getOfflineManifest()[book.id].state, 'ready');
+  });
+
+  await test('exposes each completed chapter before the active full download finishes', async () => {
+    const cache = makeCache();
+    const activeChapters = [{}, {}, {}];
+    const env = installBrowser({
+      book,
+      chapters: activeChapters,
+      cache,
+      variants: ['voice-a', 'voice-a', 'voice-a']
+    });
+    const fetchAudio = global.fetch;
+    let releaseSecondChapter;
+    const secondChapterGate = new Promise(resolve => { releaseSecondChapter = resolve; });
+    global.fetch = async (input, options) => {
+      const url = typeof input === 'string' ? input : (input.url || String(input));
+      if (url.includes('/api/audio/book-1/1')) await secondChapterGate;
+      return fetchAudio(input, options);
+    };
+    offline.initOffline(env.init);
+
+    const download = offline.downloadCurrentBook();
+    let completed;
+    try {
+      for (
+        let attempt = 0;
+        attempt < 40 &&
+          (offline.getOfflineManifest()[book.id]?.chapterEntries?.filter(Boolean).length || 0) < 2;
+        attempt++
+      ) {
+        await new Promise(resolve => setImmediate(resolve));
+      }
+
+      assert.strictEqual(offline.getOfflineManifest()[book.id].state, 'repairing');
+      assert.strictEqual(await offline.isChapterAvailableOffline(book.id, 0), true);
+      assert.deepStrictEqual(offline.offlineStatusForBook(book.id), {
+        kind: 'downloading',
+        label: 'Downloading · 2 of 3 chapters',
+        downloaded: false,
+        cachedChapters: 2,
+        totalChapters: 3
+      });
+    } finally {
+      releaseSecondChapter();
+      completed = await download;
+    }
+    assert.strictEqual(completed, true);
   });
 
   await test('recovers from a transient chapter transfer failure without user intervention', async () => {
@@ -1469,7 +1659,7 @@ function installBrowser({
     assert.deepStrictEqual(env.audioRequests, []);
   });
 
-  await test('verified offline-library reads reject evicted titles before listing them', async () => {
+  await test('verified offline-library reads retain playable chapters from an evicted title', async () => {
     const cache = makeCache();
     const env = installBrowser({ book, chapters, cache });
     offline.initOffline(env.init);
@@ -1478,10 +1668,11 @@ function installBrowser({
 
     assert.deepStrictEqual(
       await offline.getVerifiedOfflineLibraryBooks(),
-      [],
-      'the Downloaded view must wait for cache-presence verification'
+      [book],
+      'the Downloaded view should retain a title while at least one verified chapter remains'
     );
     assert.strictEqual(offline.getOfflineManifest()[book.id].state, 'incomplete');
+    assert.strictEqual(offline.getOfflineManifest()[book.id].chapterEntries[1], null);
   });
 
   await test('rolling cache does not write on an unverified deployment origin', async () => {
@@ -1687,6 +1878,7 @@ function installBrowser({
     releaseAudio();
     await download;
     assert.strictEqual(offline.getOfflineManifest()[book.id].state, 'incomplete');
+    assert.strictEqual(offline.getOfflineManifest()[book.id].autoResume, false);
   });
 
   await test('cold-launch library, player, cover, and deletion paths use offline title state', async () => {
@@ -1702,6 +1894,8 @@ function installBrowser({
     assert(appSource.includes('currentBookOfflineFallback'));
     assert(librarySource.includes('await verifiedOfflineBooks'));
     assert(librarySource.includes('getVerifiedOfflineLibraryBooks()'));
+    assert(librarySource.includes("status.kind === 'partial-download'"));
+    assert(librarySource.includes("status.kind === 'downloading' && status.cachedChapters > 0"));
     assert(librarySource.includes('${escapeHTML(status.label)} (Cancel)'));
     assert(librarySource.includes('onBookDeleted'));
     assert(librarySource.includes('await removeOfflineBook(id, { removePlaybackState: true })'));

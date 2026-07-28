@@ -10,6 +10,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Full-title downloads now expose each verified chapter for offline playback as
+  soon as it reaches the device. Interrupted titles retain a playable chapter
+  count and resume without waiting for the entire book to finish again.
 - First listening now uses one persistent native media element and one stable
   progressive chapter stream, avoiding background chunk-boundary `play()`
   calls when a PWA is locked or another app is active.

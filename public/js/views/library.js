@@ -133,6 +133,14 @@ function offlineStatusHTML(bookId) {
     </span>`;
 }
 
+function isAvailableOnDevice(status) {
+  return Boolean(
+    status.downloaded ||
+    status.kind === 'partial-download' ||
+    (status.kind === 'downloading' && status.cachedChapters > 0)
+  );
+}
+
 function offlineMenuActionContents(bookId) {
   const status = offlineStatusForBook(bookId);
   if (pendingBookDownloads.has(String(bookId))) {
@@ -181,7 +189,7 @@ function bookMenuHTML(book, onShelf) {
 function renderBookCard(book, position, onShelf = false) {
   const progress = bookProgressInfo(book, position);
   const id = String(book.id || '');
-  const downloaded = offlineStatusForBook(id).downloaded;
+  const downloaded = isAvailableOnDevice(offlineStatusForBook(id));
   const title = book.title || 'Untitled';
   const author = book.author || 'Unknown Author';
   const metaLine = progress
@@ -380,7 +388,7 @@ function refreshOfflineIndicators() {
     const status = offlineStatusForBook(element.dataset.offlineStatus);
     const contents = offlineStateContents(element.dataset.offlineStatus);
     const card = element.closest('.book-item');
-    if (card) card.dataset.downloaded = status.downloaded ? '1' : '0';
+    if (card) card.dataset.downloaded = isAvailableOnDevice(status) ? '1' : '0';
     element.className = `book-local-control book-local-control--${status.kind}`;
     element.hidden = !contents;
     element.innerHTML = `<span class="book-local-state">${contents}</span>`;
