@@ -500,14 +500,15 @@ async function auditCurrentOfflineVariant() {
   const book = deps.getCurrentBook?.();
   if (!book?.id) return;
   const entry = offlineEntryForBook(book.id);
+  const sampleChapterIndex = entry?.chapterEntries?.findIndex(Boolean) ?? -1;
   if (
     entry?.mode !== 'full' ||
     offlineState(entry) !== 'ready' ||
     !entry.variantKey ||
-    !entry.chapterEntries?.[0]
+    sampleChapterIndex < 0
   ) return;
   try {
-    const status = await getChapterAudioStatus(book.id, 0, undefined, 'active');
+    const status = await getChapterAudioStatus(book.id, sampleChapterIndex, undefined, 'active');
     if (!status.variantKey || !entry.variantKey || status.variantKey === entry.variantKey) return;
     if (offlineEntryForBook(book.id)?.state === 'ready') setOfflineEntryState(book.id, 'stale');
   } catch {}
@@ -869,12 +870,13 @@ export async function downloadBookForOffline(book, chapters, options = {}) {
           await processFullDownloadChapter({
             book,
             chapterIndex,
+            chapter: chapters[chapterIndex],
             existing,
-          working,
-          cache,
-          signal,
-          reportProgress
-        });
+            working,
+            cache,
+            signal,
+            reportProgress
+          });
         } catch (error) {
           firstError ||= error;
           downloadAbort?.abort();
@@ -925,6 +927,7 @@ export async function downloadBookForOffline(book, chapters, options = {}) {
 async function processFullDownloadChapter({
   book,
   chapterIndex,
+  chapter,
   existing,
   working,
   cache,
@@ -932,8 +935,19 @@ async function processFullDownloadChapter({
   reportProgress
 }) {
   throwIfDownloadAborted(signal);
-  reportProgress(chapterIndex, 0.01, 'Preparing download');
   const cacheRequest = offlineAudioRequest(book.id, chapterIndex);
+  if (chapter?.empty) {
+    await cache.delete(cacheRequest);
+    working.chapterEntries[chapterIndex] = null;
+    reportProgress(
+      chapterIndex,
+      1,
+      `Skipping empty section ${chapterIndex + 1} of ${working.chapters}`
+    );
+    persistWorkingEntry(book.id, working);
+    return;
+  }
+  reportProgress(chapterIndex, 0.01, 'Preparing download');
   const previous = working.chapterEntries[chapterIndex];
   const cached = await cache.match(cacheRequest);
   const cachedIdentity = cached ? await contentIdentity(cached) : null;
@@ -1052,6 +1066,7 @@ export async function ensureRollingOfflineWindow(book, chapters, chapterIndex, o
     });
     for (const index of plan.prepare) {
       if (signal.aborted) return;
+      if (chapters[index]?.empty) continue;
       const status = await prepareChapter(book.id, index, signal);
       const variantKey = String(status.variantKey || 'default');
       const url = status.url || `/api/audio/${encodeURIComponent(book.id)}/${index}`;
@@ -1548,6 +1563,7 @@ export async function verifyOfflineEntry(cache, entry, scopeId = offlineScopeId(
   if (entry.chapterEntries.length !== Number(entry.chapters)) return false;
   for (let i = 0; i < entry.chapterEntries.length; i++) {
     const expected = entry.chapterEntries[i];
+    if (entry.titleData?.chapters?.[i]?.empty && !expected) continue;
     if (!expected?.variantKey || !expected.contentHash || !Number.isFinite(expected.size) || expected.size <= 0) return false;
     const request = offlineAudioRequest(entry.bookId, i, scopeId);
     const response = await cache.match(request);
@@ -1568,6 +1584,7 @@ async function verifyOfflineEntryPresence(cache, entry, scopeId = offlineScopeId
   if (entry.mode !== 'full' || !validTitleData(entry)) return false;
   if (entry.chapterEntries.length !== Number(entry.chapters)) return false;
   for (let i = 0; i < entry.chapterEntries.length; i++) {
+    if (entry.titleData?.chapters?.[i]?.empty && !entry.chapterEntries[i]) continue;
     if (!entry.chapterEntries[i] || !await cache.match(offlineAudioRequest(entry.bookId, i, scopeId))) {
       return false;
     }

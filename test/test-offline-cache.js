@@ -998,6 +998,44 @@ function installBrowser({
     assert.deepStrictEqual(activityEvents.at(-1).detail.downloads, []);
   });
 
+  await test('full-title downloads skip empty structural chapters without requesting audio', async () => {
+    const cache = makeCache();
+    const structuralChapters = [
+      { title: 'Introduction', estimatedDuration: 60 },
+      { title: 'Part One', type: 'divider', empty: true, estimatedDuration: 0 },
+      { title: 'Chapter One', estimatedDuration: 600 }
+    ];
+    const env = installBrowser({
+      book,
+      chapters: structuralChapters,
+      cache,
+      variants: ['voice-a', null, 'voice-a'],
+      statusForChapter(chapterIndex) {
+        if (chapterIndex === 1) {
+          throw new Error('empty chapters must not reach audio status');
+        }
+        return {
+          ready: true,
+          readyChunks: 1,
+          totalChunks: 1,
+          variantKey: 'voice-a',
+          url: `/api/audio/${book.id}/${chapterIndex}`
+        };
+      }
+    });
+    offline.initOffline(env.init);
+
+    const completed = await offline.downloadBookForOffline(book, structuralChapters, {
+      confirmForeground: false
+    });
+    const entry = offline.getOfflineManifest()[book.id];
+
+    assert.strictEqual(completed, true);
+    assert.deepStrictEqual(env.audioRequests, [0, 2]);
+    assert.strictEqual(entry.chapterEntries[1], null);
+    assert.strictEqual(await offline.verifyOfflineEntry(cache, entry), true);
+  });
+
   await test('reports visible chapter preparation progress for a long title instead of sitting at zero', async () => {
     const cache = makeCache();
     const longChapters = Array.from({ length: 46 }, (_, index) => ({

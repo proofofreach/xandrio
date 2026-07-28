@@ -3090,6 +3090,7 @@ const offlinePreparationCoordinator = createOfflinePreparationCoordinator({
   chapterStatus: request => inspectChapterAudio(request.bookId, request.chapterIndex, {
     tier: 'active'
   }),
+  shouldPrepareChapter: ({ chapter }) => !chapter?.empty,
   prepareChapter: request => ensureChapterAudioPrepared(request.bookId, request.chapterIndex, {
     priority: request.priority,
     origin: request.origin,
