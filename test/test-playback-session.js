@@ -84,7 +84,7 @@ function fakeAudio() {
   Function(lifecycleSource)();
   const source = fs.readFileSync(path.join(__dirname, '..', 'public', 'js', 'playback-session.js'), 'utf8');
   const moduleUrl = `data:text/javascript;base64,${Buffer.from(source).toString('base64')}`;
-  const { createPlaybackSession } = await import(moduleUrl);
+  const { createPlaybackSession, restorePlaybackPosition } = await import(moduleUrl);
   const singleFileSource = fs.readFileSync(path.join(__dirname, '..', 'public', 'js', 'single-file-chapter-player.js'), 'utf8');
   const singleFileUrl = `data:text/javascript;base64,${Buffer.from(singleFileSource).toString('base64')}`;
   const { SingleFileChapterPlayer } = await import(singleFileUrl);
@@ -289,6 +289,37 @@ function fakeAudio() {
     }
   });
 
+  await test('restores chapter-wide time when a legacy chunk checkpoint reaches a continuous engine', async () => {
+    const calls = [];
+    const continuous = {
+      supportsChunkPositionRestore: false,
+      async seek(seconds) { calls.push(['seek', seconds]); },
+      async seekToChunk(chunkIndex, chunkTime) {
+        calls.push(['seekToChunk', chunkIndex, chunkTime]);
+      }
+    };
+    const chunked = {
+      supportsChunkPositionRestore: true,
+      async seek(seconds) { calls.push(['seek', seconds]); },
+      async seekToChunk(chunkIndex, chunkTime) {
+        calls.push(['seekToChunk', chunkIndex, chunkTime]);
+      }
+    };
+    const saved = {
+      timestamp: 235.4,
+      chunkIndex: 7,
+      chunkTime: 6.4
+    };
+
+    await restorePlaybackPosition(continuous, saved);
+    await restorePlaybackPosition(chunked, saved);
+
+    assert.deepStrictEqual(calls, [
+      ['seek', 235.4],
+      ['seekToChunk', 7, 6.4]
+    ]);
+  });
+
   await test('guards app-level chapter resume failures without an unhandled rejection', async () => {
     const appSource = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
     const appImports = {
@@ -315,6 +346,7 @@ function fakeAudio() {
       displayChapterTitle: () => 'Chapter',
       isIOSLike: () => false,
       needsReliablePlayback: () => false,
+      isSmartRewindEnabled: () => true,
       isBookDownloadedForOffline: () => false,
       ensureRollingOfflineWindow: async () => { appImports.rollingCalls += 1; },
       isRollingOfflineEnabled: () => true,
@@ -327,7 +359,9 @@ function fakeAudio() {
       renderChapterList() {},
       syncMiniPlayerInfo() {},
       showAudioLoading() {},
-      setPlaybackReliabilityState() {},
+      setPlaybackReliabilityState(...args) { appImports.reliabilityStates.push(args); },
+      setResumePromptVisible() {},
+      showToast() {},
       syncMiniPlayerIcon() {},
       getCurrentPlaybackSpeed: () => 1
     };
@@ -335,6 +369,8 @@ function fakeAudio() {
     appImports.rollingCalls = 0;
     appImports.sleepTarget = false;
     appImports.sleepExpiries = [];
+    appImports.reliabilityStates = [];
+    appImports.timeoutDelays = [];
     const appTestSource = appSource
       .replace(/^import \{([^}]+)\} from ['"][^'"]+['"];$/gm, 'const {$1} = globalThis.__playbackAppImports;')
       + `\nglobalThis.__playbackAppHarness = {
@@ -352,7 +388,8 @@ function fakeAudio() {
         playbackEvents() { return playbackEventLedger.slice(); },
         handleChapterEnd,
         handleContinuousChapterTransition,
-        estimateChapterPlaybackDuration
+        estimateChapterPlaybackDuration,
+        togglePlayPause
       };`;
     const previousGlobals = new Map(['window', 'document', 'navigator', 'setInterval', '__playbackAppImports', '__playbackAppHarness']
       .map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
@@ -376,16 +413,23 @@ function fakeAudio() {
     };
     const onUnhandled = error => unhandled.push(error);
     const originalWarn = console.warn;
+    const originalError = console.error;
 
     try {
       console.warn = () => {};
+      console.error = () => {};
       Object.defineProperties(globalThis, {
         window: {
           configurable: true,
           writable: true,
           value: {
             addEventListener() {},
-            localStorage: fakeLocalStorage
+            localStorage: fakeLocalStorage,
+            setTimeout(_callback, delay) {
+              appImports.timeoutDelays.push(delay);
+              return appImports.timeoutDelays.length;
+            },
+            clearTimeout() {}
           }
         },
         document: { configurable: true, writable: true, value: { addEventListener() {} } },
@@ -416,6 +460,29 @@ function fakeAudio() {
       assert(player.calls.some(call => call[0] === 'play'));
       assert.strictEqual(appImports.rollingCalls, 0, 'live streaming must not compete with rolling offline downloads');
       assert(uiElement.innerHTML.includes('M4.5 5.653'));
+
+      const timedOutPlayer = engine('play-timeout', {
+        backend: 'audio-stream',
+        play: async () => {
+          const error = new Error('Audio did not start');
+          error.code = 'MEDIA_PLAY_TIMEOUT';
+          throw error;
+        }
+      });
+      globalThis.__playbackAppHarness.configure({
+        book: { id: 'book-a' },
+        chapters: [{ title: 'One' }, { title: 'Two' }],
+        player: timedOutPlayer,
+        chapter: uiElement
+      });
+      appImports.timeoutDelays.length = 0;
+
+      await globalThis.__playbackAppHarness.togglePlayPause(true);
+
+      assert(
+        appImports.timeoutDelays.includes(250),
+        'a play timeout should enter automatic recovery instead of stopping at a passive label'
+      );
 
       for (let index = 0; index < 100; index++) {
         globalThis.__playbackAppHarness.recordPlaybackEvent({
@@ -499,6 +566,7 @@ function fakeAudio() {
     } finally {
       process.removeListener('unhandledRejection', onUnhandled);
       console.warn = originalWarn;
+      console.error = originalError;
       restoreGlobals();
     }
   });

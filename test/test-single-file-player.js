@@ -36,6 +36,7 @@ function fakeAudio() {
     error: null,
     buffered: {
       length: 1,
+      start() { return 0; },
       end() { return 10; }
     },
     loadCalls: 0,
@@ -278,6 +279,41 @@ function fakeAudio() {
     const seek = player.seek(18);
     await new Promise(resolve => setImmediate(resolve));
     assert.notStrictEqual(audio.src, originalSource);
+    assert.match(audio.src, /offsetSeconds=18/);
+    audio.currentTime = 0;
+    audio.emit('loadedmetadata');
+    await seek;
+    assert.strictEqual(player.getCurrentTime(), 18);
+  });
+
+  await test('a false-positive seekable range cannot strand a restored stream outside its buffer', async () => {
+    const audio = fakeAudio();
+    audio.seekable = {
+      length: 1,
+      start() { return 0; },
+      end() { return Infinity; }
+    };
+    audio.buffered = {
+      length: 0,
+      start() { return 0; },
+      end() { return 0; }
+    };
+    const { player } = makePlayer(audio, {
+      getEstimatedDuration: () => 60
+    });
+    const load = player.loadChapter('book1', 0);
+    audio.emit('loadedmetadata');
+    await load;
+    const originalSource = audio.src;
+
+    const seek = player.seek(18);
+    await new Promise(resolve => setImmediate(resolve));
+
+    assert.notStrictEqual(
+      audio.src,
+      originalSource,
+      'an unbuffered target must reopen the transport instead of trusting seekable'
+    );
     assert.match(audio.src, /offsetSeconds=18/);
     audio.currentTime = 0;
     audio.emit('loadedmetadata');

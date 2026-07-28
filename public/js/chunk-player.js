@@ -24,6 +24,7 @@ class ChunkPlayer {
   constructor(options = {}) {
     this.audio = options.audio || new Audio();
     this.backend = 'chunked';
+    this.supportsChunkPositionRestore = true;
     this.supportsNativeMediaSession = true;
 
     // Current chapter state

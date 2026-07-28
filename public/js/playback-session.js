@@ -9,6 +9,27 @@ function enginePosition(engine) {
   return engine?.getPosition?.() || null;
 }
 
+export async function restorePlaybackPosition(engine, position) {
+  if (!engine || !position) return;
+  if (
+    engine.supportsChunkPositionRestore === true
+    && typeof engine.seekToChunk === 'function'
+    && Number.isInteger(position.chunkIndex)
+  ) {
+    await engine.seekToChunk(
+      position.chunkIndex,
+      Math.max(0, Number(position.chunkTime) || 0)
+    );
+    return;
+  }
+  if (typeof engine.seek !== 'function') return;
+  const seconds = Math.max(
+    0,
+    Number(position.timestamp ?? position.currentTime ?? position.chunkTime) || 0
+  );
+  await engine.seek(seconds);
+}
+
 /**
  * Owns the mutable playback session while engines remain small media adapters.
  * An engine implements loadChapter, play, pause, getPosition, seek, and
