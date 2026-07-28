@@ -146,6 +146,8 @@ async function testBookPreparationRoutes() {
     }
   };
   const requested = [];
+  const served = [];
+  const subscriptions = [];
   registerPlaybackRoutes(app, {
     playbackOrchestrator: {
       startChapterAudio: async () => ({ ready: false })
@@ -181,11 +183,22 @@ async function testBookPreparationRoutes() {
         };
       }
     },
+    getOfflineChapterAudio: async ({ bookId, chapterIndex }) => ({
+      ready: true,
+      path: `/cache/${bookId}-${chapterIndex}-48k.mp3`
+    }),
+    offlineReadinessNotifications: {
+      enabled: true,
+      publicKey: 'vapid-public',
+      subscribe: async (ownerId, subscription) => subscriptions.push([ownerId, subscription]),
+      unsubscribe: async () => true
+    },
+    offlinePreparationOwner: () => 'account:device',
     ttsForTier: () => ({}),
     generationJournal: {},
     chapterAudioStreamer: {},
     hlsAudioStreamer: {},
-    serveAudioFile: async () => {},
+    serveAudioFile: async (_req, _res, audioPath) => served.push(audioPath),
     sendServerError: (_res, error) => { throw error; },
     fs: {}
   });
@@ -226,6 +239,28 @@ async function testBookPreparationRoutes() {
     nextChapter: 1,
     percent: 50
   });
+
+  await handlers.get('GET /api/offline/audio/:bookId/:chapterIndex')({
+    params: { bookId: 'book', chapterIndex: '1' },
+    query: {}
+  }, response);
+  assert.deepStrictEqual(served, ['/cache/book-1-48k.mp3']);
+
+  await handlers.get('GET /api/offline/notifications')({
+    params: {},
+    query: {}
+  }, response);
+  assert.deepStrictEqual(body, { enabled: true, publicKey: 'vapid-public' });
+
+  await handlers.get('POST /api/offline/notifications')({
+    params: {},
+    query: {},
+    body: { subscription: { endpoint: 'https://push.test/device' } }
+  }, response);
+  assert.deepStrictEqual(subscriptions, [[
+    'account:device',
+    { endpoint: 'https://push.test/device' }
+  ]]);
 }
 
 async function testDurableBookPreparationIntent() {

@@ -91,8 +91,15 @@ assert(
   'the populated Downloaded view explains that copies are device-local'
 );
 assert(
-  indexSource.includes('Do not close Xandrio, switch apps, or lock the screen while downloading'),
-  'the Downloaded view discloses the foreground download requirement'
+  indexSource.includes('Audio preparation continues on the server when Xandrio is closed') &&
+    indexSource.includes('During the later device download, keep Xandrio visible'),
+  'the Downloaded view distinguishes background preparation from foreground transfer'
+);
+assert(
+  swSource.includes("self.addEventListener('push'") &&
+    swSource.includes('self.registration.showNotification') &&
+    swSource.includes("self.addEventListener('notificationclick'"),
+  'the service worker notifies users when server preparation completes'
 );
 
 // APP_SHELL entries must exist on disk, or cache.addAll() rejects and the new

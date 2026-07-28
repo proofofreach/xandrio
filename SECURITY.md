@@ -18,3 +18,6 @@ Treat a Xandrio instance as private. Use localhost, a trusted LAN, or a private 
 
 The supported deployment boundaries, protected assets, abuse cases, and
 verification steps are recorded in [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md).
+If Web Push is enabled, protect the VAPID private key and
+`data/push-subscriptions.json` like other instance credentials, and warn users
+that prepared-book titles may appear in lock-screen notifications.

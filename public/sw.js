@@ -1,7 +1,7 @@
 importScripts('/js/offline-range.js');
 
 const APP_RELEASE = '1.1.0';
-const CACHE_VERSION = 'xandrio-v114';
+const CACHE_VERSION = 'xandrio-v115';
 const OFFLINE_AUDIO_CACHE = 'xandrio-offline-audio';
 const OFFLINE_TITLE_CACHE = 'xandrio-offline-titles';
 const OFFLINE_SCOPE_PARAM = 'xandrio-offline-scope';
@@ -107,6 +107,36 @@ self.addEventListener('activate', event => {
       )
       .map(key => caches.delete(key)));
     await self.clients.claim();
+  })());
+});
+
+self.addEventListener('push', event => {
+  let payload = {};
+  try {
+    payload = event.data?.json?.() || {};
+  } catch {}
+  if (payload.type !== 'offline-audio-ready') return;
+  const title = String(payload.title || 'Your audiobook').slice(0, 180);
+  event.waitUntil(self.registration.showNotification(`${title} is ready`, {
+    body: 'Audio preparation is complete. Open Xandrio to download it to this device.',
+    icon: '/icon-xandrio-ankh.png',
+    badge: '/icon-xandrio-ankh.png',
+    tag: `offline-audio-ready:${String(payload.bookId || '').slice(0, 128)}`,
+    data: { url: payload.url || '/' }
+  }));
+});
+
+self.addEventListener('notificationclick', event => {
+  event.notification.close();
+  const target = new URL(event.notification.data?.url || '/', self.location.origin).href;
+  event.waitUntil((async () => {
+    const windows = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    const existing = windows.find(client => new URL(client.url).origin === self.location.origin);
+    if (existing) {
+      await existing.navigate?.(target);
+      return existing.focus();
+    }
+    return self.clients.openWindow?.(target);
   })());
 });
 

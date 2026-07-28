@@ -194,6 +194,16 @@ HTTP remains suitable only for localhost development because remote PWA
 installation, offline playback, and related platform APIs require a secure
 context.
 
+To notify an installed PWA after a long server-side audio preparation finishes,
+generate one Web Push VAPID key pair with `npx web-push generate-vapid-keys`.
+Set `WEB_PUSH_VAPID_PUBLIC_KEY`, `WEB_PUSH_VAPID_PRIVATE_KEY`, and
+`WEB_PUSH_SUBJECT` (a monitored `mailto:` or HTTPS contact URI), then restart
+Xandrio. Keep the private key secret and stable across upgrades. iPhone and iPad
+Web Push requires the site to be installed to the Home Screen and notification
+permission to be granted from the user's **Prepare for offline** action.
+Preparation itself does not depend on Web Push; without it, readiness appears
+the next time Xandrio opens.
+
 When introducing or changing the canonical origin, browser state does not move
 automatically. Sign in at the new origin, confirm the server-backed library and
 positions, then download any needed titles again. Existing offline downloads
@@ -229,7 +239,7 @@ docker compose start
 
 After restoring, verify `/health`, the library, one book, and one audio Range request before resuming normal use.
 
-To upgrade a source checkout, fetch and check out the signed release tag, run `npm ci` for a native installation, or rebuild the Compose service with `docker compose build --pull && docker compose up -d`. On the first start after the bounded-generation upgrade, a versioned migration discards unfinished legacy speculative work, including untagged jobs, while preserving completed audio, premium preparation, explicit download intents, and quarantine records. Every start also releases transient playback and import warm-up claims so ended sessions are not resurrected; a shared chapter remains recoverable when it still has an explicit download owner. Confirm `/health`, library access, one book, and one audio Range request before deleting the backup.
+To upgrade a source checkout, fetch and check out the signed release tag, run `npm ci` for a native installation, or rebuild the Compose service with `docker compose build --pull && docker compose up -d`. On the first start after the bounded-generation upgrade, a versioned migration discards unfinished legacy speculative work, including untagged jobs, while preserving completed audio, premium preparation, explicit download intents, and quarantine records. Every start also releases transient playback and import warm-up claims so ended sessions are not resurrected; a shared chapter remains recoverable when it still has an explicit download owner. After the 48 kbps offline-package upgrade, an unfinished legacy preparation restarts its package scan at chapter one, reuses completed narration, and transcodes compact derivatives without rerunning TTS for ready chapters. A legacy preparation already marked ready is migrated when an opted-in device next opens Xandrio. Confirm `/health`, library access, one book, and one audio Range request before deleting the backup.
 
 For a systemd-managed source checkout, `scripts/deploy-prod.sh [ref]` performs those steps repeatably: it records the current revision as the rollback point, fetches and checks out the requested ref (a signed tag, or `origin/main` by default), runs `npm ci --omit=dev`, restarts the service, and polls `/health` for up to a minute. If the health check fails it prints the exact rollback invocation (`scripts/deploy-prod.sh --rollback <previous-ref>`) and exits non-zero. `--dry-run` prints the plan without changing anything; the script refuses to run over server-local edits.
 
@@ -243,6 +253,9 @@ storage pressure. A server-side deletion is recorded in
 `data/book-deletions.json`; connected devices, and offline devices when they
 next reconnect, remove local copies older than the deletion. Include that file
 with `data/` backups so deletion cursors remain monotonic after restore.
+Configured Web Push subscriptions live in `data/push-subscriptions.json`;
+include them in encrypted backups or omit that file to require devices to
+subscribe again.
 
 Clear browser site data when removing an instance or immediately erasing a
 device that cannot reconnect. Then remove associated server cache files, voice

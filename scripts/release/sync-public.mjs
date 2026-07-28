@@ -109,7 +109,10 @@ try {
   // history is the public lineage plus the new commits.
   const scanDir = mkdtempSync(resolve(tmpdir(), 'xandrio-sync-scan-'));
   try {
-    git('clone', '--quiet', '--single-branch', '--branch', branch, REPO_ROOT, scanDir);
+    // The source repository contains the private-history public-sync-base tag.
+    // Importing tags here makes the subsequent --all scan traverse history
+    // that is not reachable from the public candidate.
+    git('clone', '--quiet', '--single-branch', '--no-tags', '--branch', branch, REPO_ROOT, scanDir);
     execFileSync('node', [resolve(REPO_ROOT, 'scripts/release/scan-git-history.mjs'), '--repo', scanDir],
       { stdio: 'inherit' });
   } finally {

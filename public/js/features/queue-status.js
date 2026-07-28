@@ -100,7 +100,21 @@ function chapterSummary(book) {
 
 function activityStateLabel(book) {
   if (book.kind === 'download') {
-    return `${book.phase || 'Downloading'} · ${book.percent}%`;
+    const size = bytes => {
+      if (!Number.isFinite(bytes) || bytes <= 0) return '';
+      if (bytes >= 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024 / 1024).toFixed(1)} GB`;
+      return `${Math.max(0.1, bytes / 1024 / 1024).toFixed(1)} MB`;
+    };
+    const details = [];
+    if (book.bytesReceived > 0 && book.bytesTotal > 0) {
+      details.push(`${size(book.bytesReceived)} of ${size(book.bytesTotal)}`);
+    }
+    if (book.bytesPerSecond > 0) details.push(`${size(book.bytesPerSecond)}/s`);
+    if (Number.isFinite(book.etaSeconds) && book.etaSeconds > 0) {
+      const minutes = Math.max(1, Math.ceil(book.etaSeconds / 60));
+      details.push(`${minutes} min left`);
+    }
+    return [book.phase || 'Downloading', `${book.percent}%`, ...details].join(' · ');
   }
   if (book.kind === 'preparation') {
     return `Preparing audio · ${book.readyChapters}/${book.totalChapters}`;
