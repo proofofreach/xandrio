@@ -199,12 +199,17 @@ function installBrowser({
         preparationGate &&
         (!preparationGateBookId || requestPath.endsWith(`/${encodeURIComponent(preparationGateBookId)}`))
       ) await preparationGate;
-      return preparationResponse || {
+      return {
         bookId: book?.id,
         state: 'ready',
         readyChapters: chapters.length,
         totalChapters: chapters.length,
-        percent: 100
+        percent: 100,
+        bytesPrepared: chapters.length * 100,
+        bytesTotal: chapters.length * 100,
+        bitrateKbps: 48,
+        packageVariantKey: variants[0] || 'voice-a',
+        ...(preparationResponse || {})
       };
     }
     if (method === 'POST' && requestPath.includes('/prepare-chapter-audio')) {
@@ -215,14 +220,14 @@ function installBrowser({
   };
   global.fetch = async (input, options = {}) => {
     const url = typeof input === 'string' ? input : (input.url || String(input));
-    const chapter = Number(url.match(/(?:\/api\/chunks\/[^/]+\/|\/api\/audio\/[^/]+\/)(\d+)/)?.[1]);
+    const chapter = Number(url.match(/(?:\/api\/chunks\/[^/]+\/|\/api\/(?:offline\/)?audio\/[^/]+\/)(\d+)/)?.[1]);
     if (url.includes('chapter-audio-status')) {
       statusRequests.push(url);
       return Response.json(statusForChapter
         ? statusForChapter(chapter)
         : { ready: true, variantKey: variants[chapter], url: `/api/audio/${book.id}/${chapter}` });
     }
-    if (url.includes('/api/audio/')) {
+    if (url.includes('/api/audio/') || url.includes('/api/offline/audio/')) {
       audioRequests.push(chapter);
       if (audioGate) await audioGate;
       if (remainingAudioFailures > 0) {
@@ -328,14 +333,14 @@ function installBrowser({
     assert.strictEqual(offline.offlineDownloadsSupported(), false);
   });
 
-  await test('offers a direct device download for every ingested shelf book', async () => {
+  await test('offers server preparation before a device download', async () => {
     const cache = makeCache();
     installBrowser({ book, chapters, cache });
 
-    assert.strictEqual(offline.offlineStatusForBook(book.id).kind, 'ready-to-download');
+    assert.strictEqual(offline.offlineStatusForBook(book.id).kind, 'ready-to-prepare');
     assert.strictEqual(
       offline.offlineStatusForBook(book.id).label,
-      'Download to this device'
+      'Prepare for offline'
     );
   });
 
@@ -345,10 +350,13 @@ function installBrowser({
     offline.initOffline(env.init);
 
     assert.strictEqual(await offline.downloadBookForOffline(book, chapters), true);
-    assert.deepStrictEqual(env.preparationCalls.map(call => call.method), ['POST']);
+    assert.deepStrictEqual(env.preparationCalls.map(call => call.method), ['GET']);
     assert.deepStrictEqual(env.prepareCalls, []);
     assert.deepStrictEqual(env.audioRequests, [0, 1]);
-    assert(env.statusRequests.every(url => url.endsWith('?tier=active')));
+    assert(
+      env.statusRequests.length <= 1,
+      'device transfer must not poll generation status chapter by chapter'
+    );
   });
 
   await test('reload resumes an interrupted device transfer without another confirmation', async () => {
@@ -445,7 +453,7 @@ function installBrowser({
       detail: { serviceWorkerAllowed: true }
     }));
 
-    assert.strictEqual(renderedKind, 'ready-to-download');
+    assert.strictEqual(renderedKind, 'prepared');
   });
 
   await test('does not offer device download while the browser is offline', async () => {
@@ -495,6 +503,8 @@ function installBrowser({
     assert.strictEqual(await offline.downloadCurrentBook(), false);
     assert.strictEqual(env.confirmationCalls.length, 1);
     assert.strictEqual(env.confirmationCalls[0].title, 'Keep Xandrio visible');
+    assert.match(env.confirmationCalls[0].message, /about \d+ (?:MB|GB)/i);
+    assert.match(env.confirmationCalls[0].message, /wi-fi or mobile data/i);
     assert.match(env.confirmationCalls[0].message, /do not close xandrio/i);
     assert.match(env.confirmationCalls[0].message, /switch apps.*lock/i);
     assert.deepStrictEqual(env.persistenceCalls, []);
@@ -992,9 +1002,16 @@ function installBrowser({
     assert.strictEqual(overlayCalls, 0);
     assert.deepStrictEqual(env.audioRequests, [0, 1]);
     assert.deepStrictEqual(env.prepareCalls, []);
-    assert.deepStrictEqual(env.preparationCalls.map(call => call.method), ['POST']);
+    assert.deepStrictEqual(env.preparationCalls.map(call => call.method), ['GET']);
     const activityEvents = env.documentEvents.filter(event => event.type === 'xandrio:downloadactivity');
     assert(activityEvents.some(event => event.detail?.downloads?.[0]?.percent >= 0));
+    assert(activityEvents.some(event => {
+      const activity = event.detail?.downloads?.[0];
+      return activity?.bytesReceived > 0 &&
+        activity?.bytesTotal > 0 &&
+        activity?.bytesPerSecond > 0 &&
+        Number.isFinite(activity?.etaSeconds);
+    }), 'device transfer reports bytes, measured throughput, and ETA');
     assert.deepStrictEqual(activityEvents.at(-1).detail.downloads, []);
   });
 
@@ -1036,7 +1053,7 @@ function installBrowser({
     assert.strictEqual(await offline.verifyOfflineEntry(cache, entry), true);
   });
 
-  await test('reports visible chapter preparation progress for a long title instead of sitting at zero', async () => {
+  await test('a prepared title transfers without browser-side chapter generation polling', async () => {
     const cache = makeCache();
     const longChapters = Array.from({ length: 46 }, (_, index) => ({
       estimatedDuration: index < 3 ? 1 : 3600
@@ -1046,53 +1063,22 @@ function installBrowser({
       chapters: longChapters,
       cache,
       variants: longChapters.map(() => 'voice-a'),
-      statusForChapter(chapterIndex) {
-        if (chapterIndex < 3) {
-          return {
-            ready: true,
-            readyChunks: 1,
-            totalChunks: 1,
-            variantKey: 'voice-a',
-            url: `/api/audio/${book.id}/${chapterIndex}`
-          };
-        }
-        return {
-          ready: false,
-          readyChunks: chapterIndex === 3 ? 28 : 0,
-          totalChunks: 40,
-          errorChunks: 0,
-          variantKey: 'voice-a'
-        };
-      }
     });
     offline.initOffline(env.init);
-    const download = offline.downloadBookForOffline(book, longChapters, {
+    const completed = await offline.downloadBookForOffline(book, longChapters, {
       confirmForeground: false
     });
 
-    try {
-      let activity = null;
-      for (let attempt = 0; attempt < 30 && !activity; attempt += 1) {
-        await new Promise(resolve => setImmediate(resolve));
-        activity = env.documentEvents
-          .filter(event => event.type === 'xandrio:downloadactivity')
-          .map(event => event.detail?.downloads?.[0])
-          .find(downloadActivity => downloadActivity?.phase?.includes('28/40 segments'));
-      }
-
-      assert(activity, 'current chapter segment progress should reach the device activity surface');
-      assert(
-        activity.percent >= 8,
-        `three ready chapters plus 28/40 segments should not display ${activity.percent}%`
-      );
-      assert.match(activity.phase, /Preparing chapter 4 of 46/);
-    } finally {
-      offline.cancelOfflineDownload(book.id);
-      await download;
-    }
+    assert.strictEqual(completed, true);
+    assert(
+      env.statusRequests.length <= 1,
+      'device transfer must not poll generation status chapter by chapter'
+    );
+    assert.deepStrictEqual(env.prepareCalls, []);
+    assert.strictEqual(env.audioRequests.length, 46);
   });
 
-  await test('legacy server preparation state does not block the device download action', async () => {
+  await test('device transfer remains unavailable until server preparation is complete', async () => {
     const cache = makeCache();
     let env = installBrowser({
       book,
@@ -1111,8 +1097,10 @@ function installBrowser({
     assert.strictEqual(await offline.prepareBookForOffline(book, chapters), false);
     assert.deepStrictEqual(env.audioRequests, []);
     assert.deepStrictEqual(env.prepareCalls, []);
-    assert.strictEqual(offline.offlineStatusForBook(book.id).kind, 'ready-to-download');
-    assert.strictEqual(offline.offlineStatusForBook(book.id).label, 'Download to this device');
+    assert.strictEqual(offline.offlineStatusForBook(book.id).kind, 'preparing');
+    assert.match(offline.offlineStatusForBook(book.id).label, /Safe to close/);
+    assert.strictEqual(await offline.downloadBookForOffline(book, chapters), false);
+    assert.deepStrictEqual(env.audioRequests, []);
 
     env = installBrowser({
       book,
@@ -1128,8 +1116,8 @@ function installBrowser({
       }
     });
     assert.strictEqual(await offline.refreshOfflinePreparation(book.id), true);
-    assert.strictEqual(offline.offlineStatusForBook(book.id).kind, 'ready-to-download');
-    assert.strictEqual(offline.offlineStatusForBook(book.id).label, 'Download to this device');
+    assert.strictEqual(offline.offlineStatusForBook(book.id).kind, 'prepared');
+    assert.strictEqual(offline.offlineStatusForBook(book.id).label, 'Audio prepared · Download to this device');
 
     assert.strictEqual(await offline.downloadBookForOffline(book, chapters), true);
     assert.deepStrictEqual(env.prepareCalls, []);
@@ -1167,7 +1155,7 @@ function installBrowser({
     const cache = makeCache();
     let env = installBrowser({ book, chapters, cache });
     offline.initOffline(env.init);
-    assert.strictEqual(offline.offlineStatusForBook(book.id).kind, 'ready-to-download');
+    assert.strictEqual(offline.offlineStatusForBook(book.id).kind, 'ready-to-prepare');
 
     const base = {
       bookId: book.id,
@@ -1298,7 +1286,7 @@ function installBrowser({
 
     assert.deepStrictEqual(env.audioRequests, [1], 'only the missing chapter should be fetched again');
     assert.deepStrictEqual(env.prepareCalls, [], 'chapter generation stays behind the title coordinator');
-    assert.deepStrictEqual(env.preparationCalls.map(call => call.method), ['POST']);
+    assert.deepStrictEqual(env.preparationCalls.map(call => call.method), ['GET']);
     const entry = offline.getOfflineManifest()[book.id];
     assert.strictEqual(entry.state, 'ready');
     assert.strictEqual(await offline.verifyOfflineEntry(cache, entry), true);
@@ -1318,7 +1306,7 @@ function installBrowser({
 
     assert.deepStrictEqual(env.audioRequests, [0], 'only the invalid chapter should be fetched again');
     assert.deepStrictEqual(env.prepareCalls, [], 'chapter generation stays behind the title coordinator');
-    assert.deepStrictEqual(env.preparationCalls.map(call => call.method), ['POST']);
+    assert.deepStrictEqual(env.preparationCalls.map(call => call.method), ['GET']);
     assert.strictEqual(await offline.verifyOfflineEntry(cache, offline.getOfflineManifest()[book.id]), true);
   });
 
@@ -1338,7 +1326,7 @@ function installBrowser({
     assert.strictEqual(offline.getOfflineManifest()[book.id].state, 'ready');
   });
 
-  await test('adopts usable legacy cache entries during repair without deleting them', async () => {
+  await test('replaces legacy playback audio with the compact offline package', async () => {
     const cache = makeCache();
     const key = offlineAudioKey('book-1', 0);
     const bytes = new TextEncoder().encode('legacy-audio');
@@ -1352,10 +1340,10 @@ function installBrowser({
     assert.strictEqual(offline.isBookDownloadedForOffline(book.id), false, 'legacy entries must request repair first');
     await offline.downloadCurrentBook();
 
-    assert.deepStrictEqual(env.audioRequests, [], 'usable legacy cache should not be re-downloaded');
+    assert.deepStrictEqual(env.audioRequests, [0], 'legacy playback audio must not masquerade as 48 kbps package audio');
     const entry = offline.getOfflineManifest()[book.id];
     assert.strictEqual(entry.state, 'ready');
-    assert.strictEqual(entry.chapterEntries[0].size, bytes.byteLength);
+    assert.notStrictEqual(entry.chapterEntries[0].size, bytes.byteLength);
     assert.strictEqual(await offline.verifyOfflineEntry(cache, entry), true);
   });
 
@@ -1366,7 +1354,7 @@ function installBrowser({
     let secondChapterUnavailable = true;
     global.fetch = async (input, options) => {
       const url = typeof input === 'string' ? input : (input.url || String(input));
-      if (secondChapterUnavailable && url.includes('/api/audio/book-1/1')) {
+      if (secondChapterUnavailable && url.includes('/api/offline/audio/book-1/1')) {
         return new Response('nope', { status: 503 });
       }
       return normalFetch(input, options);
@@ -1874,6 +1862,11 @@ function installBrowser({
     assert.strictEqual(offline.cancelOfflineDownload(book.id), true);
     assert.strictEqual(offline.cancelOfflineDownload(book.id), true);
     assert.deepStrictEqual(env.audioRequests, [0]);
+    assert.strictEqual(
+      env.preparationCalls.some(call => call.method === 'DELETE'),
+      false,
+      'cancelling device transfer must not pause the completed server package'
+    );
 
     releaseAudio();
     await download;

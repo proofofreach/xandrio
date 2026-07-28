@@ -6,10 +6,13 @@ import { showToast, showUndoToast } from '../ui/toast.js';
 import { shareBook } from '../features/sharing.js';
 import {
   cancelOfflineDownload,
+  cancelOfflinePreparation,
   downloadBookForOffline,
+  enableOfflineReadyNotifications,
   getVerifiedOfflineLibraryBooks,
   offlineDownloadsSupported,
   offlineStatusForBook,
+  prepareBookForOffline,
   removeOfflineBook
 } from '../features/offline.js';
 
@@ -152,13 +155,17 @@ function offlineMenuActionContents(bookId) {
   if (status.kind === 'downloading') {
     return `<button type="button" role="menuitem" data-download-book="${safeAttr(bookId)}">${escapeHTML(status.label)} (Cancel)</button>`;
   }
-  if (status.kind === 'ready-to-download') {
+  if (status.kind === 'preparing') {
+    return `<button type="button" role="menuitem" data-download-book="${safeAttr(bookId)}">${escapeHTML(status.label)} (Cancel)</button>`;
+  }
+  if (status.kind === 'prepared') {
     return `<button type="button" role="menuitem" data-download-book="${safeAttr(bookId)}">Download to this device</button>`;
   }
   if (status.kind === 'download-unavailable' || status.kind === 'download-offline') {
     return `<button type="button" role="menuitem" disabled>${escapeHTML(status.label)}</button>`;
   }
-  return `<button type="button" role="menuitem" data-download-book="${safeAttr(bookId)}">Download to this device</button>`;
+  const label = status.kind === 'preparation-error' ? 'Retry audio preparation' : 'Prepare for offline';
+  return `<button type="button" role="menuitem" data-download-book="${safeAttr(bookId)}">${label}</button>`;
 }
 
 function bookMenuHTML(book, onShelf) {
@@ -540,6 +547,19 @@ async function downloadBookFromLibrary(bookId) {
   const id = String(bookId);
   if (!offlineDownloadsSupported() || !navigator.onLine) return;
   if (cancelOfflineDownload(id)) return;
+  const initialStatus = offlineStatusForBook(id);
+  if (initialStatus.kind === 'preparing') {
+    await cancelOfflinePreparation(id).catch(() => {
+      showToast('Could not cancel audio preparation', 'error');
+    });
+    return;
+  }
+  const notificationSetup = (
+    initialStatus.kind === 'ready-to-prepare' ||
+    initialStatus.kind === 'preparation-error'
+  )
+    ? enableOfflineReadyNotifications()
+    : Promise.resolve(false);
   pendingBookDownloads.add(id);
   refreshOfflineIndicators();
   try {
@@ -549,7 +569,17 @@ async function downloadBookFromLibrary(bookId) {
     if (!data?.book || !Array.isArray(data.chapters) || data.chapters.length === 0) {
       throw new Error('Book has no downloadable chapters');
     }
-    await downloadBookForOffline(data.book, data.chapters, { showOverlay: false });
+    const status = offlineStatusForBook(id);
+    if (
+      status.kind === 'prepared' ||
+      status.kind === 'partial-download' ||
+      status.kind === 'repair-needed'
+    ) {
+      await downloadBookForOffline(data.book, data.chapters, { showOverlay: false });
+    } else {
+      await notificationSetup;
+      await prepareBookForOffline(data.book, data.chapters);
+    }
   } catch (error) {
     console.error('Could not start offline download:', error);
     showToast('Could not start download. Try again.', 'error');

@@ -10,6 +10,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Full-book offline use now has two explicit stages: durable server preparation
+  creates a mono 24 kHz, 48 kbps MP3 package from completed narration, then a
+  foreground-only device transfer reports real bytes, measured throughput, and
+  ETA. Transfer never regenerates audio, can resume chapter by chapter, and is
+  unavailable until the complete server package is ready. Canceling the device
+  transfer leaves that prepared package intact.
+- Installed PWAs can opt into a Web Push notification when a prepared title is
+  ready to download. Preparation continues safely after the browser closes.
 - Full-title downloads now expose each verified chapter for offline playback as
   soon as it reaches the device. Interrupted titles retain a playable chapter
   count and resume without waiting for the entire book to finish again.

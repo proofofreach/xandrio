@@ -10,6 +10,8 @@ const path = require('path');
 const tests = [
   'test-generation-scheduler.js',
   'test-download-background.js',
+  'test-offline-audio-package.js',
+  'test-offline-readiness-notifications.js',
   'test-offline-preparation-coordinator.js',
   'test-abortable-edge-tts.js',
   'test-premium-audio.js',

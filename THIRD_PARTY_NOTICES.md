@@ -49,6 +49,7 @@ This file is generated from the locked installed Node dependency tree by `npm ru
 | append-field | 1.0.0 | MIT | http://github.com/LinusU/node-append-field.git |
 | argparse | 2.0.1 | Python-2.0 | nodeca/argparse |
 | arr-union | 3.1.0 | MIT | jonschlinkert/arr-union |
+| asn1.js | 5.4.1 | MIT | git@github.com:indutny/asn1.js |
 | asynckit | 0.4.0 | MIT | https://github.com/alexindigo/asynckit.git |
 | axios | 1.18.1 | MIT | https://github.com/axios/axios.git |
 | balanced-match | 1.0.2 | MIT | git://github.com/juliangruber/balanced-match.git |
@@ -56,10 +57,12 @@ This file is generated from the locked installed Node dependency tree by `npm ru
 | binary-extensions | 2.3.0 | MIT | sindresorhus/binary-extensions |
 | bindings | 1.5.0 | MIT | git://github.com/TooTallNate/node-bindings.git |
 | bl | 4.1.0 | MIT | https://github.com/rvagg/bl.git |
+| bn.js | 4.12.5 | MIT | git@github.com:indutny/bn.js |
 | body-parser | 2.3.0 | MIT | expressjs/body-parser |
 | brace-expansion | 1.1.16 | MIT | git://github.com/juliangruber/brace-expansion.git |
 | braces | 3.0.3 | MIT | micromatch/braces |
 | buffer | 5.7.1 | MIT | git://github.com/feross/buffer.git |
+| buffer-equal-constant-time | 1.0.1 | BSD-3-Clause | git@github.com:goinstant/buffer-equal-constant-time.git |
 | buffer-from | 1.1.2 | MIT | LinusU/buffer-from |
 | busboy | 1.6.0 | MIT | http://github.com/mscdex/busboy.git |
 | bytes | 3.1.2 | MIT | visionmedia/bytes.js |
@@ -97,6 +100,7 @@ This file is generated from the locked installed Node dependency tree by `npm ru
 | discontinuous-range | 1.0.0 | MIT | https://github.com/dtudury/discontinuous-range.git |
 | dunder-proto | 1.0.1 | MIT | https://github.com/es-shims/dunder-proto.git |
 | eastasianwidth | 0.2.0 | MIT | git://github.com/komagata/eastasianwidth.git |
+| ecdsa-sig-formatter | 1.0.11 | Apache-2.0 | ssh://git@github.com/Brightspace/node-ecdsa-sig-formatter.git |
 | ee-first | 1.1.1 | MIT | jonathanong/ee-first |
 | emoji-regex | 8.0.0 | MIT | https://github.com/mathiasbynens/emoji-regex.git |
 | emoji-regex | 9.2.2 | MIT | https://github.com/mathiasbynens/emoji-regex.git |
@@ -156,6 +160,7 @@ This file is generated from the locked installed Node dependency tree by `npm ru
 | hasown | 2.0.2 | MIT | https://github.com/inspect-js/hasOwn.git |
 | hasown | 2.0.4 | MIT | https://github.com/inspect-js/hasOwn.git |
 | hosted-git-info | 9.0.3 | ISC | https://github.com/npm/hosted-git-info.git |
+| http_ece | 1.2.0 | MIT | https://github.com/martinthomson/encrypted-content-encoding.git |
 | http-cache-semantics | 4.2.0 | BSD-2-Clause | https://github.com/kornelski/http-cache-semantics.git |
 | http-errors | 2.0.1 | MIT | jshttp/http-errors |
 | http-proxy-agent | 7.0.2 | MIT | https://github.com/TooTallNate/proxy-agents.git |
@@ -191,6 +196,8 @@ This file is generated from the locked installed Node dependency tree by `npm ru
 | json-schema-traverse | 1.0.0 | MIT | https://github.com/epoberezkin/json-schema-traverse.git |
 | jsonfile | 6.2.0 | MIT | git@github.com:jprichardson/node-jsonfile.git |
 | jszip | 3.10.1 | (MIT OR GPL-3.0-or-later) | https://github.com/Stuk/jszip.git |
+| jwa | 2.0.1 | MIT | git://github.com/brianloveswords/node-jwa.git |
+| jws | 4.0.1 | MIT | git://github.com/brianloveswords/node-jws.git |
 | kind-of | 2.0.1 | MIT | jonschlinkert/kind-of |
 | kind-of | 3.2.2 | MIT | jonschlinkert/kind-of |
 | lazy-cache | 0.2.7 | MIT | jonschlinkert/lazy-cache |
@@ -217,6 +224,7 @@ This file is generated from the locked installed Node dependency tree by `npm ru
 | mime-types | 3.0.2 | MIT | jshttp/mime-types |
 | mime-types | 3.0.2 | MIT | jshttp/mime-types |
 | mimic-response | 3.1.0 | MIT | sindresorhus/mimic-response |
+| minimalistic-assert | 1.0.1 | ISC | https://github.com/calvinmetcalf/minimalistic-assert.git |
 | minimatch | 3.1.4 | ISC | git://github.com/isaacs/minimatch.git |
 | minimist | 1.2.8 | MIT | git://github.com/minimistjs/minimist.git |
 | minipass | 3.3.6 | ISC | https://github.com/isaacs/minipass.git |
@@ -361,6 +369,7 @@ This file is generated from the locked installed Node dependency tree by `npm ru
 | util-deprecate | 1.0.2 | MIT | git://github.com/TooTallNate/util-deprecate.git |
 | validate-npm-package-license | 3.0.4 | Apache-2.0 | kemitchell/validate-npm-package-license.js |
 | vary | 1.1.2 | MIT | jshttp/vary |
+| web-push | 3.6.7 | MPL-2.0 | https://github.com/web-push-libs/web-push.git |
 | which | 2.0.2 | ISC | git://github.com/isaacs/node-which.git |
 | which | 5.0.0 | ISC | https://github.com/npm/node-which.git |
 | wrap-ansi | 7.0.0 | MIT | chalk/wrap-ansi |

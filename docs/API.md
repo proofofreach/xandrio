@@ -30,6 +30,10 @@ The examples below omit authorization headers for readability.
 | GET | [/api/offline/preparation/:bookId](#get-apiofflinepreparationbookid) | Get full-title audio preparation progress |
 | POST | [/api/offline/preparation/:bookId](#post-apiofflinepreparationbookid) | Start durable full-title audio preparation |
 | DELETE | [/api/offline/preparation/:bookId](#delete-apiofflinepreparationbookid) | Pause full-title audio preparation |
+| GET | `/api/offline/audio/:bookId/:chapterIndex` | Transfer a prepared 48 kbps offline chapter |
+| GET | `/api/offline/notifications` | Get Web Push readiness-notification configuration |
+| POST | `/api/offline/notifications` | Save this device's Web Push subscription |
+| DELETE | `/api/offline/notifications` | Remove this device's Web Push subscription |
 | GET | [/api/book/:bookId](#get-apibookbookid) | Get book details and chapters |
 | GET | [/api/cover/:bookId](#get-apicoverbookid) | Get book cover image |
 | GET | [/api/audio-stream/:bookId/:chapterIndex](#get-apiaudio-streambookidchapterindex) | Stream generated chapter audio through one stable response |
@@ -53,7 +57,7 @@ The examples below omit authorization headers for readability.
 
 ## Current Endpoint Inventory
 
-Regenerated from `server.js` and `lib/routes/*.js` on 2026-07-12.
+Regenerated from `server.js` and `lib/routes/*.js` on 2026-07-28.
 
 | Method | Endpoint |
 | --- | --- |
@@ -83,6 +87,10 @@ Regenerated from `server.js` and `lib/routes/*.js` on 2026-07-12.
 | GET | `/api/offline/preparation/:bookId` |
 | POST | `/api/offline/preparation/:bookId` |
 | DELETE | `/api/offline/preparation/:bookId` |
+| GET | `/api/offline/audio/:bookId/:chapterIndex` |
+| GET | `/api/offline/notifications` |
+| POST | `/api/offline/notifications` |
+| DELETE | `/api/offline/notifications` |
 | POST | `/api/chunks/:bookId/:chapterIndex/prepare` |
 | POST | `/api/chunks/:bookId/:chapterIndex/retry` |
 | GET | `/api/chunks/:bookId/:chapterIndex/status` |
@@ -731,14 +739,20 @@ Return server preparation progress independently of any device-local download:
   "readyChunks": 18,
   "totalChunks": 120,
   "errorChapters": 0,
-  "percent": 17
+  "percent": 17,
+  "bytesPrepared": 32145678,
+  "bytesTotal": null,
+  "packageVariantKey": "edge:en-US-AvaNeural:offline-mp3-v1:br48k",
+  "bitrateKbps": 48
 }
 ```
 
 `state` is `not-requested`, `preparing`, `paused`, `ready`, or `error`. A
-client can transfer each ready chapter into that browser/PWA’s Cache Storage
-while later chapters are still being prepared; device transfer does not
-consume the generation scheduler’s GPU slot.
+client must wait for `ready` before starting the separate device transfer.
+`bytesTotal` is populated only at that point and is the exact compact-package
+size. Preparation may generate missing narration, then creates one 48 kbps MP3
+derivative per non-empty chapter. The browser does not poll or start chapter
+generation during device transfer.
 
 ## DELETE /api/offline/preparation/:bookId
 
@@ -748,9 +762,30 @@ generation tagged with its request id, and discard those recoverable chapter
 jobs. The durable title intent remains paused so a later `POST` can resume it.
 This does not delete already generated server audio or any device-local copy.
 
+## GET /api/offline/audio/:bookId/:chapterIndex
+
+Serve one already-prepared 48 kbps MP3 derivative. The PWA supplies the
+`variant` query parameter returned as `packageVariantKey` by the preparation
+status, pinning every resumed chapter transfer to the same package. The route
+returns `409` until that derivative exists and never starts narration
+generation or transcoding. The PWA calls it only after the full-title
+preparation state is `ready`.
+
+## Offline readiness notifications
+
+- `GET /api/offline/notifications` returns `{ "enabled", "publicKey" }`.
+- `POST /api/offline/notifications` stores the authenticated account/device's
+  Push API subscription. Body: `{ "subscription": PushSubscription }`.
+- `DELETE /api/offline/notifications` removes an endpoint for that
+  account/device. Body: `{ "endpoint": "https://…" }`.
+
+These routes return a disabled configuration when the operator has not set the
+three `WEB_PUSH_*` variables. Notification delivery is optional; preparation
+and readiness polling continue to work without it.
+
 ### Offline audio transfer headers
 
-For a full, same-origin audio response, the PWA sends
+For a full, same-origin offline-package response, the PWA sends
 `X-Xandrio-Offline-Download: 1`. The server then returns the normal
 `Content-Length` plus:
 

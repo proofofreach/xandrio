@@ -12,6 +12,7 @@ const { promisify } = require('util');
 const execFileAsync = promisify(execFile);
 const multer = require('multer');
 const crypto = require('crypto');
+const webPush = require('web-push');
 const { pipeline } = require('stream/promises');
 const { Readable } = require('stream');
 const { requestRemote, declaredLength, readBoundedBuffer, byteLimit } = require('./lib/remote-fetch');
@@ -34,6 +35,13 @@ const { createNarrationRuntime } = require('./lib/narration-runtime');
 const { createPlaybackOrchestrator } = require('./lib/playback-orchestrator');
 const { createPlaybackPrefetchCoordinator } = require('./lib/playback-prefetch');
 const { createOfflinePreparationCoordinator } = require('./lib/offline-preparation-coordinator');
+const {
+  OFFLINE_AUDIO_BITRATE_KBPS,
+  createOfflineAudioPackage
+} = require('./lib/offline-audio-package');
+const {
+  createOfflineReadinessNotifications
+} = require('./lib/offline-readiness-notifications');
 const {
   GENERATION_ORIGIN,
   GENERATION_PRIORITY
@@ -1959,7 +1967,7 @@ const hlsAudioStreamer = createHlsAudioStreamer({ serveAudioFile });
 async function inspectChapterAudio(bookId, chapterIndex, options = {}) {
   const clean = Boolean(options.clean);
   const tier = options.tier === 'instant' ? 'instant' : 'active';
-  const tts = ttsForTier(tier);
+  const tts = options.tts || ttsForTier(tier);
   const outputPath = clean ? tts.cleanChapterPath(bookId, chapterIndex) : tts.chapterPath(bookId, chapterIndex);
   let ready = false;
   let size = 0;
@@ -3081,24 +3089,120 @@ async function getOfflineBookChapters(bookId) {
   };
 }
 
-const offlinePreparationCoordinator = createOfflinePreparationCoordinator({
-  stateStore: generationJournal,
-  getBookChapters: getOfflineBookChapters,
-  // Offline preparation owns a bounded active-variant pipeline. Inspect it
-  // directly so progress checks cannot trigger the separate full-book premium
-  // preparation feature.
-  chapterStatus: request => inspectChapterAudio(request.bookId, request.chapterIndex, {
-    tier: 'active'
-  }),
-  shouldPrepareChapter: ({ chapter }) => !chapter?.empty,
-  prepareChapter: request => ensureChapterAudioPrepared(request.bookId, request.chapterIndex, {
+const offlineAudioPackage = createOfflineAudioPackage({ cacheDir: CACHE_DIR });
+const offlineReadinessNotifications = createOfflineReadinessNotifications({
+  filePath: path.join(DATA_DIR, 'push-subscriptions.json'),
+  webPush,
+  vapidPublicKey: process.env.WEB_PUSH_VAPID_PUBLIC_KEY,
+  vapidPrivateKey: process.env.WEB_PUSH_VAPID_PRIVATE_KEY,
+  vapidSubject: process.env.WEB_PUSH_SUBJECT
+});
+
+function offlinePreparationIdentity() {
+  const sourceVoice = voiceForTier('active');
+  const sourceVariantKey = String(getTTSVariantKeyForVoice(sourceVoice) || 'default');
+  return {
+    sourceVoice,
+    sourceVariantKey,
+    sourceChunkSize: getChunkSizeForVoice(sourceVoice),
+    packageVariantKey: offlineAudioPackage.packageVariantKey(sourceVariantKey),
+    bitrateKbps: OFFLINE_AUDIO_BITRATE_KBPS
+  };
+}
+
+function pinnedOfflinePreparationIdentity(request = {}) {
+  if (!request.sourceVariantKey || !request.sourceVoice) return offlinePreparationIdentity();
+  return {
+    sourceVoice: request.sourceVoice,
+    sourceVariantKey: request.sourceVariantKey,
+    sourceChunkSize: Math.max(
+      1,
+      Number(request.sourceChunkSize) || getChunkSizeForVoice(request.sourceVoice)
+    ),
+    packageVariantKey: request.packageVariantKey ||
+      offlineAudioPackage.packageVariantKey(request.sourceVariantKey),
+    bitrateKbps: OFFLINE_AUDIO_BITRATE_KBPS
+  };
+}
+
+function offlineSourceWorker(identity) {
+  return ttsForTier('active').workerForVariant(identity.sourceVariantKey, {
+    voice: identity.sourceVoice,
+    chunkSize: identity.sourceChunkSize
+  });
+}
+
+async function inspectOfflineChapterAudio(bookId, chapterIndex, request = {}) {
+  const identity = request.packageVariantKey && !request.sourceVoice
+    ? {
+        sourceVariantKey: offlineAudioPackage.sourceVariantKey(request.packageVariantKey),
+        packageVariantKey: request.packageVariantKey,
+        bitrateKbps: OFFLINE_AUDIO_BITRATE_KBPS
+      }
+    : pinnedOfflinePreparationIdentity(request);
+  const packaged = await offlineAudioPackage.inspectChapter({
+    bookId,
+    chapterIndex,
+    sourceVariantKey: identity.sourceVariantKey
+  });
+  if (packaged.ready) return packaged;
+  if (!identity.sourceVoice) return packaged;
+  const source = await inspectChapterAudio(bookId, chapterIndex, {
+    tier: 'active',
+    tts: offlineSourceWorker(identity)
+  });
+  return {
+    ...source,
+    ready: false,
+    size: 0,
+    url: null,
+    variantKey: identity.packageVariantKey,
+    bitrateKbps: identity.bitrateKbps
+  };
+}
+
+async function prepareOfflineChapterAudio(request) {
+  const identity = pinnedOfflinePreparationIdentity(request);
+  const sourcePath = await ensureChapterAudioPrepared(request.bookId, request.chapterIndex, {
     priority: request.priority,
     origin: request.origin,
     requestId: request.requestId,
-    tier: 'active'
-  }),
+    tier: 'active',
+    tts: offlineSourceWorker(identity),
+    voice: identity.sourceVoice
+  });
+  return offlineAudioPackage.ensureChapter({
+    bookId: request.bookId,
+    chapterIndex: request.chapterIndex,
+    sourcePath,
+    sourceVariantKey: identity.sourceVariantKey
+  });
+}
+
+const offlinePreparationCoordinator = createOfflinePreparationCoordinator({
+  stateStore: generationJournal,
+  getBookChapters: getOfflineBookChapters,
+  preparationIdentity: offlinePreparationIdentity,
+  // Offline preparation owns a bounded active-variant pipeline. Inspect it
+  // directly so progress checks cannot trigger the separate full-book premium
+  // preparation feature.
+  chapterStatus: request => inspectOfflineChapterAudio(
+    request.bookId,
+    request.chapterIndex,
+    request
+  ),
+  shouldPrepareChapter: ({ chapter }) => !chapter?.empty,
+  prepareChapter: prepareOfflineChapterAudio,
   cancelRequest: requestId => ttsQueue.cancelWhere({ requestId }),
   discardRequest: requestId => generationJournal.removeChaptersForRequest(requestId),
+  onReady: ({ book, record, status }) => offlineReadinessNotifications.notifyOwners(
+    record.owners,
+    {
+      bookId: record.bookId,
+      title: book?.title || 'Your audiobook',
+      bytesTotal: status.bytesTotal
+    }
+  ),
   onError: (error, request) => {
     console.warn(`Offline preparation failed for ${request.bookId}: ${error.message}`);
   }
@@ -3115,6 +3219,16 @@ registerPlaybackRoutes(app, {
   sendServerError,
   fs,
   getBookChapters: getOfflineBookChapters,
+  getOfflineChapterAudio: async ({ bookId, chapterIndex, packageVariantKey }) => {
+    const { chapters } = await getOfflineBookChapters(bookId);
+    if (!chapters[chapterIndex] || chapters[chapterIndex].empty) {
+      const error = new Error('Chapter not found');
+      error.statusCode = 404;
+      throw error;
+    }
+    return inspectOfflineChapterAudio(bookId, chapterIndex, { packageVariantKey });
+  },
+  offlineReadinessNotifications,
   onCurrentChapterPrepared: ({ req, bookId, chapterIndex }) => observePlaybackHorizon({
     bookId,
     chapterIndex,

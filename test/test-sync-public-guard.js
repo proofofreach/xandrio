@@ -4,6 +4,7 @@ const { spawnSync } = require('node:child_process');
 const { resolve } = require('node:path');
 
 const syncScript = resolve(__dirname, '..', 'scripts', 'release', 'sync-public.mjs');
+const { readFileSync } = require('node:fs');
 let passed = 0;
 let failed = 0;
 
@@ -45,6 +46,14 @@ check('--allow-source bypasses the trunk-only guard', () => {
 check('a main source is never rejected by the guard', () => {
   const result = invoke('--source', 'main');
   assert.doesNotMatch(result.stderr || '', GUARD);
+});
+
+check('candidate scan clone excludes private-history tags', () => {
+  const source = readFileSync(syncScript, 'utf8');
+  assert.match(
+    source,
+    /git\('clone', '--quiet', '--single-branch', '--no-tags', '--branch'/
+  );
 });
 
 console.log(`${passed} passed, ${failed} failed`);

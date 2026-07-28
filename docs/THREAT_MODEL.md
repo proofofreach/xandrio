@@ -10,6 +10,7 @@ traffic, narration text, or generated audio.
   listening statistics, and cached narration;
 - provider keys and sessions, instance authentication material, pairing codes,
   and settings;
+- Web Push VAPID private keys and stored device subscription capability URLs;
 - custom voice references and generated voice audio;
 - host filesystem integrity and the availability of CPU, memory, disk, network,
   OCR, browser, and narration processes.
@@ -42,6 +43,7 @@ that can reach the port is trusted.
 | Provider redirects, signed URLs, and hostile metadata | Provider-specific URL validation, bounded redirects/timeouts/response sizes, output sanitization, and safe public errors. Operators choose and trust enabled providers. |
 | Secret disclosure in APIs or logs | Private API routes, redacted provider errors, token-only Z-Library storage, `0600` JSON/voice-reference writes, and release history scanning. Existing files should be permission-audited after upgrade. |
 | Offline data on a shared browser profile | Offline caches are account-namespaced to prevent accidental cross-account display and playback. Browser storage remains quota-managed and may be evicted despite a persistence request. This is not a security boundary against a malicious same-origin script, browser extension, or person with access to the browser profile; use separate OS/browser profiles and clear site data on untrusted devices. |
+| Readiness notification disclosure or subscription theft | Web Push is opt-in and its payload is encrypted for the subscribed browser, but the prepared title can appear on a lock screen. Protect `.env` and `data/push-subscriptions.json` as secrets: a subscription endpoint is a capability URL, and the VAPID private key authenticates the instance to push services. Expired endpoints are removed after push services return 404/410; valid endpoints otherwise remain until unsubscribed or removed by the operator. |
 | Voice misuse | Upload requires explicit authority/consent confirmation; references stay on the instance. Confirmation is a product control, not proof of consent. |
 | Copyright or provider-terms misuse | Unverified sources are disabled until per-instance acknowledgement and enablement; results and imports retain rights-status/provenance labels. Xandrio does not decide worldwide legality. |
 | Supply-chain replacement | Locked dependencies, pinned CI actions/base image, SBOMs, CodeQL/dependency review, image scanning, OIDC signing, and digest-only Umbrel promotion. |

@@ -128,6 +128,41 @@ async function test(name, fn) {
     assert.strictEqual(record.nextChapter, chapters.length);
   });
 
+  await test('ready means every compact package exists and reports its exact byte total', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'offline-package-ready-'));
+    const journal = new GenerationJournal(path.join(dir, 'generation-state.json'));
+    const packaged = new Map();
+    const coordinator = createOfflinePreparationCoordinator({
+      stateStore: journal,
+      preparationIdentity: () => ({
+        packageVariantKey: 'voice-a:offline-mp3-v1:br48k',
+        bitrateKbps: 48
+      }),
+      getBookChapters: async bookId => ({
+        book: { id: bookId, title: 'Compact Book' },
+        chapters: [{}, {}]
+      }),
+      chapterStatus: async ({ chapterIndex }) => ({
+        ready: packaged.has(chapterIndex),
+        size: packaged.get(chapterIndex) || 0,
+        variantKey: 'voice-a:offline-mp3-v1:br48k'
+      }),
+      prepareChapter: async ({ chapterIndex }) => {
+        packaged.set(chapterIndex, chapterIndex === 0 ? 1200 : 1800);
+      }
+    });
+
+    await coordinator.request('book-package');
+    await coordinator.waitForIdle('book-package');
+    const status = await coordinator.status('book-package');
+
+    assert.strictEqual(status.state, 'ready');
+    assert.strictEqual(status.bytesPrepared, 3000);
+    assert.strictEqual(status.bytesTotal, 3000);
+    assert.strictEqual(status.bitrateKbps, 48);
+    assert.strictEqual(status.packageVariantKey, 'voice-a:offline-mp3-v1:br48k');
+  });
+
   await test('a preparation failure retains the failing chapter cursor', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'offline-error-cursor-'));
     const journal = new GenerationJournal(path.join(dir, 'generation-state.json'));
@@ -320,6 +355,116 @@ async function test(name, fn) {
 
     const record = await journal.getOfflinePreparation('book-resume');
     assert.deepStrictEqual(requestIds, ['request-1', 'request-2']);
+    assert.strictEqual(record.requestId, 'request-2');
+    assert.strictEqual(record.state, 'ready');
+  });
+
+  await test('startup recovery migrates an in-progress legacy package before resuming', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'offline-restore-package-'));
+    const journal = new GenerationJournal(path.join(dir, 'generation-state.json'));
+    await journal.putOfflinePreparation({
+      bookId: 'legacy-package',
+      requestId: 'legacy-request',
+      state: 'preparing',
+      totalChapters: 2,
+      nextChapter: 1,
+      readyChapters: 1,
+      preparedBytes: 999,
+      owners: ['account:device']
+    });
+    const prepared = [];
+    const coordinator = createOfflinePreparationCoordinator({
+      stateStore: journal,
+      preparationIdentity: () => ({
+        packageVariantKey: 'voice-a:offline-mp3-v1:br48k',
+        bitrateKbps: 48
+      }),
+      getBookChapters: async bookId => ({
+        book: { id: bookId },
+        chapters: [{}, {}]
+      }),
+      chapterStatus: async ({ chapterIndex }) => ({
+        ready: prepared.includes(chapterIndex),
+        size: prepared.includes(chapterIndex) ? 480 : 0,
+        variantKey: 'voice-a:offline-mp3-v1:br48k'
+      }),
+      prepareChapter: async ({ chapterIndex }) => {
+        prepared.push(chapterIndex);
+      },
+      createRequestId: () => 'compact-request'
+    });
+
+    const restored = await coordinator.restore();
+    await coordinator.waitForIdle('legacy-package');
+
+    assert.deepStrictEqual(restored, {
+      resumedBooks: 1,
+      failedBooks: [],
+      deferredBooks: []
+    });
+    assert.deepStrictEqual(prepared, [0, 1]);
+    const record = await journal.getOfflinePreparation('legacy-package');
+    assert.strictEqual(record.requestId, 'compact-request');
+    assert.strictEqual(record.packageVariantKey, 'voice-a:offline-mp3-v1:br48k');
+    assert.strictEqual(record.bitrateKbps, 48);
+    assert.strictEqual(record.preparedBytes, 960);
+    assert.strictEqual(record.state, 'ready');
+    assert.deepStrictEqual(record.owners, ['account:device']);
+  });
+
+  await test('a voice change restarts preparation without mixing package variants or notifying early', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'offline-pinned-variant-'));
+    const journal = new GenerationJournal(path.join(dir, 'generation-state.json'));
+    let activeVoice = 'voice-a';
+    let requestSequence = 0;
+    const packaged = new Set();
+    const prepared = [];
+    const notifications = [];
+    const identity = voice => ({
+      sourceVoice: voice,
+      sourceVariantKey: `${voice}:master`,
+      sourceChunkSize: 4000,
+      packageVariantKey: `${voice}:master:offline-mp3-v1:br48k`,
+      bitrateKbps: 48
+    });
+    const coordinator = createOfflinePreparationCoordinator({
+      stateStore: journal,
+      preparationIdentity: () => identity(activeVoice),
+      getBookChapters: async bookId => ({
+        book: { id: bookId },
+        chapters: [{}, {}]
+      }),
+      chapterStatus: async request => ({
+        ready: packaged.has(`${request.sourceVoice}:${request.chapterIndex}`),
+        size: 480,
+        variantKey: request.packageVariantKey
+      }),
+      prepareChapter: async request => {
+        prepared.push({
+          voice: request.sourceVoice,
+          variant: request.sourceVariantKey,
+          chapterIndex: request.chapterIndex
+        });
+        packaged.add(`${request.sourceVoice}:${request.chapterIndex}`);
+        if (request.sourceVoice === 'voice-a') activeVoice = 'voice-b';
+      },
+      onReady: ({ record }) => notifications.push(record.packageVariantKey),
+      createRequestId: () => `request-${++requestSequence}`
+    });
+
+    await coordinator.request('changing-voice');
+    await coordinator.waitForIdle('changing-voice');
+
+    assert.deepStrictEqual(prepared, [
+      { voice: 'voice-a', variant: 'voice-a:master', chapterIndex: 0 },
+      { voice: 'voice-b', variant: 'voice-b:master', chapterIndex: 0 },
+      { voice: 'voice-b', variant: 'voice-b:master', chapterIndex: 1 }
+    ]);
+    assert.deepStrictEqual(notifications, ['voice-b:master:offline-mp3-v1:br48k']);
+    const record = await journal.getOfflinePreparation('changing-voice');
+    assert.strictEqual(record.sourceVoice, 'voice-b');
+    assert.strictEqual(record.sourceVariantKey, 'voice-b:master');
+    assert.strictEqual(record.packageVariantKey, 'voice-b:master:offline-mp3-v1:br48k');
     assert.strictEqual(record.requestId, 'request-2');
     assert.strictEqual(record.state, 'ready');
   });
