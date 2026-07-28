@@ -16,6 +16,7 @@ let currentServerStatus = { active: 0, queued: 0, books: [] };
 let currentDownloads = [];
 let currentPreparations = [];
 let lastBookCount = 0;
+let activityStructureKey = '';
 
 function normalizedBooks(status) {
   if (!Array.isArray(status?.books)) return [];
@@ -97,6 +98,57 @@ function chapterSummary(book) {
   return 'Waiting to prepare';
 }
 
+function activityStateLabel(book) {
+  if (book.kind === 'download') {
+    return `${book.phase || 'Downloading'} · ${book.percent}%`;
+  }
+  if (book.kind === 'preparation') {
+    return `Preparing audio · ${book.readyChapters}/${book.totalChapters}`;
+  }
+  return chapterSummary(book);
+}
+
+function activityStructureFor(books) {
+  return JSON.stringify(books.map(book => ({
+    id: book.id,
+    kind: book.kind || 'queue',
+    title: book.title || '',
+    author: book.author || '',
+    hasCover: Boolean(book.hasCover),
+    coverPath: book.coverPath || '',
+    coverUrl: book.coverUrl || ''
+  })));
+}
+
+function patchActivityRows(books) {
+  const rows = Array.from(activityListEl?.querySelectorAll?.('[data-audio-activity-id]') || []);
+  if (rows.length !== books.length) return false;
+
+  for (let index = 0; index < books.length; index += 1) {
+    const book = books[index];
+    const row = rows[index];
+    if (
+      row.dataset.audioActivityId !== book.id ||
+      row.dataset.audioActivityKind !== (book.kind || 'queue')
+    ) {
+      return false;
+    }
+  }
+
+  books.forEach((book, index) => {
+    const row = rows[index];
+    row.dataset.state = Number(book.active || 0) > 0 ? 'active' : 'queued';
+    const label = row.querySelector?.('[data-audio-activity-label]');
+    if (label) label.textContent = activityStateLabel(book);
+    if (book.kind !== 'download') return;
+    const progress = row.querySelector?.('[data-audio-activity-progress]');
+    progress?.setAttribute?.('aria-valuenow', String(book.percent));
+    const fill = row.querySelector?.('[data-audio-activity-progress-fill]');
+    if (fill?.style) fill.style.width = `${book.percent}%`;
+  });
+  return true;
+}
+
 function renderActivityDetails(status = currentStatus) {
   if (!activityListEl || !activitySummaryEl) return;
   const books = normalizedBooks(status);
@@ -120,27 +172,30 @@ function renderActivityDetails(status = currentStatus) {
     activitySummaryEl.textContent = `${waitingBooks} ${waitingBooks === 1 ? 'book is' : 'books are'} waiting to prepare.`;
   }
 
+  const structureKey = activityStructureFor(books);
+  if (structureKey === activityStructureKey && patchActivityRows(books)) return;
+
   activityListEl.innerHTML = books.map(book => {
     const active = Number(book.active || 0) > 0;
     const isDownload = book.kind === 'download';
     const isPreparation = book.kind === 'preparation';
-    const downloadState = `${book.phase || 'Downloading'} · ${book.percent}%`;
-    const preparationState = `Preparing audio · ${book.readyChapters}/${book.totalChapters}`;
     return `
-      <article class="audio-activity-row" data-state="${active ? 'active' : 'queued'}">
+      <article class="audio-activity-row" data-state="${active ? 'active' : 'queued'}"
+               data-audio-activity-id="${escapeHTML(book.id)}"
+               data-audio-activity-kind="${escapeHTML(book.kind || 'queue')}">
         ${coverImageHTML(book, 'audio-activity-cover', '')}
         <div class="audio-activity-copy">
           <strong>${escapeHTML(book.title || 'Untitled')}</strong>
           <span>${escapeHTML(book.author || 'Unknown Author')}</span>
           <span class="audio-activity-state">
             <span class="audio-activity-dot" aria-hidden="true"></span>
-            ${escapeHTML(isDownload ? downloadState : isPreparation ? preparationState : chapterSummary(book))}
+            <span data-audio-activity-label>${escapeHTML(activityStateLabel(book))}</span>
           </span>
           ${isDownload ? `
-            <span class="audio-activity-progress" role="progressbar"
+            <span class="audio-activity-progress" data-audio-activity-progress role="progressbar"
                   aria-label="Download progress" aria-valuemin="0" aria-valuemax="100"
                   aria-valuenow="${book.percent}">
-              <span style="width: ${book.percent}%"></span>
+              <span data-audio-activity-progress-fill style="width: ${book.percent}%"></span>
             </span>
           ` : ''}
           ${isDownload || isPreparation ? `
@@ -151,6 +206,7 @@ function renderActivityDetails(status = currentStatus) {
       </article>
     `;
   }).join('');
+  activityStructureKey = structureKey;
 }
 
 function announceBookCount(bookCount) {
@@ -251,6 +307,7 @@ export function initQueueStatus(options = {}) {
   activitySheetEl = document.getElementById('audio-activity-sheet');
   activitySummaryEl = document.getElementById('audio-activity-summary');
   activityListEl = document.getElementById('audio-activity-list');
+  activityStructureKey = '';
   if (!queueStatusEl) return;
 
   ensureActivitySheetController();

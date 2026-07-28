@@ -88,6 +88,77 @@ async function test(name, fn) {
     assert.strictEqual((await journal.getOfflinePreparation('book-1')).nextChapter, 3);
   });
 
+  await test('empty structural chapters do not abort full-title preparation', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'offline-empty-chapter-'));
+    const journal = new GenerationJournal(path.join(dir, 'generation-state.json'));
+    const ready = new Set();
+    const started = [];
+    const chapters = [
+      { title: 'Introduction' },
+      { title: 'Part One', type: 'divider', empty: true },
+      { title: 'Chapter One' }
+    ];
+    const coordinator = createOfflinePreparationCoordinator({
+      stateStore: journal,
+      getBookChapters: async bookId => ({
+        book: { id: bookId },
+        chapters
+      }),
+      shouldPrepareChapter: ({ chapter }) => !chapter.empty,
+      chapterStatus: async ({ chapterIndex }) => ({
+        ready: ready.has(chapterIndex),
+        totalChunks: 1,
+        readyChunks: ready.has(chapterIndex) ? 1 : 0,
+        errorChunks: 0
+      }),
+      prepareChapter: async ({ chapterIndex }) => {
+        if (chapterIndex === 1) throw new Error('Chapter has no speakable text for TTS');
+        started.push(chapterIndex);
+        ready.add(chapterIndex);
+      }
+    });
+
+    await coordinator.request('book-with-divider');
+    await coordinator.waitForIdle('book-with-divider');
+
+    assert.deepStrictEqual(started, [0, 2]);
+    const record = await journal.getOfflinePreparation('book-with-divider');
+    assert.strictEqual(record.state, 'ready');
+    assert.strictEqual(record.readyChapters, chapters.length);
+    assert.strictEqual(record.nextChapter, chapters.length);
+  });
+
+  await test('a preparation failure retains the failing chapter cursor', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'offline-error-cursor-'));
+    const journal = new GenerationJournal(path.join(dir, 'generation-state.json'));
+    const ready = new Set();
+    const coordinator = createOfflinePreparationCoordinator({
+      stateStore: journal,
+      getBookChapters: async bookId => ({
+        book: { id: bookId },
+        chapters: [{}, {}, {}]
+      }),
+      chapterStatus: async ({ chapterIndex }) => ({
+        ready: ready.has(chapterIndex),
+        totalChunks: 1,
+        readyChunks: ready.has(chapterIndex) ? 1 : 0,
+        errorChunks: 0
+      }),
+      prepareChapter: async ({ chapterIndex }) => {
+        if (chapterIndex === 1) throw new Error('generation failed');
+        ready.add(chapterIndex);
+      }
+    });
+
+    await coordinator.request('book-error-cursor');
+    await coordinator.waitForIdle('book-error-cursor');
+
+    const record = await journal.getOfflinePreparation('book-error-cursor');
+    assert.strictEqual(record.state, 'error');
+    assert.strictEqual(record.readyChapters, 1);
+    assert.strictEqual(record.nextChapter, 1);
+  });
+
   await test('two titles can prepare concurrently without admitting a third', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'offline-title-capacity-'));
     const journal = new GenerationJournal(path.join(dir, 'generation-state.json'));

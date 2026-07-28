@@ -75,7 +75,8 @@ function installBrowser({
   serverContentHash = false,
   confirmationResult = true,
   wakeLockSupported = false,
-  persistenceGate = null
+  persistenceGate = null,
+  statusForChapter = null
 }) {
   const storage = sharedStorage || new Map();
   if (!storage.has('xandrio_offline_books')) {
@@ -217,7 +218,9 @@ function installBrowser({
     const chapter = Number(url.match(/(?:\/api\/chunks\/[^/]+\/|\/api\/audio\/[^/]+\/)(\d+)/)?.[1]);
     if (url.includes('chapter-audio-status')) {
       statusRequests.push(url);
-      return Response.json({ ready: true, variantKey: variants[chapter], url: `/api/audio/${book.id}/${chapter}` });
+      return Response.json(statusForChapter
+        ? statusForChapter(chapter)
+        : { ready: true, variantKey: variants[chapter], url: `/api/audio/${book.id}/${chapter}` });
     }
     if (url.includes('/api/audio/')) {
       audioRequests.push(chapter);
@@ -993,6 +996,100 @@ function installBrowser({
     const activityEvents = env.documentEvents.filter(event => event.type === 'xandrio:downloadactivity');
     assert(activityEvents.some(event => event.detail?.downloads?.[0]?.percent >= 0));
     assert.deepStrictEqual(activityEvents.at(-1).detail.downloads, []);
+  });
+
+  await test('full-title downloads skip empty structural chapters without requesting audio', async () => {
+    const cache = makeCache();
+    const structuralChapters = [
+      { title: 'Introduction', estimatedDuration: 60 },
+      { title: 'Part One', type: 'divider', empty: true, estimatedDuration: 0 },
+      { title: 'Chapter One', estimatedDuration: 600 }
+    ];
+    const env = installBrowser({
+      book,
+      chapters: structuralChapters,
+      cache,
+      variants: ['voice-a', null, 'voice-a'],
+      statusForChapter(chapterIndex) {
+        if (chapterIndex === 1) {
+          throw new Error('empty chapters must not reach audio status');
+        }
+        return {
+          ready: true,
+          readyChunks: 1,
+          totalChunks: 1,
+          variantKey: 'voice-a',
+          url: `/api/audio/${book.id}/${chapterIndex}`
+        };
+      }
+    });
+    offline.initOffline(env.init);
+
+    const completed = await offline.downloadBookForOffline(book, structuralChapters, {
+      confirmForeground: false
+    });
+    const entry = offline.getOfflineManifest()[book.id];
+
+    assert.strictEqual(completed, true);
+    assert.deepStrictEqual(env.audioRequests, [0, 2]);
+    assert.strictEqual(entry.chapterEntries[1], null);
+    assert.strictEqual(await offline.verifyOfflineEntry(cache, entry), true);
+  });
+
+  await test('reports visible chapter preparation progress for a long title instead of sitting at zero', async () => {
+    const cache = makeCache();
+    const longChapters = Array.from({ length: 46 }, (_, index) => ({
+      estimatedDuration: index < 3 ? 1 : 3600
+    }));
+    const env = installBrowser({
+      book,
+      chapters: longChapters,
+      cache,
+      variants: longChapters.map(() => 'voice-a'),
+      statusForChapter(chapterIndex) {
+        if (chapterIndex < 3) {
+          return {
+            ready: true,
+            readyChunks: 1,
+            totalChunks: 1,
+            variantKey: 'voice-a',
+            url: `/api/audio/${book.id}/${chapterIndex}`
+          };
+        }
+        return {
+          ready: false,
+          readyChunks: chapterIndex === 3 ? 28 : 0,
+          totalChunks: 40,
+          errorChunks: 0,
+          variantKey: 'voice-a'
+        };
+      }
+    });
+    offline.initOffline(env.init);
+    const download = offline.downloadBookForOffline(book, longChapters, {
+      confirmForeground: false
+    });
+
+    try {
+      let activity = null;
+      for (let attempt = 0; attempt < 30 && !activity; attempt += 1) {
+        await new Promise(resolve => setImmediate(resolve));
+        activity = env.documentEvents
+          .filter(event => event.type === 'xandrio:downloadactivity')
+          .map(event => event.detail?.downloads?.[0])
+          .find(downloadActivity => downloadActivity?.phase?.includes('28/40 segments'));
+      }
+
+      assert(activity, 'current chapter segment progress should reach the device activity surface');
+      assert(
+        activity.percent >= 8,
+        `three ready chapters plus 28/40 segments should not display ${activity.percent}%`
+      );
+      assert.match(activity.phase, /Preparing chapter 4 of 46/);
+    } finally {
+      offline.cancelOfflineDownload(book.id);
+      await download;
+    }
   });
 
   await test('legacy server preparation state does not block the device download action', async () => {

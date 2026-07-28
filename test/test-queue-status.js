@@ -51,17 +51,60 @@ function fakeElement({ hidden = false, classes = [] } = {}) {
   };
 }
 
+function fakeActivityList() {
+  const element = fakeElement();
+  let markup = '';
+  let markupWrites = 0;
+  let rows = [];
+  Object.defineProperty(element, 'innerHTML', {
+    configurable: true,
+    get() { return markup; },
+    set(value) {
+      markup = String(value);
+      markupWrites += 1;
+      rows = [];
+      const rowPattern = /<article[^>]*data-audio-activity-id="([^"]+)"[^>]*data-audio-activity-kind="([^"]+)"/g;
+      for (const match of markup.matchAll(rowPattern)) {
+        const label = { textContent: '' };
+        const progress = fakeElement();
+        const fill = { style: {} };
+        rows.push({
+          dataset: {
+            audioActivityId: match[1],
+            audioActivityKind: match[2],
+            state: ''
+          },
+          querySelector(selector) {
+            if (selector === '[data-audio-activity-label]') return label;
+            if (selector === '[data-audio-activity-progress]') return progress;
+            if (selector === '[data-audio-activity-progress-fill]') return fill;
+            return null;
+          }
+        });
+      }
+    }
+  });
+  element.querySelectorAll = selector =>
+    selector === '[data-audio-activity-id]' ? rows : [];
+  return {
+    element,
+    get markupWrites() { return markupWrites; },
+    get rows() { return rows; }
+  };
+}
+
 (async () => {
   const listeners = new Map();
   const timers = new Map();
   let nextTimer = 1;
   let queueStatusElement = fakeElement({ hidden: true });
+  const activityList = fakeActivityList();
   const elements = {
     'audio-activity-count': fakeElement(),
     'audio-activity-announcement': fakeElement(),
     'audio-activity-sheet': fakeElement({ classes: ['voice-sheet'] }),
     'audio-activity-summary': fakeElement(),
-    'audio-activity-list': fakeElement(),
+    'audio-activity-list': activityList.element,
     'audio-activity-backdrop': fakeElement(),
     'audio-activity-close': fakeElement()
   };
@@ -212,6 +255,45 @@ function fakeElement({ hidden = false, classes = [] } = {}) {
       closest: () => ({ dataset: { cancelOfflineBook: 'book-download' } })
     });
     assert.strictEqual(cancelledBookId, 'book-download');
+  });
+
+  await test('updates download progress without recreating the activity cover', async () => {
+    document.dispatchEvent({
+      type: 'xandrio:downloadactivity',
+      detail: {
+        downloads: [{
+          id: 'stable-cover',
+          title: 'The Stable Cover',
+          author: 'A. Reader',
+          percent: 1,
+          phase: 'Preparing audio'
+        }]
+      }
+    });
+    const writesAfterFirstRender = activityList.markupWrites;
+
+    document.dispatchEvent({
+      type: 'xandrio:downloadactivity',
+      detail: {
+        downloads: [{
+          id: 'stable-cover',
+          title: 'The Stable Cover',
+          author: 'A. Reader',
+          percent: 2,
+          phase: 'Preparing audio'
+        }]
+      }
+    });
+
+    assert.strictEqual(
+      activityList.markupWrites,
+      writesAfterFirstRender,
+      'progress updates must patch the existing row instead of replacing its cover'
+    );
+    assert.strictEqual(
+      activityList.rows[0]?.querySelector('[data-audio-activity-label]')?.textContent,
+      'Preparing audio · 2%'
+    );
   });
 
   await test('labels server preparation separately from device downloading', async () => {
