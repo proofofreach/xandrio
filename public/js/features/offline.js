@@ -219,8 +219,16 @@ function downloadProgressTracker(book, chapters, working, showOverlay) {
       (sum, value, index) => sum + (value * weights[index]),
       0
     );
+    const chapterProgress = fractions.reduce((sum, value) => sum + value, 0)
+      / Math.max(1, fractions.length);
+    const weightedProgress = completedWeight / totalWeight;
     const allComplete = fractions.every(value => value >= 1);
-    const percent = allComplete ? 99 : Math.min(98, Math.round((completedWeight / totalWeight) * 100));
+    // Short front matter should still produce visible progress. Duration
+    // weighting remains useful for large chapters, while chapter progress is
+    // the floor that matches the server's sequential preparation workflow.
+    const percent = allComplete
+      ? 99
+      : Math.min(98, Math.round(Math.max(weightedProgress, chapterProgress) * 100));
     working.progressPercent = percent;
     working.progressPhase = phase;
     if (percent === lastPercent && phase === lastPhase) return;
@@ -953,7 +961,16 @@ async function processFullDownloadChapter({
       book.id,
       chapterIndex,
       signal,
-      fraction => reportProgress(chapterIndex, Math.min(0.88, fraction * 0.88), 'Preparing audio')
+      (fraction, progress) => {
+        const segmentProgress = progress?.totalChunks > 0
+          ? ` · ${progress.readyChunks}/${progress.totalChunks} segments`
+          : '';
+        reportProgress(
+          chapterIndex,
+          Math.min(0.88, fraction * 0.88),
+          `Preparing chapter ${chapterIndex + 1} of ${working.chapters}${segmentProgress}`
+        );
+      }
     );
     if (!status.ready) {
       throw new Error(`Audio generation is not complete for chapter ${chapterIndex + 1}`);
@@ -1150,9 +1167,10 @@ async function prepareChapter(bookId, chapterIndex, signal, onProgress = null, p
     const status = await getChapterAudioStatus(bookId, chapterIndex, signal, 'active');
     const total = Math.max(0, Number(status.totalChunks) || 0);
     const ready = Math.max(0, Number(status.readyChunks) || 0);
-    if (total > 0) onProgress?.(Math.min(1, ready / total));
+    const progress = { readyChunks: ready, totalChunks: total };
+    if (total > 0) onProgress?.(Math.min(1, ready / total), progress);
     if (status.ready) {
-      onProgress?.(1);
+      onProgress?.(1, progress);
       return status;
     }
     if (Number(status.errorChunks) > 0 && recoveryAttempts < 2) {
@@ -1175,9 +1193,10 @@ async function waitForPreparedChapter(bookId, chapterIndex, signal, onProgress =
     const status = await getChapterAudioStatus(bookId, chapterIndex, signal, 'active');
     const total = Math.max(0, Number(status.totalChunks) || 0);
     const ready = Math.max(0, Number(status.readyChunks) || 0);
-    if (total > 0) onProgress?.(Math.min(1, ready / total));
+    const progress = { readyChunks: ready, totalChunks: total };
+    if (total > 0) onProgress?.(Math.min(1, ready / total), progress);
     if (status.ready) {
-      onProgress?.(1);
+      onProgress?.(1, progress);
       return status;
     }
     if (Number(status.errorChunks) > 0) {
