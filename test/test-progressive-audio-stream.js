@@ -116,13 +116,28 @@ async function createWavTone(filePath, duration = 0.35, frequency = 440) {
   ]);
 }
 
-async function decodedDuration(filePath) {
+async function decodedPcm(filePath) {
   const { stdout } = await execFileAsync('ffmpeg', [
     '-hide_banner', '-loglevel', 'error', '-xerror',
     '-i', filePath,
     '-f', 's16le', '-ac', '1', '-ar', '24000', 'pipe:1'
   ], { encoding: 'buffer', maxBuffer: 16 * 1024 * 1024 });
-  return stdout.length / (24000 * 2);
+  return stdout;
+}
+
+async function decodedDuration(filePath) {
+  return (await decodedPcm(filePath)).length / (24000 * 2);
+}
+
+function zeroCrossingRate(pcm) {
+  let crossings = 0;
+  let previous = pcm.readInt16LE(0);
+  for (let offset = 2; offset + 1 < pcm.length; offset += 2) {
+    const current = pcm.readInt16LE(offset);
+    if ((previous < 0 && current >= 0) || (previous >= 0 && current < 0)) crossings++;
+    previous = current;
+  }
+  return crossings / Math.max(1, (pcm.length / 2) - 1);
 }
 
 (async () => {
@@ -371,7 +386,7 @@ async function decodedDuration(filePath) {
         chapterIndex: 0,
         endChapterIndex: 0,
         startOffsetSeconds: 12,
-        decodeStartOffsetSeconds: 0.10,
+        decodeStartOffsetSeconds: 0.10004,
         format: 'mp3',
         async *iterateInputs() {
           yield { path: targetChunk, chapterIndex: 0, lastInChapter: true };
@@ -392,6 +407,11 @@ async function decodedDuration(filePath) {
       assert(
         Math.abs(actual - 0.30) < 0.07,
         `targeted seek output was ${actual.toFixed(3)}s instead of the target chunk remainder`
+      );
+      const crossingRate = zeroCrossingRate(await decodedPcm(outputPath));
+      assert(
+        crossingRate < 0.10,
+        `targeted seek byte-swapped the tone into noise (${crossingRate.toFixed(3)} crossings/sample)`
       );
     });
 
