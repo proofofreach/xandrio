@@ -43,13 +43,6 @@ function federalistFixture() {
     [58, 'Objection That the Number of Members Will Not Be Augmented as the Progress of Population Demands'],
     [82, 'The Judiciary Continued']
   ]);
-  const corruptTitles = new Map([
-    [1, 'The Federalist Papers'],
-    [29, 'XXIX 32'],
-    [58, 'Contents'],
-    [82, 'About The Judiciary Continued']
-  ]);
-
   return [
     { title: 'Introduction', type: 'frontmatter', text: 'Introduction\n' + 'Prefatory prose. '.repeat(80) },
     ...Array.from({ length: 85 }, (_, offset) => {
@@ -57,10 +50,14 @@ function federalistFixture() {
       const roman = toRoman(number);
       const heading = headings.get(number) || `Authored Essay ${number}`;
       const marker = number === 29 ? `${roman} 32` : roman;
+      const leadingBookTitle = number === 1 ? 'The Federalist Papers\n' : '';
+      const numberedArgument = number === 58
+        ? '\n1. First objection\n2. Second objection\n3. Third objection'
+        : '';
       return {
-        title: corruptTitles.get(number) || roman,
-        type: number === 58 ? 'toc' : 'content',
-        text: `${marker}\n${heading}\n${'Substantive essay prose. '.repeat(80)}`
+        title: roman,
+        type: 'content',
+        text: `${leadingBookTitle}${marker}\n${heading}${numberedArgument}\n${'Substantive essay prose. '.repeat(80)}`
       };
     }),
     { title: 'Endnotes', type: 'backmatter', text: 'Endnotes\n' + 'Notes. '.repeat(80) }
@@ -79,8 +76,9 @@ test('repairs every title and type class in a long Roman-numbered essay series',
   );
   assert.strictEqual(papers[81].title, 'LXXXII: The Judiciary Continued');
   assert.ok(papers.every(chapter => chapter.type === 'chapter'));
-  assert.strictEqual(papers[57].rawTitle, 'Contents');
-  assert.strictEqual(papers[57].rawType, 'toc');
+  assert.strictEqual(papers[0].rawTitle, 'I');
+  assert.strictEqual(papers[57].rawTitle, 'LVIII');
+  assert.strictEqual(papers[57].rawType, 'content');
 });
 
 test('does not reinterpret a short incidental Roman-numbered run', () => {
