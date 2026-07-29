@@ -31,6 +31,17 @@ test('structure key changes when chapter identity or ordering changes', () => {
   assert.notStrictEqual(chapterStructureKey([{ ...chapters[0], title: 'Foreword' }, chapters[1]]), chapterStructureKey(chapters));
 });
 
+test('cosmetic title and type repairs preserve the source structure identity', () => {
+  const repaired = chapters.map(chapter => ({
+    ...chapter,
+    rawTitle: chapter.title,
+    rawType: chapter.type,
+    title: `Repaired: ${chapter.title}`,
+    type: 'chapter'
+  }));
+  assert.strictEqual(chapterStructureKey(repaired), chapterStructureKey(chapters));
+});
+
 test('versioned books reject positions from an older chapter structure', () => {
   const key = chapterStructureKey(chapters);
   assert.strictEqual(positionMatchesChapterStructure({ chapterStructureKey: key }, { chapterStructureKey: key }), true);

@@ -96,6 +96,7 @@ const tests = [
   'test-audio-streaming.js',
   'test-progressive-audio-stream.js',
   'test-chapter-navigation.js',
+  'test-chapter-utils.js',
   'test-chapter-structure.js',
   'test-search-ranking.js',
   'test-listening-stats.js',

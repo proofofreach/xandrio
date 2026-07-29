@@ -140,14 +140,14 @@ section('Format dispatch, metadata, and covers');
   await fs.utimes(source, new Date(Date.now() - 60_000), new Date(Date.now() - 60_000));
   try {
     await fs.writeFile(path.join(dir, 'cached.chapters.json'), JSON.stringify({
-      _cacheVersion: 20,
-      chapters: [chapter('Stale version-20 chapter')]
+      _cacheVersion: 22,
+      chapters: [chapter('Stale version-22 chapter')]
     }));
     const first = await document.getChaptersCached(source);
     const second = await document.getChaptersCached(source);
     const cachedCalls = calls.filter(call => call === `chapters:pdf:${source}`).length;
     assert(first[0].title === 'PDF chapter' && first[0].normalized && second[0].normalized && cachedCalls === 1,
-      'regenerates version-20 chapter caches, then reuses the current extraction');
+      'regenerates version-22 chapter caches, then reuses the current extraction');
 
     const validation = await document.validateBook(source);
     assert(validation.valid && validation.validationOptions.format === 'pdf' &&
