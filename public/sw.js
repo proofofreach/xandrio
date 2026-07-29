@@ -1,7 +1,7 @@
 importScripts('/js/offline-range.js');
 
 const APP_RELEASE = '1.1.0';
-const CACHE_VERSION = 'xandrio-v115';
+const CACHE_VERSION = 'xandrio-v116';
 const OFFLINE_AUDIO_CACHE = 'xandrio-offline-audio';
 const OFFLINE_TITLE_CACHE = 'xandrio-offline-titles';
 const OFFLINE_SCOPE_PARAM = 'xandrio-offline-scope';
@@ -10,10 +10,10 @@ const OFFLINE_SCOPE_PARAM = 'xandrio-offline-scope';
 // and bump CACHE_VERSION whenever any APP_SHELL entry changes (including the
 // un-versioned js/ modules below, which only invalidate via CACHE_VERSION).
 const ASSET_VERSIONS = {
-  '/style-v3.css': 92,
+  '/style-v3.css': 93,
   '/js/lifecycle.js': 1,
   '/js/chunk-player.js': 22,
-  '/app.js': 104
+  '/app.js': 105
 };
 const versionedAsset = (path) => `${path}?v=${ASSET_VERSIONS[path]}`;
 const APP_SHELL = [

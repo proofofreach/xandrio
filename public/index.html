@@ -11,7 +11,7 @@
   <title>Xandrio - Audiobook Library</title>
   <link rel="preload" href="/fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin>
   <!-- ?v= values must match ASSET_VERSIONS in sw.js (single source of truth) -->
-  <link rel="stylesheet" href="style-v3.css?v=92">
+  <link rel="stylesheet" href="style-v3.css?v=93">
   <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=2">
 </head>
 <body>
@@ -725,12 +725,7 @@
 
           <div id="playback-reliability" class="playback-reliability" data-state="hidden" hidden aria-live="polite">
             <span class="playback-reliability-dot" aria-hidden="true"></span>
-            <span id="playback-reliability-text">Preparing lock-screen playback</span>
-          </div>
-
-          <div id="iphone-playback-tip" class="iphone-playback-tip" hidden>
-            <span>For best listening, keep this screen open until it says “Ready for lock screen.”</span>
-            <button id="iphone-playback-tip-dismiss" type="button" aria-label="Dismiss tip">Got it</button>
+            <span id="playback-reliability-text">Playback needs attention</span>
           </div>
 
           <div id="playback-resume-prompt" class="playback-resume-prompt" hidden role="status">
@@ -1064,6 +1059,6 @@
 
   <script src="/js/lifecycle.js?v=1"></script>
   <script src="/js/chunk-player.js?v=22"></script>
-  <script type="module" src="app.js?v=104"></script>
+  <script type="module" src="app.js?v=105"></script>
 </body>
 </html>

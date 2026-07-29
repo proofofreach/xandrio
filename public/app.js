@@ -23,7 +23,7 @@ import { readJSON, writeJSON, readText } from './js/util/storage.js';
 import { createPlaybackSession, restorePlaybackPosition } from './js/playback-session.js';
 import { navigateChapterSelection, positionMatchesChapterStructure, shouldAllowBackwardReconciliation } from './js/chapter-navigation.mjs';
 import { SingleFileChapterPlayer } from './js/single-file-chapter-player.js';
-import { initPlayerUI, paintChapterTimes, paintScrubPreview, toggleTimeDisplayMode, syncTimeDisplayModeFromClientSettings, getPlaybackProgressScope, getBookSeekTarget, syncPlaybackProgressScope, setPlaybackReliabilityState, setResumePromptVisible, maybeShowIphonePlaybackTip, dismissIphonePlaybackTip, handleChunkWaiting, handleChunkPreparing, setChunkOverlayState, displayChapterTitle, updateChapterTrigger, updateBookProgress, updatePlayerAmbient, renderChapterList, openChapterSheet, closeChapterSheet, dismissChapterSheet, showAudioLoading, hideAudioLoading, updateMiniPlayer, syncMiniPlayerInfo, syncMiniPlayerIcon } from './js/views/player-ui.js';
+import { initPlayerUI, paintChapterTimes, paintScrubPreview, toggleTimeDisplayMode, syncTimeDisplayModeFromClientSettings, getPlaybackProgressScope, getBookSeekTarget, syncPlaybackProgressScope, setPlaybackReliabilityState, setResumePromptVisible, handleChunkWaiting, handleChunkPreparing, setChunkOverlayState, displayChapterTitle, updateChapterTrigger, updateBookProgress, updatePlayerAmbient, renderChapterList, openChapterSheet, closeChapterSheet, dismissChapterSheet, showAudioLoading, hideAudioLoading, updateMiniPlayer, syncMiniPlayerInfo, syncMiniPlayerIcon } from './js/views/player-ui.js';
 import { findPreferredStartChapterIndex } from './js/util/chapter-labels.mjs';
 import { createSmartRewindController } from './js/smart-rewind.mjs';
 import { initListeningQueue, loadListeningQueue, addToListeningQueue, advanceListeningQueue, getBookPlaybackSettings, saveBookPlaybackSettings } from './js/features/listening-queue.js';
@@ -91,7 +91,7 @@ let isScrubbing = false;
 let languageFilter;
 let startOverModal, startOverBtn, startOverConfirmBtn, startOverCancelBtn;
 let shortcutOverlay, shortcutOverlayClose;
-let playbackReliability, iphonePlaybackTipDismiss;
+let playbackReliability;
 let playbackResumePrompt, playbackResumeBtn;
 let startOverModalController = null;
 let shortcutOverlayController = null;
@@ -137,7 +137,6 @@ function initializeDOMElements() {
   shortcutOverlayClose = document.getElementById('shortcut-overlay-close');
   
   playbackReliability = document.getElementById('playback-reliability');
-  iphonePlaybackTipDismiss = document.getElementById('iphone-playback-tip-dismiss');
   playbackResumePrompt = document.getElementById('playback-resume-prompt');
   playbackResumeBtn = document.getElementById('playback-resume-btn');
 }
@@ -791,7 +790,6 @@ function setupEventListeners() {
 
   playPauseBtn.addEventListener('click', () => { haptic(); togglePlayPause(); });
   playbackResumeBtn?.addEventListener('click', resumePlaybackFromPrompt);
-  iphonePlaybackTipDismiss?.addEventListener('click', dismissIphonePlaybackTip);
   skipBackBtn.addEventListener('click', () => { haptic(); skip(-getSkipInterval()); });
   skipForwardBtn.addEventListener('click', () => { haptic(); skip(getSkipInterval()); });
   prevChapterBtn.addEventListener('click', () => { haptic(); changeChapter(-1); });

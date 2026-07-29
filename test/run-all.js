@@ -81,6 +81,7 @@ const tests = [
   'test-user-library-state.js',
   'test-book-deletion-log.js',
   'test-book-lifecycle.js',
+  'test-playback-notice-policy.js',
   'test-playback-session.js',
   'test-lifecycle.js',
   'test-sleep-timer-lifecycle.js',
