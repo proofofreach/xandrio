@@ -413,6 +413,11 @@ function scheduleAutomaticPlaybackRecovery(error, resumeAt) {
 
 function handleChunkError(error) {
   console.error('Chunk playback error:', error);
+  if (error && (error.name === 'NotAllowedError' || error.name === 'AbortError')) {
+    hideAudioLoading();
+    setResumePromptVisible(true);
+    return;
+  }
   if (
     error?.code === 'CONTINUOUS_STREAM_EOF'
     || error?.code === 'MEDIA_PLAY_TIMEOUT'
@@ -423,11 +428,6 @@ function handleChunkError(error) {
     if (!scheduleAutomaticPlaybackRecovery(error, resumeAt)) {
       offerManualPlaybackRecovery(error, resumeAt);
     }
-    return;
-  }
-  if (error && (error.name === 'NotAllowedError' || error.name === 'AbortError')) {
-    hideAudioLoading();
-    setResumePromptVisible(true);
     return;
   }
   if (needsReliablePlayback()) {

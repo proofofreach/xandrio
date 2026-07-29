@@ -13,7 +13,7 @@ const ASSET_VERSIONS = {
   '/style-v3.css': 93,
   '/js/lifecycle.js': 1,
   '/js/chunk-player.js': 22,
-  '/app.js': 105
+  '/app.js': 106
 };
 const versionedAsset = (path) => `${path}?v=${ASSET_VERSIONS[path]}`;
 const APP_SHELL = [

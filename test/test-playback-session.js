@@ -359,8 +359,9 @@ function fakeAudio() {
       renderChapterList() {},
       syncMiniPlayerInfo() {},
       showAudioLoading() {},
+      hideAudioLoading() {},
       setPlaybackReliabilityState(...args) { appImports.reliabilityStates.push(args); },
-      setResumePromptVisible() {},
+      setResumePromptVisible(visible) { appImports.resumePromptStates.push(visible); },
       showToast() {},
       syncMiniPlayerIcon() {},
       getCurrentPlaybackSpeed: () => 1
@@ -370,6 +371,7 @@ function fakeAudio() {
     appImports.sleepTarget = false;
     appImports.sleepExpiries = [];
     appImports.reliabilityStates = [];
+    appImports.resumePromptStates = [];
     appImports.timeoutDelays = [];
     const appTestSource = appSource
       .replace(/^import \{([^}]+)\} from ['"][^'"]+['"];$/gm, 'const {$1} = globalThis.__playbackAppImports;')
@@ -389,7 +391,8 @@ function fakeAudio() {
         handleChapterEnd,
         handleContinuousChapterTransition,
         estimateChapterPlaybackDuration,
-        togglePlayPause
+        togglePlayPause,
+        handleChunkError
       };`;
     const previousGlobals = new Map(['window', 'document', 'navigator', 'setInterval', '__playbackAppImports', '__playbackAppHarness']
       .map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
@@ -483,6 +486,22 @@ function fakeAudio() {
         appImports.timeoutDelays.includes(250),
         'a play timeout should enter automatic recovery instead of stopping at a passive label'
       );
+
+      const continuousPlayer = engine('continuous');
+      continuousPlayer.isContinuous = true;
+      globalThis.__playbackAppHarness.configure({
+        book: { id: 'book-a' },
+        chapters: [{ title: 'One' }, { title: 'Two' }],
+        player: continuousPlayer,
+        chapter: uiElement
+      });
+      appImports.timeoutDelays.length = 0;
+      appImports.resumePromptStates.length = 0;
+      const autoplayError = new Error('Playback requires a user gesture');
+      autoplayError.name = 'NotAllowedError';
+      globalThis.__playbackAppHarness.handleChunkError(autoplayError);
+      assert.deepStrictEqual(appImports.timeoutDelays, []);
+      assert.deepStrictEqual(appImports.resumePromptStates, [true]);
 
       for (let index = 0; index < 100; index++) {
         globalThis.__playbackAppHarness.recordPlaybackEvent({
