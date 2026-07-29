@@ -9,7 +9,6 @@ import { bookTimelinePosition, bookTimelineSeekTarget } from '../util/book-timel
 import { chapterListItemState, chapterListOrdinal, chapterProgressContext, expandNumericChapterTitle, findPreferredStartChapterIndex, firstDisplaySentence } from '../util/chapter-labels.mjs';
 
 const TIME_DISPLAY_KEY = 'xandrio_time_display';
-const IPHONE_PLAYBACK_TIP_DISMISSED_KEY = 'xandrio_iphone_playback_tip_dismissed';
 const ICON_NOW_PLAYING = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="now-playing-mark" aria-hidden="true"><rect x="1.5" y="7" width="3" height="7" rx="1"/><rect x="6.5" y="3" width="3" height="11" rx="1"/><rect x="11.5" y="9" width="3" height="5" rx="1"/></svg>';
 
 let deps = {};
@@ -23,7 +22,6 @@ let startOverBtn = null;
 let playbackReliability = null;
 let playbackReliabilityText = null;
 let playbackResumePrompt = null;
-let iphonePlaybackTip = null;
 let audioLoading = null;
 let loadingText = null;
 let loadingDetail = null;
@@ -47,7 +45,6 @@ export function initPlayerUI(options = {}) {
   playbackReliability = document.getElementById('playback-reliability');
   playbackReliabilityText = document.getElementById('playback-reliability-text');
   playbackResumePrompt = document.getElementById('playback-resume-prompt');
-  iphonePlaybackTip = document.getElementById('iphone-playback-tip');
   audioLoading = document.getElementById('audio-loading');
   loadingText = document.getElementById('loading-text');
   loadingDetail = document.getElementById('loading-detail');
@@ -214,31 +211,32 @@ export function syncTimeDisplayModeFromClientSettings() {
 }
 
 
+export function isPlaybackActionRequired(state) {
+  return state === 'resume';
+}
+
+export function playbackNoticeStateForResumePrompt(visible) {
+  return visible ? 'resume' : 'hidden';
+}
+
 export function setPlaybackReliabilityState(state, text) {
   if (!playbackReliability || !playbackReliabilityText) return;
-  const shouldShow = needsReliablePlayback() && state && state !== 'hidden';
+  const normalizedState = state || 'hidden';
+  const shouldShow = needsReliablePlayback() && isPlaybackActionRequired(normalizedState);
+  playbackReliability.dataset.state = normalizedState;
   playbackReliability.hidden = !shouldShow;
-  if (!shouldShow) return;
-  playbackReliability.dataset.state = state;
-  playbackReliabilityText.textContent = text;
+  if (shouldShow) playbackReliabilityText.textContent = text;
   syncMiniPlayerInfo();
 }
 
 export function setResumePromptVisible(visible) {
   if (!playbackResumePrompt) return;
+  const noticeState = playbackNoticeStateForResumePrompt(visible);
   playbackResumePrompt.hidden = !(visible && needsReliablePlayback());
-  if (visible) setPlaybackReliabilityState('resume', 'Tap to resume');
-}
-
-export function maybeShowIphonePlaybackTip() {
-  if (!iphonePlaybackTip || !isIOSLike()) return;
-  const dismissed = readText(IPHONE_PLAYBACK_TIP_DISMISSED_KEY, '') === '1';
-  iphonePlaybackTip.hidden = dismissed;
-}
-
-export function dismissIphonePlaybackTip() {
-  writeText(IPHONE_PLAYBACK_TIP_DISMISSED_KEY, '1');
-  if (iphonePlaybackTip) iphonePlaybackTip.hidden = true;
+  setPlaybackReliabilityState(
+    noticeState,
+    noticeState === 'resume' ? 'Tap to resume' : ''
+  );
 }
 
 
@@ -715,7 +713,6 @@ export function updateMiniPlayer(viewName) {
     document.body.classList.add('has-mini-player');
     syncMiniPlayerInfo();
     syncMiniPlayerIcon();
-    maybeShowIphonePlaybackTip();
   } else {
     mini.style.display = 'none';
     document.body.classList.remove('has-mini-player');
@@ -729,10 +726,10 @@ export function syncMiniPlayerInfo() {
   const coverEl = document.getElementById('mini-player-cover');
   if (titleEl) titleEl.textContent = deps.getCurrentBook().title;
   if (chapterEl && deps.getChapters()[deps.getCurrentChapter()]) {
-    const reliability = needsReliablePlayback() && deps.getPlaybackBackend() === 'single-file'
-      ? ' · Best for lock screen'
-      : (needsReliablePlayback() ? ' · Preparing lock-screen playback' : '');
-    chapterEl.textContent = `${displayChapterTitle(deps.getChapters()[deps.getCurrentChapter()], deps.getCurrentChapter())}${reliability}`;
+    chapterEl.textContent = displayChapterTitle(
+      deps.getChapters()[deps.getCurrentChapter()],
+      deps.getCurrentChapter()
+    );
   }
   if (coverEl) {
     coverEl.src = `${API_BASE}/api/cover/${encodeURIComponent(deps.getCurrentBook().id)}`;
