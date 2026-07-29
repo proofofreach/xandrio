@@ -155,7 +155,7 @@ async function createScannedChapterBundleFixture() {
       .join('');
     return `${openerImage}${malformedLead}<p>${printedNumbers[index]}</p>${titleMarkup}<p><b>First authored subsection</b></p><p>${chapterBody}</p>`;
   }).join('');
-  const afterword = `<p>AFTERWORD</p><p>${'Closing reflections belong to the authored afterword. '.repeat(20)}</p><p>REFERENCES</p><p>${'A cited source belongs to the reference section. '.repeat(20)}</p>`;
+  const afterword = `<p>AFTERWORD</p><p>${'Closing reflections belong to the authored afterword. '.repeat(20)}</p><p>REFERENCES</p><p>${'A cited source belongs to the reference section. '.repeat(20)}</p><p>INDEX</p><p>Short trailing index entry must not be discarded.</p>`;
   await fs.writeFile(
     path.join(oebps, 'introduction.xhtml'),
     `<html><body><h1>Introduction</h1><p>${'Introductory context. '.repeat(80)}</p>${scannedChapters}${afterword}</body></html>`
@@ -275,7 +275,8 @@ async function createScannedChapterBundleFixture() {
     assert.doesNotMatch(chapters[8].text, /AFTERWORD/);
     assert.equal(chapters[9].type, 'backmatter');
     assert.equal(chapters[10].type, 'backmatter');
-    console.log('Scanned chapter bundle regression: 7 passed, 0 failed');
+    assert.match(chapters[10].text, /Short trailing index entry must not be discarded/);
+    console.log('Scanned chapter bundle regression: 8 passed, 0 failed');
   } finally {
     await fs.rm(scannedFixture.directory, { recursive: true, force: true });
   }

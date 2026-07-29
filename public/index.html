@@ -92,25 +92,25 @@
         Audio preparation continues on the server when Xandrio is closed. During the later device download, keep Xandrio visible and the screen awake. Interrupted downloads resume safely.
       </p>
 
-      <div class="library-controls">
-        <div class="control-row">
-          <select id="sort-select" aria-label="Sort books">
-            <option value="last-read" selected>Last Played</option>
-            <option value="recent">Recently Added</option>
-            <option value="title-az">Title A-Z</option>
-            <option value="title-za">Title Z-A</option>
-            <option value="author-az">Author A-Z</option>
-            <option value="author-za">Author Z-A</option>
-          </select>
-          <button id="view-toggle-btn" class="btn-icon" aria-label="Toggle grid/list view" title="Toggle view">
-            <span id="view-toggle-icon"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="icon"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 6A2.25 2.25 0 016 3.75h2.25A2.25 2.25 0 0110.5 6v2.25a2.25 2.25 0 01-2.25 2.25H6a2.25 2.25 0 01-2.25-2.25V6zM3.75 15.75A2.25 2.25 0 016 13.5h2.25a2.25 2.25 0 012.25 2.25V18a2.25 2.25 0 01-2.25 2.25H6A2.25 2.25 0 013.75 18v-2.25zM13.5 6a2.25 2.25 0 012.25-2.25H18A2.25 2.25 0 0120.25 6v2.25A2.25 2.25 0 0118 10.5h-2.25a2.25 2.25 0 01-2.25-2.25V6zM13.5 15.75a2.25 2.25 0 012.25-2.25H18a2.25 2.25 0 012.25 2.25V18A2.25 2.25 0 0118 20.25h-2.25A2.25 2.25 0 0113.5 18v-2.25z"/></svg></span>
-          </button>
-        </div>
-      </div>
-
       <div id="library-panel" role="tabpanel" aria-labelledby="library-tab-shelf" tabindex="0">
         <div id="continue-rail" class="continue-rail" hidden></div>
         <section id="up-next-rail" class="up-next-rail" hidden aria-label="Up Next"></section>
+
+        <div class="library-controls">
+          <div class="control-row">
+            <select id="sort-select" aria-label="Sort books">
+              <option value="last-read" selected>Last Played</option>
+              <option value="recent">Recently Added</option>
+              <option value="title-az">Title A-Z</option>
+              <option value="title-za">Title Z-A</option>
+              <option value="author-az">Author A-Z</option>
+              <option value="author-za">Author Z-A</option>
+            </select>
+            <button id="view-toggle-btn" class="btn-icon" aria-label="Toggle grid/list view" title="Toggle view">
+              <span id="view-toggle-icon"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="icon"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 6A2.25 2.25 0 016 3.75h2.25A2.25 2.25 0 0110.5 6v2.25a2.25 2.25 0 01-2.25 2.25H6a2.25 2.25 0 01-2.25-2.25V6zM3.75 15.75A2.25 2.25 0 016 13.5h2.25a2.25 2.25 0 012.25 2.25V18a2.25 2.25 0 01-2.25 2.25H6A2.25 2.25 0 013.75 18v-2.25zM13.5 6a2.25 2.25 0 012.25-2.25H18A2.25 2.25 0 0120.25 6v2.25A2.25 2.25 0 0118 10.5h-2.25a2.25 2.25 0 01-2.25-2.25V6zM13.5 15.75a2.25 2.25 0 012.25-2.25H18a2.25 2.25 0 012.25 2.25V18A2.25 2.25 0 0118 20.25h-2.25A2.25 2.25 0 0113.5 18v-2.25z"/></svg></span>
+            </button>
+          </div>
+        </div>
 
         <section id="shelf-empty-hint" class="shelf-empty-hint" aria-labelledby="shelf-empty-title" hidden>
           <div class="shelf-empty-copy">
@@ -1059,6 +1059,6 @@
 
   <script src="/js/lifecycle.js?v=1"></script>
   <script src="/js/chunk-player.js?v=22"></script>
-  <script type="module" src="app.js?v=105"></script>
+  <script type="module" src="app.js?v=106"></script>
 </body>
 </html>

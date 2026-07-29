@@ -682,6 +682,20 @@ async function verifyLibraryActions(page) {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(`${origin}/#/library`, { waitUntil: 'networkidle' });
   await page.waitForSelector('#shelf-empty-hint:not([hidden])');
+  const libraryOrder = await page.locator('#library-panel').evaluate(panel => {
+    const children = [...panel.children];
+    return {
+      continueRail: children.indexOf(document.getElementById('continue-rail')),
+      upNextRail: children.indexOf(document.getElementById('up-next-rail')),
+      controls: children.indexOf(panel.querySelector('.library-controls')),
+      bookList: children.indexOf(document.getElementById('library-list'))
+    };
+  });
+  if (!(libraryOrder.continueRail < libraryOrder.controls &&
+        libraryOrder.upNextRail < libraryOrder.controls &&
+        libraryOrder.controls < libraryOrder.bookList)) {
+    throw new Error(`Library sort and view controls do not sit between the listening rails and book list: ${JSON.stringify(libraryOrder)}`);
+  }
   if (await page.locator('[data-library-tab="shelf"]').textContent() !== 'My Shelf' ||
       await page.locator('[data-library-tab="downloaded"]').textContent() !== 'Downloaded' ||
       await page.locator('[data-library-tab="all"]').textContent() !== 'Shared Library') {

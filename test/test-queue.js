@@ -773,8 +773,11 @@ async function runTests() {
     const out = path.join(tmpDir, 'cancelled.mp3');
     const previousFetch = global.fetch;
     let fetchAborted = false;
+    let fetchStarted;
+    const fetchStartedPromise = new Promise(resolve => { fetchStarted = resolve; });
     try {
       global.fetch = (_url, options) => new Promise((_resolve, reject) => {
+        fetchStarted();
         options.signal.addEventListener('abort', () => {
           fetchAborted = true;
           const error = new Error('aborted');
@@ -797,7 +800,7 @@ async function runTests() {
         return q._generateHttpTTS(engine, text, outputPath, {}, 0, 0, signal);
       };
       const id = await q.enqueue({ text: 'HTTP cancellation text.', outputPath: out });
-      for (let i = 0; i < 50 && q.getStatus(id)?.status !== 'generating'; i++) await sleep(2);
+      await fetchStartedPromise;
       const startedAt = Date.now();
       assert.strictEqual(q.cancel(id), true);
       await assert.rejects(q.waitFor(id), /cancelled/);

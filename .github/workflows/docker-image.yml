@@ -212,15 +212,15 @@ jobs:
           version="${RELEASE_TAG#v}"
           printf 'tag=%s\nversion=%s\ncommit=%s\n' "$RELEASE_TAG" "$version" "$commit" >> "$GITHUB_OUTPUT"
       - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
-      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
-      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      - uses: docker/login-action@371161bbe7024a29a25c5e19bfcbc0804fe9ad2c # v4.5.2
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Build once and push an immutable candidate
         id: build
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
           platforms: linux/amd64,linux/arm64
@@ -560,8 +560,8 @@ jobs:
           tag_object=$(git rev-parse "${RELEASE_TAG}^{tag}")
           test "$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${tag_object}" --jq '.verification.verified')" = true
           test "$(git rev-list -n 1 "$RELEASE_TAG")" = "$RELEASE_COMMIT"
-      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
-      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      - uses: docker/login-action@371161bbe7024a29a25c5e19bfcbc0804fe9ad2c # v4.5.2
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
