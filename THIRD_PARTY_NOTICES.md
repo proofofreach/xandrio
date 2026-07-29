@@ -37,6 +37,7 @@ This file is generated from the locked installed Node dependency tree by `npm ru
 | accepts | 2.0.0 | MIT | jshttp/accepts |
 | agent-base | 6.0.2 | MIT | git://github.com/TooTallNate/node-agent-base.git |
 | agent-base | 7.1.4 | MIT | https://github.com/TooTallNate/proxy-agents.git |
+| agent-base | 9.0.0 | MIT | https://github.com/TooTallNate/proxy-agents.git |
 | ajv | 8.20.0 | MIT | ajv-validator/ajv |
 | ajv-formats | 3.0.1 | MIT | https://github.com/ajv-validator/ajv-formats.git |
 | ajv-formats-draft2019 | 1.6.1 | MIT | https://github.com/luzlab/ajv-formats-draft2019.git |
@@ -166,6 +167,9 @@ This file is generated from the locked installed Node dependency tree by `npm ru
 | http-proxy-agent | 7.0.2 | MIT | https://github.com/TooTallNate/proxy-agents.git |
 | https-proxy-agent | 5.0.1 | MIT | git://github.com/TooTallNate/node-https-proxy-agent.git |
 | https-proxy-agent | 7.0.6 | MIT | https://github.com/TooTallNate/proxy-agents.git |
+| https-proxy-agent | 7.0.6 | MIT | https://github.com/TooTallNate/proxy-agents.git |
+| https-proxy-agent | 7.0.6 | MIT | https://github.com/TooTallNate/proxy-agents.git |
+| https-proxy-agent | 9.1.0 | MIT | https://github.com/TooTallNate/proxy-agents.git |
 | iconv-lite | 0.6.3 | MIT | git://github.com/ashtuchkin/iconv-lite.git |
 | iconv-lite | 0.7.3 | MIT | https://github.com/pillarjs/iconv-lite.git |
 | iconv-lite | 0.7.3 | MIT | https://github.com/pillarjs/iconv-lite.git |
@@ -249,7 +253,7 @@ This file is generated from the locked installed Node dependency tree by `npm ru
 | node-abi | 3.94.0 | MIT | https://github.com/electron/node-abi.git |
 | node-edge-tts | 1.2.10 | MIT | https://github.com/SchneeHertz/node-edge-tts.git |
 | node-gyp | 11.5.0 | MIT | git://github.com/nodejs/node-gyp.git |
-| nodemon | 3.1.11 | MIT | https://github.com/remy/nodemon.git |
+| nodemon | 3.1.14 | MIT | https://github.com/remy/nodemon.git |
 | nopt | 8.1.0 | ISC | https://github.com/npm/nopt.git |
 | normalize-package-data | 8.0.0 | BSD-2-Clause | https://github.com/npm/normalize-package-data.git |
 | normalize-path | 3.0.0 | MIT | jonschlinkert/normalize-path |
@@ -279,6 +283,7 @@ This file is generated from the locked installed Node dependency tree by `npm ru
 | process-nextick-args | 2.0.1 | MIT | https://github.com/calvinmetcalf/process-nextick-args.git |
 | promise-retry | 2.0.1 | MIT | git://github.com/IndigoUnited/node-promise-retry.git |
 | proxy-addr | 2.0.7 | MIT | jshttp/proxy-addr |
+| proxy-agent-negotiate | 1.1.0 | MIT | https://github.com/TooTallNate/proxy-agents.git |
 | proxy-from-env | 2.1.0 | MIT | https://github.com/Rob--W/proxy-from-env.git |
 | pstree.remy | 1.1.8 | MIT | https://github.com/remy/pstree.git |
 | pump | 3.0.4 | MIT | git://github.com/mafintosh/pump.git |
