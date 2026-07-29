@@ -823,6 +823,51 @@ section('Variant-scoped cache paths');
   assertDeep(cancelled, ['deleted-book'], 'Title deletion reaches every restored variant worker');
 })();
 
+section('Chunk seek planning');
+
+(async () => {
+  const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'xandrio-seek-plan-'));
+  try {
+    const tts = new ChunkedTTS(dir);
+    const chunks = [];
+    for (let index = 0; index < 3; index++) {
+      const chunkPath = tts.chunkPath('seekbook', 0, index);
+      await fsp.writeFile(chunkPath, Buffer.alloc((index + 1) * 10 * 20_000));
+      chunks.push({
+        index,
+        status: STATUS.READY,
+        path: chunkPath,
+        textLength: 100,
+        duration: null
+      });
+    }
+    tts.manifests.set(tts._manifestKey('seekbook', 0), {
+      bookId: 'seekbook',
+      chapterIndex: 0,
+      totalChunks: chunks.length,
+      textLength: 300,
+      chunks
+    });
+
+    const middle = await tts.planChapterSeek('seekbook', 0, 25, 90);
+    assertEqual(middle.targetChunk, 1, 'Deep seek targets the containing rendered chunk');
+    assert(Math.abs(middle.chunkStartSeconds - 10) < 0.01,
+      'Deep seek reports the skipped rendered prefix');
+    assert(Math.abs(middle.chunkOffsetSeconds - 15) < 0.01,
+      'Deep seek decodes only the target chunk offset');
+
+    const overrun = await tts.planChapterSeek('seekbook', 0, 100, 90);
+    assertEqual(overrun.targetChunk, 2, 'Overestimated seek clamps to the final chunk');
+    assert(overrun.logicalOffsetSeconds < 60 && overrun.logicalOffsetSeconds > 59,
+      'Overestimated seek exposes its clamped chapter position');
+  } finally {
+    await fsp.rm(dir, { recursive: true, force: true });
+  }
+})().catch(error => {
+  failed++;
+  console.error(`  ❌ Chunk seek planning — ${error.stack || error.message}`);
+});
+
 // ─── Summary ─────────────────────────────────────────────────────────────────
 
 // Wait for async tests to finish

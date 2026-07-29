@@ -363,6 +363,38 @@ async function decodedDuration(filePath) {
       assert.strictEqual(decoded[1].details.skippedPcmBytes, 0);
     });
 
+    await test('continuous transport discards only the planned target-chunk offset', async () => {
+      const targetChunk = path.join(dir, 'continuous-target-chunk.mp3');
+      await createTone(targetChunk, 0.40, 520);
+      const source = {
+        bookId: 'book_targeted_seek',
+        chapterIndex: 0,
+        endChapterIndex: 0,
+        startOffsetSeconds: 12,
+        decodeStartOffsetSeconds: 0.10,
+        format: 'mp3',
+        async *iterateInputs() {
+          yield { path: targetChunk, chapterIndex: 0, lastInChapter: true };
+        }
+      };
+      const server = await listen(routeHarness(source));
+      const outputPath = path.join(dir, 'continuous-targeted-seek.mp3');
+      try {
+        const response = await fetch(
+          `http://127.0.0.1:${server.address().port}/api/audio-continuous/book_targeted_seek/0`
+        );
+        assert.strictEqual(response.status, 200);
+        await fsp.writeFile(outputPath, Buffer.from(await response.arrayBuffer()));
+      } finally {
+        await new Promise(resolve => server.close(resolve));
+      }
+      const actual = await decodedDuration(outputPath);
+      assert(
+        Math.abs(actual - 0.30) < 0.07,
+        `targeted seek output was ${actual.toFixed(3)}s instead of the target chunk remainder`
+      );
+    });
+
     await test('native HLS stays playable while its EVENT playlist remains open', async () => {
       const firstPath = path.join(dir, 'hls-first.mp3');
       const secondPath = path.join(dir, 'hls-second.mp3');

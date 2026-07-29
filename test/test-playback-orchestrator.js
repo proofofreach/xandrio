@@ -28,6 +28,18 @@ function harness(overrides = {}) {
       calls.push(['reconstruct', ...args]);
       return overrides.reconstructed || manifest;
     },
+    planChapterSeek: async (...args) => {
+      calls.push(['planSeek', ...args]);
+      const requested = Math.max(0, Number(args[2]) || 0);
+      return overrides.seekPlan || {
+        targetChunk: 0,
+        chunkOffsetSeconds: requested,
+        chunkStartSeconds: 0,
+        logicalOffsetSeconds: requested,
+        estimatedTotalDuration: Number(args[3]) || requested
+      };
+    },
+    splitIntoChunks: () => overrides.splitChunks || ['first', 'second'],
     chunkPath: (...args) => `/cache/${args.join('-')}.mp3`,
     chapterPath: (...args) => `/cache/${args.join('-')}.mp3`,
     currentOutputFormat: () => 'mp3'
@@ -55,7 +67,10 @@ function harness(overrides = {}) {
     prefetchNextChapter: (...args) => calls.push(['prefetch', ...args]),
     getChapterContext: async () => ({
       book: { language: 'en' },
-      chapter: { text: 'Current chapter narration text is long enough for testing.' },
+      chapter: {
+        text: 'Current chapter narration text is long enough for testing.',
+        estimatedDuration: overrides.estimatedDuration
+      },
       chapters: [
         { text: 'Current chapter narration text is long enough for testing.' },
         { text: 'Next chapter narration text is also long enough for testing.' }
@@ -325,6 +340,75 @@ function harness(overrides = {}) {
     assert.deepStrictEqual(timeline.durations, [6, null]);
     assert.strictEqual(timeline.startOffsetSeconds, 2);
     assert.strictEqual(timeline.complete, false);
+  });
+
+  await test('continuous deep seek starts at the planned chunk instead of decoding the chapter prefix', async () => {
+    const existing = {
+      totalChunks: 3,
+      textLength: 120,
+      chunks: [
+        { index: 0, status: 'ready', path: '/cache/chunk-0.mp3', textLength: 40 },
+        { index: 1, status: 'ready', path: '/cache/chunk-1.mp3', textLength: 40 },
+        { index: 2, status: 'ready', path: '/cache/chunk-2.mp3', textLength: 40 }
+      ]
+    };
+    const { orchestrator, calls } = harness({
+      manifest: existing,
+      ready: false,
+      seekPlan: {
+        targetChunk: 2,
+        chunkOffsetSeconds: 5,
+        chunkStartSeconds: 20,
+        logicalOffsetSeconds: 25,
+        estimatedTotalDuration: 30
+      }
+    });
+    const source = await orchestrator.prepareContinuousAudioStream({
+      bookId: 'book',
+      chapterIndex: 0,
+      requestedTier: 'instant',
+      sessionId: 'targeted-seek-session',
+      startOffsetSeconds: 40
+    });
+
+    assert.strictEqual(source.startOffsetSeconds, 25);
+    assert.strictEqual(source.decodeStartOffsetSeconds, 5);
+    assert(calls.some(call =>
+      call[0] === 'prioritize' && call[3] === 2 && call[4] === 'immediate'
+    ));
+    assert.deepStrictEqual(await source.iterateInputs().next(), {
+      value: {
+        path: '/cache/chunk-2.mp3',
+        chapterIndex: 0,
+        lastInChapter: true
+      },
+      done: false
+    });
+  });
+
+  await test('continuous deep seek initially generates the estimated unrendered chunk', async () => {
+    const { orchestrator, calls } = harness({
+      ready: false,
+      estimatedDuration: 100,
+      splitChunks: ['first', 'second', 'third', 'fourth'],
+      seekPlan: {
+        targetChunk: 3,
+        chunkOffsetSeconds: 0,
+        chunkStartSeconds: 75,
+        logicalOffsetSeconds: 75,
+        estimatedTotalDuration: 100
+      }
+    });
+    await orchestrator.prepareContinuousAudioStream({
+      bookId: 'book',
+      chapterIndex: 0,
+      requestedTier: 'instant',
+      startOffsetSeconds: 75
+    });
+
+    const generation = calls.find(call => call[0] === 'generate');
+    assert(generation);
+    assert.deepStrictEqual(generation[6].chunkIndexes, [3, 4]);
   });
 
   await test('continuous stream clamps an explicit chapter-end limit', async () => {
