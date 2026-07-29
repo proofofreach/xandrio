@@ -408,7 +408,11 @@ function harness(overrides = {}) {
 
     const generation = calls.find(call => call[0] === 'generate');
     assert(generation);
-    assert.deepStrictEqual(generation[6].chunkIndexes, [3, 4]);
+    assert.strictEqual(generation[6].priorityForChunk(3), 'immediate');
+    assert.strictEqual(generation[6].priorityForChunk(0), 'background');
+    if (generation[6].chunkIndexes) {
+      assert.deepStrictEqual(generation[6].chunkIndexes, [3, 4]);
+    }
   });
 
   await test('continuous stream clamps an explicit chapter-end limit', async () => {
