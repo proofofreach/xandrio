@@ -1643,7 +1643,7 @@ function installBrowser({
     const secondChapterGate = new Promise(resolve => { releaseSecondChapter = resolve; });
     global.fetch = async (input, options) => {
       const url = typeof input === 'string' ? input : (input.url || String(input));
-      if (url.includes('/api/audio/book-1/1')) await secondChapterGate;
+      if (url.includes('/api/offline/audio/book-1/1')) await secondChapterGate;
       return fetchAudio(input, options);
     };
     offline.initOffline(env.init);
@@ -1651,16 +1651,22 @@ function installBrowser({
     const download = offline.downloadCurrentBook();
     let completed;
     try {
-      for (
-        let attempt = 0;
-        attempt < 40 &&
-          (offline.getOfflineManifest()[book.id]?.chapterEntries?.filter(Boolean).length || 0) < 2;
-        attempt++
+      const readinessDeadline = Date.now() + 2000;
+      while (
+        Date.now() < readinessDeadline &&
+        (
+          !offline.getOfflineManifest()[book.id]?.chapterEntries?.[0] ||
+          (offline.getOfflineManifest()[book.id]?.chapterEntries?.filter(Boolean).length || 0) < 2
+        )
       ) {
-        await new Promise(resolve => setImmediate(resolve));
+        await new Promise(resolve => setTimeout(resolve, 5));
       }
 
       assert.strictEqual(offline.getOfflineManifest()[book.id].state, 'repairing');
+      assert.strictEqual(
+        offline.getOfflineManifest()[book.id].chapterEntries.filter(Boolean).length,
+        2
+      );
       assert.strictEqual(await offline.isChapterAvailableOffline(book.id, 0), true);
       assert.deepStrictEqual(offline.offlineStatusForBook(book.id), {
         kind: 'downloading',
