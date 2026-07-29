@@ -18,7 +18,7 @@ async function test(name, fn) {
   }
 }
 
-function makeCache() {
+function makeCache({ transformBytes = null } = {}) {
   const entries = new Map();
   const keyOf = input => typeof input === 'string' ? input : input.url;
   return {
@@ -29,7 +29,10 @@ function makeCache() {
     },
     async put(input, response) {
       const headers = new Headers(response.headers);
-      const bytes = await response.arrayBuffer();
+      const sourceBytes = new Uint8Array(await response.arrayBuffer());
+      const bytes = transformBytes
+        ? transformBytes(new Uint8Array(sourceBytes))
+        : sourceBytes;
       entries.set(keyOf(input), new Response(bytes, {
         status: response.status,
         statusText: response.statusText,
@@ -923,7 +926,7 @@ function installBrowser({
     assert.strictEqual(await offline.verifyOfflineEntry(metadataOnlyCache, entry), true);
   });
 
-  await test('streams server-verified audio into Cache Storage without hashing a second browser copy', async () => {
+  await test('hashes the stored body before accepting server-verified audio', async () => {
     const cache = makeCache();
     const env = installBrowser({
       book,
@@ -935,11 +938,96 @@ function installBrowser({
     offline.initOffline(env.init);
 
     assert.strictEqual(await offline.downloadCurrentBook(), true);
-    assert.strictEqual(env.hashCalls, 0);
+    assert.strictEqual(env.hashCalls, 1);
     assert.strictEqual(
       await offline.verifyOfflineEntry(cache, offline.getOfflineManifest()[book.id]),
       true
     );
+  });
+
+  await test('rejects cached audio whose body does not match its server integrity header', async () => {
+    const cache = makeCache({
+      transformBytes(bytes) {
+        if (bytes.byteLength > 0) bytes[Math.floor(bytes.byteLength / 2)] ^= 0xff;
+        return bytes;
+      }
+    });
+    const env = installBrowser({
+      book,
+      chapters: [{}],
+      cache,
+      variants: ['voice-a'],
+      serverContentHash: true
+    });
+    offline.initOffline(env.init);
+
+    assert.strictEqual(await offline.downloadCurrentBook(), false);
+    assert.strictEqual(offline.getOfflineManifest()[book.id].state, 'incomplete');
+  });
+
+  await test('one-time integrity audit rejects an existing damaged download', async () => {
+    const cache = makeCache();
+    const env = installBrowser({
+      book,
+      chapters: [{}],
+      cache,
+      variants: ['voice-a'],
+      serverContentHash: true
+    });
+    offline.initOffline(env.init);
+    assert.strictEqual(await offline.downloadCurrentBook(), true);
+
+    const legacyManifest = structuredClone(offline.getOfflineManifest());
+    delete legacyManifest[book.id].chapterEntries[0].bodyVerificationVersion;
+    const key = offlineAudioKey(book.id, 0);
+    const cached = await cache.match(key);
+    const bytes = new Uint8Array(await cached.arrayBuffer());
+    bytes[Math.floor(bytes.byteLength / 2)] ^= 0xff;
+    await cache.put(key, new Response(bytes, { headers: cached.headers }));
+
+    installBrowser({
+      book,
+      chapters: [{}],
+      cache,
+      variants: ['voice-a'],
+      manifest: legacyManifest
+    });
+
+    assert.strictEqual(await offline.auditOfflineManifest(), true);
+    assert.strictEqual(offline.getOfflineManifest()[book.id].state, 'incomplete');
+  });
+
+  await test('playback rejects a damaged legacy download before serving it', async () => {
+    const cache = makeCache();
+    const env = installBrowser({
+      book,
+      chapters: [{}],
+      cache,
+      variants: ['voice-a'],
+      serverContentHash: true
+    });
+    offline.initOffline(env.init);
+    assert.strictEqual(await offline.downloadCurrentBook(), true);
+
+    const legacyManifest = structuredClone(offline.getOfflineManifest());
+    delete legacyManifest[book.id].chapterEntries[0].bodyVerificationVersion;
+    const key = offlineAudioKey(book.id, 0);
+    const cached = await cache.match(key);
+    const bytes = new Uint8Array(await cached.arrayBuffer());
+    bytes[Math.floor(bytes.byteLength / 2)] ^= 0xff;
+    await cache.put(key, new Response(bytes, { headers: cached.headers }));
+
+    installBrowser({
+      book,
+      chapters: [{}],
+      cache,
+      variants: ['voice-a'],
+      manifest: legacyManifest
+    });
+
+    assert.strictEqual(await offline.isChapterAvailableOffline(book.id, 0), false);
+    assert.strictEqual(offline.getOfflineManifest()[book.id].state, 'incomplete');
+    assert.strictEqual(await cache.match(key), undefined);
   });
 
   await test('a successful audit backfills legacy cache identity metadata', async () => {
@@ -968,13 +1056,46 @@ function installBrowser({
       manifest: { [book.id]: entry }
     });
 
-    assert.strictEqual(await offline.auditOfflineManifest(), false);
+    assert.strictEqual(await offline.auditOfflineManifest(), true);
     const migrated = await cache.match(offlineAudioKey(book.id, 0));
     assert.strictEqual(migrated.headers.get('Content-Length'), String(bytes.byteLength));
     assert.strictEqual(
       migrated.headers.get('X-Xandrio-Content-SHA256'),
       entry.chapterEntries[0].contentHash
     );
+    assert.strictEqual(
+      offline.getOfflineManifest()[book.id].chapterEntries[0].bodyVerificationVersion,
+      1
+    );
+  });
+
+  await test('one-time integrity audit upgrades playable incomplete downloads', async () => {
+    const cache = makeCache();
+    const env = installBrowser({
+      book,
+      chapters: [{}],
+      cache,
+      variants: ['voice-a'],
+      serverContentHash: true
+    });
+    offline.initOffline(env.init);
+    assert.strictEqual(await offline.downloadCurrentBook(), true);
+
+    const legacyManifest = structuredClone(offline.getOfflineManifest());
+    legacyManifest[book.id].state = 'incomplete';
+    delete legacyManifest[book.id].chapterEntries[0].bodyVerificationVersion;
+    installBrowser({
+      book,
+      chapters: [{}],
+      cache,
+      variants: ['voice-a'],
+      manifest: legacyManifest
+    });
+
+    assert.strictEqual(await offline.auditOfflineManifest(), true);
+    const upgraded = offline.getOfflineManifest()[book.id];
+    assert.strictEqual(upgraded.state, 'incomplete');
+    assert.strictEqual(upgraded.chapterEntries[0].bodyVerificationVersion, 1);
   });
 
   await test('downloads an explicit library title without depending on player state or its overlay', async () => {
@@ -1600,7 +1721,7 @@ function installBrowser({
 
     assert.strictEqual(await offline.downloadCurrentBook(), true);
     assert.deepStrictEqual(env.audioRequests, [0, 0]);
-    assert.strictEqual(env.hashCalls, 0);
+    assert.strictEqual(env.hashCalls, 1);
   });
 
   await test('pipelines two chapters so transfer and generation can overlap', async () => {

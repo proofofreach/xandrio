@@ -12,6 +12,7 @@ const OFFLINE_DELETION_CURSOR_KEY = 'xandrio_offline_deletion_cursor';
 const OFFLINE_LEGACY_CACHE_OWNER_KEY = 'xandrio_offline_legacy_cache_owner';
 const OFFLINE_SCOPE_PARAM = 'xandrio-offline-scope';
 const OFFLINE_CONTENT_HASH_HEADER = 'X-Xandrio-Content-SHA256';
+const OFFLINE_BODY_VERIFICATION_VERSION = 1;
 const OFFLINE_MANIFEST_VERSION = 3;
 const FULL_DOWNLOAD_CONCURRENCY = 2;
 const DOWNLOAD_PREPARE_TIMEOUT_MS = 30 * 60 * 1000;
@@ -478,10 +479,23 @@ export async function isChapterAvailableOffline(bookId, chapterIndex = 0) {
   await migrateLegacyOfflineCaches().catch(() => false);
   if (!isBookDownloadedForOffline(bookId, chapterIndex) || !('caches' in window)) return false;
   const cache = await caches.open(offlineCacheName(OFFLINE_AUDIO_CACHE));
-  if (await cache.match(offlineAudioRequest(bookId, chapterIndex))) return true;
-
   const manifest = getOfflineManifest();
   const entry = manifest[bookId];
+  const request = offlineAudioRequest(bookId, chapterIndex);
+  const cached = await cache.match(request);
+  const expected = entry?.chapterEntries?.[chapterIndex];
+  if (cached && expected) {
+    if (expected.bodyVerificationVersion === OFFLINE_BODY_VERIFICATION_VERSION) return true;
+    const identity = await contentIdentity(cached, { verifyBody: true }).catch(() => null);
+    if (identity && canReuseChapter(expected, identity, expected.variantKey)) {
+      expected.bodyVerificationVersion = OFFLINE_BODY_VERIFICATION_VERSION;
+      saveOfflineManifest(manifest);
+      await backfillContentIdentity(cache, request, cached, identity).catch(() => {});
+      return true;
+    }
+    await cache.delete(request).catch(() => {});
+  }
+
   if (!entry || !Array.isArray(entry.chapterEntries) || !entry.chapterEntries[chapterIndex]) return false;
   entry.chapterEntries[chapterIndex] = null;
   entry.bytes = entry.chapterEntries.reduce((sum, chapter) => sum + (Number(chapter?.size) || 0), 0);
@@ -1122,11 +1136,19 @@ async function processFullDownloadChapter({
   reportProgress(chapterIndex, 0.01, 'Preparing download');
   const previous = working.chapterEntries[chapterIndex];
   const cached = await cache.match(cacheRequest);
-  const cachedIdentity = cached ? await contentIdentity(cached) : null;
+  const cachedIdentity = cached
+    ? await contentIdentity(cached, {
+        verifyBody: previous?.bodyVerificationVersion !== OFFLINE_BODY_VERIFICATION_VERSION
+      })
+    : null;
+  if (cachedIdentity) {
+    cachedIdentity.bodyVerificationVersion = OFFLINE_BODY_VERIFICATION_VERSION;
+  }
   const cacheIsValid = cachedIdentity && canReuseChapter(previous, cachedIdentity, previous?.variantKey);
   const variantKey = String(working.variantKey || '');
   const legacyCacheIsUsable = cachedIdentity &&
     isLegacyEntry(existing) &&
+    !previous?.contentHash &&
     cachedIdentity.size > 0 &&
     existing?.variantKey === variantKey &&
     /:offline-mp3-v\d+:br48k$/.test(variantKey);
@@ -1554,9 +1576,9 @@ async function hashBytes(bytes) {
   return `sha256-${Array.from(digest, byte => byte.toString(16).padStart(2, '0')).join('')}`;
 }
 
-async function contentIdentity(response) {
+async function contentIdentity(response, { verifyBody = false } = {}) {
   const storedIdentity = contentIdentityFromHeaders(response.headers);
-  if (storedIdentity) return storedIdentity;
+  if (storedIdentity && !verifyBody) return storedIdentity;
   const bytes = new Uint8Array(await response.clone().arrayBuffer());
   return contentIdentityForBytes(bytes, response.headers.get('ETag') || '');
 }
@@ -1684,7 +1706,9 @@ async function downloadAndVerifyChapter(cache, cacheRequest, url, signal, chapte
     if (serverIdentity) {
       await cache.put(cacheRequest, responseStreamWithProgress(response, signal, onProgress));
       const saved = await cache.match(cacheRequest);
-      const savedIdentity = saved ? await contentIdentity(saved) : null;
+      const savedIdentity = saved
+        ? await contentIdentity(saved, { verifyBody: true })
+        : null;
       if (
         !savedIdentity ||
         savedIdentity.size !== serverIdentity.size ||
@@ -1693,7 +1717,10 @@ async function downloadAndVerifyChapter(cache, cacheRequest, url, signal, chapte
         throw new Error(`Offline cache verification failed for chapter ${chapterIndex + 1}`);
       }
       onProgress?.(1, { received: serverIdentity.size, total: serverIdentity.size });
-      return serverIdentity;
+      return {
+        ...serverIdentity,
+        bodyVerificationVersion: OFFLINE_BODY_VERIFICATION_VERSION
+      };
     }
 
     const headers = new Headers(response.headers);
@@ -1705,11 +1732,21 @@ async function downloadAndVerifyChapter(cache, cacheRequest, url, signal, chapte
     headers.set(OFFLINE_CONTENT_HASH_HEADER, identity.contentHash);
     await cache.put(cacheRequest, new Response(bytes, { status: response.status, headers }));
     const saved = await cache.match(cacheRequest);
-    if (!saved) {
+    const savedIdentity = saved
+      ? await contentIdentity(saved, { verifyBody: true })
+      : null;
+    if (
+      !savedIdentity ||
+      savedIdentity.size !== identity.size ||
+      savedIdentity.contentHash !== identity.contentHash
+    ) {
       throw new Error(`Offline cache verification failed for chapter ${chapterIndex + 1}`);
     }
     onProgress?.(1, { received: identity.size, total: identity.size });
-    return identity;
+    return {
+      ...identity,
+      bodyVerificationVersion: OFFLINE_BODY_VERIFICATION_VERSION
+    };
   }, signal);
 }
 
@@ -1737,8 +1774,11 @@ export async function verifyOfflineEntry(cache, entry, scopeId = offlineScopeId(
     const request = offlineAudioRequest(entry.bookId, i, scopeId);
     const response = await cache.match(request);
     if (!response) return false;
-    const identity = await contentIdentity(response);
+    const identity = await contentIdentity(response, {
+      verifyBody: expected.bodyVerificationVersion !== OFFLINE_BODY_VERIFICATION_VERSION
+    });
     if (!canReuseChapter(expected, identity, expected.variantKey)) return false;
+    expected.bodyVerificationVersion = OFFLINE_BODY_VERIFICATION_VERSION;
     await backfillContentIdentity(cache, request, response, identity).catch(() => {});
   }
   if (entry.titleData?.book?.hasCover) {
@@ -1778,9 +1818,22 @@ async function pruneUnavailableChapterEntries(
   for (let index = 0; index < entry.chapterEntries.length; index++) {
     const expected = entry.chapterEntries[index];
     if (!expected) continue;
-    const response = await cache.match(offlineAudioRequest(bookId, index, scopeId));
-    const identity = response && !presenceOnly ? await contentIdentity(response) : null;
-    if (response && (presenceOnly || canReuseChapter(expected, identity, expected.variantKey))) continue;
+    const request = offlineAudioRequest(bookId, index, scopeId);
+    const response = await cache.match(request);
+    const identity = response && !presenceOnly
+      ? await contentIdentity(response, {
+          verifyBody: expected.bodyVerificationVersion !== OFFLINE_BODY_VERIFICATION_VERSION
+        })
+      : null;
+    if (response && (presenceOnly || canReuseChapter(expected, identity, expected.variantKey))) {
+      if (!presenceOnly && expected.bodyVerificationVersion !== OFFLINE_BODY_VERIFICATION_VERSION) {
+        expected.bodyVerificationVersion = OFFLINE_BODY_VERIFICATION_VERSION;
+        await backfillContentIdentity(cache, request, response, identity).catch(() => {});
+        changed = true;
+      }
+      continue;
+    }
+    await cache.delete(request).catch(() => {});
     entry.chapterEntries[index] = null;
     changed = true;
   }
@@ -1823,10 +1876,34 @@ export async function auditOfflineManifest({ presenceOnly = false } = {}) {
       ) || changed;
       continue;
     }
+    const needsBodyVerificationUpgrade = entry.chapterEntries.some(
+      chapter => chapter?.bodyVerificationVersion !== OFFLINE_BODY_VERIFICATION_VERSION
+    );
     const valid = presenceOnly
       ? await verifyOfflineEntryPresence(cache, entry, scope)
       : await verifyOfflineEntry(cache, entry, scope);
-    if (valid) continue;
+    if (valid) {
+      if (!presenceOnly && needsBodyVerificationUpgrade) {
+        const latestManifest = getOfflineManifest(scope);
+        const latest = latestManifest[entry.bookId];
+        if (latest?.state === 'ready' && latest.downloadedAt === entry.downloadedAt) {
+          latestManifest[entry.bookId] = {
+            ...latest,
+            chapterEntries: latest.chapterEntries.map((chapter, index) => (
+              chapter && entry.chapterEntries[index]?.bodyVerificationVersion === OFFLINE_BODY_VERIFICATION_VERSION
+                ? {
+                    ...chapter,
+                    bodyVerificationVersion: OFFLINE_BODY_VERIFICATION_VERSION
+                  }
+                : chapter
+            ))
+          };
+          saveOfflineManifest(latestManifest, scope);
+          changed = true;
+        }
+      }
+      continue;
+    }
     const latestManifest = getOfflineManifest(scope);
     const latest = latestManifest[entry.bookId];
     // Do not overwrite a repair that began after this audit captured the
