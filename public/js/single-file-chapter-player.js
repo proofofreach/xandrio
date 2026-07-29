@@ -300,6 +300,10 @@ export class SingleFileChapterPlayer {
         if (!response.ok) return;
         const timeline = await response.json();
         if (sessionId !== this.playbackSessionId || !Array.isArray(timeline.durations)) return;
+        const mappedStartOffset = Number(timeline.startOffsetSeconds);
+        if (Number.isFinite(mappedStartOffset) && mappedStartOffset >= 0) {
+          this.streamStartOffset = mappedStartOffset;
+        }
         timeline.durations.forEach((duration, offset) => {
           const value = Number(duration);
           if (Number.isFinite(value) && value > 0) {

@@ -352,6 +352,48 @@ function fakeAudio() {
     player.dispose();
   });
 
+  await test('timeline polling applies the server-clamped seek offset', async () => {
+    const audio = fakeAudio();
+    audio.buffered = {
+      length: 0,
+      start() { return 0; },
+      end() { return 0; }
+    };
+    let fetchCalls = 0;
+    const { player } = makePlayer(audio, {
+      getChapterCount: () => 1,
+      getEstimatedDuration: () => 60,
+      fetch: async () => {
+        fetchCalls += 1;
+        return {
+          ok: true,
+          async json() {
+            return {
+              startChapterIndex: 0,
+              startOffsetSeconds: fetchCalls === 1 ? 0 : 30,
+              durations: [40]
+            };
+          }
+        };
+      }
+    });
+    const load = player.loadChapter('book1', 0);
+    audio.emit('loadedmetadata');
+    await load;
+    await new Promise(resolve => setImmediate(resolve));
+
+    const seek = player.seek(50);
+    await new Promise(resolve => setImmediate(resolve));
+    audio.currentTime = 0;
+    audio.emit('loadedmetadata');
+    await seek;
+    await new Promise(resolve => setImmediate(resolve));
+
+    assert.strictEqual(player.streamStartOffset, 30);
+    assert.strictEqual(player.getCurrentTime(), 30);
+    player.dispose();
+  });
+
   await test('maps continuous stream time across chapters without replacing src', async () => {
     const audio = fakeAudio();
     audio.duration = Infinity;
