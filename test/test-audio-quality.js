@@ -127,6 +127,40 @@ async function run() {
     assert.strictEqual(bad.issues.length, 4);
   });
 
+  await test('static-noise gate separates noise-only audio from speech-like spectra', () => {
+    const { assessStaticNoiseProfile } = require('../lib/audio-quality');
+    const staticNoise = assessStaticNoiseProfile(Array.from({ length: 50 }, () => 0.82));
+    const staticTail = assessStaticNoiseProfile([
+      ...Array.from({ length: 30 }, () => 0.12),
+      ...Array.from({ length: 20 }, () => 0.72)
+    ]);
+    const speechLike = assessStaticNoiseProfile([
+      ...Array.from({ length: 25 }, () => 0.08),
+      ...Array.from({ length: 25 }, () => 0.24)
+    ]);
+    assert.strictEqual(staticNoise.staticNoise, true);
+    assert.strictEqual(staticTail.staticNoise, true);
+    assert.strictEqual(speechLike.staticNoise, false);
+  });
+
+  await test('static-noise probe detects encoded white noise', async () => {
+    const { measureStaticNoiseProfile } = require('../lib/audio-quality');
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'xandrio-static-probe-'));
+    const output = path.join(dir, 'white-noise.mp3');
+    try {
+      await runFile('ffmpeg', [
+        '-hide_banner', '-loglevel', 'error', '-y',
+        '-f', 'lavfi', '-i', 'anoisesrc=color=white:sample_rate=24000:duration=2:amplitude=0.2',
+        '-c:a', 'libmp3lame', '-b:a', '160k', output
+      ]);
+      const profile = await measureStaticNoiseProfile(output);
+      assert.strictEqual(profile.staticNoise, true);
+      assert(profile.meanSpectralFlatness > 0.5);
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
   await test('chapter generation applies the async text transform before planning chunks', async () => {
     const { EventEmitter } = require('events');
     const ChunkedTTS = require('../lib/chunked-tts');

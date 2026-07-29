@@ -1085,6 +1085,66 @@ async function runTests() {
     }
   });
 
+  await test('static generation retries once, then fails and removes the chunk', async () => {
+    const q = new TTSQueue({ timeout: 1000 });
+    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'xandrio-static-'));
+    const out = path.join(tmpDir, 'sample.mp3');
+    let generateCalls = 0;
+    q._generateHttpTTSOnce = async (_engine, _text, outputPath) => {
+      generateCalls++;
+      await fsp.writeFile(outputPath, Buffer.from('fake'));
+    };
+    q._probeChunkDurationSeconds = async () => 18;
+    q._probeStaticNoiseProfile = async () => ({
+      staticNoise: true,
+      meanSpectralFlatness: 0.82
+    });
+
+    try {
+      await assert.rejects(
+        () => q._generateHttpTTS({ label: 'Test engine' }, 'x'.repeat(270), out),
+        /produced static audio/,
+        'persistent static rejects'
+      );
+      assert.strictEqual(generateCalls, 2, 'exactly one retry');
+      assert.strictEqual(fs.existsSync(out), false, 'static file is removed');
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  await test('Edge static generation is rejected before it reaches the cache', async () => {
+    const q = new TTSQueue({ timeout: 1000 });
+    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'xandrio-edge-static-'));
+    const out = path.join(tmpDir, 'sample.mp3');
+    let generateCalls = 0;
+    q._generateEdgeTTSOnce = async ({ outputPath }) => {
+      generateCalls++;
+      await fsp.writeFile(outputPath, Buffer.from('fake'));
+    };
+    q._probeChunkDurationSeconds = async () => 18;
+    q._probeStaticNoiseProfile = async () => ({
+      staticNoise: true,
+      meanSpectralFlatness: 0.82
+    });
+
+    try {
+      await assert.rejects(
+        () => q._generateEdgeTTS({
+          text: 'x'.repeat(270),
+          outputPath: out,
+          language: 'en',
+          voice: 'en-US-AndrewMultilingualNeural'
+        }),
+        /produced static audio/
+      );
+      assert.strictEqual(generateCalls, 2, 'exactly one retry');
+      assert.strictEqual(fs.existsSync(out), false, 'static Edge file is removed');
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   // ----- 16. Error-chunk resume (auto-resume after engine outage) -----
 
   const ChunkedTTS = require('../lib/chunked-tts');

@@ -40,6 +40,7 @@ function harness(overrides = {}) {
       };
     },
     splitIntoChunks: () => overrides.splitChunks || ['first', 'second'],
+    invalidateCachedChunk: async (...args) => { calls.push(['invalidate', ...args]); },
     chunkPath: (...args) => `/cache/${args.join('-')}.mp3`,
     chapterPath: (...args) => `/cache/${args.join('-')}.mp3`,
     currentOutputFormat: () => 'mp3'
@@ -75,7 +76,11 @@ function harness(overrides = {}) {
         { text: 'Current chapter narration text is long enough for testing.' },
         { text: 'Next chapter narration text is also long enough for testing.' }
       ]
-    })
+    }),
+    inspectStaticAudio: async (...args) => {
+      calls.push(['inspectStatic', ...args]);
+      return overrides.staticProfile || { staticNoise: false, meanSpectralFlatness: 0.12 };
+    }
   });
   return { orchestrator, calls, manifest, tts };
 }
@@ -144,6 +149,29 @@ function harness(overrides = {}) {
       call[4] === 'immediate'
     ));
     assert(!calls.some(call => call[0] === 'generate'));
+  });
+
+  await test('invalidates and regenerates a cached static target chunk', async () => {
+    const existing = {
+      totalChunks: 2,
+      chunks: [{ index: 0, status: 'ready' }, { index: 1, status: 'ready' }]
+    };
+    const { orchestrator, calls } = harness({
+      manifest: existing,
+      ready: false,
+      staticProfile: { staticNoise: true, meanSpectralFlatness: 0.82 }
+    });
+    await orchestrator.prepareManifest({
+      bookId: 'book',
+      chapterIndex: 2,
+      text: 'Long enough narration text for testing.',
+      targetChunk: 1
+    });
+    assert(calls.some(call => call[0] === 'inspectStatic' && call[1].endsWith('book-2-1.mp3')));
+    assert(calls.some(call =>
+      call[0] === 'invalidate' && call[1] === 'book' && call[2] === 2 && call[3] === 1
+    ));
+    assert.strictEqual(calls.filter(call => call[0] === 'generate').length, 1);
   });
 
   await test('projects playback without treating a view load as listening intent', async () => {

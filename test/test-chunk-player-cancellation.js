@@ -235,6 +235,108 @@ class FakeAudio {
     assert.strictEqual(audio.playCalls, 2);
   });
 
+  function readyPlayer(durations, { currentChunk = 0, currentTime = 0 } = {}) {
+    const audio = new FakeAudio();
+    const player = new ChunkPlayer({ audio, maxChunkLoadRetries: 0 });
+    player.bookId = 'book-a';
+    player.chapterIndex = 2;
+    player.totalChunks = durations.length;
+    player.currentChunk = currentChunk;
+    player.manifest = {
+      totalChunks: durations.length,
+      chunks: durations.map((_, index) => ({ status: 'ready', url: `/chunk-${index}.mp3` }))
+    };
+    player.chunkDurations = durations.map((duration, index) => index === currentChunk ? duration : null);
+    audio.src = `/chunk-${currentChunk}.mp3`;
+    audio.duration = durations[currentChunk];
+    audio.currentTime = currentTime;
+    player._refreshManifest = async () => true;
+    player._preloadNext = () => {};
+    player._loadChunkInto = async (target, chunkIndex) => {
+      target.src = `/chunk-${chunkIndex}.mp3`;
+      target.duration = durations[chunkIndex];
+      target.currentTime = 0;
+      player.chunkDurations[chunkIndex] = durations[chunkIndex];
+    };
+    return { player, audio };
+  }
+
+  await test('forward skip crosses chunks using measured durations', async () => {
+    const { player, audio } = readyPlayer([12, 20, 30], { currentTime: 10 });
+    await player.skip(15);
+    assert.strictEqual(player.currentChunk, 1);
+    assert.strictEqual(audio.currentTime, 13);
+  });
+
+  await test('forward skip prioritizes an unrendered target before continuing', async () => {
+    const { player, audio } = readyPlayer([12, 20], { currentTime: 10 });
+    player.manifest.chunks[1].status = 'queued';
+    const prioritized = [];
+    player._prioritizeChunk = async chunkIndex => { prioritized.push(chunkIndex); };
+    player._pollUntilChunkReady = async chunkIndex => {
+      player.manifest.chunks[chunkIndex].status = 'ready';
+    };
+
+    await player.skip(15);
+    assert.deepStrictEqual(prioritized, [1]);
+    assert.strictEqual(player.currentChunk, 1);
+    assert.strictEqual(audio.currentTime, 13);
+  });
+
+  await test('rapid forward skips serialize across an unrendered boundary', async () => {
+    const { player, audio } = readyPlayer([12, 20, 30], { currentTime: 10 });
+    player.manifest.chunks[1].status = 'queued';
+    const release = deferred();
+    player._prioritizeChunk = async () => {};
+    player._pollUntilChunkReady = async chunkIndex => {
+      await release.promise;
+      player.manifest.chunks[chunkIndex].status = 'ready';
+    };
+
+    const first = player.skip(15);
+    await new Promise(resolve => setImmediate(resolve));
+    const second = player.skip(15);
+    release.resolve();
+    await Promise.all([first, second]);
+
+    assert.strictEqual(player.currentChunk, 2);
+    assert.strictEqual(audio.currentTime, 8);
+  });
+
+  await test('backward skip crosses chunks using measured durations', async () => {
+    const { player, audio } = readyPlayer([12, 20, 30], { currentChunk: 2, currentTime: 3 });
+    await player.skip(-10);
+    assert.strictEqual(player.currentChunk, 1);
+    assert.strictEqual(audio.currentTime, 13);
+  });
+
+  await test('multi-chunk skip resumes playback only after the final landing point', async () => {
+    const { player, audio } = readyPlayer([12, 20, 30], { currentTime: 10 });
+    player._isPlaying = true;
+    audio.paused = false;
+    await player.skip(30);
+    assert.strictEqual(player.currentChunk, 2);
+    assert.strictEqual(audio.currentTime, 8);
+    assert.strictEqual(audio.playCalls, 1);
+  });
+
+  await test('targeted manifest refresh identifies the skipped-to chunk', async () => {
+    const player = new ChunkPlayer({ audio: new FakeAudio() });
+    player.bookId = 'book-a';
+    player.chapterIndex = 2;
+    player.servedTier = 'instant';
+    let requestedUrl = null;
+    global.fetch = async url => {
+      requestedUrl = url;
+      return {
+        ok: true,
+        async json() { return { totalChunks: 0, chunks: [] }; }
+      };
+    };
+    await player._fetchManifest(undefined, 7);
+    assert.strictEqual(requestedUrl, '/api/chunks/book-a/2/manifest?tier=instant&targetChunk=7');
+  });
+
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);
 })().catch(error => {
