@@ -34,6 +34,7 @@ const TARGET = opt('--target', 'main');
 const DRY_RUN = has('--dry-run');
 const NO_MERGE = has('--no-merge');
 const NO_WAIT = has('--no-wait');
+const PUBLIC_EXCLUDED_PATHS = new Set(['AGENTS.md']);
 
 const git = (...a) => execFileSync('git', a, { cwd: REPO_ROOT, encoding: 'utf8' }).trim();
 const gh = (...a) => execFileSync('gh', a, { cwd: REPO_ROOT, encoding: 'utf8' }).trim();
@@ -54,6 +55,10 @@ export function pullRequestState(source) {
     mergedAt: parsed.mergedAt || null,
     mergeCommit: parsed.mergeCommit?.oid || null
   };
+}
+
+export function canAutoResolvePublicExclusions(paths) {
+  return paths.length > 0 && paths.every(filePath => PUBLIC_EXCLUDED_PATHS.has(filePath));
 }
 
 function waitForMergedPullRequest(prUrl, timeoutMs = 30 * 60 * 1000) {
@@ -135,8 +140,16 @@ try {
     try {
       git('cherry-pick', '--allow-empty', sha);
     } catch (err) {
-      git('cherry-pick', '--abort');
-      throw new Error(`cherry-pick of ${sha.slice(0, 7)} conflicts with ${REMOTE}/${TARGET}; resolve manually (${err.message})`);
+      const conflicts = git('diff', '--name-only', '--diff-filter=U')
+        .split('\n').filter(Boolean);
+      if (canAutoResolvePublicExclusions(conflicts)) {
+        for (const filePath of conflicts) git('rm', '--ignore-unmatch', '--', filePath);
+        git('cherry-pick', '--continue');
+        console.log(`Preserved public exclusion for: ${conflicts.join(', ')}`);
+      } else {
+        git('cherry-pick', '--abort');
+        throw new Error(`cherry-pick of ${sha.slice(0, 7)} conflicts with ${REMOTE}/${TARGET}; resolve manually (${err.message})`);
+      }
     }
     git('commit', '--amend', '--no-edit', '-m', scrubMessage(git('log', '-1', '--format=%B', sha)));
   }

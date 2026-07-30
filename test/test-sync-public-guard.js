@@ -65,5 +65,12 @@ check('default publication waits for merge before advancing its checkpoint', () 
   assert.match(source, /gh\('pr', 'checks'.*'--watch'/s);
 });
 
+check('known private-only files preserve their public exclusion automatically', () => {
+  const source = readFileSync(syncScript, 'utf8');
+  assert.match(source, /PUBLIC_EXCLUDED_PATHS = new Set\(\['AGENTS\.md'\]\)/);
+  assert.match(source, /canAutoResolvePublicExclusions\(conflicts\)/);
+  assert.match(source, /git\('rm', '--ignore-unmatch', '--', filePath\)/);
+});
+
 console.log(`${passed} passed, ${failed} failed`);
 process.exitCode = failed ? 1 : 0;
