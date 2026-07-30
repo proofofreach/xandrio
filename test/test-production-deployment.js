@@ -103,6 +103,18 @@ async function check(name, callback) {
     assert.match(source, /\$SUDO systemctl restart "\$SERVICE"/);
   });
 
+  await check('production receipt reads the detached revision without root-owned Git access', () => {
+    const source = readFileSync(resolve(
+      __dirname,
+      '..',
+      'scripts',
+      'release',
+      'deploy-production.mjs'
+    ), 'utf8');
+    assert.match(source, /`cat \$\{remoteDir\}\/\.git\/HEAD`/);
+    assert.doesNotMatch(source, /cd \$\{remoteDir\} && git rev-parse HEAD/);
+  });
+
   console.log(`${passed} passed, ${failed} failed`);
   process.exitCode = failed ? 1 : 0;
 })();

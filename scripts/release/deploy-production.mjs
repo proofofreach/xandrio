@@ -152,7 +152,7 @@ async function main() {
 
   const deployedRevision = run('ssh', [
     sshTarget,
-    `cd ${remoteDir} && git rev-parse HEAD`
+    `cat ${remoteDir}/.git/HEAD`
   ]);
   const serviceState = run('ssh', [
     sshTarget,
