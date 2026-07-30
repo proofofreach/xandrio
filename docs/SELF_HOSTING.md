@@ -241,7 +241,20 @@ After restoring, verify `/health`, the library, one book, and one audio Range re
 
 To upgrade a source checkout, fetch and check out the signed release tag, run `npm ci` for a native installation, or rebuild the Compose service with `docker compose build --pull && docker compose up -d`. On the first start after the bounded-generation upgrade, a versioned migration discards unfinished legacy speculative work, including untagged jobs, while preserving completed audio, premium preparation, explicit download intents, and quarantine records. Every start also releases transient playback and import warm-up claims so ended sessions are not resurrected; a shared chapter remains recoverable when it still has an explicit download owner. After the 48 kbps offline-package upgrade, an unfinished legacy preparation restarts its package scan at chapter one, reuses completed narration, and transcodes compact derivatives without rerunning TTS for ready chapters. A legacy preparation already marked ready is migrated when an opted-in device next opens Xandrio. Confirm `/health`, library access, one book, and one audio Range request before deleting the backup.
 
-For a systemd-managed source checkout, `scripts/deploy-prod.sh [ref]` performs those steps repeatably: it records the current revision as the rollback point, fetches and checks out the requested ref (a signed tag, or `origin/main` by default), runs `npm ci --omit=dev`, restarts the service, and polls `/health` for up to a minute. If the health check fails it prints the exact rollback invocation (`scripts/deploy-prod.sh --rollback <previous-ref>`) and exits non-zero. `--dry-run` prints the plan without changing anything; the script refuses to run over server-local edits.
+For the project-operated systemd deployment, `npm run release:production` is
+the sole operator command. It waits for the sanitized public PR and required
+checks, then streams the approved deploy implementation to the VPS and passes
+the exact merged revision. The VPS serializes releases with `flock`, prepares
+dependencies under `/opt/xandrio/releases/<sha>`, atomically switches
+`/opt/xandrio/current`, and polls both `/ready` and the external origin. A
+failed restart or readiness check automatically restores the previous symlink
+and service. Receipts are stored under `/opt/xandrio/deployments/`, and the
+last five releases are retained for rollback.
+
+`scripts/deploy-prod.sh` is an internal exact-revision primitive rather than an
+operator shortcut. Its explicit form is
+`scripts/deploy-prod.sh --root /opt/xandrio --origin https://example.com <40-char-sha>`;
+`--dry-run` prints the immutable-release plan without changing production.
 
 To roll back, stop Xandrio, check out the previous signed tag or select the previous image digest, restore the matching native directories or named-volume archive, and start the service. Do not run two versions against the same writable storage. The release workflow tests candidate restart persistence on both OCI architectures and, when a prior `stable` image exists, starts the prior image, candidate, and prior image again against the same disposable volumes.
 

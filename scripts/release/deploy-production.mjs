@@ -75,7 +75,9 @@ export function assertDeploymentEvidence({
   publicRevision,
   deployedRevision,
   serviceState,
-  healthStatus
+  healthStatus,
+  readinessStatus,
+  receipt
 }) {
   if (!/^[0-9a-f]{40}$/i.test(publicRevision || '')) fail('public revision is invalid');
   if (deployedRevision !== publicRevision) {
@@ -85,12 +87,19 @@ export function assertDeploymentEvidence({
   if (healthStatus < 200 || healthStatus >= 300) {
     fail(`external health check returned HTTP ${healthStatus || 'unknown'}`);
   }
+  if (readinessStatus < 200 || readinessStatus >= 300) {
+    fail(`external readiness check returned HTTP ${readinessStatus || 'unknown'}`);
+  }
+  if (receipt?.revision !== publicRevision || receipt?.status !== 'deployed' || receipt?.rolledBack) {
+    fail('VPS deployment receipt does not prove a successful exact-revision deployment');
+  }
   return {
     environment: 'production',
     revision: publicRevision,
     service: 'xandrio-web',
     serviceState,
-    healthStatus
+    healthStatus,
+    readinessStatus
   };
 }
 
@@ -154,28 +163,57 @@ async function main() {
   }
 
   console.log(`Deploying public/main ${publicRevision} to ${sshTarget}:${remoteDir}`);
+  const deployScript = run('git', ['show', `public/main:scripts/deploy-prod.sh`]);
   run('ssh', [
     sshTarget,
-    `cd ${remoteDir} && scripts/deploy-prod.sh origin/main`
-  ], { stdio: 'inherit' });
+    'bash',
+    '-s',
+    '--',
+    '--root',
+    remoteDir,
+    '--origin',
+    origin,
+    publicRevision
+  ], {
+    input: deployScript,
+    stdio: ['pipe', 'inherit', 'inherit']
+  });
 
   const deployedRevision = run('ssh', [
     sshTarget,
-    `cat ${remoteDir}/.git/HEAD`
+    `cat ${remoteDir}/current/.xandrio-revision`
   ]);
   const serviceState = run('ssh', [
     sshTarget,
     'systemctl is-active xandrio-web'
   ]);
-  const response = await fetch(`${origin}/health`, {
-    redirect: 'error',
-    signal: AbortSignal.timeout(10_000)
-  });
+  const [healthResponse, readinessResponse] = await Promise.all([
+    fetch(`${origin}/health`, {
+      redirect: 'error',
+      signal: AbortSignal.timeout(10_000)
+    }),
+    fetch(`${origin}/ready`, {
+      redirect: 'error',
+      signal: AbortSignal.timeout(10_000)
+    })
+  ]);
+  const receiptSource = run('ssh', [
+    sshTarget,
+    `cat ${remoteDir}/deployments/latest.json`
+  ]);
+  let remoteReceipt;
+  try {
+    remoteReceipt = JSON.parse(receiptSource);
+  } catch {
+    fail('VPS deployment receipt is not valid JSON');
+  }
   const receipt = assertDeploymentEvidence({
     publicRevision,
     deployedRevision,
     serviceState,
-    healthStatus: response.status
+    healthStatus: healthResponse.status,
+    readinessStatus: readinessResponse.status,
+    receipt: remoteReceipt
   });
 
   console.log('Production deployment verified:');
@@ -183,7 +221,8 @@ async function main() {
     ...receipt,
     origin,
     host: sshTarget,
-    verifiedAt: new Date().toISOString()
+    verifiedAt: new Date().toISOString(),
+    remoteReceipt
   }, null, 2));
 }
 

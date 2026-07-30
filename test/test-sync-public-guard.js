@@ -56,5 +56,14 @@ check('candidate scan clone excludes private-history tags', () => {
   );
 });
 
+check('default publication waits for merge before advancing its checkpoint', () => {
+  const source = readFileSync(syncScript, 'utf8');
+  const waitIndex = source.indexOf('waitForMergedPullRequest(prUrl)');
+  const tagIndex = source.indexOf("git('tag', '-f', 'public-sync-base', source)");
+  assert(waitIndex !== -1);
+  assert(tagIndex > waitIndex);
+  assert.match(source, /gh\('pr', 'checks'.*'--watch'/s);
+});
+
 console.log(`${passed} passed, ${failed} failed`);
 process.exitCode = failed ? 1 : 0;
