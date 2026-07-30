@@ -1293,12 +1293,15 @@ function coverSourceSteps(book, bookFormat, force = false) {
 }
 
 function shouldRefreshCachedCover(book, force = false, cachedCover = null) {
-  if (force) return true;
   if (!book) return false;
-  const openLibraryWorkKey = trustedOpenLibraryWorkKey(book);
   const source = String(book.coverSource || '');
   const isManualUpload = book.downloadSource === 'upload' ||
     book.sourceProvenance?.provider === 'upload';
+  if (source === 'embedded' && isManualUpload && isDisplayQualityCover(cachedCover)) {
+    return false;
+  }
+  if (force) return true;
+  const openLibraryWorkKey = trustedOpenLibraryWorkKey(book);
   if (book.openLibraryWorkKey && !openLibraryWorkKey && source === 'openlibrary-work') return true;
   const hasCatalogIdentity = Boolean(book.gutenbergId || openLibraryWorkKey);
   if (!hasCatalogIdentity) return false;

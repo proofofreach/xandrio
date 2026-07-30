@@ -192,6 +192,40 @@ section('Successful direct import');
   assert(artifactSourceInfo?.sourceDocument?._pdfStructureVersion === 2,
     'passes versioned PDF page data into the XBook artifact');
 
+  let kindleCoverRecord;
+  const manualKindle = createFixture({
+    normalizeBook: async ({ id }) => ({
+      finalPath: `/library/${id}.azw3`,
+      filename: `${id}.azw3`,
+      originalFormat: 'AZW3',
+      originalSize: 12 * 1024,
+      finalSize: 12 * 1024,
+      largeSource: false,
+      resized: false
+    }),
+    shouldDiscardSourceAfterExtract: () => true,
+    createArtifact: async () => ({
+      xbookPath: '/library/book-1.xbook.json',
+      artifact: {
+        sourceFormat: 'AZW3',
+        embeddedCover: true,
+        metadata: { title: 'Embedded title', author: 'Embedded author', language: 'en' },
+        chapters: [readableChapter()]
+      }
+    }),
+    ensureBookCover: async record => {
+      kindleCoverRecord = record;
+    }
+  });
+  const manualKindleResult = await manualKindle.importer.import(command({
+    originalName: 'book.azw3'
+  }));
+  assert(
+    manualKindleResult.book.coverSource === 'embedded' &&
+      kindleCoverRecord?.coverSource === 'embedded',
+    'manual Kindle imports retain exact-edition embedded cover provenance'
+  );
+
   const normalizedAuthor = createFixture({
     document: {
       extractMetadata: async () => ({ title: 'Revelations of Christ', author: 'Yogananda, Paramhansa', language: 'en' })

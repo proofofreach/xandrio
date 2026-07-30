@@ -2029,6 +2029,14 @@ pendingAsyncTests.push((async () => {
     coverSource: 'embedded'
   }, false, { dimensions: { width: 537, height: 811 } }),
   'Display-quality embedded covers from manual EPUB imports are not replaced by work-level catalog covers');
+  assert(!serverTestHooks.shouldRefreshCachedCover({
+    path: '/tmp/book.xbook.json',
+    sourceFormat: 'AZW3',
+    downloadSource: 'upload',
+    openLibraryWorkKey: '/works/OL527464W',
+    coverSource: 'embedded'
+  }, true, { dimensions: { width: 600, height: 900 } }),
+  'Forced catalog refresh cannot replace a display-quality embedded cover from a compact manual import');
   assert(serverTestHooks.shouldRefreshCachedCover({
     openLibraryWorkKey: '/works/OL1805249W',
     coverSource: 'selected-search-result'
