@@ -15,4 +15,4 @@ safetensors==0.8.0
 # legacy `>=5.1.*` metadata that pip >= 24.1 rejects, and 2.1–2.3 require the
 # sdist-only antlr4-python3-runtime 4.9.* (blocked by --only-binary). The 2.4
 # dev line drops antlr and ships a wheel; drop this pin when 2.4.0 finals.
-omegaconf==2.4.0.dev13
+omegaconf==2.4.0.dev14
