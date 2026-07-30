@@ -60,6 +60,17 @@ export function pendingPublicPatches(cherryOutput) {
     .filter(Boolean);
 }
 
+export function assertPublicPromotionReady({ checkpointOutput, pendingOutput }) {
+  const unpublishedCheckpoint = pendingPublicPatches(checkpointOutput);
+  if (unpublishedCheckpoint.length) {
+    fail('the public-sync checkpoint is not on public/main yet; wait for its PR to merge');
+  }
+  const pending = pendingPublicPatches(pendingOutput);
+  if (pending.length) {
+    fail(`${pending.length} private patch(es) are absent from public/main; run sync:public and wait for its PR to merge`);
+  }
+}
+
 export function assertDeploymentEvidence({
   publicRevision,
   deployedRevision,
@@ -124,12 +135,10 @@ async function main() {
 
   run('git', ['fetch', 'public', 'main']);
   const base = run('git', ['rev-parse', '--verify', 'refs/tags/public-sync-base']);
-  const pending = pendingPublicPatches(
-    run('git', ['cherry', 'public/main', 'main', base])
-  );
-  if (pending.length) {
-    fail(`${pending.length} private patch(es) are absent from public/main; run sync:public and wait for its PR to merge`);
-  }
+  assertPublicPromotionReady({
+    checkpointOutput: run('git', ['cherry', 'public/main', base, `${base}^`]),
+    pendingOutput: run('git', ['cherry', 'public/main', 'main', base])
+  });
 
   const publicRevision = run('git', ['rev-parse', 'public/main']);
   if (config.dryRun) {
