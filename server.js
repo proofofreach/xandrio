@@ -1258,7 +1258,12 @@ function coverSourceSteps(book, bookFormat, force = false) {
   const steps = [];
   const openLibraryWorkKey = trustedOpenLibraryWorkKey(book);
   const hasCatalogIdentity = Boolean(book.gutenbergId || openLibraryWorkKey);
-  const preferCatalog = force || hasCatalogIdentity;
+  const isManualUpload = book?.downloadSource === 'upload' ||
+    book?.sourceProvenance?.provider === 'upload';
+  // A catalog work cover is not edition-specific. For operator-supplied EPUBs,
+  // the validated embedded cover belongs to the exact imported artifact and
+  // must remain authoritative even when metadata resolves to a known work.
+  const preferCatalog = hasCatalogIdentity && !isManualUpload;
 
   const embedded = bookFormat === 'epub' && book.path
     ? { id: 'embedded', label: 'embedded EPUB', fetch: outputPath => extractCover(book.path, outputPath) }
@@ -1292,9 +1297,14 @@ function shouldRefreshCachedCover(book, force = false, cachedCover = null) {
   if (!book) return false;
   const openLibraryWorkKey = trustedOpenLibraryWorkKey(book);
   const source = String(book.coverSource || '');
+  const isManualUpload = book.downloadSource === 'upload' ||
+    book.sourceProvenance?.provider === 'upload';
   if (book.openLibraryWorkKey && !openLibraryWorkKey && source === 'openlibrary-work') return true;
   const hasCatalogIdentity = Boolean(book.gutenbergId || openLibraryWorkKey);
   if (!hasCatalogIdentity) return false;
+  if (source === 'embedded' && isManualUpload) {
+    return Boolean(cachedCover && !isDisplayQualityCover(cachedCover));
+  }
   if (!source || source === 'embedded') return true;
   return Boolean(cachedCover && !isDisplayQualityCover(cachedCover));
 }
