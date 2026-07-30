@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 const assert = require('node:assert/strict');
+const { readFileSync } = require('node:fs');
+const { spawnSync } = require('node:child_process');
 const { pathToFileURL } = require('node:url');
 const { resolve } = require('node:path');
 
@@ -86,6 +88,19 @@ async function check(name, callback) {
       serviceState: 'active',
       healthStatus: 503
     }), /HTTP 503/);
+  });
+
+  await check('VPS deploy keeps repository writes under the checkout owner', () => {
+    const scriptPath = resolve(__dirname, '..', 'scripts', 'deploy-prod.sh');
+    const source = readFileSync(scriptPath, 'utf8');
+    const syntax = spawnSync('bash', ['-n', scriptPath], { encoding: 'utf8' });
+    assert.equal(syntax.status, 0, syntax.stderr);
+    assert.match(source, /REPO_RUN=\(\)/);
+    assert.match(source, /REPO_RUN=\(runuser -u "\$REPO_OWNER" --\)/);
+    assert.match(source, /repo git fetch --tags origin/);
+    assert.match(source, /repo git checkout --detach "\$REF"/);
+    assert.match(source, /repo npm ci --omit=dev/);
+    assert.match(source, /\$SUDO systemctl restart "\$SERVICE"/);
   });
 
   console.log(`${passed} passed, ${failed} failed`);
