@@ -22,6 +22,7 @@ const tests = [
   'test-playback-routes.js',
   'test-pronunciation-repair.js',
   'test-queue.js',
+  'test-tts-text.js',
   'test-chunked-tts.js',
   'test-audio-quality.js',
   'test-engine-status.js',
