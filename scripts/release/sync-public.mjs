@@ -61,9 +61,25 @@ export function canAutoResolvePublicExclusions(paths) {
   return paths.length > 0 && paths.every(filePath => PUBLIC_EXCLUDED_PATHS.has(filePath));
 }
 
+export function isPendingCheckRegistration(error) {
+  return /no checks reported/i.test(String(error?.stderr || error?.message || ''));
+}
+
 function waitForMergedPullRequest(prUrl, timeoutMs = 30 * 60 * 1000) {
-  gh('pr', 'checks', prUrl, '--repo', 'ProofOfReach/xandrio', '--watch', '--interval', '10');
   const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      gh('pr', 'checks', prUrl, '--repo', 'ProofOfReach/xandrio', '--watch', '--interval', '10');
+      break;
+    } catch (error) {
+      if (!isPendingCheckRegistration(error)) throw error;
+      console.log('Waiting for GitHub to register release checks...');
+      sleep(5000);
+    }
+  }
+  if (Date.now() >= deadline) {
+    throw new Error(`timed out waiting for public release checks to register: ${prUrl}`);
+  }
   while (Date.now() < deadline) {
     const state = pullRequestState(gh(
       'pr',

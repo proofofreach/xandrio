@@ -72,5 +72,12 @@ check('known private-only files preserve their public exclusion automatically', 
   assert.match(source, /git\('rm', '--ignore-unmatch', '--', filePath\)/);
 });
 
+check('publication waits through GitHub check-registration latency', () => {
+  const source = readFileSync(syncScript, 'utf8');
+  assert.match(source, /isPendingCheckRegistration\(error\)/);
+  assert.match(source, /Waiting for GitHub to register release checks/);
+  assert.match(source, /sleep\(5000\)/);
+});
+
 console.log(`${passed} passed, ${failed} failed`);
 process.exitCode = failed ? 1 : 0;
