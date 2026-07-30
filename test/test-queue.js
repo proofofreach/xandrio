@@ -1090,9 +1090,9 @@ async function runTests() {
     const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'xandrio-static-'));
     const out = path.join(tmpDir, 'sample.mp3');
     let generateCalls = 0;
-    q._generateHttpTTSOnce = async (_engine, _text, outputPath) => {
+    q._generateHttpTTSOnce = async () => {
       generateCalls++;
-      await fsp.writeFile(outputPath, Buffer.from('fake'));
+      await fsp.writeFile(out, Buffer.from('fake'));
     };
     q._probeChunkDurationSeconds = async () => 18;
     q._probeStaticNoiseProfile = async () => ({
@@ -1118,9 +1118,9 @@ async function runTests() {
     const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'xandrio-edge-static-'));
     const out = path.join(tmpDir, 'sample.mp3');
     let generateCalls = 0;
-    q._generateEdgeTTSOnce = async ({ outputPath }) => {
+    q._generateEdgeTTSOnce = async () => {
       generateCalls++;
-      await fsp.writeFile(outputPath, Buffer.from('fake'));
+      await fsp.writeFile(out, Buffer.from('fake'));
     };
     q._probeChunkDurationSeconds = async () => 18;
     q._probeStaticNoiseProfile = async () => ({
