@@ -1880,6 +1880,28 @@ pendingAsyncTests.push((async () => {
   }, 'epub', false).map(step => step.id);
   assertEqual(identified[0], 'openlibrary-work', 'Identified books try Open Library work covers before embedded covers');
   assertEqual(identified[1], 'embedded', 'Embedded cover is preferred over generic metadata searches');
+  const identifiedUploadBook = {
+    path: '/tmp/book.epub',
+    title: 'Think and Grow Rich!',
+    author: 'Napoleon Hill',
+    downloadSource: 'upload',
+    sourceProvenance: { provider: 'upload' },
+    openLibraryWorkKey: '/works/OL527464W'
+  };
+  const identifiedUpload = serverTestHooks.coverSourceSteps(
+    identifiedUploadBook,
+    'epub',
+    false
+  ).map(step => step.id);
+  assertEqual(identifiedUpload[0], 'embedded',
+    'Manual EPUB imports prefer the exact edition cover over a work-level catalog cover');
+  assertEqual(identifiedUpload[1], 'openlibrary-work',
+    'Manual EPUB imports retain the catalog cover as a fallback');
+  assertEqual(
+    serverTestHooks.coverSourceSteps(identifiedUploadBook, 'epub', true)[0]?.id,
+    'embedded',
+    'Forced cover repair still preserves exact-edition precedence for manual EPUB imports'
+  );
   const identifiedDownload = serverTestHooks.coverSourceSteps({
     id: '28a8007aa970b47183274df933959bd5',
     path: '/tmp/book.epub',
@@ -2000,6 +2022,21 @@ pendingAsyncTests.push((async () => {
     openLibraryWorkKey: '/works/OL827364W',
     coverSource: 'embedded'
   }), 'Embedded cached catalog book cover refreshes');
+  assert(!serverTestHooks.shouldRefreshCachedCover({
+    path: '/tmp/book.epub',
+    downloadSource: 'upload',
+    openLibraryWorkKey: '/works/OL527464W',
+    coverSource: 'embedded'
+  }, false, { dimensions: { width: 537, height: 811 } }),
+  'Display-quality embedded covers from manual EPUB imports are not replaced by work-level catalog covers');
+  assert(!serverTestHooks.shouldRefreshCachedCover({
+    path: '/tmp/book.xbook.json',
+    sourceFormat: 'AZW3',
+    downloadSource: 'upload',
+    openLibraryWorkKey: '/works/OL527464W',
+    coverSource: 'embedded'
+  }, true, { dimensions: { width: 600, height: 900 } }),
+  'Forced catalog refresh cannot replace a display-quality embedded cover from a compact manual import');
   assert(serverTestHooks.shouldRefreshCachedCover({
     openLibraryWorkKey: '/works/OL1805249W',
     coverSource: 'selected-search-result'

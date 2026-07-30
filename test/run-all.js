@@ -36,6 +36,7 @@ const tests = [
   'test-listening-queue.js',
   'test-listening-queue-routes.js',
   'test-deployment-origin.js',
+  'test-production-deployment.js',
   'test-app-shell-versions.js',
   'test-server.js',
   'test-json-store.js',
