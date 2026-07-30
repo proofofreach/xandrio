@@ -3,9 +3,10 @@
  * Promote the already-published public release to the production VPS.
  *
  * This command deliberately cannot deploy private-main-only work. It first
- * proves that every patch after public-sync-base is present on public/main,
- * then runs the VPS-local deploy script and verifies the deployed revision,
- * systemd service, and public health endpoint.
+ * proves that private main is the durably published public-sync checkpoint
+ * and that public history records that exact source revision, then runs the
+ * VPS-local deploy script and verifies the deployed revision, systemd
+ * service, and public health endpoint.
  *
  * Usage:
  *   npm run deploy:production -- --ssh-target user@host
@@ -52,22 +53,20 @@ export function validateProductionOrigin(value) {
   return url.origin;
 }
 
-export function pendingPublicPatches(cherryOutput) {
-  return String(cherryOutput || '')
-    .split('\n')
-    .filter(line => line.startsWith('+ '))
-    .map(line => line.slice(2).trim())
-    .filter(Boolean);
-}
-
-export function assertPublicPromotionReady({ checkpointOutput, pendingOutput }) {
-  const unpublishedCheckpoint = pendingPublicPatches(checkpointOutput);
-  if (unpublishedCheckpoint.length) {
-    fail('the public-sync checkpoint is not on public/main yet; wait for its PR to merge');
+export function assertPublicPromotionReady({
+  checkpointRevision,
+  sourceRevision,
+  publicLog
+}) {
+  if (checkpointRevision !== sourceRevision) {
+    fail('private main is ahead of the durable public-sync checkpoint; publish it first');
   }
-  const pending = pendingPublicPatches(pendingOutput);
-  if (pending.length) {
-    fail(`${pending.length} private patch(es) are absent from public/main; run sync:public and wait for its PR to merge`);
+  const sourceMarker = new RegExp(
+    `^Xandrio-Source-Commit:\\s*${sourceRevision}$`,
+    'mi'
+  );
+  if (!sourceMarker.test(String(publicLog || ''))) {
+    fail('public/main does not record the checkpoint source revision; wait for its protected merge');
   }
 }
 
@@ -145,8 +144,9 @@ async function main() {
   run('git', ['fetch', 'public', 'main']);
   const base = run('git', ['rev-parse', '--verify', 'refs/tags/public-sync-base']);
   assertPublicPromotionReady({
-    checkpointOutput: run('git', ['cherry', 'public/main', base, `${base}^`]),
-    pendingOutput: run('git', ['cherry', 'public/main', 'main', base])
+    checkpointRevision: base,
+    sourceRevision: run('git', ['rev-parse', 'main']),
+    publicLog: run('git', ['log', '--format=%B', 'public/main'])
   });
 
   const publicRevision = run('git', ['rev-parse', 'public/main']);

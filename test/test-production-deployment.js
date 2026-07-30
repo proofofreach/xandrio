@@ -46,28 +46,22 @@ async function check(name, callback) {
     );
   });
 
-  await check('detects private patches absent from public main', () => {
-    assert.deepEqual(
-      deployment.pendingPublicPatches(
-        '- aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n' +
-        '+ bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n'
-      ),
-      ['bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb']
-    );
-  });
-
-  await check('blocks an opened sync PR until its checkpoint is merged', () => {
+  await check('requires an exact durable checkpoint recorded on public main', () => {
+    const revision = 'a'.repeat(40);
     assert.throws(() => deployment.assertPublicPromotionReady({
-      checkpointOutput: `+ ${'a'.repeat(40)}`,
-      pendingOutput: ''
-    }), /checkpoint is not on public\/main/);
+      checkpointRevision: revision,
+      sourceRevision: 'b'.repeat(40),
+      publicLog: ''
+    }), /ahead of the durable public-sync checkpoint/);
     assert.throws(() => deployment.assertPublicPromotionReady({
-      checkpointOutput: `- ${'a'.repeat(40)}`,
-      pendingOutput: `+ ${'b'.repeat(40)}`
-    }), /private patch/);
+      checkpointRevision: revision,
+      sourceRevision: revision,
+      publicLog: ''
+    }), /does not record/);
     assert.doesNotThrow(() => deployment.assertPublicPromotionReady({
-      checkpointOutput: `- ${'a'.repeat(40)}`,
-      pendingOutput: ''
+      checkpointRevision: revision,
+      sourceRevision: revision,
+      publicLog: `Release\n\nXandrio-Source-Commit: ${revision}\n`
     }));
   });
 
