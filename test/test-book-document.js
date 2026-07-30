@@ -157,6 +157,39 @@ section('Format dispatch, metadata, and covers');
     await fs.rm(dir, { recursive: true, force: true });
   }
 
+  section('Complete short EPUB validation');
+  const shortChapterLengths = [
+    0, 0, 0, 0,
+    5334, 5334, 5334, 5334, 5334, 5334, 5334, 5334, 5338,
+    0
+  ];
+  const shortFlow = shortChapterLengths.map((_, index) => ({ id: `item-${index}` }));
+  const completeShortDocument = createBookDocument({
+    fs: {
+      stat: async () => ({ size: 600 * 1024 })
+    },
+    fsSync: {
+      existsSync: () => true,
+      statSync: () => ({ size: 600 * 1024 })
+    },
+    execFileAsync: async () => {},
+    createEpub: async () => ({
+      metadata: { title: 'As a Man Thinketh' },
+      toc: shortFlow,
+      flow: shortFlow
+    }),
+    getEpubChapterText: async (_epub, id) => {
+      const index = Number(id.replace('item-', ''));
+      return 'x'.repeat(shortChapterLengths[index]);
+    },
+    log: { log() {}, error() {} }
+  });
+  const completeShortValidation = await completeShortDocument.validateBook('/library/as-a-man-thinketh.epub');
+  assert(completeShortValidation.valid,
+    'accepts the complete 48,010-character As a Man Thinketh EPUB');
+  assert(completeShortValidation.warnings.some(warning => warning.includes('48,010')),
+    'warns that the accepted EPUB is shorter than a typical book');
+
   section('XBook artifact adapter');
   const artifact = {
     metadata: { title: 'Stored title' },
