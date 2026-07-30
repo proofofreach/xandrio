@@ -14,7 +14,7 @@
  *
  * Usage:
  *   node scripts/release/sync-public.mjs [--source <branch>] [--remote public]
- *     [--target main] [--dry-run] [--no-merge] [--allow-source]
+ *     [--target main] [--dry-run] [--no-merge] [--no-wait] [--allow-source]
  */
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -33,6 +33,8 @@ const REMOTE = opt('--remote', 'public');
 const TARGET = opt('--target', 'main');
 const DRY_RUN = has('--dry-run');
 const NO_MERGE = has('--no-merge');
+const NO_WAIT = has('--no-wait');
+const PUBLIC_EXCLUDED_PATHS = new Set(['AGENTS.md']);
 
 const git = (...a) => execFileSync('git', a, { cwd: REPO_ROOT, encoding: 'utf8' }).trim();
 const gh = (...a) => execFileSync('gh', a, { cwd: REPO_ROOT, encoding: 'utf8' }).trim();
@@ -40,6 +42,45 @@ const gh = (...a) => execFileSync('gh', a, { cwd: REPO_ROOT, encoding: 'utf8' })
 function fail(message) {
   console.error(`sync-public error: ${message}`);
   process.exit(1);
+}
+
+const sleep = milliseconds => {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
+};
+
+export function pullRequestState(source) {
+  const parsed = JSON.parse(source);
+  return {
+    state: String(parsed.state || '').toUpperCase(),
+    mergedAt: parsed.mergedAt || null,
+    mergeCommit: parsed.mergeCommit?.oid || null
+  };
+}
+
+export function canAutoResolvePublicExclusions(paths) {
+  return paths.length > 0 && paths.every(filePath => PUBLIC_EXCLUDED_PATHS.has(filePath));
+}
+
+function waitForMergedPullRequest(prUrl, timeoutMs = 30 * 60 * 1000) {
+  gh('pr', 'checks', prUrl, '--repo', 'ProofOfReach/xandrio', '--watch', '--interval', '10');
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const state = pullRequestState(gh(
+      'pr',
+      'view',
+      prUrl,
+      '--repo',
+      'ProofOfReach/xandrio',
+      '--json',
+      'state,mergedAt,mergeCommit'
+    ));
+    if (state.state === 'MERGED' && state.mergeCommit) return state;
+    if (state.state === 'CLOSED') {
+      throw new Error(`public release PR closed without merging: ${prUrl}`);
+    }
+    sleep(2000);
+  }
+  throw new Error(`timed out waiting for public release PR to merge: ${prUrl}`);
 }
 
 // Attribution lines that must never reach the public history: session
@@ -99,8 +140,16 @@ try {
     try {
       git('cherry-pick', '--allow-empty', sha);
     } catch (err) {
-      git('cherry-pick', '--abort');
-      throw new Error(`cherry-pick of ${sha.slice(0, 7)} conflicts with ${REMOTE}/${TARGET}; resolve manually (${err.message})`);
+      const conflicts = git('diff', '--name-only', '--diff-filter=U')
+        .split('\n').filter(Boolean);
+      if (canAutoResolvePublicExclusions(conflicts)) {
+        for (const filePath of conflicts) git('rm', '--ignore-unmatch', '--', filePath);
+        git('cherry-pick', '--continue');
+        console.log(`Preserved public exclusion for: ${conflicts.join(', ')}`);
+      } else {
+        git('cherry-pick', '--abort');
+        throw new Error(`cherry-pick of ${sha.slice(0, 7)} conflicts with ${REMOTE}/${TARGET}; resolve manually (${err.message})`);
+      }
     }
     git('commit', '--amend', '--no-edit', '-m', scrubMessage(git('log', '-1', '--format=%B', sha)));
   }
@@ -131,8 +180,16 @@ try {
     gh('pr', 'merge', '--repo', 'ProofOfReach/xandrio', '--auto', '--merge', prUrl);
     console.log('Auto-merge armed: the PR lands when required checks pass.');
   }
-  git('tag', '-f', 'public-sync-base', source);
-  console.log(`public-sync-base advanced to ${git('rev-parse', '--short', source)}.`);
+  if (!NO_MERGE && !NO_WAIT) {
+    console.log('Waiting for every public release check and the protected merge...');
+    const merged = waitForMergedPullRequest(prUrl);
+    git('fetch', REMOTE, TARGET);
+    git('tag', '-f', 'public-sync-base', source);
+    console.log(`Public release merged at ${merged.mergeCommit}.`);
+    console.log(`public-sync-base advanced to ${git('rev-parse', '--short', source)}.`);
+  } else {
+    console.log('public-sync-base was not advanced; deployment remains blocked until the PR merges.');
+  }
 } finally {
   git('checkout', startBranch);
   git('branch', '-D', branch);

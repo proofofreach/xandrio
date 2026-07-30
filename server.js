@@ -102,6 +102,7 @@ const {
   normalizeCanonicalOrigin,
   registerDeploymentRoute
 } = require('./lib/deployment-origin');
+const { createReadinessProbe } = require('./lib/readiness');
 const {
   ConcurrencyGate,
   createConcurrencyLimitMiddleware,
@@ -2694,6 +2695,30 @@ async function persistCanonicalCoverPath(bookId, coverPath, coverSource = null) 
 // cheap: no disk reads, no engine probes. GETs are auth-exempt.
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', uptime: Math.round(process.uptime()) });
+});
+
+const readinessProbe = createReadinessProbe({
+  dataDir: DATA_DIR,
+  cacheDir: CACHE_DIR,
+  criticalJsonFiles: [
+    BOOKS_FILE,
+    ACCOUNTS_FILE,
+    SESSIONS_FILE,
+    SHELVES_FILE,
+    POSITIONS_FILE
+  ]
+});
+
+// Readiness is stricter than liveness: deployment succeeds only when the
+// process can use persistent storage and parse its critical JSON stores.
+app.get('/ready', async (req, res) => {
+  const result = await readinessProbe.check();
+  res.setHeader('Cache-Control', 'no-store');
+  if (!result.ready) {
+    console.error(`[readiness] ${result.reason}`);
+    return res.status(503).json({ status: 'not-ready' });
+  }
+  res.json({ status: 'ready' });
 });
 
 app.get('/api/library', async (req, res) => {

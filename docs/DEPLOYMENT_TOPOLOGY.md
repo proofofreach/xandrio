@@ -46,12 +46,13 @@ promoted, in order:
 3. The feature runs enabled on the local M4 instance for a soak period of real
    use (3–7 days as a default; longer for playback/audio-path changes) with no
    regressions.
-4. Only then: `npm run sync:public` from `main` and wait for the public PR to
-   merge. Promote that public revision with
-   `npm run deploy:production -- --ssh-target user@host`; this refuses private
-   patches missing from public `main`, invokes `scripts/deploy-prod.sh` on the
-   VPS, and verifies the VPS revision, `xandrio-web`, and the external health
-   endpoint. If flag-gated, enable the flag in the production `.env`.
+4. Only then: run `npm run release:production` from `main`. This single command
+   publishes the sanitized public PR, waits for every required check and the
+   protected merge, and deploys that exact merged revision. The VPS stages an
+   immutable release under `/opt/xandrio/releases/<sha>`, atomically switches
+   `/opt/xandrio/current`, verifies internal and external readiness, and
+   automatically restores the previous release on failure. If flag-gated,
+   enable the flag in the production `.env`.
 
 "Local has more than production" therefore means more *enabled flags*, never
 more *code*: both instances run the same lineage, and divergence lives in
@@ -61,10 +62,9 @@ more *code*: both instances run the same lineage, and divergence lives in
 
 - New user-facing features (like accounts) go to production through the normal
   release export; nothing is cherry-picked or hot-edited on the server —
-  server-local edits get lost on the next deploy. Operators promote from the
-  private checkout with `npm run deploy:production`; the command runs
-  `scripts/deploy-prod.sh` on the web host and prints a verified production
-  receipt (see docs/SELF_HOSTING.md).
+  server-local edits get lost on the next deploy. Operators use only
+  `npm run release:production`; the internal deployment command is not a
+  substitute for the full publication gate (see docs/SELF_HOSTING.md).
 - A local service restart, localhost health response, or push to the private
   repository is development activity. None is evidence of a production
   deployment.
@@ -73,3 +73,6 @@ more *code*: both instances run the same lineage, and divergence lives in
   harmless.
 - Per-instance state (`data/`, `cache/`, `.env`) never moves between instances
   as part of a deploy.
+- Production deployments are serialized, exact-revision, and rollback-safe.
+  The last five immutable releases and a durable receipt history stay on the
+  VPS; shared state remains outside release directories.
