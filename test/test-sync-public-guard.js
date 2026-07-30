@@ -59,7 +59,7 @@ check('candidate scan clone excludes private-history tags', () => {
 check('default publication waits for merge before advancing its checkpoint', () => {
   const source = readFileSync(syncScript, 'utf8');
   const waitIndex = source.indexOf('waitForMergedPullRequest(prUrl)');
-  const tagIndex = source.indexOf("git('tag', '-f', 'public-sync-base', source)");
+  const tagIndex = source.indexOf("persistCheckpoint(git('rev-parse', source))");
   assert(waitIndex !== -1);
   assert(tagIndex > waitIndex);
   assert.match(source, /gh\('pr', 'checks'.*'--watch'/s);
@@ -70,6 +70,21 @@ check('known private-only files preserve their public exclusion automatically', 
   assert.match(source, /PUBLIC_EXCLUDED_PATHS = new Set\(\['AGENTS\.md'\]\)/);
   assert.match(source, /canAutoResolvePublicExclusions\(conflicts\)/);
   assert.match(source, /git\('rm', '--ignore-unmatch', '--', filePath\)/);
+});
+
+check('publication waits through GitHub check-registration latency', () => {
+  const source = readFileSync(syncScript, 'utf8');
+  assert.match(source, /isPendingCheckRegistration\(error\)/);
+  assert.match(source, /Waiting for GitHub to register release checks/);
+  assert.match(source, /sleep\(5000\)/);
+});
+
+check('publication uses a durable checkpoint rather than unstable patch IDs', () => {
+  const source = readFileSync(syncScript, 'utf8');
+  assert.match(source, /git\('rev-list', '--reverse', `\$\{baseLimit\}\.\.\$\{source\}`\)/);
+  assert.doesNotMatch(source, /git\('cherry'/);
+  assert.match(source, /Xandrio-Source-Commit:/);
+  assert.match(source, /git\('push', '--force', PRIVATE_REMOTE, 'refs\/tags\/public-sync-base'\)/);
 });
 
 console.log(`${passed} passed, ${failed} failed`);

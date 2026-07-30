@@ -2,9 +2,9 @@
 /**
  * Sync development commits to the public repository.
  *
- * Cherry-picks every commit on the source branch that is not yet on the
- * public target branch (by patch id), scrubs tool/AI attribution lines from
- * the commit messages, secret-scans the resulting branch with the pinned
+ * Cherry-picks every commit after the durable public-sync-base checkpoint,
+ * scrubs tool/AI attribution lines from the commit messages, records the
+ * private source SHA, secret-scans the resulting branch with the pinned
  * Gitleaks wrapper, then pushes it, opens a PR, and arms auto-merge so it
  * lands once the required status checks pass.
  *
@@ -31,6 +31,7 @@ const opt = (name, fallback) => {
 const REPO_ROOT = resolve(import.meta.dirname, '..', '..');
 const REMOTE = opt('--remote', 'public');
 const TARGET = opt('--target', 'main');
+const PRIVATE_REMOTE = opt('--private-remote', 'origin');
 const DRY_RUN = has('--dry-run');
 const NO_MERGE = has('--no-merge');
 const NO_WAIT = has('--no-wait');
@@ -61,9 +62,25 @@ export function canAutoResolvePublicExclusions(paths) {
   return paths.length > 0 && paths.every(filePath => PUBLIC_EXCLUDED_PATHS.has(filePath));
 }
 
+export function isPendingCheckRegistration(error) {
+  return /no checks reported/i.test(String(error?.stderr || error?.message || ''));
+}
+
 function waitForMergedPullRequest(prUrl, timeoutMs = 30 * 60 * 1000) {
-  gh('pr', 'checks', prUrl, '--repo', 'ProofOfReach/xandrio', '--watch', '--interval', '10');
   const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      gh('pr', 'checks', prUrl, '--repo', 'ProofOfReach/xandrio', '--watch', '--interval', '10');
+      break;
+    } catch (error) {
+      if (!isPendingCheckRegistration(error)) throw error;
+      console.log('Waiting for GitHub to register release checks...');
+      sleep(5000);
+    }
+  }
+  if (Date.now() >= deadline) {
+    throw new Error(`timed out waiting for public release checks to register: ${prUrl}`);
+  }
   while (Date.now() < deadline) {
     const state = pullRequestState(gh(
       'pr',
@@ -96,6 +113,22 @@ export function scrubMessage(message) {
   return scrubbed ? `${scrubbed}\n` : 'sync: publish development changes\n';
 }
 
+export function publicationMessage(message, sourceSha) {
+  return `${scrubMessage(message).trim()}\n\nXandrio-Source-Commit: ${sourceSha}\n`;
+}
+
+export function publishedSourceCommits(logMessages) {
+  return new Set(
+    [...String(logMessages).matchAll(/^Xandrio-Source-Commit:\s*([0-9a-f]{40})$/gmi)]
+      .map(match => match[1].toLowerCase())
+  );
+}
+
+function persistCheckpoint(sha) {
+  git('tag', '-f', 'public-sync-base', sha);
+  git('push', '--force', PRIVATE_REMOTE, 'refs/tags/public-sync-base');
+}
+
 const startBranch = git('rev-parse', '--abbrev-ref', 'HEAD');
 const source = opt('--source', startBranch);
 
@@ -117,14 +150,40 @@ let baseLimit = '';
 try {
   baseLimit = git('rev-parse', '--verify', 'refs/tags/public-sync-base');
 } catch {
-  fail('missing public-sync-base tag; tag the last published dev commit first');
+  try {
+    git('fetch', PRIVATE_REMOTE, 'refs/tags/public-sync-base:refs/tags/public-sync-base');
+    baseLimit = git('rev-parse', '--verify', 'refs/tags/public-sync-base');
+  } catch {
+    fail('missing public-sync-base tag locally and on the private remote');
+  }
 }
 
-// '+ <sha>' lines are commits whose patch is absent from the target.
-const pending = git('cherry', `${REMOTE}/${TARGET}`, source, baseLimit)
-  .split('\n').filter(line => line.startsWith('+ ')).map(line => line.slice(2));
+// A completed public merge can outlive the local process that initiated it.
+// Source-SHA trailers let a retry repair a stale checkpoint without replaying
+// commits whose public patches legitimately differ (for example AGENTS.md is
+// deliberately excluded from the public repository).
+const afterCheckpoint = git('rev-list', '--reverse', `${baseLimit}..${source}`)
+  .split('\n').filter(Boolean);
+const published = publishedSourceCommits(
+  git('log', '--format=%B', `${REMOTE}/${TARGET}`)
+);
+let recoveredCheckpoint = baseLimit;
+for (const sha of afterCheckpoint) {
+  if (!published.has(sha.toLowerCase())) break;
+  recoveredCheckpoint = sha;
+}
+if (recoveredCheckpoint !== baseLimit) {
+  persistCheckpoint(recoveredCheckpoint);
+  baseLimit = recoveredCheckpoint;
+  console.log(`Recovered public-sync-base at ${git('rev-parse', '--short', baseLimit)}.`);
+}
+
+// The checkpoint is authoritative. Patch IDs are not: excluding a private-only
+// file changes the patch ID even when the public projection merged correctly.
+const pending = git('rev-list', '--reverse', `${baseLimit}..${source}`)
+  .split('\n').filter(Boolean);
 if (!pending.length) {
-  console.log(`Nothing to sync: every ${source} patch is already on ${REMOTE}/${TARGET}.`);
+  console.log(`Nothing to sync: ${source} matches the durable public checkpoint.`);
   process.exit(0);
 }
 console.log(`Syncing ${pending.length} commit(s) from ${source} to ${REMOTE}/${TARGET}:`);
@@ -151,7 +210,8 @@ try {
         throw new Error(`cherry-pick of ${sha.slice(0, 7)} conflicts with ${REMOTE}/${TARGET}; resolve manually (${err.message})`);
       }
     }
-    git('commit', '--amend', '--no-edit', '-m', scrubMessage(git('log', '-1', '--format=%B', sha)));
+    git('commit', '--amend', '--no-edit', '-m',
+      publicationMessage(git('log', '-1', '--format=%B', sha), sha));
   }
 
   // Secret-scan exactly what will be pushed: a single-branch clone whose
@@ -184,7 +244,7 @@ try {
     console.log('Waiting for every public release check and the protected merge...');
     const merged = waitForMergedPullRequest(prUrl);
     git('fetch', REMOTE, TARGET);
-    git('tag', '-f', 'public-sync-base', source);
+    persistCheckpoint(git('rev-parse', source));
     console.log(`Public release merged at ${merged.mergeCommit}.`);
     console.log(`public-sync-base advanced to ${git('rev-parse', '--short', source)}.`);
   } else {
