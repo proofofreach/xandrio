@@ -34,6 +34,28 @@ done
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
+# The checkout and its generated files stay owned by the service account even
+# when an operator enters through root to restart systemd. Running git or npm
+# as root against an xandrio-owned checkout both trips Git's safe-directory
+# guard and creates root-owned application files.
+REPO_OWNER="$(stat -c '%U' "$REPO_ROOT" 2>/dev/null || stat -f '%Su' "$REPO_ROOT")"
+REPO_RUN=()
+CURRENT_USER="$(id -un)"
+if [ "$CURRENT_USER" != "$REPO_OWNER" ]; then
+  if [ "$(id -u)" -ne 0 ]; then
+    echo "error: checkout is owned by $REPO_OWNER but deploy is running as $CURRENT_USER." >&2
+    exit 1
+  fi
+  if ! command -v runuser >/dev/null 2>&1; then
+    echo "error: runuser is required to deploy a checkout owned by $REPO_OWNER." >&2
+    exit 1
+  fi
+  REPO_RUN=(runuser -u "$REPO_OWNER" --)
+fi
+repo() {
+  "${REPO_RUN[@]}" "$@"
+}
+
 # The service runs as root only in containers; on the host we need sudo for
 # systemctl unless already root.
 SUDO=""
@@ -47,9 +69,9 @@ if [ -n "$ROLLBACK_REF" ]; then
   REF="$ROLLBACK_REF"
 fi
 
-PREV_REF="$(git rev-parse HEAD)"
+PREV_REF="$(repo git rev-parse HEAD)"
 echo "Current revision (rollback point): $PREV_REF"
-echo "Deploying: $REF  (service: $SERVICE, health port: $PORT)"
+echo "Deploying: $REF  (checkout owner: $REPO_OWNER, service: $SERVICE, health port: $PORT)"
 
 if [ "$DRY_RUN" -eq 1 ]; then
   cat <<PLAN
@@ -67,21 +89,21 @@ fi
 
 # Server-local edits are forbidden (they are lost on deploy anyway); refuse
 # to clobber them silently.
-if [ -n "$(git status --porcelain)" ]; then
+if [ -n "$(repo git status --porcelain)" ]; then
   echo "error: working tree has local changes; production must not be hot-edited." >&2
   echo "Inspect with 'git status', then discard them before deploying." >&2
   exit 1
 fi
 
-git fetch --tags origin
-git checkout --detach "$REF"
-npm ci --omit=dev
+repo git fetch --tags origin
+repo git checkout --detach "$REF"
+repo npm ci --omit=dev
 $SUDO systemctl restart "$SERVICE"
 
 echo "Waiting for /health on port $PORT..."
 for attempt in $(seq 1 30); do
   if curl --silent --fail --max-time 2 "http://127.0.0.1:$PORT/health" > /dev/null; then
-    echo "Healthy. Deployed $(git rev-parse HEAD) ($REF)."
+    echo "Healthy. Deployed $(repo git rev-parse HEAD) ($REF)."
     exit 0
   fi
   sleep 2
