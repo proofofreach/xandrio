@@ -56,6 +56,21 @@ async function check(name, callback) {
     );
   });
 
+  await check('blocks an opened sync PR until its checkpoint is merged', () => {
+    assert.throws(() => deployment.assertPublicPromotionReady({
+      checkpointOutput: `+ ${'a'.repeat(40)}`,
+      pendingOutput: ''
+    }), /checkpoint is not on public\/main/);
+    assert.throws(() => deployment.assertPublicPromotionReady({
+      checkpointOutput: `- ${'a'.repeat(40)}`,
+      pendingOutput: `+ ${'b'.repeat(40)}`
+    }), /private patch/);
+    assert.doesNotThrow(() => deployment.assertPublicPromotionReady({
+      checkpointOutput: `- ${'a'.repeat(40)}`,
+      pendingOutput: ''
+    }));
+  });
+
   await check('requires matching VPS revision, active service, and external health', () => {
     const revision = 'a'.repeat(40);
     assert.deepEqual(deployment.assertDeploymentEvidence({
