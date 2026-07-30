@@ -46,9 +46,12 @@ promoted, in order:
 3. The feature runs enabled on the local M4 instance for a soak period of real
    use (3–7 days as a default; longer for playback/audio-path changes) with no
    regressions.
-4. Only then: `npm run sync:public` from `main`, deploy on the web host with
-   `scripts/deploy-prod.sh`, and — if flag-gated — enable the flag in the
-   production `.env`.
+4. Only then: `npm run sync:public` from `main` and wait for the public PR to
+   merge. Promote that public revision with
+   `npm run deploy:production -- --ssh-target user@host`; this refuses private
+   patches missing from public `main`, invokes `scripts/deploy-prod.sh` on the
+   VPS, and verifies the VPS revision, `xandrio-web`, and the external health
+   endpoint. If flag-gated, enable the flag in the production `.env`.
 
 "Local has more than production" therefore means more *enabled flags*, never
 more *code*: both instances run the same lineage, and divergence lives in
@@ -58,9 +61,13 @@ more *code*: both instances run the same lineage, and divergence lives in
 
 - New user-facing features (like accounts) go to production through the normal
   release export; nothing is cherry-picked or hot-edited on the server —
-  server-local edits get lost on the next deploy. Deploys on the web host use
-  `scripts/deploy-prod.sh` (health-checked, with a printed rollback path; see
-  docs/SELF_HOSTING.md).
+  server-local edits get lost on the next deploy. Operators promote from the
+  private checkout with `npm run deploy:production`; the command runs
+  `scripts/deploy-prod.sh` on the web host and prints a verified production
+  receipt (see docs/SELF_HOSTING.md).
+- A local service restart, localhost health response, or push to the private
+  repository is development activity. None is evidence of a production
+  deployment.
 - New engine/runtime features stay local-only by default: gate them behind an
   explicit env flag that defaults to off, so shipping the code to production is
   harmless.

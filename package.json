@@ -42,6 +42,7 @@
     "check:release-contacts": "node scripts/release/check-release-contacts.mjs",
     "check:public-repository": "node scripts/release/check-public-repository.mjs",
     "sync:public": "node scripts/release/sync-public.mjs",
+    "deploy:production": "node --env-file-if-exists=.env scripts/release/deploy-production.mjs",
     "scan:history": "node scripts/release/scan-git-history.mjs",
     "release:prepare-public-root": "node scripts/release/prepare-public-root.mjs",
     "release:verify": "node scripts/release/verify-release-consistency.mjs",
