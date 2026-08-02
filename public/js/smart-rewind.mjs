@@ -21,6 +21,49 @@ function parseAnchor(storage) {
   }
 }
 
+/**
+ * Apply a pending Smart Rewind synchronously, or report that it could not be.
+ *
+ * A resume triggered by a tap or a lock-screen control must reach
+ * `audio.play()` inside the user-activation window iOS opened for it. Anything
+ * that awaits first — most importantly reloading a nonseekable HLS source so it
+ * can be repositioned — closes that window and the resume fails outright.
+ * Rewinding is a comfort; resuming is the point. So this never awaits, never
+ * reloads, and hands the caller back a verdict it can report honestly:
+ *
+ *   applied  — the position moved.
+ *   deferred — the source cannot be repositioned right now (nonseekable, or
+ *              nothing buffered at the target). Play now; a caller may retry
+ *              once the target is buffered.
+ *   skipped  — nothing to do.
+ *
+ * The pause anchor is consumed either way, so a rewind is never re-applied.
+ *
+ * @returns {{status: 'applied'|'deferred'|'skipped', rewindSeconds: number, targetSeconds: number|null}}
+ */
+export function applyRewindForResume({
+  controller,
+  player,
+  bookId,
+  chapterIndex,
+  positionSeconds,
+  enabled
+}) {
+  const nothingToDo = { status: 'skipped', rewindSeconds: 0, targetSeconds: null };
+  if (!controller || !enabled) {
+    controller?.clear();
+    return nothingToDo;
+  }
+  const plan = controller.planResume({ bookId, chapterIndex, positionSeconds });
+  if (!plan) return nothingToDo;
+  if (typeof player?.trySeekSync !== 'function') return nothingToDo;
+  return {
+    status: player.trySeekSync(plan.targetSeconds) ? 'applied' : 'deferred',
+    rewindSeconds: plan.rewindSeconds,
+    targetSeconds: plan.targetSeconds
+  };
+}
+
 export function createSmartRewindController(options = {}) {
   const storage = options.storage || globalThis.localStorage;
   const now = options.now || Date.now;

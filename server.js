@@ -402,6 +402,12 @@ const bookArtifactCleaner = createBookArtifactCleaner({
 // Unified 500 response: log the full error server-side, return a generic public
 // message with no raw err.message so internal details are not leaked to clients.
 function sendServerError(res, err, publicMessage = 'Something went wrong') {
+  // A response whose socket is already gone means the client disconnected —
+  // it seeked, navigated away or locked the phone mid-stream. That is normal
+  // client behaviour, not a server fault: logging it at error level buries real
+  // failures in noise, and writing to the dead socket only produces a second,
+  // more confusing error. Check this before logging, and before writing.
+  if (res.destroyed || res.writableEnded) return;
   console.error(`${publicMessage}:`, err);
   // Routes that stream (audio, covers) may fail after the response has begun.
   // Writing a JSON body then would throw ERR_HTTP_HEADERS_SENT on top of the
@@ -1976,7 +1982,19 @@ function observePlaybackHorizon({ bookId, chapterIndex, sessionId }) {
   });
 }
 const chapterAudioStreamer = createChapterAudioStreamer({ serveAudioFile });
-const hlsAudioStreamer = createHlsAudioStreamer({ serveAudioFile });
+const hlsAudioStreamer = createHlsAudioStreamer({
+  serveAudioFile,
+  // Instrumentation only. TTS scheduling is deliberately unchanged: immediate
+  // work already preempts the background queue, so the exposure is one in-flight
+  // chunk. This records how long a listener actually waits for first audio, and
+  // whether background generation was running when they asked, so any future
+  // preemption work starts from measurement rather than inference.
+  backgroundWorkProbe: () => ttsQueue.hasActiveBackgroundWork(),
+  onFirstSegment: ({ waitedMs, backgroundWorkInFlight }) => {
+    console.log(`[playback] first HLS segment in ${waitedMs}ms` +
+      `${backgroundWorkInFlight ? ' (TTS generation already in flight)' : ''}`);
+  }
+});
 
 async function inspectChapterAudio(bookId, chapterIndex, options = {}) {
   const clean = Boolean(options.clean);

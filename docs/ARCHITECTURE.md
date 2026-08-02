@@ -41,11 +41,82 @@ Provider result labels communicate whether a result is an operator upload, carri
 5. The player streams chunks, supports Range requests, and can create a verified
    full-title browser download containing every chapter plus a compact
    title/chapter snapshot and cover.
-6. The service worker serves downloaded chapter audio and covers when the
-   network is unavailable. The local snapshot rebuilds the library and player
-   after a cold offline launch. Server preparation and generated narration are
-   shared across devices, but the Downloaded view and transferred Cache Storage
-   entries are scoped to the current account, browser profile, and device.
+6. The service worker serves downloaded chapter audio and covers. The local
+   snapshot rebuilds the library and player after a cold offline launch. Server
+   preparation and generated narration are shared across devices, but the
+   Downloaded view and transferred Cache Storage entries are scoped to the
+   current account, browser profile, and device.
+
+## Local-first playback
+
+A chapter already on this device is played from this device, whether or not
+there is a network. Connectivity used to gate that check, so a fully downloaded
+book streamed anyway whenever the phone had signal.
+
+- The explicitly scoped offline media URL (`/api/audio/…?xandrio-offline-scope=`)
+  is **cache-only** in the service worker. This is a permanent contract, not a
+  fallback strategy. The server route behind that URL serves a different encode
+  from the downloaded offline package, so a network fall-through would stream the
+  wrong artifact — and re-run TTS — while appearing to play locally. Ordinary
+  online media still bypasses the worker entirely.
+- Scoped responses carry `X-Xandrio-Offline-Cache: hit|miss` and `X-Xandrio-SW:
+  <CACHE_VERSION>`. The app pins the exact worker version it was written against
+  (`EXPECTED_OFFLINE_SW_VERSION` in `public/js/features/offline.js`, enforced
+  equal to `CACHE_VERSION` by `test/test-app-shell-versions.js`).
+- Routing is presence-only — a manifest entry plus a cache hit. It never hashes
+  a body, because doing so on the load path would stall the first play of every
+  chapter. No scoped URL is offered when the page has no worker controller.
+- The app, not the worker, owns a **single** fallback to streaming after a local
+  failure, and says so in the UI.
+
+### Corruption and failure handling
+
+A media error is not evidence of a bad download; mobile Safari raises them
+routinely. Distrust is therefore session-only, and durable state changes require
+deterministic evidence:
+
+| Evidence | Manifest | Cached bytes |
+| --- | --- | --- |
+| Any playback failure | untouched | kept |
+| Current-version `504` + `miss` | entry cleared | **kept**, so a repair revalidates cheaply |
+| 3 failures + hash mismatch | entry cleared | deleted (the only case) |
+| 3 failures + hash match | untouched | kept; chapter streams for the session |
+| Anything else (no controller, transport failure, other worker version, malformed, transient 5xx) | untouched | kept |
+
+### Download completion
+
+Bytes are verified against the server hash, then the exact scoped worker route
+is probed with a two-byte Range request. Only an exact `206`, matching
+`Content-Range` size, `Content-Length: 2`, `hit` marker and current worker
+version promotes a download to `ready`/Downloaded. Anything else leaves it in
+`verifying` — bytes intact — and it is re-probed at startup and on
+`controllerchange`. `verifying` and partial downloads are never reported as
+Downloaded, but remain hydratable so partial offline playback keeps working.
+
+## Resume
+
+A resume must reach `audio.play()` inside the user-activation window iOS opened
+for the tap; any `await` first loses it.
+
+- Tap, lock-screen and Control Center paths call `play()` synchronously. Smart
+  Rewind applies via a synchronous seek or is deferred — it never reloads a
+  nonseekable HLS source, which both closed the activation window and minted a
+  server session.
+- Manual recovery **prepares the source before offering Resume**, so the tap only
+  plays. A failed preparation offers "Try again" instead of claiming a one-tap
+  resume.
+- One immutable snapshot of the canonical request (`book`, `chapter`, exact
+  offset, tier, end chapter) is captured when a failure is handled and replayed
+  verbatim by every attempt, so the transport opens *at* the resume position
+  rather than opening at zero and relocating.
+- The client session id is stable per canonical tuple, so retries join the
+  existing server HLS session. A resume should create **one** session.
+- One recovery attempt owns the player at a time; at most two automatic attempts;
+  a `429` is reported with its `Retry-After` and never retried into.
+- The client abandons a load at `CLIENT_LOAD_DEADLINE_MS` (30 s). Cancellation is
+  disconnect-driven; the server's HLS readiness timeout is derived from that
+  constant purely as a backstop for sockets that never close.
+- TTS scheduling is unchanged. First-segment latency is instrumented only.
 7. Title deletion cancels its generation intents and removes server artifacts
    first, then the initiating browser clears its audio, cover, manifest,
    checkpoint, and pending position records.

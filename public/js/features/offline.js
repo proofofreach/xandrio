@@ -14,6 +14,27 @@ const OFFLINE_SCOPE_PARAM = 'xandrio-offline-scope';
 const OFFLINE_CONTENT_HASH_HEADER = 'X-Xandrio-Content-SHA256';
 const OFFLINE_BODY_VERIFICATION_VERSION = 1;
 const OFFLINE_MANIFEST_VERSION = 3;
+// Markers written by the service worker on every scoped offline audio
+// response. See public/sw.js — they are what makes a cache miss distinguishable
+// from a transient media error.
+const OFFLINE_CACHE_MARKER = 'x-xandrio-offline-cache';
+const OFFLINE_SW_VERSION_MARKER = 'x-xandrio-sw';
+/**
+ * The exact service-worker build this module's offline contract is written
+ * against. MUST equal CACHE_VERSION in public/sw.js; test-app-shell-versions.js
+ * enforces that, so a worker bump without updating this fails the suite.
+ *
+ * Pinned exactly rather than "any non-empty version" because a header only
+ * proves the worker sets a header. A different build may implement different
+ * cache semantics, and a download must not be certified against semantics that
+ * are not the ones playback will use. A mismatch is never treated as damage:
+ * affected entries return to `verifying` and re-probe, which is why a routine
+ * worker bump costs one probe rather than a re-download.
+ */
+export const EXPECTED_OFFLINE_SW_VERSION = 'xandrio-v120';
+// A chapter is only ever invalidated after this many playback failures whose
+// cheap probe still says the cache is fine. Below it, we assume Safari.
+const SUSPECT_FAILURES_BEFORE_HASH = 3;
 const FULL_DOWNLOAD_CONCURRENCY = 2;
 const DOWNLOAD_PREPARE_TIMEOUT_MS = 30 * 60 * 1000;
 const DOWNLOAD_RETRY_DELAYS_MS = [0, 350, 1000];
@@ -44,6 +65,11 @@ export function offlineDownloadsSupported() {
 
 export function initOffline(options = {}) {
   deps = options;
+  // Distrust is session state, and this is the session boundary. A chapter that
+  // failed to play last time is given another chance now — the download is
+  // verified, and the usual causes (memory pressure, a backgrounded tab) do not
+  // survive a relaunch.
+  suspectChapters.clear();
   document.getElementById('offline-books-list')?.addEventListener('click', handleOfflineManagerClick);
   document.addEventListener('xandrio:deploymentchange', refreshOfflineAvailability);
   document.removeEventListener('xandrio:cancelofflinedownload', handleOfflineDownloadCancel);
@@ -54,7 +80,23 @@ export function initOffline(options = {}) {
   window.addEventListener('online', resumeInterruptedOfflineDownloads);
   window.addEventListener('online', updateOfflineBanner);
   window.addEventListener('offline', updateOfflineBanner);
+  // A download can finish while the page is uncontrolled (first install) or
+  // while an older worker is still in charge. Both resolve on their own, so
+  // re-check at startup and whenever the controlling worker changes rather than
+  // leaving the user with a book stuck in "Verifying".
+  navigator.serviceWorker?.addEventListener?.(
+    'controllerchange',
+    () => { void reprobeVerifyingDownloads().catch(() => {}); }
+  );
   renderOfflineState({ audit: false });
+  void reprobeVerifyingDownloads().catch(() => {});
+  // Again once cache migration has finished: entries moved into the scoped
+  // audio cache are only probeable at their final location, so a pass that ran
+  // before migration cannot certify them.
+  void migrateLegacyOfflineCaches()
+    .catch(() => false)
+    .then(() => reprobeVerifyingDownloads())
+    .catch(() => {});
   void prepareOfflineStorage({ waitForAudio: true })
     .then(() => resumeInterruptedOfflineDownloads())
     .finally(() => scheduleOfflineManifestAudit());
@@ -315,9 +357,34 @@ function validTitleData(entry) {
   );
 }
 
-function isPlayableFullEntry(entry) {
+// Deliberately two predicates, not one with a flag.
+//
+// These answer different questions and previously did not: one predicate served
+// both "can the player rebuild itself from this?" and "is this Downloaded?",
+// so a partial download was filed under Downloaded and failed to play. Keeping
+// them separate means broadening one cannot silently broaden the other.
+
+/**
+ * Can the app rebuild a player, library card or cover from this entry offline?
+ *
+ * Intentionally broad: a partially downloaded book is still worth opening for
+ * the chapters it does have, and that partial offline playback is a supported
+ * feature. Never use this to decide what to call Downloaded.
+ */
+function isHydratableOfflineEntry(entry) {
   if (entry?.mode !== 'full' || !validTitleData(entry)) return false;
-  return ['ready', 'repairing', 'incomplete'].includes(offlineState(entry));
+  return ['ready', 'repairing', 'incomplete', 'verifying'].includes(offlineState(entry));
+}
+
+/**
+ * Is this book completely on this device and proven playable from it?
+ *
+ * The only predicate that may drive Downloaded semantics. `ready` is reached
+ * exclusively by finishing every chapter, verifying bytes against the server
+ * hash, and confirming the scoped worker route serves them.
+ */
+function isCompletedOfflineEntry(entry) {
+  return isHydratableOfflineEntry(entry) && offlineState(entry) === 'ready';
 }
 
 function hasCachedChapter(entry) {
@@ -326,7 +393,7 @@ function hasCachedChapter(entry) {
 
 export function getOfflineBookData(bookId) {
   const entry = offlineEntryForBook(bookId);
-  if (!isPlayableFullEntry(entry) || !hasCachedChapter(entry)) return null;
+  if (!isHydratableOfflineEntry(entry) || !hasCachedChapter(entry)) return null;
   const data = structuredClone(entry.titleData);
   if (data.book.hasCover) data.book.coverUrl = offlineTitleRequest(bookId).url;
   return data;
@@ -334,7 +401,7 @@ export function getOfflineBookData(bookId) {
 
 export function getOfflineLibraryBooks() {
   return Object.values(getOfflineManifest())
-    .filter(entry => isPlayableFullEntry(entry) && hasCachedChapter(entry))
+    .filter(entry => isHydratableOfflineEntry(entry) && hasCachedChapter(entry))
     .sort((a, b) => String(b.downloadedAt || '').localeCompare(String(a.downloadedAt || '')))
     .map(entry => {
       const book = structuredClone(entry.titleData.book);
@@ -425,7 +492,10 @@ export function offlineStatusForBook(bookId) {
       totalChapters
     };
   }
-  if (state === 'ready') {
+  // Routed through the strict predicate on purpose: this is the single place
+  // that may report `downloaded: true`, and it must not widen with the
+  // hydration predicate.
+  if (isCompletedOfflineEntry(entry)) {
     return {
       kind: 'downloaded',
       label: 'Downloaded',
@@ -443,7 +513,18 @@ export function offlineStatusForBook(bookId) {
       totalChapters
     };
   }
-  if (state === 'incomplete' && isPlayableFullEntry(entry) && cachedChapters > 0) {
+  // Stored and byte-verified, but the scoped playback route is unconfirmed.
+  // Never reported as downloaded — that claim is what failed the user before.
+  if (state === 'verifying') {
+    return {
+      kind: 'verifying',
+      label: 'Verifying download — reopen Xandrio to finish',
+      downloaded: false,
+      cachedChapters,
+      totalChapters
+    };
+  }
+  if (state === 'incomplete' && isHydratableOfflineEntry(entry) && cachedChapters > 0) {
     return {
       kind: 'partial-download',
       label: `${cachedChapters} of ${totalChapters} chapters downloaded`,
@@ -468,7 +549,7 @@ export function isBookDownloadedForOffline(bookId, chapterIndex = 0) {
     entry?.state === 'ready' &&
     Array.isArray(entry?.chapterEntries);
   return Boolean(
-    entry && (isPlayableFullEntry(entry) || entry.mode === 'rolling' || legacyReady) &&
+    entry && (isHydratableOfflineEntry(entry) || entry.mode === 'rolling' || legacyReady) &&
     Array.isArray(entry.chapterEntries) &&
     chapterIndex >= 0 && chapterIndex < entry.chapterEntries.length &&
     entry.chapterEntries[chapterIndex]
@@ -502,6 +583,371 @@ export async function isChapterAvailableOffline(bookId, chapterIndex = 0) {
   if (entry.mode !== 'rolling') entry.state = 'incomplete';
   saveOfflineManifest(manifest);
   return false;
+}
+
+// Runtime-only distrust, keyed `bookId:chapterIndex`.
+//
+// `failures` is the tally for this session and survives a clean probe, because
+// a two-byte probe cannot prove a whole chapter is playable — a chapter that
+// keeps failing while passing it has to be escalated eventually. `distrusted`
+// is the routing flag and *is* cleared by a clean probe, so a one-off Safari
+// error costs a single chapter load rather than the rest of the session.
+// Neither is persisted; the durable manifest is written only on deterministic
+// evidence.
+const suspectChapters = new Map();
+
+function suspectKey(bookId, chapterIndex) {
+  return `${bookId}:${chapterIndex}`;
+}
+
+/**
+ * Prove the exact scoped service-worker route can serve a downloaded chapter.
+ *
+ * Byte-exact storage was already verified against the server hash; what this
+ * adds is that the route the media element actually uses answers correctly.
+ * Deliberately not an audio-element probe: on iOS that costs a media element,
+ * interacts with activation rules, and cannot be run per chapter — a two-byte
+ * Range request through the same URL is deterministic and nearly free.
+ *
+ * @returns {Promise<{ok: boolean, swVersion: string, reason: string}>}
+ */
+export function hasOfflineWorkerController() {
+  return Boolean(globalThis.navigator?.serviceWorker?.controller);
+}
+
+/**
+ * The script URL the app registers, pinned to the worker build this module's
+ * offline contract is written against. Registering a versioned URL is what makes
+ * the controlling worker's identity observable: `controller.scriptURL` is the
+ * only thing a page can read about the worker in charge of it.
+ */
+export const OFFLINE_WORKER_SCRIPT_URL = `/sw.js?v=${EXPECTED_OFFLINE_SW_VERSION}`;
+
+/**
+ * Is the page controlled by the exact worker build this contract expects?
+ *
+ * During a rollout the new app.js runs for a while under the *previous* worker,
+ * which still resolves the scoped offline URL network-first. Handing that worker
+ * a scoped source while online fetches from the server — streamed audio, a
+ * different encode, reported as "Playing from this device". Any check looser
+ * than exact identity lets that through.
+ */
+export function hasExpectedOfflineWorkerController() {
+  const scriptURL = globalThis.navigator?.serviceWorker?.controller?.scriptURL;
+  if (!scriptURL) return false;
+  try {
+    const version = new URL(scriptURL, globalThis.location?.origin || 'https://localhost')
+      .searchParams.get('v');
+    return version === EXPECTED_OFFLINE_SW_VERSION;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The one strict reading of a scoped offline probe response, shared by download
+ * verification and runtime classification so the two can never drift.
+ *
+ * @returns {{outcome: 'hit'|'miss'|'indeterminate', swVersion: string, reason: string}}
+ *   hit           — this exact worker served the chapter from cache. Proof the
+ *                   route works.
+ *   miss          — this exact worker states the chapter is not cached. The only
+ *                   evidence strong enough to write to the manifest.
+ *   indeterminate — anything else: no controller, transport failure, a worker
+ *                   from another build, a malformed answer, a transient 5xx.
+ *                   Proves nothing, so nothing durable may be concluded.
+ */
+async function readOfflineProbe(bookId, chapterIndex, options = {}) {
+  const probe = options.probe || (request => fetch(request, { cache: 'no-store' }));
+  // Certification and classification both require the exact worker *before*
+  // fetching. A worker of another build could answer with its own semantics, and
+  // its answer — in either direction — is not evidence about this contract.
+  if (!hasExpectedOfflineWorkerController()) {
+    return {
+      outcome: 'indeterminate',
+      swVersion: '',
+      reason: hasOfflineWorkerController() ? 'unexpected-controller' : 'uncontrolled'
+    };
+  }
+
+  let response = null;
+  try {
+    response = await probe(new Request(
+      offlineAudioRequest(bookId, chapterIndex),
+      { headers: { Range: 'bytes=0-1' } }
+    ));
+  } catch {
+    return { outcome: 'indeterminate', swVersion: '', reason: 'probe-failed' };
+  }
+
+  // A worker from another build may implement different cache semantics, so
+  // nothing it says is evidence about this contract — in either direction.
+  const swVersion = response?.headers?.get?.(OFFLINE_SW_VERSION_MARKER) || '';
+  if (swVersion !== EXPECTED_OFFLINE_SW_VERSION) {
+    return {
+      outcome: 'indeterminate',
+      swVersion,
+      reason: swVersion ? 'worker-version-mismatch' : 'unversioned-worker'
+    };
+  }
+
+  const marker = response.headers.get(OFFLINE_CACHE_MARKER);
+  if (response.status === 504 && marker === 'miss') {
+    return { outcome: 'miss', swVersion, reason: '' };
+  }
+  if (response.status !== 206 || marker !== 'hit') {
+    return { outcome: 'indeterminate', swVersion, reason: 'unexpected-status' };
+  }
+  if (Number(response.headers.get('Content-Length')) !== 2) {
+    return { outcome: 'indeterminate', swVersion, reason: 'bad-length' };
+  }
+  const range = /^bytes 0-1\/(\d+)$/.exec(response.headers.get('Content-Range') || '');
+  if (!range) return { outcome: 'indeterminate', swVersion, reason: 'malformed-range' };
+  return { outcome: 'hit', swVersion, reason: '', totalBytes: Number(range[1]) };
+}
+
+/**
+ * Prove the exact scoped service-worker route can serve a downloaded chapter.
+ *
+ * Byte-exact storage was already verified against the server hash; what this
+ * adds is that the route the media element actually uses answers correctly.
+ * Deliberately not an audio-element probe: on iOS that costs a media element,
+ * interacts with activation rules, and cannot be run per chapter — a two-byte
+ * Range request through the same URL is deterministic and nearly free.
+ *
+ * @returns {Promise<{ok: boolean, swVersion: string, reason: string}>}
+ */
+async function probeOfflinePlaybackRoute(bookId, chapterIndex, expectedSize, options = {}) {
+  const result = await readOfflineProbe(bookId, chapterIndex, options);
+  if (result.outcome !== 'hit') {
+    return { ok: false, swVersion: result.swVersion, reason: result.reason || result.outcome };
+  }
+  // Exact, not merely well-formed: a well-formed range over a different
+  // artifact would otherwise pass.
+  if (Number(result.totalBytes) !== Number(expectedSize)) {
+    return { ok: false, swVersion: result.swVersion, reason: 'range-mismatch' };
+  }
+  return { ok: true, swVersion: result.swVersion, reason: '' };
+}
+
+/**
+ * Re-probe every download left in `verifying`, promoting the ones that now pass.
+ *
+ * A download reaches `verifying` when its bytes are sound but the route could
+ * not be confirmed — an uncontrolled page on first install, or a worker from a
+ * different build. Both resolve themselves, so this runs at startup and on
+ * `controllerchange` rather than asking the user to do anything.
+ */
+export async function reprobeVerifyingDownloads() {
+  if (!('caches' in globalThis) || !hasExpectedOfflineWorkerController()) return false;
+  const manifest = getOfflineManifest();
+  let changed = false;
+  for (const [bookId, entry] of Object.entries(manifest)) {
+    if (!Array.isArray(entry?.chapterEntries)) continue;
+    // Two populations need checking: entries still waiting for certification,
+    // and entries certified before this contract existed or against an earlier
+    // worker build. The latter are currently claiming Downloaded on the strength
+    // of a check that no longer means what it meant.
+    const uncertified = entry.state === 'verifying';
+    const staleCertificate = entry.state === 'ready'
+      && entry.probedSwVersion !== EXPECTED_OFFLINE_SW_VERSION;
+    if (!uncertified && !staleCertificate) continue;
+
+    const chapterIndex = entry.chapterEntries.findIndex(Boolean);
+    if (chapterIndex < 0) continue;
+    const check = await probeOfflinePlaybackRoute(
+      bookId,
+      chapterIndex,
+      entry.chapterEntries[chapterIndex]?.size
+    ).catch(() => ({ ok: false, swVersion: '' }));
+
+    const latest = getOfflineManifest();
+    // Do not fight a download or repair that started after this pass began.
+    if (latest[bookId]?.state !== entry.state) continue;
+
+    if (check.ok) {
+      latest[bookId] = {
+        ...latest[bookId],
+        state: 'ready',
+        progressPhase: 'Downloaded',
+        probedSwVersion: check.swVersion
+      };
+    } else if (staleCertificate) {
+      // Bytes are intact and stay intact — but an unconfirmed route cannot keep
+      // claiming Downloaded. It returns to verifying and is retried later.
+      latest[bookId] = {
+        ...latest[bookId],
+        state: 'verifying',
+        progressPhase: 'Verifying'
+      };
+    } else {
+      // Still uncertified: leave it exactly as it is and try again next time.
+      continue;
+    }
+    saveOfflineManifest(latest);
+    changed = true;
+  }
+  if (changed) renderOfflineState({ audit: false });
+  return changed;
+}
+
+/**
+ * Presence-only local availability for the chapter-load path.
+ *
+ * Routing must be cheap. Full-body verification already happened at download
+ * time, and re-running it here would stall the first play of every chapter by
+ * however long it takes to hash tens of megabytes on a phone. Corruption that
+ * slipped past download verification surfaces as a playback failure, which
+ * classifyLocalChapter then diagnoses off the critical path.
+ *
+ * @returns {Promise<{available: boolean, url: string|null, mode: string|null}>}
+ */
+export async function localChapterSource(bookId, chapterIndex = 0) {
+  const unavailable = { available: false, url: null, mode: null };
+  if (!bookId || !Number.isInteger(chapterIndex) || chapterIndex < 0) return unavailable;
+  if (suspectChapters.get(suspectKey(bookId, chapterIndex))?.distrusted) return unavailable;
+  if (!('caches' in globalThis)) return unavailable;
+  // The scoped URL only means anything to the service worker. Handed to a media
+  // element on an uncontrolled page it reaches the server instead, which serves
+  // a different encode of the same chapter — silently streaming while claiming
+  // to play locally. Without a controller there is no local playback to offer.
+  if (!hasOfflineWorkerController()) return unavailable;
+  // Online, the controlling worker must be the exact build whose scoped URL is
+  // cache-only. During a rollout the previous worker is still in charge for a
+  // while and is network-first, so it would quietly stream.
+  //
+  // Offline is the opposite case and is deliberately permissive: an older
+  // worker's network attempt simply fails and its own cache fallback serves the
+  // chapter. Requiring the new worker here would strand a listener with a
+  // downloaded book, mid-activation, for no benefit.
+  if (globalThis.navigator?.onLine !== false && !hasExpectedOfflineWorkerController()) {
+    return unavailable;
+  }
+  await migrateLegacyOfflineCaches().catch(() => false);
+  if (!isBookDownloadedForOffline(bookId, chapterIndex)) return unavailable;
+
+  const entry = offlineEntryForBook(bookId);
+  const cache = await caches.open(offlineCacheName(OFFLINE_AUDIO_CACHE));
+  const cached = await cache.match(offlineAudioRequest(bookId, chapterIndex));
+  if (!cached) return unavailable;
+  return {
+    available: true,
+    url: offlinePlaybackUrl(bookId, chapterIndex),
+    mode: entry?.mode || null
+  };
+}
+
+/**
+ * Distrust one chapter for the rest of this session, without touching storage.
+ *
+ * Called the moment local playback fails. Falling back to streaming is cheap
+ * and reversible; deleting a download is neither, and mobile Safari produces
+ * transient media errors often enough that acting durably on one is wrong.
+ */
+export function markLocalChapterSuspect(bookId, chapterIndex = 0) {
+  if (!bookId || !Number.isInteger(chapterIndex) || chapterIndex < 0) return;
+  const key = suspectKey(bookId, chapterIndex);
+  const current = suspectChapters.get(key) || { failures: 0, distrusted: false };
+  suspectChapters.set(key, { failures: current.failures + 1, distrusted: true });
+}
+
+// Route locally again, but remember that this chapter has failed before.
+function trustLocalChapterAgain(bookId, chapterIndex) {
+  const key = suspectKey(bookId, chapterIndex);
+  const current = suspectChapters.get(key);
+  if (current) suspectChapters.set(key, { ...current, distrusted: false });
+}
+
+function clearLocalChapterSuspicion(bookId, chapterIndex) {
+  suspectChapters.delete(suspectKey(bookId, chapterIndex));
+}
+
+/**
+ * Diagnose a suspect chapter away from the playback path.
+ *
+ * Runs the same scoped service-worker request the media element uses, so it
+ * exercises the real route rather than a proxy for it.
+ *
+ * @returns {Promise<'transient'|'missing'|'corrupt'|'unplayable'|'indeterminate'>}
+ *   transient     — this exact worker served the chapter from cache; trust it
+ *                   again on the next chapter load.
+ *   missing       — this exact worker states it is not cached. The only verdict
+ *                   that writes to the manifest, and even then the bytes are
+ *                   kept so a repair can revalidate them cheaply.
+ *   corrupt       — repeated failures plus a hash mismatch. The only verdict
+ *                   that deletes cached audio.
+ *   unplayable    — repeated failures but the hash matches. The bytes are the
+ *                   bytes we downloaded and this device still cannot play them,
+ *                   so keep everything and keep streaming for this session.
+ *   indeterminate — nothing was proven. Keep everything, keep streaming.
+ */
+export async function classifyLocalChapter(bookId, chapterIndex = 0, options = {}) {
+  const failures = suspectChapters.get(suspectKey(bookId, chapterIndex))?.failures || 0;
+  const { outcome } = await readOfflineProbe(bookId, chapterIndex, options);
+
+  // Only an explicit, current-version miss is strong enough to edit the
+  // manifest. A dropped request, an old worker or a momentary 5xx says nothing
+  // about whether the download is intact, and acting on one would throw away a
+  // good copy over a transient condition.
+  if (outcome === 'miss') {
+    await invalidateLocalChapter(bookId, chapterIndex, { deleteBytes: false });
+    return 'missing';
+  }
+  if (outcome !== 'hit') return 'indeterminate';
+
+  // The cheap probe reads two bytes, so it cannot prove a whole chapter is
+  // sound. Only once a chapter has repeatedly failed despite passing it do we
+  // pay for the full hash — and only then may bytes be deleted.
+  if (failures >= SUSPECT_FAILURES_BEFORE_HASH) {
+    const intact = await localChapterBodyMatchesManifest(bookId, chapterIndex);
+    if (!intact) {
+      await invalidateLocalChapter(bookId, chapterIndex, { deleteBytes: true });
+      return 'corrupt';
+    }
+    // A matching hash proves the file is the one we downloaded. It does not
+    // prove this device can decode it, and three failures are evidence it
+    // cannot. Keep the download — it may play elsewhere, or after an OS update
+    // — but stop routing this chapter locally for the rest of the session.
+    return 'unplayable';
+  }
+
+  trustLocalChapterAgain(bookId, chapterIndex);
+  return 'transient';
+}
+
+async function localChapterBodyMatchesManifest(bookId, chapterIndex) {
+  const entry = offlineEntryForBook(bookId);
+  const expected = entry?.chapterEntries?.[chapterIndex];
+  if (!expected) return false;
+  try {
+    const cache = await caches.open(offlineCacheName(OFFLINE_AUDIO_CACHE));
+    const cached = await cache.match(offlineAudioRequest(bookId, chapterIndex));
+    if (!cached) return false;
+    const identity = await contentIdentity(cached, { verifyBody: true });
+    return canReuseChapter(expected, identity, expected.variantKey);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Durably drop one chapter from the manifest. Bytes are retained unless they
+ * are known bad, so a later repair can revalidate them instead of re-fetching.
+ */
+export async function invalidateLocalChapter(bookId, chapterIndex, { deleteBytes = false } = {}) {
+  clearLocalChapterSuspicion(bookId, chapterIndex);
+  const manifest = getOfflineManifest();
+  const entry = manifest[bookId];
+  if (deleteBytes && 'caches' in globalThis) {
+    const cache = await caches.open(offlineCacheName(OFFLINE_AUDIO_CACHE));
+    await cache.delete(offlineAudioRequest(bookId, chapterIndex)).catch(() => {});
+  }
+  if (!entry || !Array.isArray(entry.chapterEntries)) return;
+  if (!entry.chapterEntries[chapterIndex]) return;
+  entry.chapterEntries[chapterIndex] = null;
+  entry.bytes = entry.chapterEntries.reduce((sum, chapter) => sum + (Number(chapter?.size) || 0), 0);
+  if (entry.mode !== 'rolling') entry.state = 'incomplete';
+  saveOfflineManifest(manifest);
 }
 
 export function renderOfflineState({ audit = true } = {}) {
@@ -593,7 +1039,7 @@ async function auditCurrentOfflineVariant() {
   const entry = offlineEntryForBook(book.id);
   const sampleChapterIndex = entry?.chapterEntries?.findIndex(Boolean) ?? -1;
   if (
-    !isPlayableFullEntry(entry) ||
+    !isHydratableOfflineEntry(entry) ||
     !entry.variantKey ||
     sampleChapterIndex < 0
   ) return;
@@ -1079,15 +1525,31 @@ export async function downloadBookForOffline(book, chapters, options = {}) {
       throw new Error('Offline audio verification failed');
     }
     if (signal.aborted) throw new Error('Download cancelled');
-    working.state = 'ready';
+
+    // The bytes are right. Now prove the route that will play them is right.
+    // A failure here is not a broken download — the audio is stored and
+    // verified — so nothing is discarded; the entry waits in `verifying` and
+    // re-probes on the next launch or worker change.
+    const probeChapter = working.chapterEntries.findIndex(Boolean);
+    const routeCheck = probeChapter < 0
+      ? { ok: false, swVersion: '', reason: 'no-chapters' }
+      : await probeOfflinePlaybackRoute(
+        book.id,
+        probeChapter,
+        working.chapterEntries[probeChapter]?.size
+      );
     working.autoResume = false;
     working.progressPercent = 100;
-    working.progressPhase = 'Downloaded';
     working.downloadedAt = new Date().toISOString();
+    working.probedSwVersion = routeCheck.swVersion || '';
+    working.state = routeCheck.ok ? 'ready' : 'verifying';
+    working.progressPhase = routeCheck.ok ? 'Downloaded' : 'Verifying';
     persistWorkingEntry(book.id, working);
-    setDownloadActivity(book, 100, 'Downloaded');
+    setDownloadActivity(book, 100, working.progressPhase);
     completed = true;
-    showToast(existing ? 'Offline download repaired' : 'Book downloaded for offline');
+    showToast(routeCheck.ok
+      ? (existing ? 'Offline download repaired' : 'Book downloaded for offline')
+      : 'Download saved — reopen Xandrio to finish verifying it');
   } catch (err) {
     const cancelled = err?.name === 'AbortError' || err?.message === 'Download cancelled';
     working.state = 'incomplete';
@@ -1526,7 +1988,14 @@ function offlineState(entry) {
     entry.state === 'preparation-error'
   ) return entry.state;
   if (!validTitleData(entry)) return 'incomplete';
-  if (entry.state === 'repairing' || entry.state === 'stale' || entry.state === 'incomplete') return entry.state;
+  if (
+    entry.state === 'repairing' ||
+    entry.state === 'stale' ||
+    entry.state === 'incomplete' ||
+    // Stored and byte-verified, but the scoped worker route has not yet been
+    // proven to serve it. Playable-but-unconfirmed, never "Downloaded".
+    entry.state === 'verifying'
+  ) return entry.state;
   return entry.state === 'ready' ? 'ready' : 'incomplete';
 }
 
@@ -1546,6 +2015,7 @@ function offlineStateLabel(entry) {
       return `Downloading · ${cached}/${total} chapters`;
     }
     case 'stale': return 'Offline audio · current voice changed';
+    case 'verifying': return 'Verifying download · reopen Xandrio to finish';
     default: {
       const cached = entry?.chapterEntries?.filter(Boolean).length || 0;
       const total = Number(entry?.chapters) || 0;
@@ -1861,7 +2331,7 @@ export async function auditOfflineManifest({ presenceOnly = false } = {}) {
   const entries = Object.values(getOfflineManifest(scope))
     .filter(entry =>
       entry?.mode === 'rolling' ||
-      (isPlayableFullEntry(entry) && hasCachedChapter(entry))
+      (isHydratableOfflineEntry(entry) && hasCachedChapter(entry))
     );
   if (entries.length === 0) return false;
   const cache = await caches.open(offlineCacheName(OFFLINE_AUDIO_CACHE, scope));

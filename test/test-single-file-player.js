@@ -761,6 +761,337 @@ function fakeAudio() {
     assert.deepStrictEqual(ready, [], 'a disposed engine must not report ready');
   });
 
+  // --- Resume churn: one server session per canonical request tuple ---------
+  // The server keys an HLS session on the request tuple *including* the client
+  // session id, so a fresh id per retry spawns a fresh ffmpeg encoder that must
+  // reach its first segment before the playlist returns. Retrying the identical
+  // tuple must therefore reuse the identical id.
+
+  function sessionParam(src) {
+    return new URL(src, 'https://reader.test').searchParams.get('session');
+  }
+
+  await test('retrying the identical request tuple reuses one playback session id', async () => {
+    const audio = fakeAudio();
+    const { player } = makePlayer(audio, { isIOSLike: () => false });
+
+    const first = player.loadChapter('book1', 3);
+    const firstSession = sessionParam(audio.src);
+    audio.emit('loadedmetadata');
+    await first;
+
+    const second = player.loadChapter('book1', 3);
+    const secondSession = sessionParam(audio.src);
+    audio.emit('loadedmetadata');
+    await second;
+
+    assert.ok(firstSession, 'the continuous source carries a session id');
+    assert.strictEqual(
+      secondSession,
+      firstSession,
+      'an identical retry must join the existing server session, not spawn a new one'
+    );
+  });
+
+  await test('a different chapter mints a new playback session id', async () => {
+    const audio = fakeAudio();
+    const { player } = makePlayer(audio, { isIOSLike: () => false });
+
+    const first = player.loadChapter('book1', 0);
+    const firstSession = sessionParam(audio.src);
+    audio.emit('loadedmetadata');
+    await first;
+
+    const second = player.loadChapter('book1', 1);
+    const secondSession = sessionParam(audio.src);
+    audio.emit('loadedmetadata');
+    await second;
+
+    assert.notStrictEqual(
+      secondSession,
+      firstSession,
+      'a genuinely different media tuple must not share a session'
+    );
+  });
+
+  await test('an explicit seek relocation mints a new playback session id', async () => {
+    const audio = fakeAudio();
+    const { player } = makePlayer(audio, { isIOSLike: () => false });
+
+    const load = player.loadChapter('book1', 0);
+    const initialSession = sessionParam(audio.src);
+    audio.emit('loadedmetadata');
+    await load;
+
+    // Nothing buffered at the target, so this is a genuine relocation.
+    audio.buffered = { length: 0, start() { return 0; }, end() { return 0; } };
+    const seek = player.seek(600);
+    const relocatedSession = sessionParam(audio.src);
+    audio.emit('loadedmetadata');
+    await seek;
+
+    assert.notStrictEqual(
+      relocatedSession,
+      initialSession,
+      'relocating to an unbuffered offset is a new media tuple'
+    );
+  });
+
+  // --- Activation-safe resume ----------------------------------------------
+  // iOS grants a play() call only while the user-activation window from the tap
+  // is still open. Anything that awaits a media event first — notably reloading
+  // a nonseekable HLS source to satisfy a rewind — closes that window.
+
+  await test('trySeekSync relocates a seekable source without awaiting', () => {
+    const audio = fakeAudio();
+    const { player } = makePlayer(audio);
+    player.bookId = 'book1';
+    player.chapterIndex = 0;
+    player.startChapterIndex = 0;
+
+    const applied = player.trySeekSync(4);
+
+    assert.strictEqual(applied, true, 'a buffered target applies immediately');
+    assert.strictEqual(audio.currentTime, 4);
+    assert.strictEqual(audio.loadCalls, 0, 'no reload is needed for a buffered target');
+  });
+
+  await test('trySeekSync refuses an unbuffered continuous target instead of reloading', () => {
+    const audio = fakeAudio();
+    const { player } = makePlayer(audio);
+    player.bookId = 'book1';
+    player.chapterIndex = 0;
+    player.startChapterIndex = 0;
+    player.isContinuous = true;
+    audio.buffered = { length: 0, start() { return 0; }, end() { return 0; } };
+    audio.currentTime = 300;
+
+    const applied = player.trySeekSync(295);
+
+    assert.strictEqual(applied, false, 'an unbuffered continuous target must be refused');
+    assert.strictEqual(audio.loadCalls, 0, 'refusing must never reload the source');
+    assert.strictEqual(audio.src, '', 'refusing must never replace the media source');
+    assert.strictEqual(audio.currentTime, 300, 'the position is left untouched');
+  });
+
+  await test('seek with allowReload false refuses rather than relocating', async () => {
+    const audio = fakeAudio();
+    const { player } = makePlayer(audio, { isIOSLike: () => false });
+
+    const load = player.loadChapter('book1', 0);
+    audio.emit('loadedmetadata');
+    await load;
+
+    const loadsBefore = audio.loadCalls;
+    audio.buffered = { length: 0, start() { return 0; }, end() { return 0; } };
+
+    const applied = await player.seek(600, { allowReload: false });
+
+    assert.strictEqual(applied, false, 'the caller is told the seek did not happen');
+    assert.strictEqual(
+      audio.loadCalls,
+      loadsBefore,
+      'a rewind-originated seek must never reload a nonseekable stream'
+    );
+  });
+
+  // --- Rate-limit classification -------------------------------------------
+  // A media element reports only "it failed" — never the HTTP status. When a
+  // continuous source fails, one cheap probe recovers the reason so the app can
+  // tell the user to wait instead of retrying into the same rate limit.
+
+  await test('a failed continuous load is classified as rate limited', async () => {
+    const audio = fakeAudio();
+    audio.canPlayType = () => 'maybe';
+    const probes = [];
+    const { player } = makePlayer(audio, {
+      isIOSLike: () => true,
+      cryptoProvider: { randomUUID: () => 'session-1' },
+      fetch: async (url) => {
+        probes.push(url);
+        return new Response('', {
+          status: 429,
+          headers: { 'Retry-After': '17' }
+        });
+      }
+    });
+
+    const load = player.loadChapter('book1', 0);
+    audio.error = { message: 'network error' };
+    audio.emit('error');
+
+    const error = await load.then(() => null, err => err);
+    assert.ok(error, 'the load fails');
+    assert.strictEqual(error.status, 429, 'the rate limit is surfaced on the error');
+    assert.strictEqual(error.retryAfterSeconds, 17, 'Retry-After is carried through');
+    assert.strictEqual(probes.length, 1, 'exactly one classification probe is made');
+  });
+
+  await test('a failed continuous load is not misreported when the probe is fine', async () => {
+    const audio = fakeAudio();
+    audio.canPlayType = () => 'maybe';
+    const { player } = makePlayer(audio, {
+      isIOSLike: () => true,
+      cryptoProvider: { randomUUID: () => 'session-2' },
+      fetch: async () => new Response('#EXTM3U', { status: 200 })
+    });
+
+    const load = player.loadChapter('book1', 0);
+    audio.error = { message: 'decode error' };
+    audio.emit('error');
+
+    const error = await load.then(() => null, err => err);
+    assert.ok(error, 'the load still fails');
+    assert.strictEqual(error.status, undefined, 'a healthy playlist adds no false status');
+  });
+
+  // --- Recovery at a nonzero offset ----------------------------------------
+  // Recovery used to load the continuous transport at offset 0 and then seek to
+  // the resume position, which relocated and therefore created a *second*
+  // server session for every attempt. The load itself must start at the exact
+  // captured offset.
+
+  await test('loadChapter starts the continuous transport at the requested offset', async () => {
+    const audio = fakeAudio();
+    const { player } = makePlayer(audio, { isIOSLike: () => false });
+
+    const load = player.loadChapter('book1', 2, { startOffsetSeconds: 412.5 });
+    const url = new URL(audio.src, 'https://reader.test');
+    audio.emit('loadedmetadata');
+    await load;
+
+    assert.strictEqual(
+      url.searchParams.get('offsetSeconds'),
+      '412.5',
+      'the initial source carries the resume offset'
+    );
+    assert.strictEqual(audio.loadCalls, 1, 'exactly one source is assigned');
+  });
+
+  await test('seeking to the offset it loaded at does not relocate', async () => {
+    const audio = fakeAudio();
+    const { player } = makePlayer(audio, { isIOSLike: () => false });
+
+    const load = player.loadChapter('book1', 2, { startOffsetSeconds: 412.5 });
+    audio.emit('loadedmetadata');
+    await load;
+    const loadsAfterOpen = audio.loadCalls;
+    const sessionAfterOpen = new URL(audio.src, 'https://reader.test').searchParams.get('session');
+
+    // This is what playbackSession does after the transition commits.
+    const applied = await player.seek(412.5);
+
+    assert.strictEqual(applied, true, 'the position is applied');
+    assert.strictEqual(audio.loadCalls, loadsAfterOpen, 'no reload is triggered');
+    assert.strictEqual(
+      new URL(audio.src, 'https://reader.test').searchParams.get('session'),
+      sessionAfterOpen,
+      'the session is unchanged'
+    );
+  });
+
+  await test('every retry of one recovery snapshot reuses a single session tuple', async () => {
+    const audio = fakeAudio();
+    const { player } = makePlayer(audio, { isIOSLike: () => false });
+    const snapshot = { startOffsetSeconds: 412.5, endChapterIndex: 5, servedTier: 'premium' };
+    const seen = [];
+
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const load = player.loadChapter('book1', 2, snapshot);
+      seen.push(new URL(audio.src, 'https://reader.test'));
+      audio.emit('loadedmetadata');
+      await load;
+      await player.seek(snapshot.startOffsetSeconds);
+    }
+
+    const sessions = new Set(seen.map(url => url.searchParams.get('session')));
+    assert.strictEqual(sessions.size, 1, 'all three attempts share one session id');
+    assert.strictEqual(
+      new Set(seen.map(url => `${url.pathname}?${url.searchParams.toString()}`)).size,
+      1,
+      'all three attempts request the byte-identical canonical tuple'
+    );
+    assert.strictEqual(seen[0].searchParams.get('offsetSeconds'), '412.5');
+    assert.strictEqual(seen[0].searchParams.get('endChapter'), '5');
+    assert.strictEqual(seen[0].searchParams.get('tier'), 'premium');
+    assert.strictEqual(
+      audio.loadCalls,
+      3,
+      'three attempts assign three sources — never six from offset-0-plus-relocation'
+    );
+  });
+
+  // --- Underestimated chapter duration -------------------------------------
+  // seek() clamps the target to the estimated chapter duration. When that
+  // estimate is *below* the resume offset the clamp drags the target backwards,
+  // the position is no longer buffered, and the stream relocates — a second
+  // session for a resume that had already opened in exactly the right place.
+
+  await test('a continuous source reports the offset it opened at', async () => {
+    const audio = fakeAudio();
+    const { player } = makePlayer(audio, {
+      isIOSLike: () => false,
+      // Deliberately far below the resume offset.
+      getEstimatedDuration: () => 100
+    });
+
+    const load = player.loadChapter('book1', 2, { startOffsetSeconds: 412.5 });
+    audio.emit('loadedmetadata');
+    await load;
+
+    assert.strictEqual(player.openedAtOffset(2, 412.5), true);
+    assert.strictEqual(player.openedAtOffset(2, 0), false, 'a different offset is not a match');
+    assert.strictEqual(player.openedAtOffset(3, 412.5), false, 'a different chapter is not a match');
+  });
+
+  await test('an underestimated duration would otherwise relocate an already-correct stream', async () => {
+    const audio = fakeAudio();
+    const { player } = makePlayer(audio, {
+      isIOSLike: () => false,
+      getEstimatedDuration: () => 100
+    });
+
+    const load = player.loadChapter('book1', 2, { startOffsetSeconds: 412.5 });
+    audio.emit('loadedmetadata');
+    await load;
+    const loadsAfterOpen = audio.loadCalls;
+
+    // This is the call the guard exists to skip. Left unguarded it reloads.
+    const seek = player.seek(412.5);
+    audio.emit('loadedmetadata');
+    await seek;
+
+    assert(
+      audio.loadCalls > loadsAfterOpen,
+      'the clamp does relocate — openedAtOffset is what prevents this being reached'
+    );
+  });
+
+  await test('skipping the redundant seek keeps one source URL and one session', async () => {
+    const audio = fakeAudio();
+    const { player } = makePlayer(audio, {
+      isIOSLike: () => false,
+      getEstimatedDuration: () => 100
+    });
+    const sources = [];
+
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const load = player.loadChapter('book1', 2, { startOffsetSeconds: 412.5 });
+      sources.push(audio.src);
+      audio.emit('loadedmetadata');
+      await load;
+      // Exactly what app.js does: skip the seek the source already satisfies.
+      if (!player.openedAtOffset(2, 412.5)) await player.seek(412.5);
+    }
+
+    const sessions = new Set(
+      sources.map(src => new URL(src, 'https://reader.test').searchParams.get('session'))
+    );
+    assert.strictEqual(sessions.size, 1, 'one session id across all attempts');
+    assert.strictEqual(new Set(sources).size, 1, 'one source URL across all attempts');
+    assert.strictEqual(audio.loadCalls, 3, 'three loads, not six');
+  });
+
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);
 })().catch(error => {

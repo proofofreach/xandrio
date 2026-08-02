@@ -48,6 +48,12 @@ function makeCache({ transformBytes = null } = {}) {
   };
 }
 
+// The exact service-worker version offline.js pins itself to. Read from sw.js
+// so this harness exercises the real contract rather than a stand-in.
+const SW_CACHE_VERSION = fs
+  .readFileSync(path.join(__dirname, '..', 'public', 'sw.js'), 'utf8')
+  .match(/const CACHE_VERSION = '([^']+)'/)[1];
+
 function offlineAudioKey(bookId, chapterIndex, scope = 'default') {
   const url = new URL(`https://reader.test/api/audio/${encodeURIComponent(bookId)}/${chapterIndex}`);
   url.searchParams.set('xandrio-offline-scope', scope);
@@ -79,7 +85,12 @@ function installBrowser({
   confirmationResult = true,
   wakeLockSupported = false,
   persistenceGate = null,
-  statusForChapter = null
+  statusForChapter = null,
+  // Version-pinned by default: the app registers /sw.js?v=<CACHE_VERSION>, so a
+  // controller carrying that exact version is the normal steady state. Tests
+  // that need the rollout race pass an unversioned or mismatched scriptURL.
+  serviceWorkerController = { scriptURL: `https://reader.test/sw.js?v=${SW_CACHE_VERSION}` },
+  verificationProbe = null
 }) {
   const storage = sharedStorage || new Map();
   if (!storage.has('xandrio_offline_books')) {
@@ -145,6 +156,11 @@ function installBrowser({
     writable: true,
     value: {
       onLine: true,
+      // A download is only "Downloaded" once the exact scoped service-worker
+      // path has been proven to serve it, so the page must be controlled.
+      serviceWorker: serviceWorkerController === null
+        ? {}
+        : { controller: serviceWorkerController },
       ...(wakeLockSupported ? {
         wakeLock: {
           async request(type) {
@@ -187,6 +203,7 @@ function installBrowser({
   global.window.caches = global.caches;
   const audioRequests = [];
   const statusRequests = [];
+  const verificationProbes = [];
   const prepareCalls = [];
   const prepareBodies = [];
   const preparationCalls = [];
@@ -230,6 +247,25 @@ function installBrowser({
         ? statusForChapter(chapter)
         : { ready: true, variantKey: variants[chapter], url: `/api/audio/${book.id}/${chapter}` });
     }
+    // Post-download verification probe: the scoped playback URL with a Range.
+    // This is the request the media element will really make, served by the
+    // service worker from cache, so the markers below are what prove the route
+    // works rather than merely that bytes were stored.
+    const rangeHeader = options.headers?.Range || input?.headers?.get?.('Range');
+    if (url.includes('xandrio-offline-scope=') && rangeHeader) {
+      verificationProbes.push(url);
+      if (verificationProbe) return verificationProbe(url, chapter);
+      const size = new TextEncoder().encode(`audio-${variants[chapter]}-${chapter}`).byteLength;
+      return new Response(new Uint8Array([0, 0]), {
+        status: 206,
+        headers: {
+          'Content-Range': `bytes 0-1/${size}`,
+          'Content-Length': '2',
+          'X-Xandrio-Offline-Cache': 'hit',
+          'X-Xandrio-SW': SW_CACHE_VERSION
+        }
+      });
+    }
     if (url.includes('/api/audio/') || url.includes('/api/offline/audio/')) {
       audioRequests.push(chapter);
       if (audioGate) await audioGate;
@@ -266,6 +302,7 @@ function installBrowser({
     storage,
     audioRequests,
     statusRequests,
+    verificationProbes,
     prepareCalls,
     prepareBodies,
     preparationCalls,
@@ -2015,12 +2052,656 @@ function installBrowser({
     assert(librarySource.includes('await verifiedOfflineBooks'));
     assert(librarySource.includes('getVerifiedOfflineLibraryBooks()'));
     assert(librarySource.includes("status.kind === 'partial-download'"));
-    assert(librarySource.includes("status.kind === 'downloading' && status.cachedChapters > 0"));
+    // Partial and in-progress downloads keep their own distinct labels and
+    // affordances, but no longer count as available on this device: a book that
+    // cannot play offline must not be filed under Downloaded. See
+    // isAvailableOnDevice in library.js.
+    assert(librarySource.includes("kind: 'partial-download'") === false);
+    assert(/function isAvailableOnDevice\(status\) \{\s*return Boolean\(status\.downloaded\);/.test(librarySource));
     assert(librarySource.includes('${escapeHTML(status.label)} (Cancel)'));
     assert(librarySource.includes('onBookDeleted'));
     assert(librarySource.includes('await removeOfflineBook(id, { removePlaybackState: true })'));
     assert(workerSource.includes("const OFFLINE_TITLE_CACHE = 'xandrio-offline-titles';"));
     assert(workerSource.includes('isOfflineTitleRequest(request)'));
+  });
+
+  // --- Local-first routing --------------------------------------------------
+  // Routing runs on the chapter-load path, so it must be cheap: presence only,
+  // never a body hash. Hashing a downloaded chapter before playback would
+  // reintroduce the very stall this work exists to remove.
+
+  await test('localChapterSource reports a cached chapter without hashing its body', async () => {
+    const cache = makeCache();
+    const env = installBrowser({ book, chapters, cache });
+    offline.initOffline(env.init);
+    assert.strictEqual(await offline.downloadCurrentBook(), true);
+
+    const digest = crypto.webcrypto.subtle.digest;
+    let digestCalls = 0;
+    crypto.webcrypto.subtle.digest = function (...args) {
+      digestCalls += 1;
+      return digest.apply(this, args);
+    };
+    try {
+      const source = await offline.localChapterSource(book.id, 0);
+      assert.strictEqual(source.available, true);
+      assert.match(source.url, /xandrio-offline-scope=/);
+      assert.strictEqual(source.mode, 'full');
+      assert.strictEqual(digestCalls, 0, 'routing must not hash the chapter body');
+    } finally {
+      crypto.webcrypto.subtle.digest = digest;
+    }
+  });
+
+  await test('localChapterSource reports an uncached chapter as unavailable', async () => {
+    const cache = makeCache();
+    const env = installBrowser({ book, chapters, cache, manifest: {} });
+    offline.initOffline(env.init);
+
+    const source = await offline.localChapterSource(book.id, 0);
+    assert.strictEqual(source.available, false);
+    assert.strictEqual(source.url, null);
+  });
+
+  // --- Transient vs deterministic failure -----------------------------------
+  // Safari emits media errors routinely (backgrounding, buffer eviction). One
+  // of those must never destroy a verified multi-hundred-megabyte download.
+
+  await test('a suspect chapter is not durably invalidated and keeps its bytes', async () => {
+    const cache = makeCache();
+    const env = installBrowser({ book, chapters, cache });
+    offline.initOffline(env.init);
+    assert.strictEqual(await offline.downloadCurrentBook(), true);
+
+    const before = offline.offlineEntryForBook(book.id);
+    offline.markLocalChapterSuspect(book.id, 0);
+
+    const after = offline.offlineEntryForBook(book.id);
+    assert.strictEqual(after.state, before.state, 'the manifest state is untouched');
+    assert(after.chapterEntries[0], 'the chapter entry survives a transient error');
+    assert(
+      await cache.match(offlineAudioKey(book.id, 0)),
+      'cached audio is never deleted on suspicion'
+    );
+    assert.strictEqual(
+      (await offline.localChapterSource(book.id, 0)).available,
+      false,
+      'a suspect chapter is skipped for the rest of the session'
+    );
+  });
+
+  await test('a suspect chapter recovers when classification finds the cache intact', async () => {
+    const cache = makeCache();
+    const env = installBrowser({ book, chapters, cache });
+    offline.initOffline(env.init);
+    assert.strictEqual(await offline.downloadCurrentBook(), true);
+    offline.markLocalChapterSuspect(book.id, 0);
+
+    const verdict = await offline.classifyLocalChapter(book.id, 0, {
+      probe: async () => new Response(null, {
+        status: 206,
+        headers: {
+          'Content-Range': 'bytes 0-1/6',
+          'Content-Length': '2',
+          'X-Xandrio-Offline-Cache': 'hit',
+          'X-Xandrio-SW': SW_CACHE_VERSION
+        }
+      })
+    });
+
+    assert.strictEqual(verdict, 'transient');
+    assert.strictEqual(
+      (await offline.localChapterSource(book.id, 0)).available,
+      true,
+      'a proven-intact chapter is trusted again'
+    );
+  });
+
+  await test('a deterministic cache miss invalidates the entry but keeps the bytes', async () => {
+    const cache = makeCache();
+    const env = installBrowser({ book, chapters, cache });
+    offline.initOffline(env.init);
+    assert.strictEqual(await offline.downloadCurrentBook(), true);
+    offline.markLocalChapterSuspect(book.id, 0);
+
+    const verdict = await offline.classifyLocalChapter(book.id, 0, {
+      probe: async () => new Response(null, {
+        status: 504,
+        headers: {
+          'X-Xandrio-Offline-Cache': 'miss',
+          'X-Xandrio-SW': SW_CACHE_VERSION
+        }
+      })
+    });
+
+    assert.strictEqual(verdict, 'missing');
+    const entry = offline.offlineEntryForBook(book.id);
+    assert.strictEqual(entry.chapterEntries[0], null, 'the chapter entry is cleared');
+    assert.strictEqual(entry.state, 'incomplete', 'the book needs repair');
+    assert.strictEqual(offline.offlineStatusForBook(book.id).downloaded, false);
+  });
+
+  await test('repeated failures escalate to a hash check and delete only proven-corrupt bytes', async () => {
+    const cache = makeCache();
+    const env = installBrowser({ book, chapters, cache });
+    offline.initOffline(env.init);
+    assert.strictEqual(await offline.downloadCurrentBook(), true);
+
+    // Corrupt the stored body behind the manifest's back.
+    await cache.put(
+      new Request(offlineAudioKey(book.id, 0)),
+      new Response('tampered', { headers: { 'Content-Type': 'audio/mpeg' } })
+    );
+
+    const okProbe = async () => new Response(null, {
+      status: 206,
+      headers: {
+        'Content-Range': 'bytes 0-1/8',
+        'Content-Length': '2',
+        'X-Xandrio-Offline-Cache': 'hit',
+        'X-Xandrio-SW': SW_CACHE_VERSION
+      }
+    });
+
+    offline.markLocalChapterSuspect(book.id, 0);
+    assert.strictEqual(await offline.classifyLocalChapter(book.id, 0, { probe: okProbe }), 'transient');
+    offline.markLocalChapterSuspect(book.id, 0);
+    assert.strictEqual(await offline.classifyLocalChapter(book.id, 0, { probe: okProbe }), 'transient');
+    offline.markLocalChapterSuspect(book.id, 0);
+    const verdict = await offline.classifyLocalChapter(book.id, 0, { probe: okProbe });
+
+    assert.strictEqual(verdict, 'corrupt', 'the third failure escalates past the cheap probe');
+    assert.strictEqual(
+      await cache.match(offlineAudioKey(book.id, 0)),
+      undefined,
+      'proven-corrupt bytes are the only bytes ever deleted'
+    );
+    assert.strictEqual(offline.offlineEntryForBook(book.id).chapterEntries[0], null);
+  });
+
+  // --- Download completion verification -------------------------------------
+  // Byte-exact storage is necessary but not sufficient: the incident was a book
+  // that was stored correctly and still would not play. Completion therefore
+  // proves the exact scoped service-worker route serves it.
+
+  await test('a download is only Downloaded once the scoped worker route serves it', async () => {
+    const cache = makeCache();
+    const env = installBrowser({ book, chapters, cache });
+    offline.initOffline(env.init);
+
+    assert.strictEqual(await offline.downloadCurrentBook(), true);
+
+    assert(env.verificationProbes.length > 0, 'the scoped playback route is probed');
+    assert(
+      env.verificationProbes.every(url => url.includes('xandrio-offline-scope=')),
+      'the probe uses the same URL the media element will request'
+    );
+    assert.strictEqual(offline.offlineStatusForBook(book.id).downloaded, true);
+    assert.strictEqual(offline.offlineEntryForBook(book.id).state, 'ready');
+  });
+
+  await test('an uncontrolled page leaves the download verifying, not ready or broken', async () => {
+    const cache = makeCache();
+    const env = installBrowser({ book, chapters, cache, serviceWorkerController: null });
+    offline.initOffline(env.init);
+
+    assert.strictEqual(await offline.downloadCurrentBook(), true);
+
+    const entry = offline.offlineEntryForBook(book.id);
+    assert.strictEqual(entry.state, 'verifying', 'the bytes are kept and re-checked later');
+    assert(entry.chapterEntries.every(Boolean), 'no chapter is discarded');
+    const status = offline.offlineStatusForBook(book.id);
+    assert.strictEqual(status.downloaded, false, 'it must not claim to be Downloaded');
+    assert.match(status.label, /verif/i, 'the label says what is happening');
+  });
+
+  await test('a worker that cannot serve the route fails verification instead of claiming success', async () => {
+    const cache = makeCache();
+    const env = installBrowser({
+      book,
+      chapters,
+      cache,
+      // An older worker: no markers, and it falls through to a 200.
+      verificationProbe: async () => new Response('whole file', { status: 200 })
+    });
+    offline.initOffline(env.init);
+
+    assert.strictEqual(await offline.downloadCurrentBook(), true);
+
+    const entry = offline.offlineEntryForBook(book.id);
+    assert.strictEqual(entry.state, 'verifying');
+    assert.strictEqual(offline.offlineStatusForBook(book.id).downloaded, false);
+  });
+
+  await test('a mismatched Content-Range fails verification', async () => {
+    const cache = makeCache();
+    const env = installBrowser({
+      book,
+      chapters,
+      cache,
+      verificationProbe: async () => new Response(new Uint8Array([0, 0]), {
+        status: 206,
+        headers: {
+          // Size disagrees with the manifest entry: a different artifact.
+          'Content-Range': 'bytes 0-1/999999',
+          'Content-Length': '2',
+          'X-Xandrio-Offline-Cache': 'hit',
+          'X-Xandrio-SW': SW_CACHE_VERSION
+        }
+      })
+    });
+    offline.initOffline(env.init);
+
+    assert.strictEqual(await offline.downloadCurrentBook(), true);
+    assert.strictEqual(offline.offlineEntryForBook(book.id).state, 'verifying');
+  });
+
+  // --- Strict worker contract ----------------------------------------------
+  // "Some version header" is not a contract. offline.js pins the exact service
+  // worker version it was written against, so a worker from a different build
+  // cannot satisfy verification under semantics it may not implement.
+
+  await test('a stale service-worker version never completes verification', async () => {
+    const cache = makeCache();
+    const env = installBrowser({
+      book,
+      chapters,
+      cache,
+      verificationProbe: async () => new Response(new Uint8Array([0, 0]), {
+        status: 206,
+        headers: {
+          'Content-Range': 'bytes 0-1/14',
+          'Content-Length': '2',
+          'X-Xandrio-Offline-Cache': 'hit',
+          'X-Xandrio-SW': 'xandrio-v1'
+        }
+      })
+    });
+    offline.initOffline(env.init);
+
+    assert.strictEqual(await offline.downloadCurrentBook(), true);
+    assert.strictEqual(offline.offlineEntryForBook(book.id).state, 'verifying');
+  });
+
+  await test('a verifying download is re-probed and promoted on the next initialization', async () => {
+    const cache = makeCache();
+    const failing = installBrowser({
+      book,
+      chapters,
+      cache,
+      verificationProbe: async () => new Response('', { status: 500 })
+    });
+    offline.initOffline(failing.init);
+    assert.strictEqual(await offline.downloadCurrentBook(), true);
+    assert.strictEqual(offline.offlineEntryForBook(book.id).state, 'verifying');
+
+    // Same storage and cache, but now the page is controlled by a worker that
+    // implements the contract.
+    const healthy = installBrowser({
+      book,
+      chapters,
+      cache,
+      storage: failing.storage
+    });
+    offline.initOffline(healthy.init);
+    await offline.reprobeVerifyingDownloads();
+
+    assert.strictEqual(offline.offlineEntryForBook(book.id).state, 'ready');
+    assert.strictEqual(offline.offlineStatusForBook(book.id).downloaded, true);
+  });
+
+  await test('a re-probe that still fails preserves the bytes and the verifying state', async () => {
+    const cache = makeCache();
+    const env = installBrowser({
+      book,
+      chapters,
+      cache,
+      verificationProbe: async () => { throw new Error('worker unavailable'); }
+    });
+    offline.initOffline(env.init);
+    assert.strictEqual(await offline.downloadCurrentBook(), true);
+
+    await offline.reprobeVerifyingDownloads();
+
+    const entry = offline.offlineEntryForBook(book.id);
+    assert.strictEqual(entry.state, 'verifying');
+    assert(entry.chapterEntries.every(Boolean), 'no chapter entry is dropped');
+    assert(await cache.match(offlineAudioKey(book.id, 0)), 'no bytes are dropped');
+  });
+
+  // --- Strict runtime classification ---------------------------------------
+  // Only an explicit, current-version cache miss is deterministic enough to
+  // write to the manifest. Everything else keeps the download intact.
+
+  for (const [name, probe] of [
+    ['a fetch failure', async () => { throw new Error('offline'); }],
+    ['a transient 5xx', async () => new Response('', { status: 503 })],
+    ['a malformed response', async () => new Response('', {
+      status: 504,
+      headers: { 'X-Xandrio-Offline-Cache': 'miss' }
+    })],
+    ['a stale-version miss', async () => new Response('', {
+      status: 504,
+      headers: { 'X-Xandrio-Offline-Cache': 'miss', 'X-Xandrio-SW': 'xandrio-v1' }
+    })]
+  ]) {
+    await test(`${name} is indeterminate: manifest, bytes and streaming all preserved`, async () => {
+      const cache = makeCache();
+      const env = installBrowser({ book, chapters, cache });
+      offline.initOffline(env.init);
+      assert.strictEqual(await offline.downloadCurrentBook(), true);
+      offline.markLocalChapterSuspect(book.id, 0);
+
+      const verdict = await offline.classifyLocalChapter(book.id, 0, { probe });
+
+      assert.strictEqual(verdict, 'indeterminate');
+      const entry = offline.offlineEntryForBook(book.id);
+      assert(entry.chapterEntries[0], 'the manifest entry survives');
+      assert.strictEqual(entry.state, 'ready', 'the book is not marked broken');
+      assert(await cache.match(offlineAudioKey(book.id, 0)), 'the bytes survive');
+      assert.strictEqual(
+        (await offline.localChapterSource(book.id, 0)).available,
+        false,
+        'an undiagnosed chapter keeps streaming for this session'
+      );
+    });
+  }
+
+  await test('intact bytes that still will not play stay distrusted for the session', async () => {
+    const cache = makeCache();
+    const env = installBrowser({ book, chapters, cache });
+    offline.initOffline(env.init);
+    assert.strictEqual(await offline.downloadCurrentBook(), true);
+
+    const hitProbe = async () => new Response(new Uint8Array([0, 0]), {
+      status: 206,
+      headers: {
+        'Content-Range': 'bytes 0-1/14',
+        'Content-Length': '2',
+        'X-Xandrio-Offline-Cache': 'hit',
+        'X-Xandrio-SW': offline.EXPECTED_OFFLINE_SW_VERSION
+      }
+    });
+
+    for (let attempt = 0; attempt < 2; attempt++) {
+      offline.markLocalChapterSuspect(book.id, 0);
+      assert.strictEqual(await offline.classifyLocalChapter(book.id, 0, { probe: hitProbe }), 'transient');
+    }
+    offline.markLocalChapterSuspect(book.id, 0);
+    const verdict = await offline.classifyLocalChapter(book.id, 0, { probe: hitProbe });
+
+    // A matching hash proves the bytes are the bytes we downloaded. It does not
+    // prove Safari can decode them, and three failures say it cannot.
+    assert.strictEqual(verdict, 'unplayable');
+    assert(await cache.match(offlineAudioKey(book.id, 0)), 'intact bytes are never deleted');
+    assert(offline.offlineEntryForBook(book.id).chapterEntries[0], 'the manifest entry survives');
+    assert.strictEqual(
+      (await offline.localChapterSource(book.id, 0)).available,
+      false,
+      'the chapter keeps streaming for the rest of the session'
+    );
+  });
+
+  // --- Controller requirement ----------------------------------------------
+
+  await test('no scoped offline URL is offered when the page has no worker controller', async () => {
+    const cache = makeCache();
+    const env = installBrowser({ book, chapters, cache });
+    offline.initOffline(env.init);
+    assert.strictEqual(await offline.downloadCurrentBook(), true);
+    assert.strictEqual((await offline.localChapterSource(book.id, 0)).available, true);
+
+    // The scoped URL is only meaningful to the service worker. Uncontrolled, it
+    // would reach the server and stream a different encode of the same chapter.
+    const uncontrolled = installBrowser({
+      book,
+      chapters,
+      cache,
+      storage: env.storage,
+      serviceWorkerController: null
+    });
+    offline.initOffline(uncontrolled.init);
+
+    const source = await offline.localChapterSource(book.id, 0);
+    assert.strictEqual(source.available, false);
+    assert.strictEqual(source.url, null);
+  });
+
+  await test('partial offline playback survives while Downloaded stays strict', async () => {
+    const cache = makeCache();
+    const env = installBrowser({ book, chapters, cache });
+    offline.initOffline(env.init);
+    assert.strictEqual(await offline.downloadCurrentBook(), true);
+
+    // Lose one chapter, exactly as a deterministic cache miss would.
+    await offline.invalidateLocalChapter(book.id, 1, { deleteBytes: false });
+
+    const status = offline.offlineStatusForBook(book.id);
+    assert.strictEqual(status.downloaded, false, 'a partial book is not Downloaded');
+    assert.strictEqual(status.kind, 'partial-download');
+
+    // ...but the remaining chapter is still playable offline, and the player
+    // can still rebuild itself from the entry after a cold launch.
+    assert(offline.getOfflineBookData(book.id), 'partial entries remain hydratable');
+    assert.strictEqual(
+      (await offline.localChapterSource(book.id, 0)).available,
+      true,
+      'the chapters still present keep playing from this device'
+    );
+    assert.strictEqual((await offline.localChapterSource(book.id, 1)).available, false);
+
+    const offlineSource = fs.readFileSync(
+      path.join(__dirname, '..', 'public', 'js', 'features', 'offline.js'),
+      'utf8'
+    );
+    assert(
+      /function isCompletedOfflineEntry\(entry\) \{[\s\S]*?offlineState\(entry\) === 'ready'/.test(offlineSource),
+      'the Downloaded predicate is defined strictly and separately from hydration'
+    );
+  });
+
+  // --- Old-worker rollout race ---------------------------------------------
+  // A new app.js can run while the *previous* worker is still controlling the
+  // page. That worker still has network-first semantics for the scoped URL, so
+  // handing it the scoped source while online would fetch from the server and
+  // report "Playing from this device" over streamed audio.
+
+  const OLD_CONTROLLER = { scriptURL: 'https://reader.test/sw.js' };
+  const MISMATCHED_CONTROLLER = { scriptURL: 'https://reader.test/sw.js?v=xandrio-v119' };
+
+  await test('online local-first is withheld while an old worker still controls the page', async () => {
+    const cache = makeCache();
+    const ready = installBrowser({ book, chapters, cache });
+    offline.initOffline(ready.init);
+    assert.strictEqual(await offline.downloadCurrentBook(), true);
+    assert.strictEqual((await offline.localChapterSource(book.id, 0)).available, true);
+
+    for (const controller of [OLD_CONTROLLER, MISMATCHED_CONTROLLER]) {
+      const stale = installBrowser({
+        book,
+        chapters,
+        cache,
+        storage: ready.storage,
+        serviceWorkerController: controller
+      });
+      offline.initOffline(stale.init);
+      navigator.onLine = true;
+
+      const source = await offline.localChapterSource(book.id, 0);
+      assert.strictEqual(
+        source.available,
+        false,
+        `${controller.scriptURL} must not be handed the scoped local source while online`
+      );
+      assert.strictEqual(source.url, null);
+    }
+  });
+
+  await test('offline playback still works through an old controller', async () => {
+    const cache = makeCache();
+    const ready = installBrowser({ book, chapters, cache });
+    offline.initOffline(ready.init);
+    assert.strictEqual(await offline.downloadCurrentBook(), true);
+
+    const stale = installBrowser({
+      book,
+      chapters,
+      cache,
+      storage: ready.storage,
+      serviceWorkerController: OLD_CONTROLLER
+    });
+    offline.initOffline(stale.init);
+    navigator.onLine = false;
+    try {
+      // The old worker is network-first, but with no network its fetch fails and
+      // its existing cache fallback serves the chapter. Withholding local
+      // playback here would strand an offline listener mid-activation.
+      const source = await offline.localChapterSource(book.id, 0);
+      assert.strictEqual(source.available, true, 'an offline listener is not stranded');
+      assert.match(source.url, /xandrio-offline-scope=/);
+    } finally {
+      navigator.onLine = true;
+    }
+  });
+
+  await test('route certification refuses to probe through an unexpected controller', async () => {
+    const cache = makeCache();
+    let probed = false;
+    const env = installBrowser({
+      book,
+      chapters,
+      cache,
+      serviceWorkerController: MISMATCHED_CONTROLLER,
+      verificationProbe: async () => {
+        probed = true;
+        return new Response('', { status: 200 });
+      }
+    });
+    offline.initOffline(env.init);
+
+    assert.strictEqual(await offline.downloadCurrentBook(), true);
+    assert.strictEqual(probed, false, 'no probe is issued through a worker of another build');
+    assert.strictEqual(offline.offlineEntryForBook(book.id).state, 'verifying');
+  });
+
+  await test('runtime classification is indeterminate under an unexpected controller', async () => {
+    const cache = makeCache();
+    const ready = installBrowser({ book, chapters, cache });
+    offline.initOffline(ready.init);
+    assert.strictEqual(await offline.downloadCurrentBook(), true);
+
+    const stale = installBrowser({
+      book,
+      chapters,
+      cache,
+      storage: ready.storage,
+      serviceWorkerController: OLD_CONTROLLER
+    });
+    offline.initOffline(stale.init);
+    offline.markLocalChapterSuspect(book.id, 0);
+
+    let probed = false;
+    const verdict = await offline.classifyLocalChapter(book.id, 0, {
+      probe: async () => {
+        probed = true;
+        return new Response('', {
+          status: 504,
+          headers: { 'X-Xandrio-Offline-Cache': 'miss', 'X-Xandrio-SW': SW_CACHE_VERSION }
+        });
+      }
+    });
+
+    assert.strictEqual(probed, false, 'no probe is issued through an old worker');
+    assert.strictEqual(verdict, 'indeterminate');
+    assert(offline.offlineEntryForBook(book.id).chapterEntries[0], 'the manifest survives');
+  });
+
+  // --- Re-probe lifecycle for already-ready entries -------------------------
+  // Downloads certified before this contract existed, or against an earlier
+  // worker, carry no usable probedSwVersion. Downloaded must stay truthful for
+  // them too, without ever discarding audio.
+
+  await test('a legacy ready entry is re-certified and stamped under the expected worker', async () => {
+    const cache = makeCache();
+    const env = installBrowser({ book, chapters, cache });
+    offline.initOffline(env.init);
+    assert.strictEqual(await offline.downloadCurrentBook(), true);
+
+    // Simulate a download certified before versions were recorded.
+    const manifest = JSON.parse(env.storage.get('xandrio_offline_books:default'));
+    delete manifest[book.id].probedSwVersion;
+    env.storage.set('xandrio_offline_books:default', JSON.stringify(manifest));
+
+    assert.strictEqual(await offline.reprobeVerifyingDownloads(), true);
+
+    const entry = offline.offlineEntryForBook(book.id);
+    assert.strictEqual(entry.state, 'ready', 'a passing legacy entry stays Downloaded');
+    assert.strictEqual(
+      entry.probedSwVersion,
+      SW_CACHE_VERSION,
+      'the certifying worker version is recorded'
+    );
+    assert.strictEqual(offline.offlineStatusForBook(book.id).downloaded, true);
+  });
+
+  await test('a stale ready entry whose route fails becomes verifying and keeps its bytes', async () => {
+    const cache = makeCache();
+    const env = installBrowser({
+      book,
+      chapters,
+      cache,
+      verificationProbe: async () => new Response('', { status: 500 })
+    });
+    offline.initOffline(env.init);
+    assert.strictEqual(await offline.downloadCurrentBook(), true);
+
+    // Force it to look like a previously certified download from an older build.
+    const manifest = JSON.parse(env.storage.get('xandrio_offline_books:default'));
+    manifest[book.id].state = 'ready';
+    manifest[book.id].probedSwVersion = 'xandrio-v119';
+    env.storage.set('xandrio_offline_books:default', JSON.stringify(manifest));
+    assert.strictEqual(offline.offlineStatusForBook(book.id).downloaded, true);
+
+    await offline.reprobeVerifyingDownloads();
+
+    const entry = offline.offlineEntryForBook(book.id);
+    assert.strictEqual(entry.state, 'verifying', 'Downloaded is withdrawn until re-certified');
+    assert.strictEqual(offline.offlineStatusForBook(book.id).downloaded, false);
+    assert(entry.chapterEntries.every(Boolean), 'no chapter entry is dropped');
+    assert(await cache.match(offlineAudioKey(book.id, 0)), 'no bytes are dropped');
+  });
+
+  await test('a current-version ready entry is left alone', async () => {
+    const cache = makeCache();
+    let probes = 0;
+    const env = installBrowser({ book, chapters, cache });
+    offline.initOffline(env.init);
+    assert.strictEqual(await offline.downloadCurrentBook(), true);
+    assert.strictEqual(offline.offlineEntryForBook(book.id).probedSwVersion, SW_CACHE_VERSION);
+
+    const reprobed = await offline.reprobeVerifyingDownloads();
+    assert.strictEqual(reprobed, false, 'an already-certified download is not re-probed');
+    assert.strictEqual(offline.offlineEntryForBook(book.id).state, 'ready');
+    assert.strictEqual(probes, 0);
+  });
+
+  await test('the re-probe also runs after audio cache migration', async () => {
+    const offlineSource = fs.readFileSync(
+      path.join(__dirname, '..', 'public', 'js', 'features', 'offline.js'),
+      'utf8'
+    );
+    const initBody = offlineSource.match(
+      /export function initOffline\(options = \{\}\) \{([\s\S]*?)\n\}/
+    )?.[1] || '';
+    assert(initBody.length > 0, 'initOffline is present');
+    assert(
+      /controllerchange/.test(initBody),
+      'a controller change re-checks verifying downloads'
+    );
+    assert(
+      /migrateLegacyOfflineCaches\(\)[\s\S]*?reprobeVerifyingDownloads\(\)/.test(initBody),
+      'the re-probe also runs once cache migration has completed'
+    );
   });
 
   console.log(`\n${passed} passed, ${failed} failed`);

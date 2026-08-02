@@ -1234,6 +1234,47 @@ async function runTests() {
     }
   });
 
+  // ----- Background-priority introspection (diagnostics only) -----
+  // Playback instrumentation needs to know whether a slow first segment waited
+  // behind *background* generation specifically. "Any active job" is the wrong
+  // question: a foreground job for the very chapter being requested is not a
+  // priority inversion. This query changes no scheduling behaviour.
+  await test('hasActiveBackgroundWork distinguishes background work from foreground work', async () => {
+    const q = new TestableQueue({ maxConcurrent: 1, generateDelay: 40 });
+    assert.strictEqual(q.hasActiveBackgroundWork(), false, 'an idle queue has no background work');
+
+    const bgId = await q.enqueue({ text: 'bg', outputPath: '/tmp/bg.mp3', priority: 'background' });
+    await new Promise(r => setTimeout(r, 10));
+    assert.strictEqual(
+      q.hasActiveBackgroundWork(),
+      true,
+      'an actively generating background job is reported'
+    );
+    await q.waitFor(bgId);
+    assert.strictEqual(q.hasActiveBackgroundWork(), false, 'it clears once the job settles');
+
+    const immId = await q.enqueue({ text: 'imm', outputPath: '/tmp/imm.mp3', priority: 'immediate' });
+    await new Promise(r => setTimeout(r, 10));
+    assert.strictEqual(
+      q.hasActiveBackgroundWork(),
+      false,
+      'active foreground work is not misreported as background'
+    );
+    await q.waitFor(immId);
+
+    // Queued-but-not-started background work is not holding the engine, so it
+    // is not what a foreground request is waiting behind.
+    const blocker = await q.enqueue({ text: 'blocker', outputPath: '/tmp/b.mp3', priority: 'immediate' });
+    await q.enqueue({ text: 'bg2', outputPath: '/tmp/bg2.mp3', priority: 'background' });
+    await new Promise(r => setTimeout(r, 10));
+    assert.strictEqual(
+      q.hasActiveBackgroundWork(),
+      false,
+      'merely queued background work is not counted as active'
+    );
+    await q.waitFor(blocker);
+  });
+
   // ----- Summary -----
   console.log(`\n${passed + failed} tests: ${passed} passed, ${failed} failed\n`);
   process.exit(failed > 0 ? 1 : 0);

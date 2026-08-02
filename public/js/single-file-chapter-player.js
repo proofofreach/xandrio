@@ -6,7 +6,16 @@
 // A media element that neither fires `canplay`/`loadedmetadata` nor `error`
 // (backgrounded iOS tab, silently stalled response) would otherwise leave
 // loadChapter() pending forever with the loading overlay stuck up.
-const LOAD_TIMEOUT_MS = 30000;
+//
+// This is the single client-side abandonment deadline. The server's HLS
+// readiness timeout is derived from it (see lib/hls-audio-stream.js) so that a
+// still-connected client never has its in-flight encoder killed underneath it.
+export const CLIENT_LOAD_DEADLINE_MS = 30000;
+const LOAD_TIMEOUT_MS = CLIENT_LOAD_DEADLINE_MS;
+
+// How many canonical request tuples keep a remembered session id. Small: a
+// listener only ever revisits the current chapter's handful of offsets.
+const MAX_REMEMBERED_ATTEMPTS = 16;
 const { DisposableScope, LifecycleCancelledError, waitForMediaEvents } = globalThis.XandrioLifecycle || {};
 
 export class SingleFileChapterPlayer {
@@ -46,6 +55,14 @@ export class SingleFileChapterPlayer {
     this.playbackSessionId = null;
     this.playbackOwnerId = this._newPlaybackSessionId();
     this.endChapterIndex = null;
+    // Canonical request tuple -> session id. The server keys an HLS session on
+    // the tuple *including* this id, so minting a fresh one per attempt made
+    // every retry spawn a new ffmpeg encoder. Remembering the id per tuple lets
+    // an identical retry join the session already being prepared, while a
+    // genuine relocation (different chapter/tier/offset/end) still gets its own.
+    // The id stays a per-client random value, so sessions are never shared
+    // across accounts.
+    this._attemptSessions = new Map();
     this._timelineDurations = new Map();
     this.totalChunks = 1;
     this.currentChunk = 0;
@@ -73,19 +90,37 @@ export class SingleFileChapterPlayer {
     this._boundMediaState = this._handleMediaState.bind(this);
   }
 
-  async loadChapter(bookId, chapterIndex) {
+  /**
+   * @param {string} bookId
+   * @param {number} chapterIndex
+   * @param {{startOffsetSeconds?: number, servedTier?: string, endChapterIndex?: number}} [options]
+   *   The exact canonical tuple to open. Recovery passes an immutable snapshot
+   *   here so the transport starts *at* the resume position. Loading at zero and
+   *   seeking afterwards relocated the stream, which minted a second server
+   *   session for every retry — the churn behind the production incident.
+   */
+  async loadChapter(bookId, chapterIndex, options = {}) {
     const gen = ++this._generation;
     this.pause();
+    const requestedOffset = Number(options.startOffsetSeconds);
+    const startOffsetSeconds = Number.isFinite(requestedOffset) && requestedOffset > 0
+      ? requestedOffset
+      : 0;
     this.bookId = bookId;
     this.chapterIndex = chapterIndex;
     this.startChapterIndex = chapterIndex;
     this.isContinuous = false;
-    this.streamStartOffset = 0;
+    // The transport begins at this offset, so chapter time maps back through it
+    // and a seek to the same position resolves to the buffered start instead of
+    // relocating. Overwritten below if a finite chapter source is used instead.
+    this.streamStartOffset = startOffsetSeconds;
     this.playbackSessionId = null;
-    this.endChapterIndex = this._normalizeEndChapter(
-      this.getContinuousEndChapter(bookId, chapterIndex),
-      chapterIndex
-    );
+    this.endChapterIndex = Number.isInteger(options.endChapterIndex)
+      ? this._normalizeEndChapter(options.endChapterIndex, chapterIndex)
+      : this._normalizeEndChapter(
+        this.getContinuousEndChapter(bookId, chapterIndex),
+        chapterIndex
+      );
     this._timelineDurations.clear();
     this.currentChunk = 0;
     this.totalChunks = 1;
@@ -103,7 +138,15 @@ export class SingleFileChapterPlayer {
         : `/api/audio/${encodedBookId}/${chapterIndex}`;
     let tierQuery = '';
     this.servedTier = null;
-    if (!this.preferStandardAudio && this.resolveServedTier) {
+    // A recovery snapshot pins the tier it captured, so a retry cannot drift on
+    // to a different one and thereby request a different canonical tuple.
+    const pinnedTier = options.servedTier === 'instant' || options.servedTier === 'premium'
+      ? options.servedTier
+      : null;
+    if (pinnedTier) {
+      this.servedTier = pinnedTier;
+      tierQuery = `?tier=${encodeURIComponent(pinnedTier)}`;
+    } else if (!this.preferStandardAudio && this.resolveServedTier) {
       try {
         const tier = await this.resolveServedTier(bookId, chapterIndex);
         if (gen !== this._generation) return;
@@ -119,7 +162,7 @@ export class SingleFileChapterPlayer {
       encodedBookId,
       chapterIndex,
       tierQuery,
-      0
+      startOffsetSeconds
     );
     const sourceCandidates = this.preferStandardAudio
       ? [{ url: standardUrl, continuous: false }]
@@ -169,7 +212,11 @@ export class SingleFileChapterPlayer {
       }
       if (lastError) throw lastError;
     } catch (error) {
-      if (gen === this._generation && !error?.cancelled) this.onError?.(error);
+      if (gen === this._generation && !error?.cancelled) {
+        await this._classifyLoadFailure(error, sourceCandidates);
+        if (gen !== this._generation) throw error;
+        this.onError?.(error);
+      }
       throw error;
     } finally {
       if (gen === this._generation) this._isLoading = false;
@@ -239,6 +286,52 @@ export class SingleFileChapterPlayer {
     }
   }
 
+  /**
+   * Recover the reason a continuous source failed.
+   *
+   * A media element surfaces only a generic error — never the HTTP status — so
+   * a server that is shedding load (429/503) is indistinguishable from a decode
+   * failure. One small probe of the same URL recovers it, letting the app tell
+   * the user to wait rather than retry straight back into the limit. Best
+   * effort by design: any probe failure leaves the original error untouched.
+   */
+  async _classifyLoadFailure(error, sourceCandidates) {
+    if (!this.fetch || !error || typeof error !== 'object') return;
+    if (error.status !== undefined) return;
+    const continuous = sourceCandidates.find(candidate => candidate.continuous);
+    if (!continuous) return;
+    try {
+      const response = await this.fetch(continuous.url, { cache: 'no-store' });
+      if (!response || response.ok) return;
+      error.status = response.status;
+      const retryAfter = Number(response.headers?.get?.('Retry-After'));
+      if (Number.isFinite(retryAfter) && retryAfter > 0) {
+        error.retryAfterSeconds = retryAfter;
+      }
+    } catch {
+      // The probe is diagnostic only; its failure must not mask the real error.
+    }
+  }
+
+  // Stable session id for one canonical request tuple. Reusing the id makes the
+  // server's own session key repeat, so a retry joins the encoder already
+  // running instead of starting — and rate-limiting — another one.
+  _sessionIdForAttempt(attemptKey) {
+    const remembered = this._attemptSessions.get(attemptKey);
+    if (remembered) {
+      // Refresh recency so the tuple in active use is the last to be dropped.
+      this._attemptSessions.delete(attemptKey);
+      this._attemptSessions.set(attemptKey, remembered);
+      return remembered;
+    }
+    const sessionId = this._newPlaybackSessionId();
+    this._attemptSessions.set(attemptKey, sessionId);
+    while (this._attemptSessions.size > MAX_REMEMBERED_ATTEMPTS) {
+      this._attemptSessions.delete(this._attemptSessions.keys().next().value);
+    }
+    return sessionId;
+  }
+
   _normalizeEndChapter(value, startChapterIndex = this.chapterIndex) {
     if (value === null || value === undefined || value === '') return null;
     const endChapterIndex = Number(value);
@@ -257,7 +350,14 @@ export class SingleFileChapterPlayer {
     endChapterIndex = this.endChapterIndex
   ) {
     const candidateFor = transport => {
-      const sessionId = this._newPlaybackSessionId();
+      const sessionId = this._sessionIdForAttempt(JSON.stringify([
+        transport,
+        this.bookId,
+        chapterIndex,
+        tierQuery,
+        endChapterIndex ?? 'book',
+        startOffset || 0
+      ]));
       const parameters = new URLSearchParams(tierQuery.replace(/^\?/, ''));
       parameters.set('session', sessionId);
       if (startOffset > 0) parameters.set('offsetSeconds', String(startOffset));
@@ -557,17 +657,69 @@ export class SingleFileChapterPlayer {
     this.audio.pause();
   }
   get isPlaying() { return this._isPlaying && !this.audio.paused; }
-  async seek(seconds) {
+  _streamTimeForChapterTime(seconds) {
     const chapterTime = Math.max(0, Math.min(Number(seconds) || 0, this.getTotalTime() || Number(seconds) || 0));
     const streamTime = this._streamOffsetForChapter(this.chapterIndex)
       + chapterTime
       - (this.chapterIndex === this.startChapterIndex ? this.streamStartOffset : 0);
+    return { chapterTime, streamTime };
+  }
+
+  /**
+   * Relocate without awaiting anything, or report that it is not possible.
+   *
+   * Callers running inside a user-activation window (a tap, a lock-screen
+   * control) must not await before audio.play(), so they use this and degrade
+   * when it returns false rather than reloading the source.
+   *
+   * @returns {boolean} true when the position was applied.
+   */
+  trySeekSync(seconds) {
+    const { streamTime } = this._streamTimeForChapterTime(seconds);
+    if (this.isContinuous && !this._canSeekTo(streamTime)) return false;
+    this.audio.currentTime = Math.max(0, streamTime);
+    this._handleTimeUpdate();
+    return true;
+  }
+
+  /**
+   * Did this continuous source already open at exactly this chapter position?
+   *
+   * If so the caller must skip its follow-up seek. seek() clamps its target to
+   * the *estimated* chapter duration, and when that estimate is below the resume
+   * offset the clamp drags the target backwards, out of the buffered range, and
+   * the stream relocates — spending a second server session to reach a position
+   * the source was already sitting at.
+   *
+   * Only ever true for a continuous transport; a finite chapter file is freely
+   * seekable and its seek is both cheap and necessary.
+   */
+  openedAtOffset(chapterIndex, seconds) {
+    if (!this.isContinuous) return false;
+    if (this.chapterIndex !== chapterIndex || this.startChapterIndex !== chapterIndex) return false;
+    const target = Number(seconds);
+    if (!Number.isFinite(target)) return false;
+    return Math.abs(this.streamStartOffset - target) < 0.01;
+  }
+
+  /**
+   * @param {number} seconds Target position within the current chapter.
+   * @param {{allowReload?: boolean}} [options] `allowReload: false` forbids
+   *   replacing the media source, which would both close an iOS activation
+   *   window and mint a new server session. Used by Smart Rewind.
+   * @returns {Promise<boolean>} whether the position was applied.
+   */
+  async seek(seconds, options = {}) {
+    const allowReload = options.allowReload !== false;
+    const { chapterTime, streamTime } = this._streamTimeForChapterTime(seconds);
     if (this.isContinuous && !this._canSeekTo(streamTime)) {
+      if (!allowReload) return false;
       await this._reloadContinuousAtOffset(chapterTime);
-      return;
+      return true;
     }
     this.audio.currentTime = Math.max(0, streamTime);
     this._handleTimeUpdate();
+    return true;
   }
   async seekToChunk(_chunkIndex, chunkTime = 0) { await this.seek(chunkTime); }
   async skip(seconds) {

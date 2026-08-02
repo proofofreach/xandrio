@@ -54,6 +54,44 @@ async function request(base, method, pathname, body) {
       assert(result.status === 500 && result.body.error === expected, `${method} ${pathname} hides storage internals`);
       assert(!JSON.stringify(result.body).includes('/private/'), `${method} ${pathname} does not leak a private path`);
     }
+    // Client disconnects are ordinary. A listener closing the app, seeking, or
+    // locking the phone aborts an in-flight audio response; that must not be
+    // logged as a server fault, and nothing may be written to a socket that is
+    // already gone. Misreading this noise as failure is what obscured the
+    // production incident this work came from.
+    const { sendServerError } = require('../server').__test;
+    const logged = [];
+    console.error = (...args) => logged.push(args.join(' '));
+    let wroteToDeadSocket = false;
+    const destroyedResponse = {
+      headersSent: false,
+      destroyed: true,
+      writableEnded: false,
+      destroy() {},
+      status() { wroteToDeadSocket = true; return this; },
+      json() { wroteToDeadSocket = true; return this; }
+    };
+
+    sendServerError(destroyedResponse, new Error('client went away'), 'Failed to serve audio');
+
+    assert(logged.length === 0, 'a client disconnect is not logged as a server error');
+    assert(!wroteToDeadSocket, 'nothing is written to an already-destroyed socket');
+
+    const audioResponseSource = require('fs').readFileSync(
+      require('path').join(__dirname, '..', 'lib', 'audio-response.js'),
+      'utf8'
+    );
+    for (const code of [
+      'ERR_STREAM_PREMATURE_CLOSE',
+      'ECONNRESET',
+      'ERR_STREAM_UNABLE_TO_PIPE',
+      'ERR_STREAM_DESTROYED'
+    ]) {
+      assert(
+        audioResponseSource.includes(code),
+        `${code} is treated as a client disconnect, not a stream failure`
+      );
+    }
   } finally {
     console.error = originalConsoleError;
     await new Promise(resolve => server.close(resolve));
