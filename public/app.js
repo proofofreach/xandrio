@@ -8,7 +8,7 @@ import { showToast } from './js/ui/toast.js';
 import { initKeys, onActivate } from './js/ui/keys.js';
 import { registerSheet } from './js/ui/sheets.js';
 import { initBookmarks, renderBookmarksSection, addBookmarkAtCurrentPosition } from './js/features/bookmarks.js';
-import { initOffline, prepareOfflineStorage, renderOfflineState, queuePendingPosition, isChapterAvailableOffline, ensureRollingOfflineWindow, getOfflineBookData, offlinePlaybackUrl } from './js/features/offline.js';
+import { initOffline, prepareOfflineStorage, renderOfflineState, queuePendingPosition, ensureRollingOfflineWindow, getOfflineBookData, offlinePlaybackUrl, localChapterSource, markLocalChapterSuspect, classifyLocalChapter, OFFLINE_WORKER_SCRIPT_URL } from './js/features/offline.js';
 import { initPronunciationRepair } from './js/features/pronunciations.js';
 import { initQueueStatus } from './js/features/queue-status.js';
 import { loadClientSettings, getSkipInterval, isSmartRewindEnabled, isRollingOfflineEnabled } from './js/client-settings.js';
@@ -25,7 +25,7 @@ import { navigateChapterSelection, positionMatchesChapterStructure, shouldAllowB
 import { SingleFileChapterPlayer } from './js/single-file-chapter-player.js';
 import { initPlayerUI, paintChapterTimes, paintScrubPreview, toggleTimeDisplayMode, syncTimeDisplayModeFromClientSettings, getPlaybackProgressScope, getBookSeekTarget, syncPlaybackProgressScope, setPlaybackReliabilityState, setResumePromptVisible, handleChunkWaiting, handleChunkPreparing, setChunkOverlayState, displayChapterTitle, updateChapterTrigger, updateBookProgress, updatePlayerAmbient, renderChapterList, openChapterSheet, closeChapterSheet, dismissChapterSheet, showAudioLoading, hideAudioLoading, updateMiniPlayer, syncMiniPlayerInfo, syncMiniPlayerIcon } from './js/views/player-ui.js';
 import { findPreferredStartChapterIndex } from './js/util/chapter-labels.mjs';
-import { createSmartRewindController } from './js/smart-rewind.mjs';
+import { applyRewindForResume, createSmartRewindController } from './js/smart-rewind.mjs';
 import { initListeningQueue, loadListeningQueue, addToListeningQueue, advanceListeningQueue, getBookPlaybackSettings, saveBookPlaybackSettings } from './js/features/listening-queue.js';
 import { initDeploymentGuard } from './js/deployment-origin.js';
 
@@ -60,8 +60,25 @@ let pendingServerPositionTimer = null;
 const restoredPlaybackEventLedger = loadPlaybackEventLedger();
 let playbackEventLedger = restoredPlaybackEventLedger.slice();
 let persistedPlaybackEventLedger = restoredPlaybackEventLedger.slice();
+// Rollout control for playing a downloaded chapter from this device while the
+// network is up. A build-time constant on purpose: the deployment guard is a
+// local origin/HTTPS computation, not a server-driven config channel, and this
+// change did not warrant inventing one. Set to false and release to fall back
+// to streaming while online; offline playback is unaffected either way, and the
+// service worker's cache-only contract for scoped URLs is permanent and needs
+// no revert. Removing this flag once the rollout has soaked is expected.
+const ONLINE_LOCAL_FIRST_ENABLED = true;
+
 let automaticRecoveryAttempts = 0;
 let automaticRecoveryTimer = null;
+// Recovery ownership. Every attempt captures the token that was current when it
+// started; a newer attempt, a chapter change or a book change replaces it, and
+// the older attempt then abandons instead of committing a stale source. Without
+// this, overlapping attempts each created their own server-side HLS session.
+let recoveryToken = { cancelled: false };
+// Held for the whole attempt — scheduling *and* the awaited load — so a second
+// error arriving mid-load cannot start a parallel recovery.
+let automaticRecoveryInFlight = false;
 let stablePlaybackTimer = null;
 let rollingOfflineTimer = null;
 const playbackSession = createPlaybackSession({
@@ -305,10 +322,10 @@ async function handleSleepTimerChapterTargetChange(target, detail = {}) {
 }
 
 function clearPlaybackRecoveryTimers() {
-  if (automaticRecoveryTimer !== null) {
-    window.clearTimeout?.(automaticRecoveryTimer);
-    automaticRecoveryTimer = null;
-  }
+  // Invalidate the token first: an attempt that is already past its timer and
+  // awaiting a load will not be stopped by clearing the handle, and must not
+  // commit a source for playback the user has since moved on from.
+  cancelPlaybackRecovery();
   if (stablePlaybackTimer !== null) {
     window.clearTimeout?.(stablePlaybackTimer);
     stablePlaybackTimer = null;
@@ -340,70 +357,192 @@ function scheduleRollingOfflineAfterStablePlayback() {
   }, 60000);
 }
 
-function offerManualPlaybackRecovery(error, resumeAt) {
+/**
+ * Hand recovery to the user — but only offer "Resume" once it is truthful.
+ *
+ * iOS grants audio.play() only during the synchronous turn of the tap that
+ * triggered it. A Resume button that first awaits a chapter load has already
+ * lost that grant by the time it plays, so the tap does nothing and the user
+ * taps again — which is how one interruption became a burst of sessions.
+ *
+ * So the source is prepared *before* Resume appears. The tap then does nothing
+ * but play, synchronously. If preparation fails there is no one-tap resume to
+ * offer and we say so: the action is labelled "Try again" and re-prepares.
+ */
+function offerManualPlaybackRecovery(error, snapshot) {
   checkpointPlayback({ force: true });
-  setResumePromptVisible(true);
-  setPlaybackReliabilityState('resume', 'Stream interrupted');
+  setPlaybackReliabilityState('preparing', 'Preparing to resume…');
   recordPlaybackEvent({
     type: 'recovery-offered',
     reason: error?.code || 'playback-error',
-    chapterIndex: currentChapter,
-    chapterTime: resumeAt
+    chapterIndex: snapshot?.chapterIndex ?? currentChapter,
+    chapterTime: snapshot?.startOffsetSeconds ?? 0
   });
-  const retry = async () => {
-    automaticRecoveryAttempts = 0;
-    await loadChapter(currentChapter, {
-      seekToSeconds: resumeAt,
-      reason: 'manual-recovery'
+  void prepareManualResume(snapshot);
+}
+
+async function prepareManualResume(snapshot) {
+  // The user is taking over; any pending automatic attempt is now stale.
+  cancelPlaybackRecovery();
+  const chapterIndex = snapshot?.chapterIndex ?? currentChapter;
+  try {
+    await loadChapter(chapterIndex, {
+      reason: 'manual-recovery',
+      sourceTuple: snapshot,
+      seekToSeconds: snapshot?.startOffsetSeconds
     });
-    await chunkPlayer.play();
+  } catch (prepareError) {
+    console.warn('Could not prepare a resume:', prepareError);
     setResumePromptVisible(false);
-    updatePlaybackUI(true);
-  };
+    setPlaybackReliabilityState('resume', 'Stream interrupted');
+    showToast('Playback was interrupted', 'error', {
+      actionLabel: 'Try again',
+      onAction: () => { void prepareManualResume(snapshot); }
+    });
+    return;
+  }
+  // The source is loaded and positioned, so the next tap can play immediately.
+  setResumePromptVisible(true);
+  setPlaybackReliabilityState('resume', 'Ready to resume');
   showToast('Playback was interrupted', 'error', {
     actionLabel: 'Resume',
-    onAction: () => retry().catch(retryError => handleChunkError(retryError))
+    onAction: () => resumeFromPreparedSource()
   });
 }
 
-function scheduleAutomaticPlaybackRecovery(error, resumeAt) {
-  if (!window.setTimeout || automaticRecoveryTimer !== null || automaticRecoveryAttempts >= 3) {
-    return false;
+// Narrow an immutable recovery snapshot down to the fields the engine opens a
+// source with, and only when it is for the chapter actually being loaded.
+function recoverySourceTuple(snapshot, chapterIndex) {
+  if (!snapshot || snapshot.chapterIndex !== chapterIndex) return null;
+  const tuple = {};
+  if (Number(snapshot.startOffsetSeconds) > 0) {
+    tuple.startOffsetSeconds = Number(snapshot.startOffsetSeconds);
   }
+  if (snapshot.servedTier) tuple.servedTier = snapshot.servedTier;
+  if (Number.isInteger(snapshot.endChapterIndex)) tuple.endChapterIndex = snapshot.endChapterIndex;
+  return Object.keys(tuple).length ? tuple : null;
+}
+
+// Runs inside the tap. Nothing may be awaited before play().
+function resumeFromPreparedSource() {
+  if (!chunkPlayer) return Promise.resolve();
+  applySmartRewindForResume();
+  const started = Promise.resolve(chunkPlayer.play());
+  setResumePromptVisible(false);
+  updatePlaybackUI(true);
+  return started.catch(playError => {
+    updatePlaybackUI(false);
+    handleChunkError(playError);
+  });
+}
+
+// Two attempts, not three. Each attempt loads a chapter, and each load asks the
+// server for an HLS session; a third automatic try bought little and tripled the
+// session churn a single failed resume could produce.
+const MAX_AUTOMATIC_RECOVERY_ATTEMPTS = 2;
+
+// Abandon the current recovery lineage entirely: invalidate the in-flight
+// attempt, drop its timer, release the slot and reset the attempt budget.
+// Called when the user takes over, or when the player moves to a different
+// book/chapter and the old attempts are moot.
+function cancelPlaybackRecovery() {
+  recoveryToken.cancelled = true;
+  recoveryToken = { cancelled: false };
+  if (automaticRecoveryTimer !== null) {
+    window.clearTimeout?.(automaticRecoveryTimer);
+    automaticRecoveryTimer = null;
+  }
+  automaticRecoveryInFlight = false;
+  automaticRecoveryAttempts = 0;
+  try { chunkPlayer?.cancelPendingLoad?.(); } catch {}
+}
+
+// Returns whether the failure is *handled* — not whether a timer was created.
+// A duplicate error arriving while an attempt is already in flight is handled
+// by that attempt; reporting it as unhandled put a manual "Resume" prompt on
+// screen on top of a retry that was already running.
+function scheduleAutomaticPlaybackRecovery(error, snapshot) {
+  const resumeAt = snapshot?.startOffsetSeconds || 0;
+  if (!window.setTimeout) return false;
+
+  // A server that is rate-limiting playback sessions will not be helped by
+  // retrying sooner, and offering a Resume button just walks the user back into
+  // the same limit. Tell them how long to wait. Checked before the in-flight
+  // guards so it is reported even when an attempt is already running.
+  const retryAfterSeconds = Number(error?.retryAfterSeconds);
+  if (error?.status === 429 || error?.code === 429) {
+    cancelPlaybackRecovery();
+    const wait = Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0
+      ? ` Try again in ${Math.ceil(retryAfterSeconds)}s.`
+      : '';
+    setPlaybackReliabilityState('resume', 'Too many playback attempts');
+    showToast(`Too many playback sessions started.${wait}`, 'error');
+    return true;
+  }
+
+  if (automaticRecoveryTimer !== null || automaticRecoveryInFlight) return true;
+  if (automaticRecoveryAttempts >= MAX_AUTOMATIC_RECOVERY_ATTEMPTS) return false;
   automaticRecoveryAttempts += 1;
   const attempt = automaticRecoveryAttempts;
+  // The whole attempt runs under one token and one in-flight flag. Both are
+  // taken here, not inside retry(), so nothing can slip in between.
+  automaticRecoveryInFlight = true;
+  const token = recoveryToken;
   const retry = async () => {
-    automaticRecoveryTimer = null;
-    if (!navigator.onLine) {
-      setPlaybackReliabilityState('resume', 'Waiting for connection');
-      window.addEventListener('online', () => {
-        if (!scheduleAutomaticPlaybackRecovery(error, resumeAt)) {
-          offerManualPlaybackRecovery(error, resumeAt);
-        }
-      }, { once: true });
-      return;
-    }
-    recordPlaybackEvent({
-      type: 'automatic-recovery',
-      reason: error?.code || 'playback-error',
-      attempt,
-      chapterIndex: currentChapter,
-      chapterTime: resumeAt
-    });
-    setPlaybackReliabilityState('preparing', `Reconnecting… (${attempt}/3)`);
+    // Re-scheduling happens strictly after this attempt has released its slot,
+    // otherwise the release would wipe the successor's guard the moment it took
+    // it — reopening the parallel-recovery hole this token is here to close.
+    let followUpError = null;
     try {
-      await loadChapter(currentChapter, {
-        seekToSeconds: resumeAt,
-        reason: 'automatic-recovery'
-      });
-      await chunkPlayer.play();
-      setResumePromptVisible(false);
-      updatePlaybackUI(true);
-      markPlaybackStableSoon();
-    } catch (retryError) {
-      if (!scheduleAutomaticPlaybackRecovery(retryError, resumeAt)) {
-        offerManualPlaybackRecovery(retryError, resumeAt);
+      if (token.cancelled) return;
+      if (!navigator.onLine) {
+        setPlaybackReliabilityState('resume', 'Waiting for connection');
+        window.addEventListener('online', () => {
+          if (token.cancelled) return;
+          if (!scheduleAutomaticPlaybackRecovery(error, snapshot)) {
+            offerManualPlaybackRecovery(error, snapshot);
+          }
+        }, { once: true });
+        return;
       }
+      recordPlaybackEvent({
+        type: 'automatic-recovery',
+        reason: error?.code || 'playback-error',
+        attempt,
+        chapterIndex: currentChapter,
+        chapterTime: resumeAt
+      });
+      setPlaybackReliabilityState(
+        'preparing',
+        `Reconnecting… (${attempt}/${MAX_AUTOMATIC_RECOVERY_ATTEMPTS})`
+      );
+      try {
+        // The snapshot is captured once, at the moment the failure was handled,
+        // and replayed verbatim by every attempt. The transport therefore opens
+        // *at* the resume position, so each retry requests the byte-identical
+        // canonical tuple and joins the session already being prepared instead
+        // of opening at zero and relocating into a second one.
+        await loadChapter(snapshot?.chapterIndex ?? currentChapter, {
+          sourceTuple: snapshot,
+          seekToSeconds: resumeAt,
+          reason: 'automatic-recovery'
+        });
+        if (token.cancelled) return;
+        await chunkPlayer.play();
+        if (token.cancelled) return;
+        setResumePromptVisible(false);
+        updatePlaybackUI(true);
+        markPlaybackStableSoon();
+      } catch (retryError) {
+        if (!token.cancelled) followUpError = retryError;
+      }
+    } finally {
+      automaticRecoveryTimer = null;
+      automaticRecoveryInFlight = false;
+    }
+    if (!followUpError || token.cancelled) return;
+    if (!scheduleAutomaticPlaybackRecovery(followUpError, snapshot)) {
+      offerManualPlaybackRecovery(followUpError, snapshot);
     }
   };
   automaticRecoveryTimer = window.setTimeout(retry, 250 * (2 ** (attempt - 1)));
@@ -421,12 +560,28 @@ function handleChunkError(error) {
   if (
     error?.code === 'CONTINUOUS_STREAM_EOF'
     || error?.code === 'MEDIA_PLAY_TIMEOUT'
+    // A rate limit is about the account, not the transport: it must be reported
+    // even when the engine that failed had not reached continuous playback.
+    || error?.status === 429
+    || error?.code === 429
     || chunkPlayer?.isContinuous
   ) {
     const resumeAt = Math.max(0, Number(error.chapterTime ?? chunkPlayer?.getCurrentTime?.()) || 0);
     checkpointPlayback({ force: true });
-    if (!scheduleAutomaticPlaybackRecovery(error, resumeAt)) {
-      offerManualPlaybackRecovery(error, resumeAt);
+    // One immutable snapshot of the canonical request, captured once, here.
+    // Every attempt — automatic or manual — replays it verbatim, so all of them
+    // resolve to the same server session instead of each minting a new one.
+    const snapshot = Object.freeze({
+      bookId: currentBook?.id,
+      chapterIndex: currentChapter,
+      startOffsetSeconds: resumeAt,
+      servedTier: chunkPlayer?.servedTier || null,
+      endChapterIndex: Number.isInteger(chunkPlayer?.endChapterIndex)
+        ? chunkPlayer.endChapterIndex
+        : null
+    });
+    if (!scheduleAutomaticPlaybackRecovery(error, snapshot)) {
+      offerManualPlaybackRecovery(error, snapshot);
     }
     return;
   }
@@ -464,8 +619,8 @@ function handleChunkReady() {
   updateMediaSessionPosition();
   if (chunkPlayer?.supportsNativeMediaSession) {
     setPlaybackReliabilityState('active', playbackBackend === 'single-file'
-      ? 'Playing downloaded audio'
-      : 'Continuous lock-screen playback');
+      ? 'Playing from this device'
+      : 'Streaming');
   }
 }
 
@@ -487,10 +642,8 @@ function makePlaybackCallbacks() {
         markPlaybackStableSoon();
         scheduleRollingOfflineAfterStablePlayback();
         checkpointPlayback({ throttle: true });
-        if (detail.reason === 'external') {
-          void applySmartRewindBeforeResume()
-            .catch(error => console.warn('Smart rewind after interruption failed:', error));
-        }
+        if (detail.reason === 'external') applySmartRewindForResume();
+        else retryDeferredSmartRewind();
       } else {
         if (rollingOfflineTimer !== null) {
           window.clearTimeout?.(rollingOfflineTimer);
@@ -528,12 +681,13 @@ function createSingleFileChapterEngine(options = {}) {
 }
 
 async function selectPlaybackEngineForChapter(bookId, chapterIndex, options = {}) {
-  chunkedPlayer.preferStandardAudio = Boolean(options.offlineMode && options.offlineChapterAvailable);
-  if (options.offlineMode && options.offlineChapterAvailable) {
+  // Local availability alone decides this now — not connectivity.
+  chunkedPlayer.preferStandardAudio = Boolean(options.offlineChapterAvailable);
+  if (options.offlineChapterAvailable) {
     return {
       engine: chunkedPlayer,
       backend: 'single-file',
-      reliability: ['active', 'Playing downloaded audio'],
+      reliability: ['active', 'Playing from this device'],
     };
   }
   return {
@@ -735,7 +889,11 @@ function registerServiceWorker() {
   serviceWorkerRegistrationStarted = true;
   // Updates wait for active clients to close, so a new shell cannot take over
   // a page with in-flight playback. Never reload on controllerchange either.
-  navigator.serviceWorker.register('/sw.js')
+  //
+  // The script URL is version-pinned (OFFLINE_WORKER_SCRIPT_URL) so the page can
+  // read which worker build controls it. Local-first playback depends on the
+  // scoped offline URL being cache-only, which only the matching build does.
+  navigator.serviceWorker.register(OFFLINE_WORKER_SCRIPT_URL)
     .then(registration => registration?.update?.().catch(() => {}))
     .catch(err => {
       serviceWorkerRegistrationStarted = false;
@@ -1266,22 +1424,26 @@ async function loadChapter(index, options = {}) {
   // Show loading indicator immediately
   showAudioLoading(`Loading: ${displayChapterTitle(chapter, currentChapter)}...`);
 
-  // Offline + not downloaded: skip the doomed network fetch and surface a
-  // calm situational state. No retry button — retrying can't succeed without a
-  // connection, so the chapter reloads itself the moment the network returns.
-  let offlineMode = !navigator.onLine || currentBookOfflineFallback;
-  const offlineChapterAvailable = offlineMode
-    ? await isChapterAvailableOffline(currentBook.id, index)
-    : false;
+  // Local-first: a chapter that is already on this device is played from this
+  // device whether or not there is a network. Connectivity used to gate this
+  // check, so a fully downloaded book streamed anyway whenever the phone had
+  // signal — the download was verified, stored and then ignored.
+  //
+  // The check is presence-only and therefore cheap enough for the load path;
+  // see localChapterSource in js/features/offline.js.
+  const offlineMode = !navigator.onLine || currentBookOfflineFallback;
+  const local = ONLINE_LOCAL_FIRST_ENABLED || offlineMode
+    ? await localChapterSource(currentBook.id, index)
+    : { available: false };
   if (token !== loadChapterToken) return;
+  const offlineChapterAvailable = local.available;
   // navigator.onLine can remain true through a transient metadata failure. If
   // that local snapshot points at an evicted chapter, let normal network
   // playback recover instead of pinning the player to an offline error.
   if (offlineMode && !offlineChapterAvailable && navigator.onLine) {
     currentBookOfflineFallback = false;
-    offlineMode = false;
   }
-  if (offlineMode && !offlineChapterAvailable) {
+  if (!navigator.onLine && !offlineChapterAvailable) {
     setChunkOverlayState('offline', {
       message: "You're offline",
       detail: 'This book isn’t downloaded. It will start when you’re back online.'
@@ -1300,21 +1462,56 @@ async function loadChapter(index, options = {}) {
     offlineMode
   });
   if (token !== loadChapterToken) return;
-  const transition = await playbackSession.transitionTo({
-    book: currentBook,
-    chapterIndex: index,
-    engine: selection.engine,
-    backend: selection.backend,
-    play: false,
-    preservePosition: false,
-    disposePrevious: false,
-    commitImmediately: options.commitImmediately
-  });
+  let transition;
+  try {
+    transition = await playbackSession.transitionTo({
+      book: currentBook,
+      chapterIndex: index,
+      engine: selection.engine,
+      backend: selection.backend,
+      // Only a streamed source can be opened at an offset; a local chapter is a
+      // finite, freely seekable file and needs no tuple.
+      sourceTuple: offlineChapterAvailable ? null : recoverySourceTuple(options.sourceTuple, index),
+      play: false,
+      preservePosition: false,
+      disposePrevious: false,
+      commitImmediately: options.commitImmediately
+    });
+  } catch (error) {
+    // Local playback failed. Hand off to the network exactly once, and say so:
+    // silently streaming a book the user downloaded is how this stopped being
+    // noticed in the first place. Nothing durable is written here — Safari
+    // raises transient media errors often enough that acting on one would
+    // destroy good downloads. classifyLocalChapter decides that, off this path.
+    const recoverable = offlineChapterAvailable
+      && !options.localFallbackUsed
+      && navigator.onLine
+      && !error?.cancelled;
+    if (!recoverable) throw error;
+    if (token !== loadChapterToken) return;
+    markLocalChapterSuspect(currentBook.id, index);
+    const bookId = currentBook.id;
+    void classifyLocalChapter(bookId, index)
+      .then(verdict => {
+        if (verdict !== 'transient') renderOfflineState({ audit: false });
+      })
+      .catch(() => {});
+    setPlaybackReliabilityState('active', 'Streaming · checking your download');
+    return await loadChapter(index, { ...options, localFallbackUsed: true });
+  }
   if (transition.stale) return;
   applyPlaybackSelection(selection);
   chunkPlayer?.setSpeed?.(getCurrentPlaybackSpeed());
   if (token !== loadChapterToken) return;
-  if (Number.isFinite(options.seekToSeconds)) {
+  // A continuous source opened directly at the resume position needs no seek,
+  // and issuing one can undo the work: seek() clamps to the *estimated* chapter
+  // duration, so an underestimate drags the target out of the buffered range and
+  // relocates the stream — a second session to reach where it already was.
+  // Finite sources (local files, chapter fallback) still seek normally.
+  if (
+    Number.isFinite(options.seekToSeconds)
+    && !chunkPlayer.openedAtOffset?.(index, options.seekToSeconds)
+  ) {
     await chunkPlayer.seek(Math.max(0, options.seekToSeconds));
     if (token !== loadChapterToken) return;
   }
@@ -1399,19 +1596,51 @@ function recordSmartRewindPause() {
   });
 }
 
-async function applySmartRewindBeforeResume() {
-  if (!currentBook || !chunkPlayer || !smartRewindIsEnabled()) {
+// A rewind that could not be applied yet, kept so it can be retried once the
+// stream has buffered the target. Never retried by reloading the source.
+let deferredSmartRewind = null;
+
+// Synchronous by contract: every caller runs inside an iOS user-activation
+// window and must reach audio.play() without awaiting. See applyRewindForResume.
+function applySmartRewindForResume() {
+  deferredSmartRewind = null;
+  if (!currentBook || !chunkPlayer) {
     smartRewind.clear();
     return;
   }
-  const plan = smartRewind.planResume({
+  const outcome = applyRewindForResume({
+    controller: smartRewind,
+    player: chunkPlayer,
     bookId: currentBook.id,
     chapterIndex: currentChapter,
-    positionSeconds: chunkPlayer.getCurrentTime?.() || 0
+    positionSeconds: chunkPlayer.getCurrentTime?.() || 0,
+    enabled: smartRewindIsEnabled()
   });
-  if (!plan) return;
-  await chunkPlayer.seek(plan.targetSeconds);
-  showToast(`Smart rewind · ${plan.rewindSeconds} seconds`);
+  if (outcome.status === 'applied') {
+    showToast(`Smart rewind · ${outcome.rewindSeconds} seconds`);
+  } else if (outcome.status === 'deferred') {
+    // Only claim a rewind that actually happened.
+    deferredSmartRewind = {
+      bookId: currentBook.id,
+      chapterIndex: currentChapter,
+      ...outcome
+    };
+  }
+}
+
+// Retried after playback starts, when the target may have become buffered.
+// Silently abandoned otherwise — resuming matters more than the rewind.
+function retryDeferredSmartRewind() {
+  const pending = deferredSmartRewind;
+  if (!pending || !chunkPlayer || !currentBook) return;
+  if (pending.bookId !== currentBook.id || pending.chapterIndex !== currentChapter) {
+    deferredSmartRewind = null;
+    return;
+  }
+  if (chunkPlayer.trySeekSync?.(pending.targetSeconds)) {
+    deferredSmartRewind = null;
+    showToast(`Smart rewind · ${pending.rewindSeconds} seconds`);
+  }
 }
 
 async function togglePlayPause(forcePlay = false) {
@@ -1419,7 +1648,9 @@ async function togglePlayPause(forcePlay = false) {
   if (!currentBook || !chunkPlayer) return;
   try {
     if (forcePlay || !chunkPlayer.isPlaying) {
-      await applySmartRewindBeforeResume();
+      // Nothing may be awaited between here and play(): iOS revokes the user
+      // activation from the tap at the first await.
+      applySmartRewindForResume();
       await chunkPlayer.play();
       setResumePromptVisible(false);
       updatePlaybackUI(true);
@@ -1563,7 +1794,9 @@ function isNativeSingleFileReady() {
 async function resumeNativeSingleFileFromMediaSession() {
   if (!isNativeSingleFileReady()) return false;
   try {
-    await applySmartRewindBeforeResume();
+    // Same activation contract as togglePlayPause: the lock screen and Control
+    // Center grant activation for exactly one synchronous play() call.
+    applySmartRewindForResume();
     await chunkPlayer.play();
     setResumePromptVisible(false);
     updatePlaybackUI(true);

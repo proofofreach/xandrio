@@ -1,7 +1,7 @@
 importScripts('/js/offline-range.js');
 
 const APP_RELEASE = '1.1.0';
-const CACHE_VERSION = 'xandrio-v119';
+const CACHE_VERSION = 'xandrio-v120';
 const OFFLINE_AUDIO_CACHE = 'xandrio-offline-audio';
 const OFFLINE_TITLE_CACHE = 'xandrio-offline-titles';
 const OFFLINE_SCOPE_PARAM = 'xandrio-offline-scope';
@@ -13,7 +13,7 @@ const ASSET_VERSIONS = {
   '/style-v3.css': 93,
   '/js/lifecycle.js': 1,
   '/js/chunk-player.js': 23,
-  '/app.js': 106
+  '/app.js': 107
 };
 const versionedAsset = (path) => `${path}?v=${ASSET_VERSIONS[path]}`;
 const APP_SHELL = [
@@ -181,7 +181,34 @@ async function cachedTitleResponse(request) {
   return (await cache.match(request.url)) || Response.error();
 }
 
+// Markers on every scoped offline audio response. `hit`/`miss` lets the page
+// tell a deterministic cache miss (invalidate the manifest entry) from a
+// transient media error (never invalidate — Safari emits those routinely). The
+// worker version stops a stale-but-controlling worker from satisfying a
+// post-download verification probe under semantics it does not implement.
+const OFFLINE_CACHE_MARKER = 'X-Xandrio-Offline-Cache';
+const OFFLINE_SW_VERSION_MARKER = 'X-Xandrio-SW';
+
+function markOfflineResponse(response, state) {
+  const headers = new Headers(response.headers);
+  headers.set(OFFLINE_CACHE_MARKER, state);
+  headers.set(OFFLINE_SW_VERSION_MARKER, CACHE_VERSION);
+  return new Response(
+    response.status === 204 || response.status === 304 ? null : response.body,
+    { status: response.status, statusText: response.statusText, headers }
+  );
+}
+
+function offlineCacheMiss() {
+  return markOfflineResponse(new Response(null, { status: 504 }), 'miss');
+}
+
 async function cachedAudioResponse(request) {
+  const response = await lookupCachedAudio(request);
+  return response ? markOfflineResponse(response, 'hit') : offlineCacheMiss();
+}
+
+async function lookupCachedAudio(request) {
   const cache = await caches.open(scopedOfflineCacheName(OFFLINE_AUDIO_CACHE, request));
   // Offline downloads are stored under /api/audio/ (see offline.js). The iOS
   // single-file player requests /api/audio-ios/ — same chapter audio, different
@@ -192,7 +219,7 @@ async function cachedAudioResponse(request) {
     cacheKey = request.url.replace('/api/audio-ios/', '/api/audio/');
     cached = await cache.match(cacheKey);
   }
-  if (!cached) return Response.error();
+  if (!cached) return null;
   const range = request.headers.get('Range');
   if (!range) return cached;
 
@@ -244,7 +271,13 @@ async function cachedAudioResponse(request) {
 self.addEventListener('fetch', event => {
   const request = event.request;
   if (isOfflineAudioRequest(request)) {
-    event.respondWith(fetch(request, { cache: 'no-store' }).catch(() => cachedAudioResponse(request)));
+    // Cache-only, permanently. This URL is emitted only for a chapter the app
+    // has already established is on this device, and the server route behind it
+    // serves a different encode from the downloaded offline package — so a
+    // network fall-through would quietly stream the wrong artifact (and re-run
+    // TTS) instead of playing the download. The one-time fallback to streaming
+    // belongs to the app, which owns the visible status that goes with it.
+    event.respondWith(cachedAudioResponse(request));
   } else if (isOfflineTitleRequest(request)) {
     event.respondWith(fetch(request, { cache: 'no-store' }).catch(() => cachedTitleResponse(request)));
   } else if (isAppShell(request)) {

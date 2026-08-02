@@ -694,6 +694,59 @@ function zeroCrossingRate(pcm) {
       }
     });
 
+    // Instrumentation is diagnostics. A hook that throws — a logger with a bad
+    // format string, a metrics client that is down — must never reject session
+    // readiness or evict a session a listener is waiting on.
+    await test('a throwing first-segment diagnostic hook cannot break playback', async () => {
+      const tonePath = path.join(dir, 'hls-diagnostic.mp3');
+      await createTone(tonePath, 1.5, 440);
+      const observed = [];
+      const source = {
+        bookId: 'book_diag',
+        chapterIndex: 0,
+        endChapterIndex: 0,
+        format: 'mp3',
+        async *iterateInputs() {
+          yield { path: tonePath, chapterIndex: 0, lastInChapter: true };
+        }
+      };
+      const app = routeHarness(source, {
+        hlsRootDir: path.join(dir, 'hls-diagnostic'),
+        hlsSegmentSeconds: 1,
+        hlsOptions: {
+          backgroundWorkProbe: () => { throw new Error('probe exploded'); },
+          onFirstSegment: (details) => {
+            observed.push(details);
+            throw new Error('diagnostic hook exploded');
+          }
+        }
+      });
+      const server = await listen(app);
+      const origin = `http://127.0.0.1:${server.address().port}`;
+      try {
+        const response = await fetch(
+          `${origin}/api/audio-hls/book_diag/0/index.m3u8?session=diag-session-1&owner=diag-owner-1`
+        );
+        assert.strictEqual(response.status, 200, 'the playlist is served despite the throwing hook');
+        const playlist = await response.text();
+        assert(playlist.includes('#EXTM3U'), 'the playlist body is intact');
+        assert.strictEqual(observed.length, 1, 'the hook was invoked exactly once');
+        assert.strictEqual(
+          typeof observed[0].waitedMs,
+          'number',
+          'time to first segment is measured'
+        );
+        assert.strictEqual(
+          observed[0].backgroundWorkInFlight,
+          false,
+          'a throwing background probe degrades to false rather than propagating'
+        );
+      } finally {
+        await app.locals.hlsAudioStreamer.dispose();
+        await new Promise(resolve => server.close(resolve));
+      }
+    });
+
     await test('HLS storage maintenance evicts completed sessions above the byte budget', async () => {
       const pendingSource = deferred();
       const app = routeHarness(pendingSource.promise, {

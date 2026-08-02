@@ -19,14 +19,19 @@ async function test(name, fn) {
 
 function engine(name, options = {}) {
   const calls = [];
+  const loadTuples = [];
   return {
     name,
     backend: options.backend || name,
     isPlaying: Boolean(options.isPlaying),
     calls,
+    loadTuples,
     position: options.position || { currentTime: 0, totalEstimatedTime: 0, chunkIndex: 0, chunkTime: 0 },
-    async loadChapter(bookId, chapterIndex) {
+    async loadChapter(bookId, chapterIndex, sourceTuple = {}) {
       calls.push(['load', bookId, chapterIndex]);
+      // Kept out of `calls` so existing deep-equal assertions on call shape
+      // stay meaningful.
+      loadTuples.push(sourceTuple);
       if (options.load) await options.load();
     },
     async seek(seconds) {
@@ -34,7 +39,11 @@ function engine(name, options = {}) {
       if (options.seek) await options.seek();
     },
     async play() {
+      // Recorded before any await so a test can assert what was true at the
+      // moment play() was invoked — an async function body runs synchronously
+      // up to its first await, exactly as the real engine's audio.play() does.
       calls.push(['play']);
+      options.onPlayInvoked?.();
       if (options.play) await options.play();
       this.isPlaying = true;
     },
@@ -341,6 +350,11 @@ function fakeAudio() {
         planResume() { return null; },
         clear() {}
       }),
+      applyRewindForResume: () => ({
+        status: 'skipped',
+        rewindSeconds: 0,
+        targetSeconds: null
+      }),
       expireSleepTimer: reason => appImports.sleepExpiries.push(reason),
       isSleepTimerChapterTarget: () => appImports.sleepTarget,
       displayChapterTitle: () => 'Chapter',
@@ -348,6 +362,13 @@ function fakeAudio() {
       needsReliablePlayback: () => false,
       isSmartRewindEnabled: () => true,
       isBookDownloadedForOffline: () => false,
+      localChapterSource: async (...args) => {
+        appImports.localSourceQueries.push(args);
+        return appImports.localSource;
+      },
+      markLocalChapterSuspect: (...args) => appImports.suspectMarks.push(args),
+      classifyLocalChapter: async () => 'transient',
+      renderOfflineState() {},
       ensureRollingOfflineWindow: async () => { appImports.rollingCalls += 1; },
       isRollingOfflineEnabled: () => true,
       refreshVoicePrepPanel() {},
@@ -362,7 +383,7 @@ function fakeAudio() {
       hideAudioLoading() {},
       setPlaybackReliabilityState(...args) { appImports.reliabilityStates.push(args); },
       setResumePromptVisible(visible) { appImports.resumePromptStates.push(visible); },
-      showToast() {},
+      showToast(...args) { appImports.toasts.push(args); },
       syncMiniPlayerIcon() {},
       getCurrentPlaybackSpeed: () => 1
     };
@@ -373,6 +394,10 @@ function fakeAudio() {
     appImports.reliabilityStates = [];
     appImports.resumePromptStates = [];
     appImports.timeoutDelays = [];
+    appImports.toasts = [];
+    appImports.localSourceQueries = [];
+    appImports.suspectMarks = [];
+    appImports.localSource = { available: false, url: null, mode: null };
     const appTestSource = appSource
       .replace(/^import \{([^}]+)\} from ['"][^'"]+['"];$/gm, 'const {$1} = globalThis.__playbackAppImports;')
       + `\nglobalThis.__playbackAppHarness = {
@@ -392,7 +417,9 @@ function fakeAudio() {
         handleContinuousChapterTransition,
         estimateChapterPlaybackDuration,
         togglePlayPause,
-        handleChunkError
+        handleChunkError,
+        cancelPlaybackRecovery,
+        offerManualPlaybackRecovery
       };`;
     const previousGlobals = new Map(['window', 'document', 'navigator', 'setInterval', '__playbackAppImports', '__playbackAppHarness']
       .map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
@@ -456,6 +483,11 @@ function fakeAudio() {
       process.removeListener('unhandledRejection', onUnhandled);
 
       assert.strictEqual(unhandled.length, 0);
+      assert.strictEqual(
+        appImports.localSourceQueries.length,
+        1,
+        'local availability is consulted even though navigator.onLine is true'
+      );
       assert.strictEqual(appImports.transitionRequests.length, 1);
       assert.strictEqual(appImports.transitionRequests[0].play, false);
       assert.strictEqual(appImports.transitionRequests[0].engine, player);
@@ -463,6 +495,43 @@ function fakeAudio() {
       assert(player.calls.some(call => call[0] === 'play'));
       assert.strictEqual(appImports.rollingCalls, 0, 'live streaming must not compete with rolling offline downloads');
       assert(uiElement.innerHTML.includes('M4.5 5.653'));
+
+      // Local-first. A chapter already on this device is played from this
+      // device while online — connectivity used to gate the check entirely, so
+      // a verified download was ignored whenever the phone had signal.
+      appImports.localSource = {
+        available: true,
+        url: '/api/audio/book-a/0?xandrio-offline-scope=account_a',
+        mode: 'full'
+      };
+      appImports.transitionRequests.length = 0;
+      const localPlayer = engine('local-first', { backend: 'single-file' });
+      globalThis.__playbackAppHarness.configure({
+        book: { id: 'book-a' },
+        chapters: [{ title: 'One' }, { title: 'Two' }],
+        player: localPlayer,
+        chapter: uiElement
+      });
+
+      await globalThis.__playbackAppHarness.loadChapter(0);
+
+      assert.strictEqual(globalThis.navigator.onLine, true, 'the device is online');
+      assert.strictEqual(
+        appImports.transitionRequests.at(-1).backend,
+        'single-file',
+        'a downloaded chapter plays from this device rather than streaming'
+      );
+      assert.strictEqual(
+        localPlayer.preferStandardAudio,
+        true,
+        'the engine is pointed at the scoped offline URL'
+      );
+      assert(
+        appImports.reliabilityStates.some(([, label]) => label === 'Playing from this device'),
+        'the user is told playback is local'
+      );
+
+      appImports.localSource = { available: false, url: null, mode: null };
 
       const timedOutPlayer = engine('play-timeout', {
         backend: 'audio-stream',
@@ -502,6 +571,186 @@ function fakeAudio() {
       globalThis.__playbackAppHarness.handleChunkError(autoplayError);
       assert.deepStrictEqual(appImports.timeoutDelays, []);
       assert.deepStrictEqual(appImports.resumePromptStates, [true]);
+
+      // Single-flight recovery. Each recovery attempt loads a chapter, and each
+      // load asks the server for an HLS session, so a burst of errors from one
+      // stalled stream must still own exactly one attempt at a time. This is
+      // the shape that produced six sessions in eighty seconds in production.
+      appImports.timeoutDelays.length = 0;
+      globalThis.__playbackAppHarness.cancelPlaybackRecovery();
+      const streamError = new Error('stream stalled');
+      streamError.code = 'CONTINUOUS_STREAM_EOF';
+      for (let index = 0; index < 5; index++) {
+        globalThis.__playbackAppHarness.handleChunkError(streamError);
+      }
+      assert.deepStrictEqual(
+        appImports.timeoutDelays,
+        [250],
+        'a burst of stream errors schedules exactly one recovery attempt'
+      );
+
+      // Duplicate errors from one stalled stream are already handled by the
+      // attempt in flight. Treating them as unhandled put a manual "Resume"
+      // prompt on screen while a retry was already running.
+      appImports.resumePromptStates.length = 0;
+      appImports.toasts.length = 0;
+      for (let index = 0; index < 3; index++) {
+        globalThis.__playbackAppHarness.handleChunkError(streamError);
+      }
+      assert.deepStrictEqual(
+        appImports.resumePromptStates,
+        [],
+        'a duplicate error while an attempt is in flight raises no manual prompt'
+      );
+
+      // A rate-limited session must not be retried into the same limit, and the
+      // 429 must be reachable even when the failed engine was never continuous.
+      appImports.timeoutDelays.length = 0;
+      appImports.resumePromptStates.length = 0;
+      appImports.toasts.length = 0;
+      const finitePlayer = engine('finite-429');
+      finitePlayer.isContinuous = false;
+      globalThis.__playbackAppHarness.configure({
+        book: { id: 'book-a' },
+        chapters: [{ title: 'One' }, { title: 'Two' }],
+        player: finitePlayer,
+        chapter: uiElement
+      });
+      globalThis.__playbackAppHarness.cancelPlaybackRecovery();
+      const rateLimited = new Error('Too many HLS playback sessions started');
+      rateLimited.status = 429;
+      rateLimited.retryAfterSeconds = 12;
+      globalThis.__playbackAppHarness.handleChunkError(rateLimited);
+
+      assert.deepStrictEqual(
+        appImports.timeoutDelays,
+        [],
+        'a 429 is surfaced to the user instead of scheduling another attempt'
+      );
+      assert.deepStrictEqual(
+        appImports.resumePromptStates,
+        [],
+        'a handled 429 does not also fall through to the manual prompt'
+      );
+      assert(
+        appImports.toasts.some(([message]) => /12s/.test(message)),
+        'the user is told how long to wait, from Retry-After'
+      );
+
+      // --- Manual Resume must play inside the activation window -------------
+      // iOS grants play() only during the synchronous turn of the tap that
+      // triggered it. The old toast action awaited loadChapter first, so by the
+      // time it called play() the grant was gone and "Resume" did nothing.
+      appImports.toasts.length = 0;
+      appImports.resumePromptStates.length = 0;
+      let activationOpen = false;
+      const playInvocations = [];
+      const manualPlayer = engine('manual-resume', {
+        backend: 'audio-stream',
+        onPlayInvoked: () => playInvocations.push({ activationOpen })
+      });
+      manualPlayer.isContinuous = true;
+      manualPlayer.servedTier = 'premium';
+      manualPlayer.endChapterIndex = 4;
+      globalThis.__playbackAppHarness.configure({
+        book: { id: 'book-a' },
+        chapters: [{ title: 'One' }, { title: 'Two' }],
+        player: manualPlayer,
+        chapter: uiElement
+      });
+      globalThis.__playbackAppHarness.cancelPlaybackRecovery();
+      appImports.transitionRequests.length = 0;
+      const manualTransitions = appImports.transitionRequests;
+
+      const interrupted = new Error('stream ended early');
+      interrupted.code = 'CONTINUOUS_STREAM_EOF';
+      interrupted.chapterTime = 412.5;
+      globalThis.__playbackAppHarness.offerManualPlaybackRecovery(interrupted, {
+        bookId: 'book-a',
+        chapterIndex: 0,
+        startOffsetSeconds: 412.5,
+        servedTier: 'premium',
+        endChapterIndex: 4
+      });
+
+      // Preparation happens before Resume is ever offered.
+      await new Promise(resolve => setImmediate(resolve));
+      await new Promise(resolve => setImmediate(resolve));
+      await new Promise(resolve => setImmediate(resolve));
+
+      const resumeToast = appImports.toasts.find(([, , options]) => options?.actionLabel === 'Resume');
+      assert(resumeToast, 'a Resume action is offered once the source is prepared');
+      assert(
+        manualTransitions.length > 0,
+        'the source was prepared before Resume was offered, not after the tap'
+      );
+
+      // The exact captured tuple reaches the engine verbatim.
+      assert.deepStrictEqual(
+        manualTransitions.at(-1).sourceTuple,
+        { startOffsetSeconds: 412.5, servedTier: 'premium', endChapterIndex: 4 },
+        'the immutable recovery snapshot is replayed verbatim'
+      );
+
+      // Now the tap. play() must be reached without any intervening await.
+      playInvocations.length = 0;
+      activationOpen = true;
+      const resumeResult = resumeToast[2].onAction();
+      activationOpen = false;
+      await resumeResult;
+
+      assert.strictEqual(playInvocations.length, 1, 'the Resume tap starts playback');
+      assert.strictEqual(
+        playInvocations[0].activationOpen,
+        true,
+        'play() is called synchronously inside the tap, not after an await'
+      );
+
+      // --- No redundant seek after opening at the requested offset ----------
+      // The engine already opened at the resume position. Seeking to it again
+      // can relocate the stream (seek clamps to the estimated chapter duration),
+      // spending a second session to reach where it already was.
+      const openedPlayer = engine('opened-at-offset', { backend: 'audio-stream' });
+      openedPlayer.isContinuous = true;
+      openedPlayer.openedAtOffset = (chapterIndex, seconds) =>
+        chapterIndex === 0 && Math.abs(seconds - 412.5) < 0.01;
+      globalThis.__playbackAppHarness.configure({
+        book: { id: 'book-a' },
+        chapters: [{ title: 'One' }, { title: 'Two' }],
+        player: openedPlayer,
+        chapter: uiElement
+      });
+      globalThis.__playbackAppHarness.cancelPlaybackRecovery();
+
+      await globalThis.__playbackAppHarness.loadChapter(0, {
+        reason: 'automatic-recovery',
+        sourceTuple: { startOffsetSeconds: 412.5, chapterIndex: 0 },
+        seekToSeconds: 412.5
+      });
+
+      assert(
+        !openedPlayer.calls.some(call => call[0] === 'seek'),
+        'no seek is issued when the source already opened at that offset'
+      );
+
+      // A finite/local source still needs its seek.
+      const finiteSeekPlayer = engine('finite-seek', { backend: 'single-file' });
+      finiteSeekPlayer.isContinuous = false;
+      finiteSeekPlayer.openedAtOffset = () => false;
+      globalThis.__playbackAppHarness.configure({
+        book: { id: 'book-a' },
+        chapters: [{ title: 'One' }, { title: 'Two' }],
+        player: finiteSeekPlayer,
+        chapter: uiElement
+      });
+
+      await globalThis.__playbackAppHarness.loadChapter(0, { seekToSeconds: 412.5 });
+
+      assert.deepStrictEqual(
+        finiteSeekPlayer.calls.filter(call => call[0] === 'seek'),
+        [['seek', 412.5]],
+        'a freely seekable source still receives its seek'
+      );
 
       for (let index = 0; index < 100; index++) {
         globalThis.__playbackAppHarness.recordPlaybackEvent({

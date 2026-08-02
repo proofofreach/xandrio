@@ -13,3 +13,57 @@ Run this on a real iPhone in Safari and from the Home Screen PWA. Use the LAN or
 9. Voice sample playback ducks the main player and restores volume afterward.
 
 Likely failure areas to inspect first: expensive ambient blur, mini-player swipe threshold near iOS gestures, and stale Media Session metadata after playback handoff.
+
+## Resume and downloaded playback
+
+These cover the incident behavior described in `docs/ARCHITECTURE.md`
+("Local-first playback", "Resume"). Automated tests cannot reach real iOS user
+activation or a real service worker, so these are the acceptance gate.
+
+Keep the server log visible: it prints `[playback] first HLS segment in …ms`.
+
+**First-tap resume**
+
+10. Play a streamed (not downloaded) book. Lock the phone, wait 15 minutes, then
+    press play from the Lock Screen. Audio must start on the **first** press.
+11. Repeat from Control Center, and from the in-app play button after a long
+    pause. Each must start on the first press.
+12. With Smart Rewind enabled, resume a streamed book after several long pauses.
+    Playback must start immediately every time. A rewind toast may or may not
+    appear — it must never appear without the position actually moving back.
+13. Force an interruption (drop Wi-Fi mid-chapter). The "Resume" action must not
+    appear until the audio is ready; when it appears, one tap must start
+    playback. If it offers "Try again" instead, that is correct behavior for a
+    failed preparation — it must not be labelled "Resume".
+
+**One session per resume**
+
+14. Watch `/api/audio-hls` in the server log across steps 10–13. A single resume
+    must create **one** session. Several sessions within a few seconds, or 499s
+    in nginx, is the regression this work fixed.
+
+**Downloaded playback is local**
+
+15. Download a book fully. With Wi-Fi and cellular **on**, play it and confirm
+    there is **no** `/api/audio-hls` or `/api/audio` traffic for that book. The
+    status must read "Playing from this device".
+16. Toggle airplane mode mid-chapter. Playback must continue uninterrupted.
+17. Corrupt or evict one chapter (Safari → Storage), then play it. It must fall
+    back to streaming **once**, show a status saying so, and the rest of the
+    download must remain intact — the book must not be re-downloaded or lost.
+
+**Honest download states**
+
+18. Cancel a download part-way. The book must **not** appear under Downloaded
+    and must not be marked as on-device; it should show its own partial label.
+    The chapters already transferred must still play offline.
+19. Download a book on a first install, before the service worker has taken
+    control. It must show "Verifying", keep its audio, and become Downloaded
+    after relaunching — never a failed or re-started download.
+
+**Service-worker update**
+
+20. Deploy a build with a new `CACHE_VERSION` while a downloaded book is
+    installed. After the update, downloads may briefly show "Verifying"; they
+    must return to Downloaded without re-downloading, and playback must stay
+    local throughout.

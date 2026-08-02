@@ -8,8 +8,45 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- A downloaded book now plays from the device whenever it is on the device.
+  Local availability was previously only consulted while offline, so a fully
+  downloaded, verified book streamed anyway whenever the phone had signal.
+- Resume now starts on the first tap. Play, lock-screen and Control Center
+  resumes reach the native `play()` call inside the activation window iOS grants
+  for the tap, and Smart Rewind degrades rather than reloading a nonseekable
+  stream — which previously consumed that window and made the tap do nothing.
+- The "Resume" action offered after an interruption now prepares the audio
+  before appearing, so the tap only starts playback. If preparation fails, the
+  action is labelled "Try again" instead of promising a resume it cannot give.
+- One interrupted resume no longer starts a burst of server audio sessions. The
+  canonical request is captured once and replayed verbatim, the transport opens
+  directly at the resume position instead of opening at zero and relocating, and
+  retries reuse one session. Automatic attempts are capped at two, only one runs
+  at a time, and a rate-limited response is reported with its retry delay rather
+  than retried into.
+- Partial, in-progress and unverified downloads no longer appear under
+  Downloaded or claim to be available on this device. They keep their own
+  labels, and the chapters they do have still play offline.
+- Client disconnects during audio streaming are no longer logged as server
+  errors, and nothing is written to an already-closed connection.
+
 ### Changed
 
+- A completed download is now confirmed by probing the exact service-worker
+  route that will play it, not only by verifying stored bytes. A download whose
+  route cannot yet be confirmed — an uncontrolled page on first install, or a
+  service worker from another build — waits in "Verifying" with its audio
+  intact and is re-checked on the next launch and whenever the worker changes.
+- The explicitly scoped offline media URL is served only from the cache. This is
+  a permanent contract: the server route behind that URL returns a different
+  encode from the downloaded package, so falling through to it would stream the
+  wrong audio while appearing to play locally.
+- A playback failure on a downloaded chapter now falls back to streaming once,
+  visibly, and diagnoses the cause away from the playback path. Cached audio is
+  deleted only on a proven hash mismatch; a dropped request, an old worker or a
+  momentary server error never discards a download.
 - Full-book offline use now has two explicit stages: durable server preparation
   creates a mono 24 kHz, 48 kbps MP3 package from completed narration, then a
   foreground-only device transfer reports real bytes, measured throughput, and

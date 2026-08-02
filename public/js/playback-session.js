@@ -181,7 +181,15 @@ export function createPlaybackSession(options = {}) {
 
     const old = state.engine;
     const shouldResume = request.play === undefined ? Boolean(old?.isPlaying) : Boolean(request.play);
-    await incoming.loadChapter(request.book.id, request.chapterIndex);
+    // `sourceTuple` is the exact canonical request a recovery captured. Passing
+    // it through means the transport opens *at* the resume position instead of
+    // opening at zero and relocating, which created a second server session for
+    // every retry.
+    await incoming.loadChapter(
+      request.book.id,
+      request.chapterIndex,
+      request.sourceTuple || {}
+    );
     if (!isCurrent(id)) return { stale: true, snapshot: snapshot() };
 
     const handoffPosition = request.position || (request.preservePosition ? enginePosition(old) : null);

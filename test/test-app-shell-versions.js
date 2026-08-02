@@ -90,6 +90,77 @@ assert(
     librarySource.includes("deviceHint.hidden = currentTab !== 'downloaded'"),
   'the populated Downloaded view explains that copies are device-local'
 );
+// A partial or unverified download used to be filed under Downloaded and
+// marked data-downloaded="1". Opening one and having it fail to play is
+// exactly the report this work came from.
+const availableOnDevice = librarySource.match(
+  /function isAvailableOnDevice\(status\) \{([\s\S]*?)\n\}/
+)?.[1] || '';
+// Most js/ modules in APP_SHELL carry no ?v=, so CACHE_VERSION is their only
+// invalidation path. Editing one without bumping it strands installed clients
+// on old playback logic while app.js updates around them.
+const cacheVersion = swSource.match(/const CACHE_VERSION = '([^']+)'/)?.[1] || '';
+assert(/^xandrio-v\d+$/.test(cacheVersion), 'CACHE_VERSION is a recognisable version string');
+
+// offline.js certifies downloads against one exact worker build. If these two
+// drift, every download silently falls back to "Verifying" until re-probed, and
+// a worker whose cache semantics differ could otherwise certify a download.
+const offlineSource = fs.readFileSync(
+  path.join(publicDir, 'js', 'features', 'offline.js'),
+  'utf8'
+);
+const expectedSwVersion = offlineSource
+  .match(/export const EXPECTED_OFFLINE_SW_VERSION = '([^']+)'/)?.[1] || '';
+assert(
+  expectedSwVersion === cacheVersion,
+  `offline.js EXPECTED_OFFLINE_SW_VERSION (${expectedSwVersion || 'missing'}) matches sw.js CACHE_VERSION (${cacheVersion})`
+);
+assert(
+  swSource.includes('OFFLINE_SW_VERSION_MARKER') && swSource.includes('CACHE_VERSION);'),
+  'the worker stamps its own version on scoped offline responses'
+);
+// The page can only read `controller.scriptURL`, so registering a versioned URL
+// is what makes the controlling worker's build observable. Without it, a new
+// app.js cannot tell that the previous (network-first) worker is still in
+// charge, and would hand it a scoped URL while claiming local playback.
+assert(
+  /OFFLINE_WORKER_SCRIPT_URL = `\/sw\.js\?v=\$\{EXPECTED_OFFLINE_SW_VERSION\}`/.test(offlineSource),
+  'the registered worker URL is pinned to the expected offline contract version'
+);
+assert(
+  serviceWorkerRegistration.includes('OFFLINE_WORKER_SCRIPT_URL') &&
+    !/register\('\/sw\.js'\)/.test(appSource),
+  'app.js registers the version-pinned worker URL, not a bare /sw.js'
+);
+{
+  const { execSync } = require('child_process');
+  const git = (command) => {
+    try {
+      return execSync(command, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+    } catch {
+      return '';
+    }
+  };
+  const changed = git('git diff --name-only HEAD -- public/').split('\n').filter(Boolean);
+  const versionedPaths = new Set([...assetVersions.keys()].map(entry => `public${entry}`));
+  const unversionedShellChanged = changed.filter(file =>
+    file.startsWith('public/js/') && !versionedPaths.has(file)
+  );
+  const cacheVersionBumped = git('git diff HEAD -- public/sw.js')
+    .split('\n')
+    .some(line => /^[+-]const CACHE_VERSION/.test(line));
+  assert(
+    unversionedShellChanged.length === 0 || cacheVersionBumped,
+    'an edited unversioned shell module comes with a CACHE_VERSION bump' +
+      (unversionedShellChanged.length ? ` (${unversionedShellChanged.join(', ')})` : '')
+  );
+}
+
+assert(availableOnDevice.length > 0, 'library.js declares isAvailableOnDevice');
+assert(
+  !/partial-download|downloading/.test(availableOnDevice),
+  'only a fully verified download counts as available on this device'
+);
 assert(
   indexSource.includes('Audio preparation continues on the server when Xandrio is closed') &&
     indexSource.includes('During the later device download, keep Xandrio visible'),

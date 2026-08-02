@@ -4,6 +4,7 @@ const { pathToFileURL } = require('url');
 
 (async () => {
   const {
+    applyRewindForResume,
     createSmartRewindController,
     rewindSecondsForIdle
   } = await import(pathToFileURL(path.join(__dirname, '..', 'public', 'js', 'smart-rewind.mjs')).href);
@@ -72,7 +73,93 @@ const { pathToFileURL } = require('url');
     positionSeconds: 500
   }), null, 'an explicit seek must consume the old pause anchor without rewinding');
 
-  console.log('9 passed, 0 failed');
+  // --- Activation-safe application -----------------------------------------
+  // iOS only honours audio.play() inside the user-activation window opened by
+  // the tap. applyRewindForResume must therefore complete synchronously and
+  // report what it did, so the caller can play immediately either way.
+
+  const seekablePlayer = { trySeekSync: () => true, seeks: [] };
+  const nonseekablePlayer = { trySeekSync: () => false };
+
+  rewind.recordPause({ bookId: 'book-a', chapterIndex: 2, positionSeconds: 100 });
+  now += 4 * 60_000;
+  assert.deepStrictEqual(
+    applyRewindForResume({
+      controller: rewind,
+      player: { trySeekSync: seconds => { seekablePlayer.seeks.push(seconds); return true; } },
+      bookId: 'book-a',
+      chapterIndex: 2,
+      positionSeconds: 100,
+      enabled: true
+    }),
+    { status: 'applied', rewindSeconds: 10, targetSeconds: 90 },
+    'a seekable source rewinds synchronously'
+  );
+  assert.deepStrictEqual(seekablePlayer.seeks, [90]);
+
+  rewind.recordPause({ bookId: 'book-a', chapterIndex: 2, positionSeconds: 100 });
+  now += 4 * 60_000;
+  assert.deepStrictEqual(
+    applyRewindForResume({
+      controller: rewind,
+      player: nonseekablePlayer,
+      bookId: 'book-a',
+      chapterIndex: 2,
+      positionSeconds: 100,
+      enabled: true
+    }),
+    { status: 'deferred', rewindSeconds: 10, targetSeconds: 90 },
+    'a nonseekable source defers the rewind instead of reloading'
+  );
+
+  rewind.recordPause({ bookId: 'book-a', chapterIndex: 2, positionSeconds: 100 });
+  now += 4 * 60_000;
+  assert.deepStrictEqual(
+    applyRewindForResume({
+      controller: rewind,
+      player: seekablePlayer,
+      bookId: 'book-a',
+      chapterIndex: 2,
+      positionSeconds: 100,
+      enabled: false
+    }),
+    { status: 'skipped', rewindSeconds: 0, targetSeconds: null },
+    'a disabled rewind is skipped and the anchor cleared'
+  );
+  assert.strictEqual(
+    rewind.planResume({ bookId: 'book-a', chapterIndex: 2, positionSeconds: 100 }),
+    null,
+    'disabling clears the stored anchor'
+  );
+
+  assert.deepStrictEqual(
+    applyRewindForResume({
+      controller: rewind,
+      player: seekablePlayer,
+      bookId: 'book-a',
+      chapterIndex: 2,
+      positionSeconds: 100,
+      enabled: true
+    }),
+    { status: 'skipped', rewindSeconds: 0, targetSeconds: null },
+    'no pause anchor means nothing to apply'
+  );
+
+  // A player that cannot seek synchronously at all (no trySeekSync) must not
+  // throw and must not fall back to an awaiting seek.
+  assert.strictEqual(
+    applyRewindForResume({
+      controller: rewind,
+      player: {},
+      bookId: 'book-a',
+      chapterIndex: 2,
+      positionSeconds: 100,
+      enabled: true
+    }).status,
+    'skipped'
+  );
+
+  console.log('15 passed, 0 failed');
 })().catch(error => {
   console.error(error);
   process.exit(1);

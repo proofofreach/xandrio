@@ -136,12 +136,15 @@ function offlineStatusHTML(bookId) {
     </span>`;
 }
 
+// Strictly: is this book fully on this device and proven playable from it?
+//
+// Partial, in-progress and still-verifying downloads previously answered yes,
+// so they were filed under Downloaded and marked as on-device. Opening one and
+// finding it would not play is the failure this guards against. Those states
+// keep their own descriptive card labels — they simply stop claiming to be
+// something the user can rely on offline.
 function isAvailableOnDevice(status) {
-  return Boolean(
-    status.downloaded ||
-    status.kind === 'partial-download' ||
-    (status.kind === 'downloading' && status.cachedChapters > 0)
-  );
+  return Boolean(status.downloaded);
 }
 
 function offlineMenuActionContents(bookId) {

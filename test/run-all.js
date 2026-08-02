@@ -32,6 +32,7 @@ const tests = [
   'test-client-settings.js',
   'test-client-offline-identity.js',
   'test-smart-rewind.js',
+  'test-resume-activation.js',
   'test-rolling-offline.js',
   'test-listening-queue.js',
   'test-listening-queue-routes.js',
