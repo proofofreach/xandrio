@@ -9,7 +9,9 @@ const port = Number(process.env.SMOKE_PORT || 8391);
 const origin = `http://127.0.0.1:${port}`;
 const smokeCoverImage = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64');
 const traceSmoke = label => {
-  if (process.env.SMOKE_TRACE === '1') process.stderr.write(`[smoke] ${label}\n`);
+  if (process.env.SMOKE_TRACE === '1' || process.env.CI === 'true') {
+    process.stderr.write(`[smoke] ${label}\n`);
+  }
 };
 
 function smokeCoverKey(value) {
@@ -1376,14 +1378,25 @@ async function verifyRealServiceWorkerOffline(browser) {
     await page.check('#operator-notice-ack');
     await page.click('#operator-notice-continue');
     await page.waitForSelector('#operator-notice-dialog', { state: 'hidden' });
-    await page.evaluate(async () => {
-      await navigator.serviceWorker.ready;
-      if (navigator.serviceWorker.controller) return;
-      await new Promise(resolve => navigator.serviceWorker.addEventListener('controllerchange', resolve, { once: true }));
-    });
-    if (!await page.evaluate(() => Boolean(navigator.serviceWorker.controller))) {
-      throw new Error('Real Xandrio service worker did not control the fixture page');
-    }
+    // A first install may finish after the app's bounded boot handoff. Without
+    // clients.claim(), that is correctly active but cannot control the already
+    // open page until navigation. Never wait indefinitely for a controllerchange
+    // that cannot occur; wait for activation, then establish control by reload.
+    await page.waitForFunction(
+      () => navigator.serviceWorker.getRegistration()
+        .then(registration => registration?.active?.state === 'activated'),
+      null,
+      { timeout: 15000 }
+    );
+    // Make the fixture deterministic across fast local machines and slower CI:
+    // navigate once after activation whether or not the app already did so.
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.waitForSelector('#player-view.active');
+    await page.waitForFunction(
+      () => Boolean(navigator.serviceWorker.controller),
+      null,
+      { timeout: 10000 }
+    );
     await verifyAtomicServiceWorkerUpgrade(page, fixture);
 
     // Exercise both explicit offline milestones without navigating into the
