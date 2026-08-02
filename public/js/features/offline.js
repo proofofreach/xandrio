@@ -19,19 +19,15 @@ const OFFLINE_MANIFEST_VERSION = 3;
 // from a transient media error.
 const OFFLINE_CACHE_MARKER = 'x-xandrio-offline-cache';
 const OFFLINE_SW_VERSION_MARKER = 'x-xandrio-sw';
+const OFFLINE_CONTRACT_MARKER = 'x-xandrio-offline-contract';
 /**
- * The exact service-worker build this module's offline contract is written
- * against. MUST equal CACHE_VERSION in public/sw.js; test-app-shell-versions.js
- * enforces that, so a worker bump without updating this fails the suite.
- *
- * Pinned exactly rather than "any non-empty version" because a header only
- * proves the worker sets a header. A different build may implement different
- * cache semantics, and a download must not be certified against semantics that
- * are not the ones playback will use. A mismatch is never treated as damage:
- * affected entries return to `verifying` and re-probe, which is why a routine
- * worker bump costs one probe rather than a re-download.
+ * The worker build shipped with this shell. Exact identity is the synchronous
+ * fast path during boot; compatible older/newer workers prove route semantics
+ * with OFFLINE_ROUTE_CONTRACT_VERSION instead of tying downloads to a build id.
+ * This value MUST equal CACHE_VERSION in public/sw.js.
  */
-export const EXPECTED_OFFLINE_SW_VERSION = 'xandrio-v120';
+export const EXPECTED_OFFLINE_SW_VERSION = 'xandrio-v121';
+export const MINIMUM_OFFLINE_ROUTE_CONTRACT = 1;
 // A chapter is only ever invalidated after this many playback failures whose
 // cheap probe still says the cache is fine. Below it, we assume Safari.
 const SUSPECT_FAILURES_BEFORE_HASH = 3;
@@ -55,6 +51,63 @@ let preparationPollTimer = null;
 const rollingCompletions = new Map();
 const legacyCacheMigrations = new Map();
 const deletionReconciliations = new Map();
+let certifiedOfflineController = null;
+let certifiedOfflineContract = 0;
+
+export function offlineWorkerControllerState() {
+  const controller = globalThis.navigator?.serviceWorker?.controller || null;
+  return {
+    controlled: Boolean(controller),
+    scriptURL: controller?.scriptURL || '',
+    contractVersion: controller === certifiedOfflineController ? certifiedOfflineContract : 0,
+    compatible: hasCompatibleOfflineWorkerController()
+  };
+}
+
+export function hasCompatibleOfflineWorkerController() {
+  const controller = globalThis.navigator?.serviceWorker?.controller || null;
+  if (!controller) return false;
+  if (controller === certifiedOfflineController && certifiedOfflineContract >= MINIMUM_OFFLINE_ROUTE_CONTRACT) {
+    return true;
+  }
+  // The exact worker shipped with this app is trusted synchronously. This keeps
+  // chapter selection free of a MessageChannel round trip; boot certification
+  // covers compatible workers from other builds.
+  try {
+    return new URL(controller.scriptURL, globalThis.location?.origin || 'https://localhost')
+      .searchParams.get('v') === EXPECTED_OFFLINE_SW_VERSION;
+  } catch {
+    return false;
+  }
+}
+
+export async function certifyOfflineWorkerController(options = {}) {
+  const controller = options.controller || globalThis.navigator?.serviceWorker?.controller || null;
+  if (!controller?.postMessage || typeof MessageChannel === 'undefined') {
+    return offlineWorkerControllerState();
+  }
+  const timeoutMs = Math.max(50, Number(options.timeoutMs) || 1500);
+  const channel = new MessageChannel();
+  const result = await new Promise(resolve => {
+    const timer = setTimeout(() => resolve(null), timeoutMs);
+    channel.port1.onmessage = event => {
+      clearTimeout(timer);
+      resolve(event.data || null);
+    };
+    try {
+      controller.postMessage({ type: 'XANDRIO_OFFLINE_CONTRACT_QUERY' }, [channel.port2]);
+    } catch {
+      clearTimeout(timer);
+      resolve(null);
+    }
+  });
+  const contractVersion = Number(result?.contractVersion) || 0;
+  if (contractVersion >= MINIMUM_OFFLINE_ROUTE_CONTRACT) {
+    certifiedOfflineController = controller;
+    certifiedOfflineContract = contractVersion;
+  }
+  return offlineWorkerControllerState();
+}
 
 export function offlineDownloadsSupported() {
   return typeof window !== 'undefined' &&
@@ -86,7 +139,12 @@ export function initOffline(options = {}) {
   // leaving the user with a book stuck in "Verifying".
   navigator.serviceWorker?.addEventListener?.(
     'controllerchange',
-    () => { void reprobeVerifyingDownloads().catch(() => {}); }
+    () => {
+      void certifyOfflineWorkerController()
+        .catch(() => offlineWorkerControllerState())
+        .then(() => reprobeVerifyingDownloads())
+        .catch(() => {});
+    }
   );
   renderOfflineState({ audit: false });
   void reprobeVerifyingDownloads().catch(() => {});
@@ -616,33 +674,10 @@ export function hasOfflineWorkerController() {
 }
 
 /**
- * The script URL the app registers, pinned to the worker build this module's
- * offline contract is written against. Registering a versioned URL is what makes
- * the controlling worker's identity observable: `controller.scriptURL` is the
- * only thing a page can read about the worker in charge of it.
+ * The script URL this shell registers. Versioning forces the browser to install
+ * this build; compatibility is still decided by the explicit route contract.
  */
 export const OFFLINE_WORKER_SCRIPT_URL = `/sw.js?v=${EXPECTED_OFFLINE_SW_VERSION}`;
-
-/**
- * Is the page controlled by the exact worker build this contract expects?
- *
- * During a rollout the new app.js runs for a while under the *previous* worker,
- * which still resolves the scoped offline URL network-first. Handing that worker
- * a scoped source while online fetches from the server — streamed audio, a
- * different encode, reported as "Playing from this device". Any check looser
- * than exact identity lets that through.
- */
-export function hasExpectedOfflineWorkerController() {
-  const scriptURL = globalThis.navigator?.serviceWorker?.controller?.scriptURL;
-  if (!scriptURL) return false;
-  try {
-    const version = new URL(scriptURL, globalThis.location?.origin || 'https://localhost')
-      .searchParams.get('v');
-    return version === EXPECTED_OFFLINE_SW_VERSION;
-  } catch {
-    return false;
-  }
-}
 
 /**
  * The one strict reading of a scoped offline probe response, shared by download
@@ -662,7 +697,7 @@ async function readOfflineProbe(bookId, chapterIndex, options = {}) {
   // Certification and classification both require the exact worker *before*
   // fetching. A worker of another build could answer with its own semantics, and
   // its answer — in either direction — is not evidence about this contract.
-  if (!hasExpectedOfflineWorkerController()) {
+  if (!hasCompatibleOfflineWorkerController()) {
     return {
       outcome: 'indeterminate',
       swVersion: '',
@@ -677,33 +712,35 @@ async function readOfflineProbe(bookId, chapterIndex, options = {}) {
       { headers: { Range: 'bytes=0-1' } }
     ));
   } catch {
-    return { outcome: 'indeterminate', swVersion: '', reason: 'probe-failed' };
+    return { outcome: 'indeterminate', swVersion: '', contractVersion: 0, reason: 'probe-failed' };
   }
 
   // A worker from another build may implement different cache semantics, so
   // nothing it says is evidence about this contract — in either direction.
   const swVersion = response?.headers?.get?.(OFFLINE_SW_VERSION_MARKER) || '';
-  if (swVersion !== EXPECTED_OFFLINE_SW_VERSION) {
+  const contractVersion = Number(response?.headers?.get?.(OFFLINE_CONTRACT_MARKER)) || 0;
+  if (contractVersion < MINIMUM_OFFLINE_ROUTE_CONTRACT) {
     return {
       outcome: 'indeterminate',
       swVersion,
-      reason: swVersion ? 'worker-version-mismatch' : 'unversioned-worker'
+      contractVersion,
+      reason: contractVersion ? 'worker-contract-too-old' : 'unversioned-worker'
     };
   }
 
   const marker = response.headers.get(OFFLINE_CACHE_MARKER);
   if (response.status === 504 && marker === 'miss') {
-    return { outcome: 'miss', swVersion, reason: '' };
+    return { outcome: 'miss', swVersion, contractVersion, reason: '' };
   }
   if (response.status !== 206 || marker !== 'hit') {
-    return { outcome: 'indeterminate', swVersion, reason: 'unexpected-status' };
+    return { outcome: 'indeterminate', swVersion, contractVersion, reason: 'unexpected-status' };
   }
   if (Number(response.headers.get('Content-Length')) !== 2) {
-    return { outcome: 'indeterminate', swVersion, reason: 'bad-length' };
+    return { outcome: 'indeterminate', swVersion, contractVersion, reason: 'bad-length' };
   }
   const range = /^bytes 0-1\/(\d+)$/.exec(response.headers.get('Content-Range') || '');
-  if (!range) return { outcome: 'indeterminate', swVersion, reason: 'malformed-range' };
-  return { outcome: 'hit', swVersion, reason: '', totalBytes: Number(range[1]) };
+  if (!range) return { outcome: 'indeterminate', swVersion, contractVersion, reason: 'malformed-range' };
+  return { outcome: 'hit', swVersion, contractVersion, reason: '', totalBytes: Number(range[1]) };
 }
 
 /**
@@ -720,14 +757,29 @@ async function readOfflineProbe(bookId, chapterIndex, options = {}) {
 async function probeOfflinePlaybackRoute(bookId, chapterIndex, expectedSize, options = {}) {
   const result = await readOfflineProbe(bookId, chapterIndex, options);
   if (result.outcome !== 'hit') {
-    return { ok: false, swVersion: result.swVersion, reason: result.reason || result.outcome };
+    return {
+      ok: false,
+      swVersion: result.swVersion,
+      contractVersion: result.contractVersion || 0,
+      reason: result.reason || result.outcome
+    };
   }
   // Exact, not merely well-formed: a well-formed range over a different
   // artifact would otherwise pass.
   if (Number(result.totalBytes) !== Number(expectedSize)) {
-    return { ok: false, swVersion: result.swVersion, reason: 'range-mismatch' };
+    return {
+      ok: false,
+      swVersion: result.swVersion,
+      contractVersion: result.contractVersion || 0,
+      reason: 'range-mismatch'
+    };
   }
-  return { ok: true, swVersion: result.swVersion, reason: '' };
+  return {
+    ok: true,
+    swVersion: result.swVersion,
+    contractVersion: result.contractVersion || 0,
+    reason: ''
+  };
 }
 
 /**
@@ -739,7 +791,7 @@ async function probeOfflinePlaybackRoute(bookId, chapterIndex, expectedSize, opt
  * `controllerchange` rather than asking the user to do anything.
  */
 export async function reprobeVerifyingDownloads() {
-  if (!('caches' in globalThis) || !hasExpectedOfflineWorkerController()) return false;
+  if (!('caches' in globalThis) || !hasCompatibleOfflineWorkerController()) return false;
   const manifest = getOfflineManifest();
   let changed = false;
   for (const [bookId, entry] of Object.entries(manifest)) {
@@ -749,8 +801,12 @@ export async function reprobeVerifyingDownloads() {
     // worker build. The latter are currently claiming Downloaded on the strength
     // of a check that no longer means what it meant.
     const uncertified = entry.state === 'verifying';
+    const probedContractVersion = Number(entry.probedContractVersion);
     const staleCertificate = entry.state === 'ready'
-      && entry.probedSwVersion !== EXPECTED_OFFLINE_SW_VERSION;
+      && (
+        !Number.isFinite(probedContractVersion)
+        || probedContractVersion < MINIMUM_OFFLINE_ROUTE_CONTRACT
+      );
     if (!uncertified && !staleCertificate) continue;
 
     const chapterIndex = entry.chapterEntries.findIndex(Boolean);
@@ -770,7 +826,8 @@ export async function reprobeVerifyingDownloads() {
         ...latest[bookId],
         state: 'ready',
         progressPhase: 'Downloaded',
-        probedSwVersion: check.swVersion
+        probedSwVersion: check.swVersion,
+        probedContractVersion: check.contractVersion
       };
     } else if (staleCertificate) {
       // Bytes are intact and stay intact — but an unconfirmed route cannot keep
@@ -807,29 +864,28 @@ export async function localChapterSource(bookId, chapterIndex = 0) {
   if (!bookId || !Number.isInteger(chapterIndex) || chapterIndex < 0) return unavailable;
   if (suspectChapters.get(suspectKey(bookId, chapterIndex))?.distrusted) return unavailable;
   if (!('caches' in globalThis)) return unavailable;
-  // The scoped URL only means anything to the service worker. Handed to a media
-  // element on an uncontrolled page it reaches the server instead, which serves
-  // a different encode of the same chapter — silently streaming while claiming
-  // to play locally. Without a controller there is no local playback to offer.
-  if (!hasOfflineWorkerController()) return unavailable;
-  // Online, the controlling worker must be the exact build whose scoped URL is
-  // cache-only. During a rollout the previous worker is still in charge for a
-  // while and is network-first, so it would quietly stream.
-  //
-  // Offline is the opposite case and is deliberately permissive: an older
-  // worker's network attempt simply fails and its own cache fallback serves the
-  // chapter. Requiring the new worker here would strand a listener with a
-  // downloaded book, mid-activation, for no benefit.
-  if (globalThis.navigator?.onLine !== false && !hasExpectedOfflineWorkerController()) {
-    return unavailable;
-  }
   await migrateLegacyOfflineCaches().catch(() => false);
-  if (!isBookDownloadedForOffline(bookId, chapterIndex)) return unavailable;
+  if (!isBookDownloadedForOffline(bookId, chapterIndex)) {
+    return { ...unavailable, reason: 'not-downloaded' };
+  }
 
   const entry = offlineEntryForBook(bookId);
   const cache = await caches.open(offlineCacheName(OFFLINE_AUDIO_CACHE));
   const cached = await cache.match(offlineAudioRequest(bookId, chapterIndex));
-  if (!cached) return unavailable;
+  if (!cached) return { ...unavailable, reason: 'cache-miss' };
+  // The scoped URL only means anything to the service worker. Handed to a media
+  // element on an uncontrolled page it reaches the server instead, which serves
+  // a different encode of the same chapter — silently streaming while claiming
+  // to play locally. Without a controller there is no local playback to offer.
+  if (!hasOfflineWorkerController()) {
+    return { ...unavailable, reason: 'worker-update-required', cached: true, mode: entry?.mode || null };
+  }
+  // navigator.onLine is advisory and cannot make a network-first legacy worker
+  // safe. Only a certified cache-only contract may receive the scoped URL in
+  // any connectivity state.
+  if (!hasCompatibleOfflineWorkerController()) {
+    return { ...unavailable, reason: 'worker-update-required', cached: true, mode: entry?.mode || null };
+  }
   return {
     available: true,
     url: offlinePlaybackUrl(bookId, chapterIndex),
@@ -1542,6 +1598,7 @@ export async function downloadBookForOffline(book, chapters, options = {}) {
     working.progressPercent = 100;
     working.downloadedAt = new Date().toISOString();
     working.probedSwVersion = routeCheck.swVersion || '';
+    working.probedContractVersion = routeCheck.contractVersion || 0;
     working.state = routeCheck.ok ? 'ready' : 'verifying';
     working.progressPhase = routeCheck.ok ? 'Downloaded' : 'Verifying';
     persistWorkingEntry(book.id, working);
