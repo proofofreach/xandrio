@@ -215,6 +215,34 @@ async function withService(overrides, fn) {
     });
   });
 
+  await test('continues after a visually empty catalog candidate', async () => {
+    let inspections = 0;
+    let googleFetches = 0;
+    await withService({
+      inspectVisualQuality: async () => ({ lowInformation: inspections++ === 0 }),
+      fetchCoverByOpenLibraryWorkKey: async (_key, outputPath) => {
+        await fs.writeFile(outputPath, jpegFixture());
+        return true;
+      },
+      fetchCoverFromGoogleBooks: async (_title, _author, outputPath) => {
+        googleFetches += 1;
+        await fs.writeFile(outputPath, jpegFixture());
+        return true;
+      }
+    }, async service => {
+      const registered = service.register({
+        source: 'annas',
+        hash: 'edition-empty-work-cover',
+        title: 'Catalog Book',
+        author: 'Author',
+        openLibraryWorkKey: '/works/OLEMPTYW'
+      });
+      assert.ok(await service.resolve(registered.key));
+      assert.strictEqual(inspections, 2);
+      assert.strictEqual(googleFetches, 1);
+    });
+  });
+
   await test('does not use low-confidence title-only catalog matches', async () => {
     let identityCalls = 0;
     await withService({

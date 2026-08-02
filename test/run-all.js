@@ -79,6 +79,7 @@ const tests = [
   'test-annas-routes.js',
   'test-pinned-browser-proxy.js',
   'test-search-cover-service.js',
+  'test-cover-selection.js',
   'test-cover-service-security.js',
   'test-search-work-groups.js',
   'test-search-query.js',
