@@ -22,6 +22,10 @@ memory, and a transient miss was held by the negative cache.
 - A successful image is cacheable. A miss/error is `private, no-store` with a
   short `Retry-After`; `retry=1` permits one deliberate retry to bypass a
   transient negative entry.
+- Structurally valid candidates also pass a bounded visual-information probe.
+  Near-monochrome binding scans and blank catalog images remain last-resort
+  library fallbacks instead of terminating selection ahead of meaningful
+  catalog art. Probe failure preserves the previous fail-open behavior.
 - The browser leaves the existing book fallback visible after a failed image,
   then makes one delayed, cache-busted, same-origin retry while that image node
   is still connected.
@@ -42,7 +46,8 @@ memory, and a transient miss was held by the negative cache.
 
 - Unit coverage verifies Anna page-origin enforcement, persisted descriptors,
   request coalescing, catalog-before-generated-fallback ordering, and explicit
-  negative-cache retry behavior.
+  negative-cache retry behavior. A synthetic binding-scan regression verifies
+  that low-information images fall through while designed covers remain valid.
 - The browser smoke test verifies the fallback path performs exactly one
   cache-busted `retry=1` request and that all rendered/retried cover requests
   stay on the app origin.

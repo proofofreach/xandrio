@@ -168,6 +168,7 @@ const {
   fetchCoverFromAnnasPage,
   extractCover
 } = require('./lib/cover-service');
+const { inspectCoverVisualQuality } = require('./lib/cover-visual-quality');
 
 const app = express();
 const PORT = process.env.PORT || 8181;
@@ -371,6 +372,7 @@ const searchCoverService = createSearchCoverService({
   fetchCoverByOpenLibraryWorkKey,
   fetchCoverFromGutenbergId,
   fetchCoverFromGoogleBooks,
+  inspectVisualQuality: inspectCoverVisualQuality,
   // The configured origin is resolved at fetch time so changing Anna's
   // Archive settings cannot leave the cover proxy trusting a prior mirror.
   fetchCoverFromAnnasPage: (pageUrl, outputPath) => fetchCoverFromAnnasPage(pageUrl, outputPath, {
@@ -1212,10 +1214,22 @@ async function ensureBookCover(book, options = {}) {
       await removeFileIfExists(coverPath);
       continue;
     }
+    const pixels = candidate.dimensions.width * candidate.dimensions.height;
+    if (isDisplayQualityCover(candidate)) {
+      const visualQuality = await inspectCoverVisualQuality(coverPath);
+      if (visualQuality.lowInformation) {
+        if (!fallback || fallback.qualityRank < 1 ||
+            (fallback.qualityRank === 1 && pixels > fallback.pixels)) {
+          fallback = { buffer: candidate.buffer, source: step.id, pixels, qualityRank: 1 };
+        }
+        console.log(`[cover] ${step.label} is visually low-information; looking for a meaningful source`);
+        continue;
+      }
+    }
     if (!isDisplayQualityCover(candidate)) {
-      const pixels = candidate.dimensions.width * candidate.dimensions.height;
-      if (!fallback || pixels > fallback.pixels) {
-        fallback = { buffer: candidate.buffer, source: step.id, pixels };
+      if (!fallback || fallback.qualityRank < 2 ||
+          (fallback.qualityRank === 2 && pixels > fallback.pixels)) {
+        fallback = { buffer: candidate.buffer, source: step.id, pixels, qualityRank: 2 };
       }
       console.log(`[cover] ${step.label} is only ${candidate.dimensions.width}x${candidate.dimensions.height}; looking for a sharper source`);
       continue;
@@ -1230,7 +1244,7 @@ async function ensureBookCover(book, options = {}) {
     await fs.writeFile(coverPath, fallback.buffer);
     book.coverPath = coverPath;
     book.coverSource = fallback.source;
-    console.log(`[cover] No display-quality cover found; retained best available fallback for "${book.title}"`);
+    console.log(`[cover] No meaningful display-quality cover found; retained best available fallback for "${book.title}"`);
     return coverPath;
   }
   return undefined;
