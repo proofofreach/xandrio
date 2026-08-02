@@ -45,11 +45,14 @@ export async function navigateChapterSelection(options = {}) {
 
   checkpointPlayback({ force: true });
   await savePosition({ force: true });
-  await loadChapter(nextChapter, {
+  const loaded = await loadChapter(nextChapter, {
     provisionalForward: isForward && !commitImmediately,
     commitImmediately: isBackward || commitImmediately,
     ...(Number.isFinite(seekToSeconds) ? { seekToSeconds } : {})
   });
+  if (loaded?.loaded === false) {
+    return { changed: false, loaded: false, reason: loaded.reason || 'unavailable' };
+  }
 
   if (getCurrentChapter() !== nextChapter) return { changed: false, stale: true };
 

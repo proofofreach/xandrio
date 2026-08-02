@@ -692,7 +692,7 @@ function renderOverlayActions(options) {
   const retryBtn = document.createElement('button');
   retryBtn.type = 'button';
   retryBtn.className = 'btn-secondary btn-sm';
-  retryBtn.textContent = 'Try again';
+  retryBtn.textContent = options.retryLabel || 'Try again';
   retryBtn.addEventListener('click', () => {
     hideAudioLoading();
     if (typeof options.onRetry === 'function') options.onRetry();

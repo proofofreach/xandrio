@@ -340,9 +340,10 @@ function fakeAudio() {
         clearProvisionalForward() {},
         buildCheckpoint() { return null; },
         dispose() {},
-        transitionTo(request) {
+        async transitionTo(request) {
           appImports.transitionRequests.push(request);
-          return Promise.resolve({ stale: false });
+          if (appImports.transitionGate) await appImports.transitionGate;
+          return { stale: false };
         }
       }),
       createSmartRewindController: () => ({
@@ -381,19 +382,26 @@ function fakeAudio() {
       syncMiniPlayerInfo() {},
       showAudioLoading() {},
       hideAudioLoading() {},
+      setChunkOverlayState(...args) { appImports.overlays.push(args); },
       setPlaybackReliabilityState(...args) { appImports.reliabilityStates.push(args); },
       setResumePromptVisible(visible) { appImports.resumePromptStates.push(visible); },
       showToast(...args) { appImports.toasts.push(args); },
       syncMiniPlayerIcon() {},
-      getCurrentPlaybackSpeed: () => 1
+      getCurrentPlaybackSpeed: () => 1,
+      offlineWorkerControllerState: () => ({ controlled: true, compatible: false }),
+      certifyOfflineWorkerController: async () => ({ controlled: true, compatible: false })
     };
     appImports.transitionRequests = [];
+    appImports.transitionGate = null;
     appImports.rollingCalls = 0;
     appImports.sleepTarget = false;
     appImports.sleepExpiries = [];
     appImports.reliabilityStates = [];
+    appImports.overlays = [];
     appImports.resumePromptStates = [];
     appImports.timeoutDelays = [];
+    appImports.pendingTimeouts = [];
+    appImports.nextTimeoutId = 1;
     appImports.toasts = [];
     appImports.localSourceQueries = [];
     appImports.suspectMarks = [];
@@ -419,6 +427,7 @@ function fakeAudio() {
         togglePlayPause,
         handleChunkError,
         cancelPlaybackRecovery,
+        invalidatePlaybackRecoveryForUserSeek,
         offerManualPlaybackRecovery
       };`;
     const previousGlobals = new Map(['window', 'document', 'navigator', 'setInterval', '__playbackAppImports', '__playbackAppHarness']
@@ -455,11 +464,16 @@ function fakeAudio() {
           value: {
             addEventListener() {},
             localStorage: fakeLocalStorage,
-            setTimeout(_callback, delay) {
+            setTimeout(callback, delay) {
+              const id = appImports.nextTimeoutId++;
               appImports.timeoutDelays.push(delay);
-              return appImports.timeoutDelays.length;
+              appImports.pendingTimeouts.push({ id, callback, delay, cancelled: false });
+              return id;
             },
-            clearTimeout() {}
+            clearTimeout(id) {
+              const pending = appImports.pendingTimeouts.find(entry => entry.id === id);
+              if (pending) pending.cancelled = true;
+            }
           }
         },
         document: { configurable: true, writable: true, value: { addEventListener() {} } },
@@ -603,6 +617,78 @@ function fakeAudio() {
         'a duplicate error while an attempt is in flight raises no manual prompt'
       );
 
+      // A recovery lineage owns one immutable source tuple and one bounded
+      // retry budget until playback has remained stable. Production opened
+      // four sessions at 0, .063, .241 and .417 seconds because each new media
+      // error captured a creeping offset and manual preparation reset the
+      // automatic budget.
+      globalThis.__playbackAppHarness.cancelPlaybackRecovery();
+      appImports.pendingTimeouts.length = 0;
+      appImports.timeoutDelays.length = 0;
+      appImports.transitionRequests.length = 0;
+      appImports.toasts.length = 0;
+      const lineagePlayer = engine('recovery-lineage', { backend: 'audio-stream' });
+      lineagePlayer.isContinuous = true;
+      lineagePlayer.servedTier = 'premium';
+      lineagePlayer.endChapterIndex = 1;
+      let observedOffset = 0.063;
+      lineagePlayer.getCurrentTime = () => observedOffset;
+      globalThis.__playbackAppHarness.configure({
+        book: { id: 'book-a' },
+        chapters: [{ title: 'One' }, { title: 'Two' }],
+        player: lineagePlayer,
+        chapter: uiElement
+      });
+      const runRecoveryTimer = async delay => {
+        const pending = appImports.pendingTimeouts.find(entry =>
+          !entry.cancelled && entry.delay === delay
+        );
+        assert(pending, `expected a pending ${delay}ms recovery timer`);
+        pending.cancelled = true;
+        await pending.callback();
+        await new Promise(resolve => setImmediate(resolve));
+      };
+
+      globalThis.__playbackAppHarness.handleChunkError(streamError);
+      await runRecoveryTimer(250);
+      observedOffset = 0.241;
+      globalThis.__playbackAppHarness.handleChunkError(streamError);
+      await runRecoveryTimer(500);
+      observedOffset = 0.417;
+      globalThis.__playbackAppHarness.handleChunkError(streamError);
+      await new Promise(resolve => setImmediate(resolve));
+      await new Promise(resolve => setImmediate(resolve));
+
+      const recoveryTuples = appImports.transitionRequests
+        .map(request => request.sourceTuple)
+        .filter(Boolean);
+      assert(recoveryTuples.length >= 3, 'two retries and manual preparation all load a source');
+      assert(
+        recoveryTuples.every(tuple => tuple.startOffsetSeconds === 0.063),
+        `the lineage drifted across offsets: ${recoveryTuples.map(tuple => tuple.startOffsetSeconds).join(', ')}`
+      );
+
+      observedOffset = 0.8;
+      globalThis.__playbackAppHarness.handleChunkError(streamError);
+      assert.strictEqual(
+        appImports.timeoutDelays.filter(delay => delay === 250).length,
+        1,
+        'manual preparation must not re-arm the exhausted automatic retry budget'
+      );
+
+      // An explicit seek starts a new lineage. A later transport failure must
+      // recover at the selected position, never at the pre-seek failure point.
+      globalThis.__playbackAppHarness.invalidatePlaybackRecoveryForUserSeek();
+      appImports.timeoutDelays.length = 0;
+      observedOffset = 1200;
+      globalThis.__playbackAppHarness.handleChunkError(streamError);
+      await runRecoveryTimer(250);
+      assert.strictEqual(
+        appImports.transitionRequests.at(-1).sourceTuple.startOffsetSeconds,
+        1200,
+        'a user seek invalidates the earlier recovery snapshot'
+      );
+
       // A rate-limited session must not be retried into the same limit, and the
       // 429 must be reachable even when the failed engine was never continuous.
       appImports.timeoutDelays.length = 0;
@@ -705,6 +791,85 @@ function fakeAudio() {
         true,
         'play() is called synchronously inside the tap, not after an await'
       );
+
+      // Superseding a manual preparation must suppress its late Resume UI. A
+      // stale loadChapter returns without throwing, so ownership has to be
+      // checked explicitly after the await.
+      let releaseManualPreparation;
+      appImports.transitionGate = new Promise(resolve => { releaseManualPreparation = resolve; });
+      appImports.toasts.length = 0;
+      appImports.resumePromptStates.length = 0;
+      globalThis.__playbackAppHarness.cancelPlaybackRecovery();
+      globalThis.__playbackAppHarness.configure({
+        book: { id: 'book-a' },
+        chapters: [{ title: 'One' }, { title: 'Two' }],
+        player: manualPlayer,
+        chapter: uiElement
+      });
+      globalThis.__playbackAppHarness.offerManualPlaybackRecovery(interrupted, {
+        bookId: 'book-a',
+        chapterIndex: 0,
+        startOffsetSeconds: 412.5,
+        servedTier: 'premium',
+        endChapterIndex: 4
+      });
+      await new Promise(resolve => setImmediate(resolve));
+      globalThis.__playbackAppHarness.cancelPlaybackRecovery();
+      globalThis.__playbackAppHarness.configure({
+        book: { id: 'book-b' },
+        chapters: [{ title: 'Other' }],
+        player: manualPlayer,
+        chapter: uiElement
+      });
+      releaseManualPreparation();
+      await new Promise(resolve => setImmediate(resolve));
+      await new Promise(resolve => setImmediate(resolve));
+      appImports.transitionGate = null;
+
+      assert(
+        !appImports.toasts.some(([, , options]) => options?.actionLabel === 'Resume'),
+        'superseded manual preparation must not publish a Resume action'
+      );
+      assert(
+        !appImports.resumePromptStates.includes(true),
+        'superseded manual preparation must not reveal the resume prompt'
+      );
+
+      // A worker handoff block is a handled, unloaded result. Recovery must not
+      // mistake its normal return for a prepared source and offer Resume.
+      appImports.localSource = {
+        available: false,
+        url: null,
+        mode: 'full',
+        cached: true,
+        reason: 'worker-update-required'
+      };
+      appImports.toasts.length = 0;
+      appImports.overlays.length = 0;
+      appImports.resumePromptStates.length = 0;
+      globalThis.__playbackAppHarness.cancelPlaybackRecovery();
+      globalThis.__playbackAppHarness.configure({
+        book: { id: 'book-a' },
+        chapters: [{ title: 'One' }, { title: 'Two' }],
+        player: manualPlayer,
+        chapter: uiElement
+      });
+      globalThis.__playbackAppHarness.offerManualPlaybackRecovery(interrupted, {
+        bookId: 'book-a',
+        chapterIndex: 0,
+        startOffsetSeconds: 412.5,
+        servedTier: 'premium',
+        endChapterIndex: 4
+      });
+      await new Promise(resolve => setImmediate(resolve));
+      await new Promise(resolve => setImmediate(resolve));
+      assert(appImports.overlays.some(([state]) => state === 'error'));
+      assert(
+        !appImports.toasts.some(([, , options]) => options?.actionLabel === 'Resume'),
+        'a blocked local source must not be reported as prepared'
+      );
+      assert(!appImports.resumePromptStates.includes(true));
+      appImports.localSource = { available: false, url: null, mode: null };
 
       // --- No redundant seek after opening at the requested offset ----------
       // The engine already opened at the resume position. Seeking to it again

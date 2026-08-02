@@ -23,9 +23,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - One interrupted resume no longer starts a burst of server audio sessions. The
   canonical request is captured once and replayed verbatim, the transport opens
   directly at the resume position instead of opening at zero and relocating, and
-  retries reuse one session. Automatic attempts are capped at two, only one runs
-  at a time, and a rate-limited response is reported with its retry delay rather
-  than retried into.
+  retries reuse one session. The same tuple and exhausted retry budget now
+  survive the handoff to manual Resume, preventing creeping offsets from
+  re-arming another burst. Automatic attempts are capped at two, only one runs
+  at a time, and a rate-limited response is reported with its retry delay.
+- A new app shell can no longer select a downloaded source while an older,
+  network-first service worker still controls the page. The idle boot page
+  activates a fully installed compatible worker and reloads once before routing.
+  Activation is deferred while another window is open, so `skipWaiting()` cannot
+  switch or interrupt that tab. Deferred handoff is visible and never silently
+  falls back to streaming a chapter labelled as downloaded.
 - Partial, in-progress and unverified downloads no longer appear under
   Downloaded or claim to be available on this device. They keep their own
   labels, and the chapters they do have still play offline.
@@ -39,6 +46,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   route cannot yet be confirmed — an uncontrolled page on first install, or a
   service worker from another build — waits in "Verifying" with its audio
   intact and is re-checked on the next launch and whenever the worker changes.
+- Offline worker compatibility now uses an explicit cache-route contract rather
+  than exact build equality; response and playback diagnostics include both.
 - The explicitly scoped offline media URL is served only from the cache. This is
   a permanent contract: the server route behind that URL returns a different
   encode from the downloaded package, so falling through to it would stream the

@@ -18,7 +18,8 @@ Likely failure areas to inspect first: expensive ambient blur, mini-player swipe
 
 These cover the incident behavior described in `docs/ARCHITECTURE.md`
 ("Local-first playback", "Resume"). Automated tests cannot reach real iOS user
-activation or a real service worker, so these are the acceptance gate.
+activation, so these remain the acceptance gate. The browser smoke does exercise
+a real legacy-to-current service-worker handoff and asserts zero streaming.
 
 Keep the server log visible: it prints `[playback] first HLS segment in …ms`.
 
@@ -39,8 +40,9 @@ Keep the server log visible: it prints `[playback] first HLS segment in …ms`.
 **One session per resume**
 
 14. Watch `/api/audio-hls` in the server log across steps 10–13. A single resume
-    must create **one** session. Several sessions within a few seconds, or 499s
-    in nginx, is the regression this work fixed.
+    must keep one canonical start offset across its two bounded automatic
+    attempts and manual Resume preparation. Creeping offsets or a third
+    automatic attempt after Resume appears are regressions.
 
 **Downloaded playback is local**
 
@@ -64,6 +66,9 @@ Keep the server log visible: it prints `[playback] first HLS segment in …ms`.
 **Service-worker update**
 
 20. Deploy a build with a new `CACHE_VERSION` while a downloaded book is
-    installed. After the update, downloads may briefly show "Verifying"; they
-    must return to Downloaded without re-downloading, and playback must stay
-    local throughout.
+    installed. Open a fresh idle PWA page while another tab is playing. The new
+    page must defer activation and show the reload/update action; the playing tab
+    must keep its controller and audio. Close the playing tab, reload the idle
+    page, and confirm it reloads once under the new worker. Playback of the
+    downloaded book must stay local, with no `/api/audio-hls` or unscoped
+    `/api/audio` request at any point.

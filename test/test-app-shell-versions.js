@@ -61,14 +61,36 @@ assert(
   'index.html loads lifecycle helpers before the classic chunk player'
 );
 
-const serviceWorkerRegistration = appSource.match(/function registerServiceWorker\(\) \{([\s\S]*?)\n\}/)?.[1] || '';
 assert(
-  serviceWorkerRegistration && !serviceWorkerRegistration.includes('location.reload'),
-  'service-worker activation never reloads an actively playing client'
+  appSource.indexOf('await registerServiceWorker()') !== -1 &&
+    appSource.indexOf('await registerServiceWorker()') < appSource.indexOf('initializeDOMElements();  //') &&
+    appSource.indexOf('await registerServiceWorker()') < appSource.indexOf('initRouter({'),
+  'idle-page worker handoff completes before UI handlers or routing can select playback'
 );
 assert(
-  !swSource.includes('self.skipWaiting()'),
-  'service-worker updates wait for active playback clients to close'
+  appSource.includes('if (updated.serviceWorkerAllowed) void registerServiceWorker();') &&
+    appSource.includes("candidate?.state === 'installed'\n    && Date.now() < deadlineAt\n    && serviceWorkerBootWindowOpen") &&
+    appSource.includes('if (!alreadyReloaded && serviceWorkerBootWindowOpen)'),
+  'late connectivity may register, while activation and reload stay confined to the pre-router boot window'
+);
+assert(
+  appSource.includes('SERVICE_WORKER_BOOT_DEADLINE_MS = 6000') &&
+    appSource.includes('settleBeforeDeadline('),
+  'network-dependent worker boot has a hard deadline'
+);
+{
+  const skipWaitingCalls = swSource.match(/\bself\.skipWaiting\s*\(/g) || [];
+  assert(
+    skipWaitingCalls.length === 1 &&
+      swSource.includes("event.data?.type === 'XANDRIO_ACTIVATE_WAITING'") &&
+      swSource.indexOf("reason: 'other-clients'") < swSource.indexOf('await self.skipWaiting()') &&
+      !swSource.includes('clients.claim()'),
+    'service-worker activation is refused while another window client is open'
+  );
+}
+assert(
+  swSource.includes('key !== previousShellCache'),
+  'activation retains the immediately previous complete shell cache'
 );
 assert(
   swSource.includes("key.startsWith(`${OFFLINE_AUDIO_CACHE}:`)") &&
@@ -102,9 +124,9 @@ const availableOnDevice = librarySource.match(
 const cacheVersion = swSource.match(/const CACHE_VERSION = '([^']+)'/)?.[1] || '';
 assert(/^xandrio-v\d+$/.test(cacheVersion), 'CACHE_VERSION is a recognisable version string');
 
-// offline.js certifies downloads against one exact worker build. If these two
-// drift, every download silently falls back to "Verifying" until re-probed, and
-// a worker whose cache semantics differ could otherwise certify a download.
+// The shipped worker and the page's expected build move together. Runtime
+// routing accepts the compatible contract during a rolling handoff, while the
+// exact script identity still decides whether an update registration is due.
 const offlineSource = fs.readFileSync(
   path.join(publicDir, 'js', 'features', 'offline.js'),
   'utf8'
@@ -128,9 +150,15 @@ assert(
   'the registered worker URL is pinned to the expected offline contract version'
 );
 assert(
-  serviceWorkerRegistration.includes('OFFLINE_WORKER_SCRIPT_URL') &&
+  appSource.includes('navigator.serviceWorker.register(OFFLINE_WORKER_SCRIPT_URL)') &&
     !/register\('\/sw\.js'\)/.test(appSource),
   'app.js registers the version-pinned worker URL, not a bare /sw.js'
+);
+assert(
+  appSource.includes(
+    'current.compatible && isExpectedOfflineWorker(navigator.serviceWorker.controller)'
+  ),
+  'a compatible older worker does not suppress registration of the shipped worker build'
 );
 {
   const { execSync } = require('child_process');

@@ -1,7 +1,8 @@
 importScripts('/js/offline-range.js');
 
 const APP_RELEASE = '1.1.0';
-const CACHE_VERSION = 'xandrio-v120';
+const CACHE_VERSION = 'xandrio-v121';
+const OFFLINE_ROUTE_CONTRACT_VERSION = 1;
 const OFFLINE_AUDIO_CACHE = 'xandrio-offline-audio';
 const OFFLINE_TITLE_CACHE = 'xandrio-offline-titles';
 const OFFLINE_SCOPE_PARAM = 'xandrio-offline-scope';
@@ -13,7 +14,7 @@ const ASSET_VERSIONS = {
   '/style-v3.css': 93,
   '/js/lifecycle.js': 1,
   '/js/chunk-player.js': 23,
-  '/app.js': 107
+  '/app.js': 108
 };
 const versionedAsset = (path) => `${path}?v=${ASSET_VERSIONS[path]}`;
 const APP_SHELL = [
@@ -97,17 +98,45 @@ self.addEventListener('activate', event => {
       throw new Error(`Refusing to activate incomplete app shell ${CACHE_VERSION}`);
     }
     const keys = await caches.keys();
+    const previousShellCache = keys
+      .filter(key => key !== CACHE_VERSION && /^xandrio-v\d+$/.test(key))
+      .sort((left, right) => Number(right.slice('xandrio-v'.length)) - Number(left.slice('xandrio-v'.length)))[0];
     await Promise.all(keys
       .filter(key =>
         key !== CACHE_VERSION &&
+        // Retain the immediately previous complete shell for the narrow race
+        // between the other-client check and activation. Long-lived old tabs
+        // block activation entirely, so older generations are not in use.
+        key !== previousShellCache &&
         key !== OFFLINE_AUDIO_CACHE &&
         key !== OFFLINE_TITLE_CACHE &&
         !key.startsWith(`${OFFLINE_AUDIO_CACHE}:`) &&
         !key.startsWith(`${OFFLINE_TITLE_CACHE}:`)
       )
       .map(key => caches.delete(key)));
-    await self.clients.claim();
   })());
+});
+
+self.addEventListener('message', event => {
+  if (event.data?.type === 'XANDRIO_ACTIVATE_WAITING') {
+    event.waitUntil((async () => {
+      const windows = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+      const otherWindows = windows.filter(client => client.id !== event.source?.id);
+      if (otherWindows.length > 0) {
+        event.ports?.[0]?.postMessage?.({ activationRequested: false, reason: 'other-clients' });
+        return;
+      }
+      event.ports?.[0]?.postMessage?.({ activationRequested: true, reason: '' });
+      await self.skipWaiting();
+    })());
+    return;
+  }
+  if (event.data?.type === 'XANDRIO_OFFLINE_CONTRACT_QUERY') {
+    event.ports?.[0]?.postMessage?.({
+      contractVersion: OFFLINE_ROUTE_CONTRACT_VERSION,
+      workerVersion: CACHE_VERSION
+    });
+  }
 });
 
 self.addEventListener('push', event => {
@@ -188,11 +217,13 @@ async function cachedTitleResponse(request) {
 // post-download verification probe under semantics it does not implement.
 const OFFLINE_CACHE_MARKER = 'X-Xandrio-Offline-Cache';
 const OFFLINE_SW_VERSION_MARKER = 'X-Xandrio-SW';
+const OFFLINE_CONTRACT_MARKER = 'X-Xandrio-Offline-Contract';
 
 function markOfflineResponse(response, state) {
   const headers = new Headers(response.headers);
   headers.set(OFFLINE_CACHE_MARKER, state);
   headers.set(OFFLINE_SW_VERSION_MARKER, CACHE_VERSION);
+  headers.set(OFFLINE_CONTRACT_MARKER, String(OFFLINE_ROUTE_CONTRACT_VERSION));
   return new Response(
     response.status === 204 || response.status === 304 ? null : response.body,
     { status: response.status, statusText: response.statusText, headers }
