@@ -62,6 +62,30 @@ async function createFixture() {
   return { directory, epubPath };
 }
 
+async function createEmptyAnchorTocFixture() {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'xandrio-epub-empty-anchor-toc-'));
+  const epubRoot = path.join(directory, 'book');
+  const oebps = path.join(epubRoot, 'OEBPS');
+  await fs.mkdir(path.join(epubRoot, 'META-INF'), { recursive: true });
+  await fs.mkdir(oebps, { recursive: true });
+  await fs.writeFile(path.join(epubRoot, 'mimetype'), 'application/epub+zip');
+  await fs.writeFile(path.join(epubRoot, 'META-INF', 'container.xml'), `<?xml version="1.0"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>`);
+  await fs.writeFile(path.join(oebps, 'content.opf'), `<?xml version="1.0" encoding="utf-8"?>
+<package version="2.0" xmlns="http://www.idpf.org/2007/opf"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>Empty Anchor TOC</dc:title><dc:creator>Fixture Author</dc:creator><dc:language>en</dc:language></metadata><manifest><item id="book" href="book.xhtml" media-type="application/xhtml+xml"/><item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/></manifest><spine toc="ncx"><itemref idref="book"/></spine></package>`);
+  await fs.writeFile(path.join(oebps, 'toc.ncx'), `<?xml version="1.0" encoding="UTF-8"?>
+<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/"><navMap><navPoint id="nav-publisher" playOrder="1"><navLabel><text>Publisher Navigation</text></navLabel><content src="book.xhtml#publisher"/></navPoint><navPoint id="nav-foreword" playOrder="2"><navLabel><text>FOREWORD</text></navLabel><content src="book.xhtml#foreword"/></navPoint><navPoint id="nav-thought" playOrder="3"><navLabel><text>THOUGHT AND CHARACTER</text></navLabel><content src="book.xhtml#thought"/></navPoint><navPoint id="nav-serenity" playOrder="4"><navLabel><text>SERENITY</text></navLabel><content src="book.xhtml#serenity"/></navPoint></navMap></ncx>`);
+  await fs.writeFile(
+    path.join(oebps, 'book.xhtml'),
+    `<html><body><div id="publisher"></div><h2 id="foreword">FOREWORD</h2><p>${'The foreword explains the purpose of this short work. '.repeat(30)}</p><h2 id="thought">THOUGHT AND CHARACTER</h2><p>${'The opening essay discusses thought and character. '.repeat(40)}</p><h2 id="serenity">SERENITY</h2><p>${'The closing essay discusses serenity and self-control. '.repeat(40)}</p></body></html>`
+  );
+
+  const epubPath = path.join(directory, 'fixture.epub');
+  execFileSync('zip', ['-qX0', epubPath, 'mimetype'], { cwd: epubRoot });
+  execFileSync('zip', ['-qr9', epubPath, 'META-INF', 'OEBPS'], { cwd: epubRoot });
+  return { directory, epubPath };
+}
+
 async function createOversizedAuthoredChapterFixture() {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'xandrio-epub-oversized-chapter-'));
   const epubRoot = path.join(directory, 'book');
@@ -224,6 +248,23 @@ async function createScannedChapterBundleFixture() {
     console.log('Oversized authored chapter regression: 3 passed, 0 failed');
   } finally {
     await fs.rm(oversizedFixture.directory, { recursive: true, force: true });
+  }
+
+  const emptyAnchorFixture = await createEmptyAnchorTocFixture();
+  try {
+    const document = createBookDocument({ log: { log() {}, error() {} } });
+    const chapters = await document.extractChapters(emptyAnchorFixture.epubPath);
+    assert.deepEqual(
+      chapters.map(chapter => chapter.title),
+      ['Foreword', 'Thought And Character', 'Serenity'],
+      'empty same-file TOC anchors do not shift authored titles onto following sections'
+    );
+    assert.equal(chapters[0].type, 'frontmatter');
+    assert.match(chapters[0].text, /foreword explains the purpose/);
+    assert.match(chapters[1].text, /opening essay discusses thought/);
+    console.log('Empty-anchor TOC regression: 4 passed, 0 failed');
+  } finally {
+    await fs.rm(emptyAnchorFixture.directory, { recursive: true, force: true });
   }
 
   const nonLinearFixture = await createNonLinearFootnoteFixture();
