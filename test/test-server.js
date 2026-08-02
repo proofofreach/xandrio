@@ -868,6 +868,27 @@ section('11. Extracted chapter validation');
   assert(!tinyValidation.valid, 'Insufficient extracted text is rejected');
   assert(tinyValidation.errors[0].includes('Insufficient content'), 'Insufficient content error is reported');
 
+  const completeShortChapters = [
+    ...Array.from({ length: 4 }, (_, index) => ({
+      title: `Front matter ${index + 1}`,
+      text: ''
+    })),
+    ...Array.from({ length: 8 }, (_, index) => ({
+      title: `Chapter ${index + 1}`,
+      text: 'x'.repeat(5334)
+    })),
+    { title: 'Chapter 9', text: 'x'.repeat(5338) },
+    { title: 'Back matter', text: '' }
+  ];
+  const completeShortValidation = validateExtractedChapters(completeShortChapters, {
+    format: 'epub',
+    fileSize: 600 * 1024
+  });
+  assert(completeShortValidation.valid,
+    'A complete 48,010-character short book passes extracted-chapter validation');
+  assert(completeShortValidation.warnings.some(warning => warning.includes('48,010')),
+    'A complete short book retains a visible length warning');
+
   const sparseValidation = validateExtractedChapters([
     { title: 'Chapter 1', text: 'x'.repeat(60000) },
     { title: 'Divider', text: 'short' },
@@ -1285,6 +1306,15 @@ section('16. Import validation');
     { text: 'x'.repeat(160000) }
   ], { format: 'pdf' });
   assert(!noisyContent.valid, 'Import content validation rejects giant extracted sections');
+
+  const completeShortContent = assessExtractedContent([
+    ...Array.from({ length: 8 }, () => ({ text: 'x'.repeat(5334) })),
+    { text: 'x'.repeat(5338) }
+  ], { format: 'epub' });
+  assert(completeShortContent.valid,
+    'Import content validation accepts a structured 48,010-character short book');
+  assert(completeShortContent.warnings.some(warning => warning.includes('48,010')),
+    'Import content validation warns that the accepted book is short');
 
   const lowScorePdf = assessExtractedContent([
     {
