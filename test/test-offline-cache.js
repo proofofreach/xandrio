@@ -53,6 +53,9 @@ function makeCache({ transformBytes = null } = {}) {
 const SW_CACHE_VERSION = fs
   .readFileSync(path.join(__dirname, '..', 'public', 'sw.js'), 'utf8')
   .match(/const CACHE_VERSION = '([^']+)'/)[1];
+const SW_OFFLINE_CONTRACT_VERSION = Number(fs
+  .readFileSync(path.join(__dirname, '..', 'public', 'sw.js'), 'utf8')
+  .match(/const OFFLINE_ROUTE_CONTRACT_VERSION = (\d+)/)[1]);
 
 function offlineAudioKey(bookId, chapterIndex, scope = 'default') {
   const url = new URL(`https://reader.test/api/audio/${encodeURIComponent(bookId)}/${chapterIndex}`);
@@ -262,7 +265,8 @@ function installBrowser({
           'Content-Range': `bytes 0-1/${size}`,
           'Content-Length': '2',
           'X-Xandrio-Offline-Cache': 'hit',
-          'X-Xandrio-SW': SW_CACHE_VERSION
+          'X-Xandrio-SW': SW_CACHE_VERSION,
+          'X-Xandrio-Offline-Contract': String(SW_OFFLINE_CONTRACT_VERSION)
         }
       });
     }
@@ -2144,7 +2148,8 @@ function installBrowser({
           'Content-Range': 'bytes 0-1/6',
           'Content-Length': '2',
           'X-Xandrio-Offline-Cache': 'hit',
-          'X-Xandrio-SW': SW_CACHE_VERSION
+          'X-Xandrio-SW': SW_CACHE_VERSION,
+          'X-Xandrio-Offline-Contract': String(SW_OFFLINE_CONTRACT_VERSION)
         }
       })
     });
@@ -2169,7 +2174,8 @@ function installBrowser({
         status: 504,
         headers: {
           'X-Xandrio-Offline-Cache': 'miss',
-          'X-Xandrio-SW': SW_CACHE_VERSION
+          'X-Xandrio-SW': SW_CACHE_VERSION,
+          'X-Xandrio-Offline-Contract': String(SW_OFFLINE_CONTRACT_VERSION)
         }
       })
     });
@@ -2199,7 +2205,8 @@ function installBrowser({
         'Content-Range': 'bytes 0-1/8',
         'Content-Length': '2',
         'X-Xandrio-Offline-Cache': 'hit',
-        'X-Xandrio-SW': SW_CACHE_VERSION
+        'X-Xandrio-SW': SW_CACHE_VERSION,
+        'X-Xandrio-Offline-Contract': String(SW_OFFLINE_CONTRACT_VERSION)
       }
     });
 
@@ -2286,7 +2293,8 @@ function installBrowser({
           'Content-Range': 'bytes 0-1/999999',
           'Content-Length': '2',
           'X-Xandrio-Offline-Cache': 'hit',
-          'X-Xandrio-SW': SW_CACHE_VERSION
+          'X-Xandrio-SW': SW_CACHE_VERSION,
+          'X-Xandrio-Offline-Contract': String(SW_OFFLINE_CONTRACT_VERSION)
         }
       })
     });
@@ -2297,11 +2305,10 @@ function installBrowser({
   });
 
   // --- Strict worker contract ----------------------------------------------
-  // "Some version header" is not a contract. offline.js pins the exact service
-  // worker version it was written against, so a worker from a different build
-  // cannot satisfy verification under semantics it may not implement.
+  // A build label is diagnostic; compatibility is the explicit route-contract
+  // number so future worker builds can retain proven semantics.
 
-  await test('a stale service-worker version never completes verification', async () => {
+  await test('an older offline-route contract never completes verification', async () => {
     const cache = makeCache();
     const env = installBrowser({
       book,
@@ -2313,7 +2320,8 @@ function installBrowser({
           'Content-Range': 'bytes 0-1/14',
           'Content-Length': '2',
           'X-Xandrio-Offline-Cache': 'hit',
-          'X-Xandrio-SW': 'xandrio-v1'
+          'X-Xandrio-SW': 'xandrio-v999',
+          'X-Xandrio-Offline-Contract': '0'
         }
       })
     });
@@ -2370,7 +2378,7 @@ function installBrowser({
   });
 
   // --- Strict runtime classification ---------------------------------------
-  // Only an explicit, current-version cache miss is deterministic enough to
+  // Only an explicit, compatible-contract cache miss is deterministic enough to
   // write to the manifest. Everything else keeps the download intact.
 
   for (const [name, probe] of [
@@ -2380,9 +2388,13 @@ function installBrowser({
       status: 504,
       headers: { 'X-Xandrio-Offline-Cache': 'miss' }
     })],
-    ['a stale-version miss', async () => new Response('', {
+    ['an incompatible-contract miss', async () => new Response('', {
       status: 504,
-      headers: { 'X-Xandrio-Offline-Cache': 'miss', 'X-Xandrio-SW': 'xandrio-v1' }
+      headers: {
+        'X-Xandrio-Offline-Cache': 'miss',
+        'X-Xandrio-SW': 'xandrio-v999',
+        'X-Xandrio-Offline-Contract': '0'
+      }
     })]
   ]) {
     await test(`${name} is indeterminate: manifest, bytes and streaming all preserved`, async () => {
@@ -2419,7 +2431,8 @@ function installBrowser({
         'Content-Range': 'bytes 0-1/14',
         'Content-Length': '2',
         'X-Xandrio-Offline-Cache': 'hit',
-        'X-Xandrio-SW': offline.EXPECTED_OFFLINE_SW_VERSION
+        'X-Xandrio-SW': offline.EXPECTED_OFFLINE_SW_VERSION,
+        'X-Xandrio-Offline-Contract': String(SW_OFFLINE_CONTRACT_VERSION)
       }
     });
 
@@ -2537,7 +2550,7 @@ function installBrowser({
     }
   });
 
-  await test('offline playback still works through an old controller', async () => {
+  await test('offline routing is withheld from an uncertified old controller', async () => {
     const cache = makeCache();
     const ready = installBrowser({ book, chapters, cache });
     offline.initOffline(ready.init);
@@ -2553,12 +2566,12 @@ function installBrowser({
     offline.initOffline(stale.init);
     navigator.onLine = false;
     try {
-      // The old worker is network-first, but with no network its fetch fails and
-      // its existing cache fallback serves the chapter. Withholding local
-      // playback here would strand an offline listener mid-activation.
+      // navigator.onLine is advisory. Even when it reports false, a scoped URL
+      // must never reach a network-first worker and risk silent streaming.
       const source = await offline.localChapterSource(book.id, 0);
-      assert.strictEqual(source.available, true, 'an offline listener is not stranded');
-      assert.match(source.url, /xandrio-offline-scope=/);
+      assert.strictEqual(source.available, false);
+      assert.strictEqual(source.reason, 'worker-update-required');
+      assert.strictEqual(source.cached, true, 'the UI can say the download is still safe');
     } finally {
       navigator.onLine = true;
     }
@@ -2606,7 +2619,11 @@ function installBrowser({
         probed = true;
         return new Response('', {
           status: 504,
-          headers: { 'X-Xandrio-Offline-Cache': 'miss', 'X-Xandrio-SW': SW_CACHE_VERSION }
+          headers: {
+            'X-Xandrio-Offline-Cache': 'miss',
+            'X-Xandrio-SW': SW_CACHE_VERSION,
+            'X-Xandrio-Offline-Contract': String(SW_OFFLINE_CONTRACT_VERSION)
+          }
         });
       }
     });
@@ -2617,22 +2634,25 @@ function installBrowser({
   });
 
   // --- Re-probe lifecycle for already-ready entries -------------------------
-  // Downloads certified before this contract existed, or against an earlier
-  // worker, carry no usable probedSwVersion. Downloaded must stay truthful for
+  // Downloads certified before this contract existed carry no usable contract
+  // stamp. Downloaded must stay truthful for
   // them too, without ever discarding audio.
 
-  await test('a legacy ready entry is re-certified and stamped under the expected worker', async () => {
+  await test('a legacy ready entry is re-certified and stamped with the route contract', async () => {
     const cache = makeCache();
     const env = installBrowser({ book, chapters, cache });
     offline.initOffline(env.init);
     assert.strictEqual(await offline.downloadCurrentBook(), true);
 
-    // Simulate a download certified before versions were recorded.
+    // Simulate a download certified before route contracts were recorded.
     const manifest = JSON.parse(env.storage.get('xandrio_offline_books:default'));
     delete manifest[book.id].probedSwVersion;
+    delete manifest[book.id].probedContractVersion;
     env.storage.set('xandrio_offline_books:default', JSON.stringify(manifest));
 
-    assert.strictEqual(await offline.reprobeVerifyingDownloads(), true);
+    // Startup and migration also trigger this pass; it may already have won
+    // the race before this explicit await.
+    await offline.reprobeVerifyingDownloads();
 
     const entry = offline.offlineEntryForBook(book.id);
     assert.strictEqual(entry.state, 'ready', 'a passing legacy entry stays Downloaded');
@@ -2641,6 +2661,7 @@ function installBrowser({
       SW_CACHE_VERSION,
       'the certifying worker version is recorded'
     );
+    assert.strictEqual(entry.probedContractVersion, SW_OFFLINE_CONTRACT_VERSION);
     assert.strictEqual(offline.offlineStatusForBook(book.id).downloaded, true);
   });
 

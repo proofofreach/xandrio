@@ -8,6 +8,11 @@ const { chromium } = require('playwright');
 const port = Number(process.env.SMOKE_PORT || 8391);
 const origin = `http://127.0.0.1:${port}`;
 const smokeCoverImage = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64');
+const traceSmoke = label => {
+  if (process.env.SMOKE_TRACE === '1' || process.env.CI === 'true') {
+    process.stderr.write(`[smoke] ${label}\n`);
+  }
+};
 
 function smokeCoverKey(value) {
   return Buffer.from(String(value)).toString('hex').slice(0, 32).padEnd(32, '0');
@@ -95,6 +100,7 @@ async function startOfflineFixtureServer() {
     missingShellPath: null,
     replacementCacheVersion: null,
     offlinePreparationRequested: false,
+    streamingPlaybackRequests: [],
     operatorPolicy: { version: 1, acknowledged: false, acknowledgedAt: null, unverifiedSourcesEnabled: false }
   };
 
@@ -140,6 +146,18 @@ async function startOfflineFixtureServer() {
     if (pathname === '/api/position/smoke-offline') return jsonResponse(res, { position: null });
     if (pathname === '/api/position') return jsonResponse(res, { success: true });
     if (pathname === '/api/bookmarks/smoke-offline') return jsonResponse(res, { bookmarks: [] });
+    if (
+      pathname.startsWith('/api/audio-continuous/') ||
+      pathname.startsWith('/api/audio-hls/') ||
+      pathname.startsWith('/api/audio-ios/')
+    ) {
+      state.streamingPlaybackRequests.push(req.url);
+      res.writeHead(200, {
+        'Content-Type': 'audio/wav', 'Content-Length': audio.length,
+        'Accept-Ranges': 'bytes', 'Cache-Control': 'no-store'
+      });
+      return res.end(audio);
+    }
     if (pathname === '/api/voices') return jsonResponse(res, {
       current: 'edge:andrew', voices: [{ id: 'edge:andrew', name: 'Andrew', provider: 'edge', gender: 'male' }]
     });
@@ -160,6 +178,9 @@ async function startOfflineFixtureServer() {
       pathname === '/api/audio/smoke-offline/0' ||
       pathname === '/api/offline/audio/smoke-offline/0'
     ) {
+      if (req.headers['x-xandrio-offline-download'] !== '1') {
+        state.streamingPlaybackRequests.push(req.url);
+      }
       if (req.headers['x-xandrio-offline-download'] === '1') {
         await new Promise(resolve => setTimeout(resolve, 500));
       }
@@ -174,6 +195,81 @@ async function startOfflineFixtureServer() {
       return res.end();
     }
     if (pathname.startsWith('/api/')) return jsonResponse(res, {});
+
+    if (pathname === '/smoke-tone.wav') {
+      res.writeHead(200, {
+        'Content-Type': 'audio/wav',
+        'Content-Length': audio.length,
+        'Cache-Control': 'no-store'
+      });
+      return res.end(audio);
+    }
+
+    if (pathname === '/legacy-sw.js') {
+      const body = Buffer.from(`
+        const AUDIO_CACHE = 'xandrio-offline-audio';
+        const SHELL_CACHE = 'xandrio-v120';
+        self.addEventListener('install', event => event.waitUntil((async () => {
+          const cache = await caches.open(SHELL_CACHE);
+          await cache.add('/legacy-playing.html');
+          await self.skipWaiting();
+        })()));
+        self.addEventListener('activate', event => event.waitUntil(self.clients.claim()));
+        self.addEventListener('fetch', event => {
+          const url = new URL(event.request.url);
+          if (url.pathname === '/legacy-playing.html') {
+            event.respondWith(caches.match(event.request).then(hit => hit || fetch(event.request)));
+            return;
+          }
+          const scope = url.searchParams.get('xandrio-offline-scope');
+          if (!scope || !url.pathname.startsWith('/api/audio/')) return;
+          event.respondWith(fetch(event.request).catch(async () => {
+            const cache = await caches.open(AUDIO_CACHE + ':' + scope);
+            return (await cache.match(event.request)) || Response.error();
+          }));
+        });
+      `);
+      res.writeHead(200, {
+        'Content-Type': 'text/javascript; charset=utf-8',
+        'Content-Length': body.length,
+        'Cache-Control': 'no-store',
+        'Service-Worker-Allowed': '/'
+      });
+      return res.end(body);
+    }
+
+    if (pathname === '/legacy-playing.html') {
+      const body = Buffer.from(`<!doctype html><meta charset="utf-8"><title>Active legacy tab</title>
+        <button id="play">Play</button><audio id="audio" loop src="/smoke-tone.wav"></audio>
+        <script>
+          window.controllerChanges = 0;
+          navigator.serviceWorker.addEventListener('controllerchange', () => { window.controllerChanges += 1; });
+          document.getElementById('play').addEventListener('click', () => document.getElementById('audio').play());
+        </script>`);
+      res.writeHead(200, {
+        'Content-Type': 'text/html; charset=utf-8',
+        'Content-Length': body.length,
+        'Cache-Control': 'no-store'
+      });
+      return res.end(body);
+    }
+
+    if (pathname === '/legacy-worker-bootstrap.html') {
+      const body = Buffer.from(`<!doctype html><meta charset="utf-8"><title>Legacy worker bootstrap</title>
+        <script>
+          const markReady = () => { document.documentElement.dataset.workerReady = '1'; };
+          navigator.serviceWorker.addEventListener('controllerchange', markReady, { once: true });
+          navigator.serviceWorker.register('/legacy-sw.js', { scope: '/' }).then(() => navigator.serviceWorker.ready).then(() => {
+            if (navigator.serviceWorker.controller) markReady();
+          });
+        </script>`);
+      res.writeHead(200, {
+        'Content-Type': 'text/html; charset=utf-8',
+        'Content-Length': body.length,
+        'Cache-Control': 'no-store'
+      });
+      return res.end(body);
+    }
 
     const relative = pathname === '/' ? 'index.html' : decodeURIComponent(pathname.slice(1));
     const filePath = path.resolve(publicRoot, relative);
@@ -221,6 +317,8 @@ async function startOfflineFixtureServer() {
       state.missingShellPath = null;
     },
     offlinePreparationRequested: () => state.offlinePreparationRequested,
+    streamingPlaybackRequests: () => [...state.streamingPlaybackRequests],
+    resetStreamingPlaybackRequests() { state.streamingPlaybackRequests.length = 0; },
     close: () => new Promise(resolve => server.close(resolve))
   };
 }
@@ -1159,12 +1257,119 @@ async function verifyAtomicServiceWorkerUpgrade(page, fixture) {
   }
 }
 
+async function verifyDownloadedPlaybackDuringWorkerHandoff(context, fixture) {
+  const activeLegacyPage = await context.newPage();
+  let handoffPage = null;
+  try {
+    await activeLegacyPage.goto(`${fixture.origin}/legacy-worker-bootstrap.html`, { waitUntil: 'domcontentloaded' });
+    await activeLegacyPage.waitForFunction(() => document.documentElement.dataset.workerReady === '1');
+    const legacyController = await activeLegacyPage.evaluate(() => navigator.serviceWorker.controller?.scriptURL || '');
+    if (!legacyController.endsWith('/legacy-sw.js')) {
+      throw new Error(`Could not establish the prior unversioned worker: ${legacyController}`);
+    }
+
+    // Keep a genuinely active old-controlled tab alive while a second idle page
+    // performs the handoff. It must retain its controller, shell cache, URL and
+    // uninterrupted media; activation itself is refused while this tab exists.
+    await activeLegacyPage.goto(`${fixture.origin}/legacy-playing.html`, { waitUntil: 'domcontentloaded' });
+    await activeLegacyPage.click('#play');
+    await activeLegacyPage.waitForFunction(() => document.getElementById('audio')?.currentTime > 0.1);
+    const activeBefore = await activeLegacyPage.evaluate(() => ({
+      currentTime: document.getElementById('audio').currentTime,
+      source: document.getElementById('audio').currentSrc,
+      controller: navigator.serviceWorker.controller?.scriptURL || ''
+    }));
+
+    fixture.resetStreamingPlaybackRequests();
+    handoffPage = await context.newPage();
+    await handoffPage.goto(`${fixture.origin}/#/player/smoke-offline`, { waitUntil: 'domcontentloaded' });
+    await handoffPage.waitForSelector('#player-view.active');
+    await handoffPage.waitForFunction(() =>
+      window.xandrioPlaybackReport?.().events?.some(event => event.type === 'local-source-blocked')
+    );
+    const blocked = await handoffPage.evaluate(() => ({
+      controller: navigator.serviceWorker.controller?.scriptURL || '',
+      source: document.getElementById('audio-player')?.src || '',
+      reliability: document.getElementById('playback-reliability')?.textContent || '',
+      overlay: document.getElementById('audio-loading')?.textContent || '',
+      overlayVisible: document.getElementById('audio-loading')?.style.display !== 'none',
+      events: window.xandrioPlaybackReport?.().events?.slice(-5) || []
+    }));
+    if (
+      !blocked.controller.endsWith('/legacy-sw.js')
+      || blocked.source
+      || !blocked.overlayVisible
+      || !blocked.overlay.includes('Xandrio needs to finish updating')
+    ) {
+      throw new Error(`Busy-tab handoff did not block safely: ${JSON.stringify(blocked)}`);
+    }
+    if (fixture.streamingPlaybackRequests().length) {
+      throw new Error(`Blocked downloaded chapter opened a server transport: ${fixture.streamingPlaybackRequests().join(', ')}`);
+    }
+    const activeAfter = await activeLegacyPage.evaluate(async () => ({
+      currentTime: document.getElementById('audio').currentTime,
+      source: document.getElementById('audio').currentSrc,
+      controller: navigator.serviceWorker.controller?.scriptURL || '',
+      controllerChanges: window.controllerChanges,
+      path: window.location.pathname,
+      oldShellCachePresent: await caches.has('xandrio-v120')
+    }));
+    if (
+      activeAfter.controller !== activeBefore.controller
+      || activeAfter.controllerChanges !== 0
+      || activeAfter.path !== '/legacy-playing.html'
+      || activeAfter.source !== activeBefore.source
+      || activeAfter.currentTime <= activeBefore.currentTime
+      || !activeAfter.oldShellCachePresent
+    ) {
+      throw new Error(`Active legacy tab was disrupted by worker handoff: ${JSON.stringify({ activeBefore, activeAfter })}`);
+    }
+
+    // Once the other client closes, this idle page can activate the fully
+    // installed worker, reload once, and select the cached source before any
+    // server transport is considered.
+    await activeLegacyPage.close();
+    await handoffPage.reload({ waitUntil: 'domcontentloaded' });
+    await handoffPage.waitForSelector('#player-view.active');
+    await handoffPage.waitForFunction(
+      () => navigator.serviceWorker.controller?.scriptURL.includes('/sw.js?v=xandrio-v121')
+    );
+    await handoffPage.waitForFunction(() =>
+      document.getElementById('audio-player')?.src.includes('/api/audio/smoke-offline/0?xandrio-offline-scope=default')
+    );
+    const completed = await handoffPage.evaluate(() => ({
+      controller: navigator.serviceWorker.controller?.scriptURL || '',
+      source: document.getElementById('audio-player')?.src || '',
+      reliability: document.getElementById('playback-reliability')?.textContent || '',
+      backend: window.xandrioPlaybackReport?.().backend || ''
+    }));
+    if (fixture.streamingPlaybackRequests().length) {
+      throw new Error(`Downloaded chapter opened server transports after safe handoff: ${fixture.streamingPlaybackRequests().join(', ')}`);
+    }
+    if (completed.backend !== 'single-file') {
+      throw new Error(`Completed handoff did not select the local playback backend: ${JSON.stringify(completed)}`);
+    }
+    return handoffPage;
+  } catch (error) {
+    await activeLegacyPage.close().catch(() => {});
+    await handoffPage?.close().catch(() => {});
+    throw error;
+  }
+}
+
 async function verifyRealServiceWorkerOffline(browser) {
   const fixture = await startOfflineFixtureServer();
   const context = await browser.newContext({ serviceWorkers: 'allow' });
-  const page = await context.newPage();
   const pageErrors = [];
-  page.on('pageerror', err => pageErrors.push(err.message));
+  const observedPages = new WeakSet();
+  const trackPageErrors = observedPage => {
+    if (observedPages.has(observedPage)) return;
+    observedPages.add(observedPage);
+    observedPage.on('pageerror', err => pageErrors.push(err.message));
+  };
+  context.on('page', trackPageErrors);
+  let page = await context.newPage();
+  trackPageErrors(page);
   try {
     await page.goto(`${fixture.origin}/#/player/smoke-offline`, { waitUntil: 'networkidle' });
     await page.waitForSelector('#player-view.active');
@@ -1173,14 +1378,25 @@ async function verifyRealServiceWorkerOffline(browser) {
     await page.check('#operator-notice-ack');
     await page.click('#operator-notice-continue');
     await page.waitForSelector('#operator-notice-dialog', { state: 'hidden' });
-    await page.evaluate(async () => {
-      await navigator.serviceWorker.ready;
-      if (navigator.serviceWorker.controller) return;
-      await new Promise(resolve => navigator.serviceWorker.addEventListener('controllerchange', resolve, { once: true }));
-    });
-    if (!await page.evaluate(() => Boolean(navigator.serviceWorker.controller))) {
-      throw new Error('Real Xandrio service worker did not control the fixture page');
-    }
+    // A first install may finish after the app's bounded boot handoff. Without
+    // clients.claim(), that is correctly active but cannot control the already
+    // open page until navigation. Never wait indefinitely for a controllerchange
+    // that cannot occur; wait for activation, then establish control by reload.
+    await page.waitForFunction(
+      () => navigator.serviceWorker.getRegistration()
+        .then(registration => registration?.active?.state === 'activated'),
+      null,
+      { timeout: 15000 }
+    );
+    // Make the fixture deterministic across fast local machines and slower CI:
+    // navigate once after activation whether or not the app already did so.
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.waitForSelector('#player-view.active');
+    await page.waitForFunction(
+      () => Boolean(navigator.serviceWorker.controller),
+      null,
+      { timeout: 10000 }
+    );
     await verifyAtomicServiceWorkerUpgrade(page, fixture);
 
     // Exercise both explicit offline milestones without navigating into the
@@ -1251,6 +1467,17 @@ async function verifyRealServiceWorkerOffline(browser) {
     if (cachedBytes !== fixture.audioBytes) {
       throw new Error(`Offline UI cached ${cachedBytes} audio bytes; expected ${fixture.audioBytes}`);
     }
+
+    // Reproduce a real rollout: the verified download already exists, the
+    // prior unversioned worker controls the page, and the newly deployed app
+    // registers its version-pinned worker. Playback must wait for the safe
+    // handoff and stay local; silently opening a server stream is the incident.
+    await page.evaluate(async () => {
+      const registration = await navigator.serviceWorker.getRegistration();
+      await registration?.unregister();
+    });
+    await page.close();
+    page = await verifyDownloadedPlaybackDuringWorkerHandoff(context, fixture);
 
     // Browser-level network loss is deliberate here: navigator.onLine and
     // media are native. Only the real public/sw.js can satisfy these requests.
@@ -1373,12 +1600,18 @@ async function main() {
     const pageErrors = [];
     page.on('pageerror', err => pageErrors.push(err.message));
     const fixtureState = await installBrowserFixtures(page);
+    traceSmoke('fixtures installed');
     await verifyPlayback(page, fixtureState);
+    traceSmoke('playback verified');
     await verifyPronunciations(page, fixtureState);
+    traceSmoke('pronunciations verified');
     await verifyLibraryActions(page);
+    traceSmoke('library verified');
     await verifySearchWorkspace(page, fixtureState);
+    traceSmoke('search verified');
     if (pageErrors.length) throw new Error(`Browser page errors:\n${pageErrors.join('\n')}`);
     await verifyRealServiceWorkerOffline(browser);
+    traceSmoke('service worker verified');
     console.log('Browser smoke passed: playback/tier/pronunciation, library actions, search workspace, atomic shell upgrade failure, PWA icons, and real offline Range 206/416.');
   } catch (err) {
     if (serverOutput) process.stderr.write(`\nServer output:\n${serverOutput}\n`);

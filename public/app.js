@@ -8,7 +8,7 @@ import { showToast } from './js/ui/toast.js';
 import { initKeys, onActivate } from './js/ui/keys.js';
 import { registerSheet } from './js/ui/sheets.js';
 import { initBookmarks, renderBookmarksSection, addBookmarkAtCurrentPosition } from './js/features/bookmarks.js';
-import { initOffline, prepareOfflineStorage, renderOfflineState, queuePendingPosition, ensureRollingOfflineWindow, getOfflineBookData, offlinePlaybackUrl, localChapterSource, markLocalChapterSuspect, classifyLocalChapter, OFFLINE_WORKER_SCRIPT_URL } from './js/features/offline.js';
+import { initOffline, prepareOfflineStorage, renderOfflineState, queuePendingPosition, ensureRollingOfflineWindow, getOfflineBookData, offlinePlaybackUrl, localChapterSource, markLocalChapterSuspect, classifyLocalChapter, OFFLINE_WORKER_SCRIPT_URL, certifyOfflineWorkerController, offlineWorkerControllerState } from './js/features/offline.js';
 import { initPronunciationRepair } from './js/features/pronunciations.js';
 import { initQueueStatus } from './js/features/queue-status.js';
 import { loadClientSettings, getSkipInterval, isSmartRewindEnabled, isRollingOfflineEnabled } from './js/client-settings.js';
@@ -79,6 +79,12 @@ let recoveryToken = { cancelled: false };
 // Held for the whole attempt — scheduling *and* the awaited load — so a second
 // error arriving mid-load cannot start a parallel recovery.
 let automaticRecoveryInFlight = false;
+let manualRecoveryInFlight = false;
+let manualRecoveryToken = null;
+// One canonical transport tuple for the entire interrupted-playback lineage.
+// It survives the automatic-to-manual handoff and is cleared only by stable
+// playback or real navigation.
+let recoverySnapshot = null;
 let stablePlaybackTimer = null;
 let rollingOfflineTimer = null;
 const playbackSession = createPlaybackSession({
@@ -112,7 +118,11 @@ let playbackReliability;
 let playbackResumePrompt, playbackResumeBtn;
 let startOverModalController = null;
 let shortcutOverlayController = null;
-let serviceWorkerRegistrationStarted = false;
+let serviceWorkerReadiness = null;
+let serviceWorkerBootWindowOpen = true;
+let blockedWorkerOnlineRetry = null;
+const OFFLINE_WORKER_RELOAD_KEY = 'xandrio_offline_worker_reload';
+const SERVICE_WORKER_BOOT_DEADLINE_MS = 6000;
 
 // Initialize DOM elements after DOM is ready
 function initializeDOMElements() {
@@ -337,8 +347,15 @@ function markPlaybackStableSoon() {
   if (stablePlaybackTimer !== null) window.clearTimeout(stablePlaybackTimer);
   stablePlaybackTimer = window.setTimeout(() => {
     automaticRecoveryAttempts = 0;
+    recoverySnapshot = null;
     stablePlaybackTimer = null;
   }, 30000);
+}
+
+function interruptStablePlaybackWindow() {
+  if (stablePlaybackTimer === null) return;
+  window.clearTimeout?.(stablePlaybackTimer);
+  stablePlaybackTimer = null;
 }
 
 function scheduleRollingOfflineAfterStablePlayback() {
@@ -370,36 +387,62 @@ function scheduleRollingOfflineAfterStablePlayback() {
  * offer and we say so: the action is labelled "Try again" and re-prepares.
  */
 function offerManualPlaybackRecovery(error, snapshot) {
+  const lineageSnapshot = retainRecoverySnapshot(snapshot);
+  if (!lineageSnapshot) return;
   checkpointPlayback({ force: true });
   setPlaybackReliabilityState('preparing', 'Preparing to resume…');
   recordPlaybackEvent({
     type: 'recovery-offered',
     reason: error?.code || 'playback-error',
-    chapterIndex: snapshot?.chapterIndex ?? currentChapter,
-    chapterTime: snapshot?.startOffsetSeconds ?? 0
+    chapterIndex: lineageSnapshot?.chapterIndex ?? currentChapter,
+    chapterTime: lineageSnapshot?.startOffsetSeconds ?? 0
   });
-  void prepareManualResume(snapshot);
+  void prepareManualResume(lineageSnapshot);
 }
 
 async function prepareManualResume(snapshot) {
-  // The user is taking over; any pending automatic attempt is now stale.
-  cancelPlaybackRecovery();
-  const chapterIndex = snapshot?.chapterIndex ?? currentChapter;
+  if (manualRecoveryInFlight) {
+    setPlaybackReliabilityState('preparing', 'Preparing to resume…');
+    showToast('Still preparing playback…');
+    return;
+  }
+  const lineageSnapshot = retainRecoverySnapshot(snapshot);
+  if (!lineageSnapshot) return;
+  // The user is taking over; invalidate pending automatic work, but preserve
+  // this lineage's tuple and already-spent retry budget.
+  stopPendingAutomaticRecovery();
+  const token = recoveryToken;
+  manualRecoveryInFlight = true;
+  manualRecoveryToken = token;
+  const chapterIndex = lineageSnapshot?.chapterIndex ?? currentChapter;
   try {
-    await loadChapter(chapterIndex, {
+    const prepared = await loadChapter(chapterIndex, {
       reason: 'manual-recovery',
-      sourceTuple: snapshot,
-      seekToSeconds: snapshot?.startOffsetSeconds
+      sourceTuple: lineageSnapshot,
+      seekToSeconds: lineageSnapshot?.startOffsetSeconds
     });
+    if (prepared?.loaded === false) return;
+    if (
+      token.cancelled
+      || recoverySnapshot !== lineageSnapshot
+      || currentBook?.id !== lineageSnapshot.bookId
+      || currentChapter !== lineageSnapshot.chapterIndex
+    ) return;
   } catch (prepareError) {
+    if (token.cancelled || recoverySnapshot !== lineageSnapshot) return;
     console.warn('Could not prepare a resume:', prepareError);
     setResumePromptVisible(false);
     setPlaybackReliabilityState('resume', 'Stream interrupted');
     showToast('Playback was interrupted', 'error', {
       actionLabel: 'Try again',
-      onAction: () => { void prepareManualResume(snapshot); }
+      onAction: () => { void prepareManualResume(lineageSnapshot); }
     });
     return;
+  } finally {
+    if (manualRecoveryToken === token) {
+      manualRecoveryInFlight = false;
+      manualRecoveryToken = null;
+    }
   }
   // The source is loaded and positioned, so the next tap can play immediately.
   setResumePromptVisible(true);
@@ -414,6 +457,7 @@ async function prepareManualResume(snapshot) {
 // source with, and only when it is for the chapter actually being loaded.
 function recoverySourceTuple(snapshot, chapterIndex) {
   if (!snapshot || snapshot.chapterIndex !== chapterIndex) return null;
+  if (snapshot.bookId && snapshot.bookId !== currentBook?.id) return null;
   const tuple = {};
   if (Number(snapshot.startOffsetSeconds) > 0) {
     tuple.startOffsetSeconds = Number(snapshot.startOffsetSeconds);
@@ -430,10 +474,12 @@ function resumeFromPreparedSource() {
   const started = Promise.resolve(chunkPlayer.play());
   setResumePromptVisible(false);
   updatePlaybackUI(true);
-  return started.catch(playError => {
-    updatePlaybackUI(false);
-    handleChunkError(playError);
-  });
+  return started
+    .then(() => markPlaybackStableSoon())
+    .catch(playError => {
+      updatePlaybackUI(false);
+      handleChunkError(playError);
+    });
 }
 
 // Two attempts, not three. Each attempt loads a chapter, and each load asks the
@@ -441,11 +487,7 @@ function resumeFromPreparedSource() {
 // session churn a single failed resume could produce.
 const MAX_AUTOMATIC_RECOVERY_ATTEMPTS = 2;
 
-// Abandon the current recovery lineage entirely: invalidate the in-flight
-// attempt, drop its timer, release the slot and reset the attempt budget.
-// Called when the user takes over, or when the player moves to a different
-// book/chapter and the old attempts are moot.
-function cancelPlaybackRecovery() {
+function stopPendingAutomaticRecovery() {
   recoveryToken.cancelled = true;
   recoveryToken = { cancelled: false };
   if (automaticRecoveryTimer !== null) {
@@ -453,8 +495,61 @@ function cancelPlaybackRecovery() {
     automaticRecoveryTimer = null;
   }
   automaticRecoveryInFlight = false;
-  automaticRecoveryAttempts = 0;
   try { chunkPlayer?.cancelPendingLoad?.(); } catch {}
+}
+
+// Abandon the current recovery lineage entirely. Real navigation and explicit
+// cancellation reset both its immutable tuple and its bounded attempt budget;
+// the automatic-to-manual handoff deliberately does neither.
+function cancelPlaybackRecovery() {
+  stopPendingAutomaticRecovery();
+  manualRecoveryInFlight = false;
+  manualRecoveryToken = null;
+  automaticRecoveryAttempts = 0;
+  recoverySnapshot = null;
+}
+
+// A user-selected position begins a new playback lineage. Keeping the failed
+// stream's snapshot here would make a later error jump back to the position
+// captured before the seek.
+function invalidatePlaybackRecoveryForUserSeek() {
+  if (
+    recoverySnapshot
+    || automaticRecoveryTimer !== null
+    || automaticRecoveryInFlight
+    || manualRecoveryInFlight
+    || automaticRecoveryAttempts > 0
+  ) {
+    cancelPlaybackRecovery();
+  }
+}
+
+function retainRecoverySnapshot(snapshot) {
+  if (
+    snapshot
+    && (
+      snapshot.bookId !== currentBook?.id
+      || snapshot.chapterIndex !== currentChapter
+    )
+  ) return null;
+  if (
+    recoverySnapshot
+    && recoverySnapshot.bookId === currentBook?.id
+    && recoverySnapshot.chapterIndex === currentChapter
+  ) {
+    return recoverySnapshot;
+  }
+  if (!snapshot) return null;
+  recoverySnapshot = Object.freeze({
+    bookId: snapshot.bookId,
+    chapterIndex: snapshot.chapterIndex,
+    startOffsetSeconds: Math.max(0, Number(snapshot.startOffsetSeconds) || 0),
+    servedTier: snapshot.servedTier || null,
+    endChapterIndex: Number.isInteger(snapshot.endChapterIndex)
+      ? snapshot.endChapterIndex
+      : null
+  });
+  return recoverySnapshot;
 }
 
 // Returns whether the failure is *handled* — not whether a timer was created.
@@ -462,7 +557,8 @@ function cancelPlaybackRecovery() {
 // by that attempt; reporting it as unhandled put a manual "Resume" prompt on
 // screen on top of a retry that was already running.
 function scheduleAutomaticPlaybackRecovery(error, snapshot) {
-  const resumeAt = snapshot?.startOffsetSeconds || 0;
+  const lineageSnapshot = retainRecoverySnapshot(snapshot);
+  const resumeAt = lineageSnapshot?.startOffsetSeconds || 0;
   if (!window.setTimeout) return false;
 
   // A server that is rate-limiting playback sessions will not be helped by
@@ -480,7 +576,7 @@ function scheduleAutomaticPlaybackRecovery(error, snapshot) {
     return true;
   }
 
-  if (automaticRecoveryTimer !== null || automaticRecoveryInFlight) return true;
+  if (automaticRecoveryTimer !== null || automaticRecoveryInFlight || manualRecoveryInFlight) return true;
   if (automaticRecoveryAttempts >= MAX_AUTOMATIC_RECOVERY_ATTEMPTS) return false;
   automaticRecoveryAttempts += 1;
   const attempt = automaticRecoveryAttempts;
@@ -499,8 +595,8 @@ function scheduleAutomaticPlaybackRecovery(error, snapshot) {
         setPlaybackReliabilityState('resume', 'Waiting for connection');
         window.addEventListener('online', () => {
           if (token.cancelled) return;
-          if (!scheduleAutomaticPlaybackRecovery(error, snapshot)) {
-            offerManualPlaybackRecovery(error, snapshot);
+          if (!scheduleAutomaticPlaybackRecovery(error, lineageSnapshot)) {
+            offerManualPlaybackRecovery(error, lineageSnapshot);
           }
         }, { once: true });
         return;
@@ -522,11 +618,12 @@ function scheduleAutomaticPlaybackRecovery(error, snapshot) {
         // *at* the resume position, so each retry requests the byte-identical
         // canonical tuple and joins the session already being prepared instead
         // of opening at zero and relocating into a second one.
-        await loadChapter(snapshot?.chapterIndex ?? currentChapter, {
-          sourceTuple: snapshot,
+        const prepared = await loadChapter(lineageSnapshot?.chapterIndex ?? currentChapter, {
+          sourceTuple: lineageSnapshot,
           seekToSeconds: resumeAt,
           reason: 'automatic-recovery'
         });
+        if (prepared?.loaded === false) return;
         if (token.cancelled) return;
         await chunkPlayer.play();
         if (token.cancelled) return;
@@ -541,8 +638,8 @@ function scheduleAutomaticPlaybackRecovery(error, snapshot) {
       automaticRecoveryInFlight = false;
     }
     if (!followUpError || token.cancelled) return;
-    if (!scheduleAutomaticPlaybackRecovery(followUpError, snapshot)) {
-      offerManualPlaybackRecovery(followUpError, snapshot);
+    if (!scheduleAutomaticPlaybackRecovery(followUpError, lineageSnapshot)) {
+      offerManualPlaybackRecovery(followUpError, lineageSnapshot);
     }
   };
   automaticRecoveryTimer = window.setTimeout(retry, 250 * (2 ** (attempt - 1)));
@@ -566,12 +663,13 @@ function handleChunkError(error) {
     || error?.code === 429
     || chunkPlayer?.isContinuous
   ) {
+    interruptStablePlaybackWindow();
     const resumeAt = Math.max(0, Number(error.chapterTime ?? chunkPlayer?.getCurrentTime?.()) || 0);
     checkpointPlayback({ force: true });
     // One immutable snapshot of the canonical request, captured once, here.
     // Every attempt — automatic or manual — replays it verbatim, so all of them
     // resolve to the same server session instead of each minting a new one.
-    const snapshot = Object.freeze({
+    const snapshot = retainRecoverySnapshot({
       bookId: currentBook?.id,
       chapterIndex: currentChapter,
       startOffsetSeconds: resumeAt,
@@ -706,7 +804,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   console.log('Xandrio initialized');
   const deployment = await initDeploymentGuard({
     onChange: updated => {
-      if (updated.serviceWorkerAllowed) registerServiceWorker();
+      if (updated.serviceWorkerAllowed) void registerServiceWorker();
     }
   });
 
@@ -731,9 +829,19 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
   if (authStatus?.authenticationRequired && !authStatus.authenticated) {
     // Halt boot behind the gate; a successful sign-in reloads the app.
+    serviceWorkerBootWindowOpen = false;
     showLoginGate({ tokenMode: !authStatus.accountsConfigured });
     return;
   }
+
+  // Complete the bounded worker handoff before rendering library data or
+  // installing any interactive handlers. This is the only interval in which a
+  // controller-changing reload is permitted, so it must be genuinely idle.
+  const workerReadiness = deployment.serviceWorkerAllowed
+    ? await registerServiceWorker()
+    : { ready: false, reason: 'deployment-disallowed' };
+  serviceWorkerBootWindowOpen = false;
+  if (workerReadiness.reason === 'reloading') return;
 
   initializeDOMElements();  // Initialize DOM elements first
   await loadClientSettings();
@@ -818,7 +926,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   setupEventListeners();
   setupLifecycleHandlers();
   setupMediaSessionHandlers();
-  if (deployment.serviceWorkerAllowed) registerServiceWorker();
   setupPlaybackReportExport();
 
   // Hash routing (back button, deep links, reload-into-player). Runs last so
@@ -839,7 +946,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     },
     getChapterTitle: (index) => displayChapterTitle(chapters[index], index),
     selectChapter: (index, options) => selectChapter(index, options),
-    seek: (seconds) => chunkPlayer?.seek(seconds),
+    seek: (seconds) => {
+      invalidatePlaybackRecoveryForUserSeek();
+      return chunkPlayer?.seek(seconds);
+    },
     checkpointPlayback,
     savePosition,
     dismissChapterSheet: () => dismissChapterSheet(),
@@ -884,21 +994,169 @@ document.addEventListener('DOMContentLoaded', async () => {
 });
 
 
+function waitForWorkerState(worker, acceptedStates, timeoutMs = 8000) {
+  if (!worker || acceptedStates.includes(worker.state)) return Promise.resolve(worker?.state || '');
+  return new Promise(resolve => {
+    const timer = window.setTimeout(() => finish(worker.state), timeoutMs);
+    const finish = state => {
+      window.clearTimeout?.(timer);
+      worker.removeEventListener?.('statechange', onStateChange);
+      resolve(state);
+    };
+    const onStateChange = () => {
+      if (acceptedStates.includes(worker.state)) finish(worker.state);
+    };
+    worker.addEventListener?.('statechange', onStateChange);
+  });
+}
+
+function isExpectedOfflineWorker(worker) {
+  if (!worker?.scriptURL) return false;
+  try {
+    return new URL(worker.scriptURL, window.location.href).href
+      === new URL(OFFLINE_WORKER_SCRIPT_URL, window.location.href).href;
+  } catch {
+    return false;
+  }
+}
+
+function requestWaitingWorkerActivation(worker, timeoutMs = 2000) {
+  if (!worker?.postMessage || typeof MessageChannel === 'undefined') return Promise.resolve(false);
+  return new Promise(resolve => {
+    const channel = new MessageChannel();
+    const timer = window.setTimeout(() => resolve(false), timeoutMs);
+    channel.port1.onmessage = event => {
+      window.clearTimeout?.(timer);
+      resolve(event.data?.activationRequested === true);
+    };
+    try {
+      worker.postMessage({ type: 'XANDRIO_ACTIVATE_WAITING' }, [channel.port2]);
+    } catch {
+      window.clearTimeout?.(timer);
+      resolve(false);
+    }
+  });
+}
+
+function settleBeforeDeadline(promise, deadlineAt, fallback = null) {
+  const remainingMs = deadlineAt - Date.now();
+  if (remainingMs <= 0) return Promise.resolve(fallback);
+  return new Promise(resolve => {
+    const timer = window.setTimeout(() => resolve(fallback), remainingMs);
+    Promise.resolve(promise).then(
+      value => {
+        window.clearTimeout?.(timer);
+        resolve(value);
+      },
+      () => {
+        window.clearTimeout?.(timer);
+        resolve(fallback);
+      }
+    );
+  });
+}
+
+async function prepareServiceWorkerForRouting() {
+  if (!('serviceWorker' in navigator)) return { ready: false, reason: 'unsupported' };
+  const deadlineAt = Date.now() + SERVICE_WORKER_BOOT_DEADLINE_MS;
+  const initial = offlineWorkerControllerState();
+  const current = initial.compatible
+    ? initial
+    : await certifyOfflineWorkerController({
+      timeoutMs: Math.min(1500, Math.max(50, deadlineAt - Date.now()))
+    }).catch(() => offlineWorkerControllerState());
+  if (current.compatible && isExpectedOfflineWorker(navigator.serviceWorker.controller)) {
+    window.sessionStorage?.removeItem?.(OFFLINE_WORKER_RELOAD_KEY);
+    return { ready: true, reason: '' };
+  }
+
+  const registration = await settleBeforeDeadline(
+    navigator.serviceWorker.register(OFFLINE_WORKER_SCRIPT_URL),
+    deadlineAt
+  );
+  if (!registration) return { ready: false, reason: 'registration-timeout' };
+  await settleBeforeDeadline(Promise.resolve(registration.update?.()), deadlineAt);
+  if (Date.now() >= deadlineAt) return { ready: false, reason: 'registration-timeout' };
+  let candidate = registration.waiting || registration.installing;
+  if (candidate?.state === 'installing') {
+    const state = await waitForWorkerState(
+      candidate,
+      ['installed', 'redundant'],
+      Math.max(50, deadlineAt - Date.now())
+    );
+    if (state === 'redundant') candidate = null;
+  }
+  candidate = registration.waiting || candidate;
+  if (
+    candidate?.state === 'installed'
+    && Date.now() < deadlineAt
+    && serviceWorkerBootWindowOpen
+  ) {
+    const activationRequested = await requestWaitingWorkerActivation(
+      candidate,
+      Math.min(2000, Math.max(50, deadlineAt - Date.now()))
+    );
+    if (activationRequested) {
+      await waitForWorkerState(
+        candidate,
+        ['activated', 'redundant'],
+        Math.max(50, deadlineAt - Date.now())
+      );
+    }
+  }
+
+  // The waiting worker refuses activation while another window client exists:
+  // skipWaiting itself would switch that tab's controller. Once this is the
+  // only still-idle page, it reloads once so navigation starts under the active
+  // compatible worker before the hash router can select a media source.
+  const afterActivation = Date.now() < deadlineAt
+    ? await certifyOfflineWorkerController({
+      timeoutMs: Math.min(1500, Math.max(50, deadlineAt - Date.now()))
+    }).catch(() => offlineWorkerControllerState())
+    : offlineWorkerControllerState();
+  if (afterActivation.compatible) {
+    window.sessionStorage?.removeItem?.(OFFLINE_WORKER_RELOAD_KEY);
+    return { ready: true, reason: '' };
+  }
+  // A first install can finish activation before `registration.waiting` or
+  // `registration.installing` is observed. It is still safe to reload this
+  // idle boot page when the registration's active worker is the exact script
+  // requested by this build.
+  const expectedActiveWorker = candidate?.state === 'activated'
+    ? candidate
+    : registration.active;
+  if (isExpectedOfflineWorker(expectedActiveWorker) && expectedActiveWorker.state === 'activated') {
+    const alreadyReloaded = window.sessionStorage?.getItem?.(OFFLINE_WORKER_RELOAD_KEY)
+      === OFFLINE_WORKER_SCRIPT_URL;
+    if (!alreadyReloaded && serviceWorkerBootWindowOpen) {
+      window.sessionStorage?.setItem?.(OFFLINE_WORKER_RELOAD_KEY, OFFLINE_WORKER_SCRIPT_URL);
+      window.location.reload();
+      return { ready: false, reason: 'reloading' };
+    }
+  }
+  return { ready: false, reason: 'worker-update-required' };
+}
+
 function registerServiceWorker() {
-  if (!('serviceWorker' in navigator) || serviceWorkerRegistrationStarted) return;
-  serviceWorkerRegistrationStarted = true;
-  // Updates wait for active clients to close, so a new shell cannot take over
-  // a page with in-flight playback. Never reload on controllerchange either.
-  //
-  // The script URL is version-pinned (OFFLINE_WORKER_SCRIPT_URL) so the page can
-  // read which worker build controls it. Local-first playback depends on the
-  // scoped offline URL being cache-only, which only the matching build does.
-  navigator.serviceWorker.register(OFFLINE_WORKER_SCRIPT_URL)
-    .then(registration => registration?.update?.().catch(() => {}))
-    .catch(err => {
-      serviceWorkerRegistrationStarted = false;
-      console.warn('Service worker registration failed:', err);
-    });
+  if (serviceWorkerReadiness) return serviceWorkerReadiness;
+  if (!('serviceWorker' in navigator)) {
+    return Promise.resolve({ ready: false, reason: 'unsupported' });
+  }
+  const attempt = prepareServiceWorkerForRouting().catch(err => {
+    console.warn('Service worker registration failed:', err);
+    return { ready: false, reason: 'registration-failed' };
+  });
+  serviceWorkerReadiness = attempt;
+  void attempt.then(result => {
+    if (
+      serviceWorkerReadiness === attempt
+      && result?.ready !== true
+      && result?.reason !== 'reloading'
+    ) {
+      serviceWorkerReadiness = null;
+    }
+  });
+  return attempt;
 }
 
 function playbackReport() {
@@ -919,6 +1177,7 @@ function playbackReport() {
     reliabilityState: playbackReliability?.dataset?.state || null,
     mediaSessionSupported: 'mediaSession' in navigator,
     serviceWorkerControlled: Boolean(navigator.serviceWorker?.controller),
+    offlineWorker: offlineWorkerControllerState(),
     events: playbackEventLedger.slice()
   };
 }
@@ -1055,6 +1314,7 @@ function setupEventListeners() {
         });
       });
     } else if (chunkPlayer) {
+      invalidatePlaybackRecoveryForUserSeek();
       const before = chunkPlayer.getCurrentTime?.() || 0;
       chunkPlayer.seekToPercent(parseFloat(e.target.value)).finally(() => {
         const after = chunkPlayer.getCurrentTime?.() || 0;
@@ -1364,7 +1624,11 @@ async function openBook(bookId) {
     // Restore sleep timer if active
     restoreSleepTimer();
 
-    await loadChapter(chapterToLoad);
+    const chapterLoad = await loadChapter(chapterToLoad);
+    if (chapterLoad?.loaded !== true) {
+      updatePlaybackUI(false);
+      return true;
+    }
     // Seek to the saved chapter position on the persistent media element.
     await restorePlaybackPosition(chunkPlayer, restorePosition);
     checkpointPlayback();
@@ -1383,8 +1647,17 @@ async function openBook(bookId) {
 
 let loadChapterToken = 0;
 
+function clearBlockedWorkerOnlineRetry() {
+  if (!blockedWorkerOnlineRetry) return;
+  window.removeEventListener('online', blockedWorkerOnlineRetry);
+  blockedWorkerOnlineRetry = null;
+}
+
 async function loadChapter(index, options = {}) {
-  if (!Number.isInteger(index) || index < 0 || index >= chapters.length) return;
+  if (!Number.isInteger(index) || index < 0 || index >= chapters.length) {
+    return { loaded: false, reason: 'invalid-chapter' };
+  }
+  clearBlockedWorkerOnlineRetry();
   if (!['automatic-recovery', 'manual-recovery'].includes(options.reason)) {
     clearPlaybackRecoveryTimers();
     automaticRecoveryAttempts = 0;
@@ -1432,11 +1705,68 @@ async function loadChapter(index, options = {}) {
   // The check is presence-only and therefore cheap enough for the load path;
   // see localChapterSource in js/features/offline.js.
   const offlineMode = !navigator.onLine || currentBookOfflineFallback;
-  const local = ONLINE_LOCAL_FIRST_ENABLED || offlineMode
+  const local = options.bypassLocalSource
+    ? { available: false, reason: 'explicit-stream' }
+    : ONLINE_LOCAL_FIRST_ENABLED || offlineMode
     ? await localChapterSource(currentBook.id, index)
     : { available: false };
-  if (token !== loadChapterToken) return;
+  if (token !== loadChapterToken) return { loaded: false, reason: 'stale' };
   const offlineChapterAvailable = local.available;
+  recordPlaybackEvent({
+    type: 'local-source-decision',
+    reason: offlineChapterAvailable ? 'cache-hit' : (local.reason || 'not-cached'),
+    chapterIndex: index,
+    online: navigator.onLine
+  });
+  if (local.reason === 'worker-update-required' && local.cached) {
+    const workerState = offlineWorkerControllerState();
+    const canStreamInstead = navigator.onLine === true;
+    hideAudioLoading();
+    setPlaybackReliabilityState('resume', 'Finishing offline playback update');
+    setChunkOverlayState('error', {
+      message: workerState.controlled
+        ? 'Xandrio needs to finish updating'
+        : 'Downloaded audio needs the offline player',
+      detail: canStreamInstead
+        ? 'Your download is still safe. Close other Xandrio tabs and reload, or stream this chapter now.'
+        : 'Your download is still safe. Reconnect, close other Xandrio tabs, and reload Xandrio.',
+      retryLabel: canStreamInstead ? 'Stream instead' : 'Reload',
+      onRetry: canStreamInstead
+        ? () => {
+            clearBlockedWorkerOnlineRetry();
+            void loadChapter(index, {
+              ...options,
+              reason: 'explicit-stream',
+              bypassLocalSource: true
+            });
+          }
+        : () => window.location.reload()
+    });
+    showToast(
+      canStreamInstead
+        ? 'Downloaded audio is safe — local playback is waiting for the update'
+        : 'Downloaded audio is safe — reconnect to finish the update',
+      'error'
+    );
+    recordPlaybackEvent({
+      type: 'local-source-blocked',
+      reason: local.reason,
+      chapterIndex: index
+    });
+    clearBlockedWorkerOnlineRetry();
+    if (!canStreamInstead) {
+      const blockedBookId = currentBook?.id || '';
+      blockedWorkerOnlineRetry = () => {
+        blockedWorkerOnlineRetry = null;
+        if (currentBook?.id === blockedBookId && currentChapter === index) {
+          void loadChapter(index, options);
+        }
+      };
+      window.addEventListener('online', blockedWorkerOnlineRetry, { once: true });
+    }
+    return { loaded: false, reason: local.reason };
+  }
+  clearBlockedWorkerOnlineRetry();
   // navigator.onLine can remain true through a transient metadata failure. If
   // that local snapshot points at an evicted chapter, let normal network
   // playback recover instead of pinning the player to an offline error.
@@ -1454,14 +1784,14 @@ async function loadChapter(index, options = {}) {
       if (currentBook?.id && currentChapter === index) loadChapter(index);
     };
     window.addEventListener('online', resumeWhenOnline, { once: true });
-    return;
+    return { loaded: false, reason: 'offline-unavailable' };
   }
 
   const selection = await selectPlaybackEngineForChapter(currentBook.id, index, {
     offlineChapterAvailable,
     offlineMode
   });
-  if (token !== loadChapterToken) return;
+  if (token !== loadChapterToken) return { loaded: false, reason: 'stale' };
   let transition;
   try {
     transition = await playbackSession.transitionTo({
@@ -1488,7 +1818,7 @@ async function loadChapter(index, options = {}) {
       && navigator.onLine
       && !error?.cancelled;
     if (!recoverable) throw error;
-    if (token !== loadChapterToken) return;
+    if (token !== loadChapterToken) return { loaded: false, reason: 'stale' };
     markLocalChapterSuspect(currentBook.id, index);
     const bookId = currentBook.id;
     void classifyLocalChapter(bookId, index)
@@ -1499,10 +1829,10 @@ async function loadChapter(index, options = {}) {
     setPlaybackReliabilityState('active', 'Streaming · checking your download');
     return await loadChapter(index, { ...options, localFallbackUsed: true });
   }
-  if (transition.stale) return;
+  if (transition.stale) return { loaded: false, reason: 'stale' };
   applyPlaybackSelection(selection);
   chunkPlayer?.setSpeed?.(getCurrentPlaybackSpeed());
-  if (token !== loadChapterToken) return;
+  if (token !== loadChapterToken) return { loaded: false, reason: 'stale' };
   // A continuous source opened directly at the resume position needs no seek,
   // and issuing one can undo the work: seek() clamps to the *estimated* chapter
   // duration, so an underestimate drags the target out of the buffered range and
@@ -1513,7 +1843,7 @@ async function loadChapter(index, options = {}) {
     && !chunkPlayer.openedAtOffset?.(index, options.seekToSeconds)
   ) {
     await chunkPlayer.seek(Math.max(0, options.seekToSeconds));
-    if (token !== loadChapterToken) return;
+    if (token !== loadChapterToken) return { loaded: false, reason: 'stale' };
   }
   // Never compete with first-play streaming for bandwidth or storage. Offline
   // downloads remain available only through the user's explicit action.
@@ -1523,15 +1853,16 @@ async function loadChapter(index, options = {}) {
   if (wasPlaying) {
     try {
       await chunkPlayer.play();
-      if (token !== loadChapterToken) return;
+      if (token !== loadChapterToken) return { loaded: false, reason: 'stale' };
       updatePlaybackUI(true);
     } catch (err) {
-      if (token !== loadChapterToken) return;
+      if (token !== loadChapterToken) return { loaded: false, reason: 'stale' };
       try { chunkPlayer.pause?.(); } catch {}
       console.warn('Chapter playback could not resume:', err);
       updatePlaybackUI(false);
     }
   }
+  return { loaded: true, reason: '' };
 }
 
 async function selectChapter(nextChapter, options = {}) {
@@ -1549,6 +1880,7 @@ async function selectChapter(nextChapter, options = {}) {
 async function seekAcrossBook(percent) {
   const target = getBookSeekTarget(percent);
   if (!target || !chunkPlayer) return;
+  invalidatePlaybackRecoveryForUserSeek();
 
   const fromChapter = currentChapter;
   const before = chunkPlayer.getCurrentTime?.() || 0;
@@ -1561,10 +1893,11 @@ async function seekAcrossBook(percent) {
   }
 
   savePosition({ allowBackward: target.chapterIndex < fromChapter, force: true });
-  await loadChapter(target.chapterIndex, {
+  const loaded = await loadChapter(target.chapterIndex, {
     provisionalForward: target.chapterIndex > fromChapter,
     seekToSeconds: target.chapterTime
   });
+  if (loaded?.loaded !== true) return;
   checkpointPlayback();
   savePosition({ allowBackward: target.chapterIndex < fromChapter, force: true });
   updateMediaSessionPosition();
@@ -1846,6 +2179,7 @@ function setupMediaSessionHandlers() {
     nexttrack: () => changeChapter(1),
     seekto: async (details) => {
       if (!chunkPlayer || typeof details.seekTime !== 'number') return;
+      invalidatePlaybackRecoveryForUserSeek();
       await chunkPlayer.seek(details.seekTime);
       checkpointPlayback();
       savePosition({ allowBackward: true });
@@ -1884,6 +2218,7 @@ function setupLifecycleHandlers() {
 
 async function skip(seconds) {
   if (chunkPlayer) {
+    invalidatePlaybackRecoveryForUserSeek();
     await chunkPlayer.skip(seconds);
     checkpointPlayback();
     savePosition({ allowBackward: seconds < 0 });
@@ -1936,14 +2271,23 @@ async function handleAudioEnd(detail = {}) {
       audioPlayer.autoplay = true;
       audioPlayer.addEventListener('playing', clearAutoplay, { once: true });
       try {
-        await loadChapter(currentChapter + 1, { commitImmediately: true });
+        const loaded = await loadChapter(currentChapter + 1, { commitImmediately: true });
+        if (loaded?.loaded !== true) {
+          clearAutoplay();
+          updatePlaybackUI(false);
+          return;
+        }
       } catch (err) {
         clearAutoplay();
         console.error('Native auto-advance failed:', err);
         updatePlaybackUI(false);
       }
     } else {
-      await loadChapter(currentChapter + 1, { commitImmediately: true });
+      const loaded = await loadChapter(currentChapter + 1, { commitImmediately: true });
+      if (loaded?.loaded !== true) {
+        updatePlaybackUI(false);
+        return;
+      }
       try {
         await chunkPlayer.play();
         updatePlaybackUI(true);
@@ -2057,7 +2401,8 @@ async function confirmStartOver() {
   }
   setCurrentBookFinished(false);
   const startChapter = findPreferredStartChapterIndex(chapters);
-  await loadChapter(startChapter, { commitImmediately: true });
+  const loaded = await loadChapter(startChapter, { commitImmediately: true });
+  if (loaded?.loaded !== true) return;
   if (chunkPlayer) await chunkPlayer.seek(0);
   checkpointPlayback({ force: true, finished: false });
   await savePosition({ allowBackward: true, force: true, finished: false });
