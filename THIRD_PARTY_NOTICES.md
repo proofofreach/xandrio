@@ -179,7 +179,7 @@ This file is generated from the locked installed Node dependency tree by `npm ru
 | imurmurhash | 0.1.4 | MIT | https://github.com/jensyt/imurmurhash-js |
 | inherits | 2.0.4 | ISC | git://github.com/isaacs/inherits |
 | ini | 1.3.8 | ISC | git://github.com/isaacs/ini.git |
-| ip-address | 10.2.0 | MIT | git://github.com/beaugunderson/ip-address.git |
+| ip-address | 10.4.0 | MIT | https://github.com/beaugunderson/ip-address.git |
 | ipaddr.js | 1.9.1 | MIT | git://github.com/whitequark/ipaddr.js |
 | is-binary-path | 2.1.0 | MIT | sindresorhus/is-binary-path |
 | is-buffer | 1.1.6 | MIT | git://github.com/feross/is-buffer.git |
