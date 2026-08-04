@@ -87,6 +87,19 @@ async function withService(overrides, fn) {
     assert.deepStrictEqual(normalizeIsbns(['978-1-234-56789-7', '9781234567897', 'bad']), ['9781234567897']);
   });
 
+  await test('rejects path-like cover keys without touching files outside the cache', async () => {
+    await withService({}, async (service, cacheDir) => {
+      const outsideName = `${path.basename(cacheDir)}-outside`;
+      const outsidePath = path.join(path.dirname(cacheDir), `${outsideName}.img`);
+      assert.strictEqual(await service.resolve(`../${outsideName}`), null);
+      await assert.rejects(fs.access(outsidePath));
+      assert.deepStrictEqual(
+        (await fs.readdir(cacheDir)).filter(name => name.endsWith('.img')),
+        []
+      );
+    });
+  });
+
   await test('does not fetch a cover hostname that resolves to a private address', async () => {
     let fetches = 0;
     await withService({
@@ -212,6 +225,34 @@ async function withService(overrides, fn) {
       assert.ok(await service.resolve(registered.key));
       assert.strictEqual(workFetches, 1);
       assert.strictEqual(remoteFetches, 0);
+    });
+  });
+
+  await test('continues after a visually empty catalog candidate', async () => {
+    let inspections = 0;
+    let googleFetches = 0;
+    await withService({
+      inspectVisualQuality: async () => ({ lowInformation: inspections++ === 0 }),
+      fetchCoverByOpenLibraryWorkKey: async (_key, outputPath) => {
+        await fs.writeFile(outputPath, jpegFixture());
+        return true;
+      },
+      fetchCoverFromGoogleBooks: async (_title, _author, outputPath) => {
+        googleFetches += 1;
+        await fs.writeFile(outputPath, jpegFixture());
+        return true;
+      }
+    }, async service => {
+      const registered = service.register({
+        source: 'annas',
+        hash: 'edition-empty-work-cover',
+        title: 'Catalog Book',
+        author: 'Author',
+        openLibraryWorkKey: '/works/OLEMPTYW'
+      });
+      assert.ok(await service.resolve(registered.key));
+      assert.strictEqual(inspections, 2);
+      assert.strictEqual(googleFetches, 1);
     });
   });
 
