@@ -87,6 +87,19 @@ async function withService(overrides, fn) {
     assert.deepStrictEqual(normalizeIsbns(['978-1-234-56789-7', '9781234567897', 'bad']), ['9781234567897']);
   });
 
+  await test('rejects path-like cover keys without touching files outside the cache', async () => {
+    await withService({}, async (service, cacheDir) => {
+      const outsideName = `${path.basename(cacheDir)}-outside`;
+      const outsidePath = path.join(path.dirname(cacheDir), `${outsideName}.img`);
+      assert.strictEqual(await service.resolve(`../${outsideName}`), null);
+      await assert.rejects(fs.access(outsidePath));
+      assert.deepStrictEqual(
+        (await fs.readdir(cacheDir)).filter(name => name.endsWith('.img')),
+        []
+      );
+    });
+  });
+
   await test('does not fetch a cover hostname that resolves to a private address', async () => {
     let fetches = 0;
     await withService({
