@@ -110,6 +110,85 @@ async function createOversizedAuthoredChapterFixture() {
   return { directory, epubPath };
 }
 
+async function createHeadingBackedSpineFixture() {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'xandrio-epub-heading-spine-'));
+  const epubRoot = path.join(directory, 'book');
+  const oebps = path.join(epubRoot, 'OEBPS');
+  await fs.mkdir(path.join(epubRoot, 'META-INF'), { recursive: true });
+  await fs.mkdir(oebps, { recursive: true });
+  await fs.writeFile(path.join(epubRoot, 'mimetype'), 'application/epub+zip');
+  await fs.writeFile(path.join(epubRoot, 'META-INF', 'container.xml'), `<?xml version="1.0"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>`);
+
+  const spineIds = [
+    'acclaim', 'other-books', 'acclaim-continued', 'contents', 'dedication',
+    'introduction', 'part-1',
+    ...Array.from({ length: 8 }, (_unused, index) => `chapter-${index + 1}`),
+    'debts', 'sources', 'bibliography', 'notes', 'credits', 'about-author', 'copyright'
+  ];
+  const manifest = spineIds
+    .map(id => `<item id="${id}" href="${id}.xhtml" media-type="application/xhtml+xml"/>`)
+    .join('');
+  const spine = spineIds.map(id => `<itemref idref="${id}"/>`).join('');
+  await fs.writeFile(path.join(oebps, 'content.opf'), `<?xml version="1.0" encoding="utf-8"?>
+<package version="2.0" xmlns="http://www.idpf.org/2007/opf"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>Heading Spine Book</dc:title><dc:creator>Fixture Author</dc:creator><dc:language>en</dc:language></metadata><manifest>${manifest}</manifest><spine>${spine}</spine><guide><reference type="toc" title="Table of Contents" href="contents.xhtml"/><reference type="copyright-page" title="Copyright" href="copyright.xhtml"/></guide></package>`);
+
+  await fs.writeFile(path.join(oebps, 'acclaim.xhtml'), `<html><body class="chapter"><h1>Acclaim for THE EXAMPLE BOOK</h1><p>${'Published review praise. '.repeat(220)}</p></body></html>`);
+  await fs.writeFile(path.join(oebps, 'other-books.xhtml'), `<html><body class="otherbooks"><h1>Also by Fixture Author</h1><p>Earlier Work</p></body></html>`);
+  await fs.writeFile(path.join(oebps, 'acclaim-continued.xhtml'), `<html><body class="chapter">${Array.from({ length: 8 }, (_unused, index) => `<blockquote>Review quotation ${index + 1}.</blockquote><p class="attribution">Reviewer ${index + 1}</p>`).join('')}</body></html>`);
+  await fs.writeFile(path.join(oebps, 'contents.xhtml'), `<html><body><h1>Contents</h1><p>${'1 The First Chapter 2 The Second Chapter '.repeat(20)}</p></body></html>`);
+  await fs.writeFile(path.join(oebps, 'dedication.xhtml'), '<html><body class="dedication"><p>For the reader.</p></body></html>');
+  await fs.writeFile(path.join(oebps, 'introduction.xhtml'), `<html><body class="preface"><h1>INTRODUCTION Patterns</h1><p>${'Introductory narrative. '.repeat(1600)}</p></body></html>`);
+  await fs.writeFile(path.join(oebps, 'part-1.xhtml'), '<html><body><h1>Part I<br/>THE BEGINNING</h1></body></html>');
+
+  for (let number = 1; number <= 8; number += 1) {
+    const title = number === 6
+      ? '“The Quoted Sixth”'
+      : number === 8
+        ? '“Quoted” Eighth'
+        : `The ${['First', 'Second', 'Third', 'Fourth', 'Fifth', 'Sixth', 'Seventh', 'Eighth'][number - 1]} Chapter`;
+    const repeat = [1, 7].includes(number) ? 5200 : 900;
+    const opening = number === 1
+      ? '<p>The subject was born in an example town.</p>'
+      : '<p>The chapter opens with narrative prose.</p>';
+    await fs.writeFile(
+      path.join(oebps, `chapter-${number}.xhtml`),
+      `<html><body><h1><span>${number}</span><br/><span>${title}</span></h1>${opening}<p>${'Authored chapter prose continues. '.repeat(repeat)}</p></body></html>`
+    );
+  }
+
+  await fs.writeFile(path.join(oebps, 'debts.xhtml'), `<html><body><h1>Debts</h1><p>${'Closing narrative. '.repeat(400)}</p></body></html>`);
+  await fs.writeFile(path.join(oebps, 'sources.xhtml'), `<html><body><h1>A Note on Sources</h1><p>${'Source discussion. '.repeat(800)}</p></body></html>`);
+  await fs.writeFile(path.join(oebps, 'bibliography.xhtml'), `<html><body><h1>Selected Bibliography</h1><p>${'Bibliographic entry. '.repeat(800)}</p></body></html>`);
+  await fs.writeFile(path.join(oebps, 'notes.xhtml'), `<html><body><h1>Notes</h1><p>${'Endnote entry. '.repeat(9000)}</p></body></html>`);
+  await fs.writeFile(path.join(oebps, 'credits.xhtml'), `<html><body class="appendix"><h1>PHOTOGRAPHIC CREDITS</h1><p>${'Image credit. '.repeat(120)}</p></body></html>`);
+  await fs.writeFile(path.join(oebps, 'about-author.xhtml'), `<html><body class="preface"><p>Ada Q. Writer is the author of several biographies and was born in an example city.</p><p>${'Biographical detail. '.repeat(120)}</p></body></html>`);
+  await fs.writeFile(path.join(oebps, 'copyright.xhtml'), '<html><body class="copyright"><p>Copyright © 2026 Fixture Author. All rights reserved. ISBN 0000000000.</p></body></html>');
+
+  const epubPath = path.join(directory, 'fixture.epub');
+  execFileSync('zip', ['-qX0', epubPath, 'mimetype'], { cwd: epubRoot });
+  execFileSync('zip', ['-qr9', epubPath, 'META-INF', 'OEBPS'], { cwd: epubRoot });
+  return { directory, epubPath };
+}
+
+async function createSingleSpineOversizedFixture() {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'xandrio-epub-single-spine-'));
+  const epubRoot = path.join(directory, 'book');
+  const oebps = path.join(epubRoot, 'OEBPS');
+  await fs.mkdir(path.join(epubRoot, 'META-INF'), { recursive: true });
+  await fs.mkdir(oebps, { recursive: true });
+  await fs.writeFile(path.join(epubRoot, 'mimetype'), 'application/epub+zip');
+  await fs.writeFile(path.join(epubRoot, 'META-INF', 'container.xml'), `<?xml version="1.0"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>`);
+  await fs.writeFile(path.join(oebps, 'content.opf'), `<?xml version="1.0" encoding="utf-8"?>
+<package version="2.0" xmlns="http://www.idpf.org/2007/opf"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>Single Spine Book</dc:title><dc:creator>Fixture Author</dc:creator><dc:language>en</dc:language></metadata><manifest><item id="book" href="book.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="book"/></spine></package>`);
+  await fs.writeFile(path.join(oebps, 'book.xhtml'), `<html><body><h1>Single Spine Book</h1><p>${'Unstructured book prose continues. '.repeat(5200)}</p></body></html>`);
+  const epubPath = path.join(directory, 'fixture.epub');
+  execFileSync('zip', ['-qX0', epubPath, 'mimetype'], { cwd: epubRoot });
+  execFileSync('zip', ['-qr9', epubPath, 'META-INF', 'OEBPS'], { cwd: epubRoot });
+  return { directory, epubPath };
+}
+
 async function createNonLinearFootnoteFixture() {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'xandrio-epub-nonlinear-footnotes-'));
   const epubRoot = path.join(directory, 'book');
@@ -248,6 +327,50 @@ async function createScannedChapterBundleFixture() {
     console.log('Oversized authored chapter regression: 3 passed, 0 failed');
   } finally {
     await fs.rm(oversizedFixture.directory, { recursive: true, force: true });
+  }
+
+  const headingSpineFixture = await createHeadingBackedSpineFixture();
+  try {
+    const epub = await parseEpub(headingSpineFixture.epubPath);
+    assert.equal(epub.toc.length, 0, 'fixture exercises the no-NCX spine fallback');
+    const document = createBookDocument({ log: { log() {}, error() {} } });
+    const chapters = await document.extractChapters(headingSpineFixture.epubPath);
+    const numbered = chapters.filter(chapter => /^(?:[1-8])\s/.test(chapter.title));
+    assert.deepEqual(
+      numbered.map(chapter => chapter.title),
+      [
+        '1 The First Chapter',
+        '2 The Second Chapter',
+        '3 The Third Chapter',
+        '4 The Fourth Chapter',
+        '5 The Fifth Chapter',
+        '6 “The Quoted Sixth”',
+        '7 The Seventh Chapter',
+        '8 “Quoted” Eighth'
+      ],
+      'heading-backed spine chapters keep their authored titles'
+    );
+    assert(numbered.every(chapter => chapter.type === 'chapter'));
+    assert.equal(chapters.some(chapter => chapter.splitFromOversizedChapter), false);
+    assert.equal(chapters.find(chapter => chapter.title === 'INTRODUCTION Patterns').type, 'frontmatter');
+    assert.equal(chapters.find(chapter => chapter.title === 'Acclaim for THE EXAMPLE BOOK').type, 'frontmatter');
+    assert.equal(chapters.find(chapter => chapter.title === 'Notes').type, 'backmatter');
+    assert.equal(chapters.find(chapter => chapter.title === 'Photographic Credits').type, 'backmatter');
+    assert.equal(chapters.find(chapter => chapter.type === 'author').title, 'About the Author');
+    console.log('Heading-backed spine regression: 9 passed, 0 failed');
+  } finally {
+    await fs.rm(headingSpineFixture.directory, { recursive: true, force: true });
+  }
+
+  const singleSpineFixture = await createSingleSpineOversizedFixture();
+  try {
+    const document = createBookDocument({ log: { log() {}, error() {} } });
+    const chapters = await document.extractChapters(singleSpineFixture.epubPath);
+    assert(chapters.length > 1, 'one book-title heading does not suppress unstructured fallback splitting');
+    assert(chapters.every(chapter => chapter.splitFromOversizedChapter));
+    console.log('Single-spine oversized fallback regression: 2 passed, 0 failed');
+  } finally {
+    await fs.rm(singleSpineFixture.directory, { recursive: true, force: true });
   }
 
   const emptyAnchorFixture = await createEmptyAnchorTocFixture();
