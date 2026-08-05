@@ -82,6 +82,7 @@ function installBrowser({
   deletionResponse = { revision: 0, deletions: [] },
   canClaimLegacy = true,
   preparationResponse = null,
+  preparationError = null,
   preparationGate = null,
   preparationGateBookId = null,
   serverContentHash = false,
@@ -223,6 +224,7 @@ function installBrowser({
         preparationGate &&
         (!preparationGateBookId || requestPath.endsWith(`/${encodeURIComponent(preparationGateBookId)}`))
       ) await preparationGate;
+      if (preparationError) throw preparationError;
       return {
         bookId: book?.id,
         state: 'ready',
@@ -1345,7 +1347,7 @@ function installBrowser({
     assert.strictEqual(offline.offlineStatusForBook(book.id).kind, 'downloaded');
   });
 
-  await test('paused server preparation is not reported as active zero-progress work', async () => {
+  await test('paused server preparation returns to the one-click available action', async () => {
     const cache = makeCache();
     const manifest = {
       [book.id]: {
@@ -1374,12 +1376,79 @@ function installBrowser({
 
     assert.strictEqual(await offline.refreshOfflinePreparation(book.id), false);
     assert.deepStrictEqual(offline.offlineStatusForBook(book.id), {
-      kind: 'preparation-paused',
-      label: 'Offline setup paused · Resume',
+      kind: 'ready-to-prepare',
+      label: 'Make available offline',
+      downloaded: false,
+      cachedChapters: 0,
+      totalChapters: 0
+    });
+  });
+
+  await test('a missing server intent is not silently resurrected by polling', async () => {
+    const manifest = {
+      [book.id]: {
+        bookId: book.id,
+        title: book.title,
+        chapters: chapters.length,
+        chapterEntries: chapters.map(() => null),
+        titleData: { book, chapters },
+        manifestVersion: 3,
+        mode: 'full',
+        state: 'preparing'
+      }
+    };
+    const env = installBrowser({
+      book,
+      chapters,
+      manifest,
+      preparationResponse: { state: 'not-requested', readyChapters: 0, percent: 0 }
+    });
+
+    assert.strictEqual(await offline.refreshOfflinePreparation(book.id), false);
+    assert.deepStrictEqual(env.preparationCalls.map(call => call.method), ['GET']);
+    assert.strictEqual(offline.offlineStatusForBook(book.id).kind, 'ready-to-prepare');
+  });
+
+  await test('waiting server work is distinct from active generation', async () => {
+    const env = installBrowser({
+      book,
+      chapters,
+      manifest: {
+        [book.id]: {
+          bookId: book.id,
+          title: book.title,
+          chapters: chapters.length,
+          chapterEntries: chapters.map(() => null),
+          titleData: { book, chapters },
+          manifestVersion: 3,
+          mode: 'full',
+          state: 'preparing'
+        }
+      },
+      preparationResponse: { state: 'waiting', readyChapters: 0, percent: 0 }
+    });
+
+    assert.strictEqual(await offline.refreshOfflinePreparation(book.id), false);
+    assert.deepStrictEqual(offline.offlineStatusForBook(book.id), {
+      kind: 'preparation-waiting',
+      label: `Waiting for audio · 0 of ${chapters.length}`,
       downloaded: false,
       cachedChapters: 0,
       totalChapters: chapters.length
     });
+    const activity = env.documentEvents
+      .filter(event => event.type === 'xandrio:preparationactivity')
+      .at(-1);
+    assert.deepStrictEqual(activity.detail.preparations.map(item => item.id), [book.id]);
+  });
+
+  await test('offline queue capacity is actionable and not reported as generation failure', async () => {
+    const capacityError = Object.assign(new Error('Too many titles'), { status: 429 });
+    installBrowser({ book, chapters, preparationError: capacityError });
+
+    assert.strictEqual(await offline.prepareBookForOffline(book, chapters), false);
+    assert.strictEqual(offline.offlineStatusForBook(book.id).kind, 'preparation-capacity');
+    assert.strictEqual(offline.offlineStatusForBook(book.id).label, 'Offline queue is full · Try again');
   });
 
   await test('downloads a prepared title while another title is still queueing generation', async () => {

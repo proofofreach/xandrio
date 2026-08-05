@@ -612,6 +612,93 @@ async function runTests() {
     );
   });
 
+  await test('foreground preference applies to download chunks materialized after the signal', async () => {
+    const q = new TestableQueue({ maxConcurrent: 1, generateDelay: 30 });
+    const blockerId = await q.enqueue({
+      text: 'active',
+      outputPath: '/tmp/sticky-foreground-active.mp3',
+      priority: 'immediate'
+    });
+    const otherOneId = await q.enqueue({
+      text: 'other-1',
+      outputPath: '/tmp/sticky-foreground-other-1.mp3',
+      priority: 'download',
+      activity: { bookId: 'other-book', chapterIndex: 0 }
+    });
+    const otherTwoId = await q.enqueue({
+      text: 'other-2',
+      outputPath: '/tmp/sticky-foreground-other-2.mp3',
+      priority: 'download',
+      activity: { bookId: 'other-book', chapterIndex: 0 }
+    });
+    await sleep(5);
+
+    assert.strictEqual(q.prioritizeBook('foreground-book'), 0);
+    const foregroundOneId = await q.enqueue({
+      text: 'foreground-1',
+      outputPath: '/tmp/sticky-foreground-target-1.mp3',
+      priority: 'download',
+      activity: { bookId: 'foreground-book', chapterIndex: 0 }
+    });
+    const foregroundTwoId = await q.enqueue({
+      text: 'foreground-2',
+      outputPath: '/tmp/sticky-foreground-target-2.mp3',
+      priority: 'download',
+      activity: { bookId: 'foreground-book', chapterIndex: 0 }
+    });
+
+    await Promise.all([
+      q.waitFor(blockerId),
+      q.waitFor(otherOneId),
+      q.waitFor(otherTwoId),
+      q.waitFor(foregroundOneId),
+      q.waitFor(foregroundTwoId)
+    ]);
+    assert.deepStrictEqual(
+      q.generationLog.map(entry => entry.text),
+      ['active', 'foreground-1', 'foreground-2', 'other-1', 'other-2']
+    );
+  });
+
+  await test('foreground book preference expires so other downloads cannot starve', async () => {
+    let clock = 0;
+    const q = new TestableQueue({
+      maxConcurrent: 1,
+      generateDelay: 30,
+      foregroundBookTtlMs: 1000,
+      now: () => clock
+    });
+    const blockerId = await q.enqueue({
+      text: 'active',
+      outputPath: '/tmp/expiring-foreground-active.mp3',
+      priority: 'immediate'
+    });
+    const otherId = await q.enqueue({
+      text: 'other',
+      outputPath: '/tmp/expiring-foreground-other.mp3',
+      priority: 'download',
+      activity: { bookId: 'other-book', chapterIndex: 0 }
+    });
+    q.prioritizeBook('foreground-book');
+    const foregroundId = await q.enqueue({
+      text: 'foreground',
+      outputPath: '/tmp/expiring-foreground-target.mp3',
+      priority: 'download',
+      activity: { bookId: 'foreground-book', chapterIndex: 0 }
+    });
+    clock = 1001;
+
+    await Promise.all([
+      q.waitFor(blockerId),
+      q.waitFor(otherId),
+      q.waitFor(foregroundId)
+    ]);
+    assert.deepStrictEqual(
+      q.generationLog.map(entry => entry.text),
+      ['active', 'other', 'foreground']
+    );
+  });
+
   await test('foreground work bypasses an active background job', async () => {
     const q = new TestableQueue({ maxConcurrent: 1, generateDelay: 80 });
 

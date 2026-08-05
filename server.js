@@ -3283,9 +3283,11 @@ const offlinePreparationCoordinator = createOfflinePreparationCoordinator({
 });
 
 function prioritizeForegroundBook(bookId) {
+  const queuedJobs = ttsQueue.prioritizeBook(bookId);
   return {
-    queuedJobs: ttsQueue.prioritizeBook(bookId),
-    queuedPreparation: offlinePreparationCoordinator.prioritize(bookId)
+    queuedJobs,
+    queuedPreparation: offlinePreparationCoordinator.prioritize(bookId),
+    foregroundPreferred: ttsQueue.foregroundBookId() === bookId
   };
 }
 
