@@ -244,7 +244,9 @@ function renderBookCard(book, position, onShelf = false) {
 }
 
 function skeletonCardsHTML(n) {
-  return Array.from({ length: n }, () => `
+  return `
+    <p id="library-loading-status" class="sr-only" role="status" aria-live="polite">Loading library…</p>
+    ${Array.from({ length: n }, () => `
     <div class="book-item skeleton" aria-hidden="true">
       <div class="book-item-inner">
         <div class="book-cover-wrap sk-block"></div>
@@ -255,7 +257,7 @@ function skeletonCardsHTML(n) {
         </div>
       </div>
     </div>
-  `).join('');
+  `).join('')}`;
 }
 
 function getRailDismissals() {
@@ -315,82 +317,92 @@ function renderContinueRail(entries) {
 
 export async function loadLibrary() {
   const libraryList = document.getElementById('library-list');
+  if (!libraryList) return;
   const hasRenderedBooks = !!libraryList?.querySelector('.book-item:not(.skeleton)');
-  if (libraryList && !hasRenderedBooks) libraryList.innerHTML = skeletonCardsHTML(6);
+  if (!hasRenderedBooks) libraryList.innerHTML = skeletonCardsHTML(6);
+  libraryList.setAttribute('aria-busy', 'true');
 
-  const verifiedOfflineBooks = getVerifiedOfflineLibraryBooks().catch(error => {
-    console.warn('Could not verify local downloads:', error);
-    return [];
-  });
-  let data, positions;
-  let offlineFallback = false;
   try {
-    const [libraryData, posData] = await Promise.all([
-      apiGet('/api/library'),
-      apiGet('/api/positions').catch(() => ({})),
-      verifiedOfflineBooks
-    ]);
-    data = libraryData;
-    positions = posData.positions || {};
-  } catch (err) {
-    console.error('Failed to load library:', err);
-    const offlineBooks = await verifiedOfflineBooks;
-    if (offlineBooks.length > 0) {
-      offlineFallback = true;
-      data = { books: offlineBooks, shelf: [] };
-      positions = Object.fromEntries(offlineBooks.map(book => [
-        book.id,
-        readJSON(`xandrio_playback_checkpoint:${book.id}`, null)
-      ]));
-    } else if (libraryList) {
+    // Verify local downloads concurrently, but do not make a successful online
+    // library wait for a sequential Cache Storage audit. The verified result is
+    // only required when the network library itself is unavailable.
+    const verifiedOfflineBooks = getVerifiedOfflineLibraryBooks().catch(error => {
+      console.warn('Could not verify local downloads:', error);
+      return [];
+    });
+    let data, positions;
+    let offlineFallback = false;
+    try {
+      const [libraryData, posData] = await Promise.all([
+        apiGet('/api/library'),
+        apiGet('/api/positions').catch(() => ({}))
+      ]);
+      data = libraryData;
+      positions = posData.positions || {};
+    } catch (err) {
+      console.error('Failed to load library:', err);
+      const offlineBooks = await verifiedOfflineBooks;
+      if (offlineBooks.length > 0) {
+        offlineFallback = true;
+        data = { books: offlineBooks, shelf: [] };
+        positions = Object.fromEntries(offlineBooks.map(book => [
+          book.id,
+          readJSON(`xandrio_playback_checkpoint:${book.id}`, null)
+        ]));
+      } else {
+        renderContinueRail([]);
+        libraryList.classList.remove('offline-library-fallback');
+        libraryList.innerHTML = `
+          <div class="empty-state-modern" role="alert">
+            <div class="empty-icon"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="icon-lg"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z"/></svg></div>
+            <h3>Couldn't load your library</h3>
+            <p>Check your connection and try again</p>
+            <button class="btn-primary" data-retry-library>Retry</button>
+          </div>
+        `;
+        libraryList.querySelector('[data-retry-library]')?.addEventListener('click', () => loadLibrary());
+        return;
+      }
+    }
+
+    if (data.books.length === 0) {
       renderContinueRail([]);
+      libraryList.classList.remove('offline-library-fallback');
       libraryList.innerHTML = `
         <div class="empty-state-modern">
-          <div class="empty-icon"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="icon-lg"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z"/></svg></div>
-          <h3>Couldn't load your library</h3>
-          <p>Check your connection and try again</p>
-          <button class="btn-primary" data-retry-library>Retry</button>
+          <div class="empty-icon"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="icon-lg"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6.042A8.967 8.967 0 006 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 016 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 016-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0018 18a8.967 8.967 0 00-6 2.292m0-14.25v14.25"/></svg></div>
+          <h3>Your library is empty</h3>
+          <p>Add your first audiobook to get started</p>
+          <button class="btn-primary" data-add-book-empty>+ Add Book</button>
         </div>
       `;
-      libraryList.querySelector('[data-retry-library]')?.addEventListener('click', () => loadLibrary());
       return;
     }
-  }
 
-  if (data.books.length === 0) {
-    renderContinueRail([]);
-    libraryList.innerHTML = `
-      <div class="empty-state-modern">
-        <div class="empty-icon"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="icon-lg"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6.042A8.967 8.967 0 006 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 016 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 016-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0018 18a8.967 8.967 0 00-6 2.292m0-14.25v14.25"/></svg></div>
-        <h3>Your library is empty</h3>
-        <p>Add your first audiobook to get started</p>
-        <button class="btn-primary" data-add-book-empty>+ Add Book</button>
-      </div>
-    `;
-    return;
+    if ('ontouchstart' in window || navigator.maxTouchPoints > 0) document.body.classList.add('touch-device');
+    currentShelf = new Set(Array.isArray(data.shelf) ? data.shelf : []);
+    // A new account opens on its own shelf, even when the shared library
+    // already contains books. Preserve an explicit tab choice on later visits.
+    const storedTab = readText(libraryTabStorageKey(), 'shelf');
+    currentTab = ['shelf', 'downloaded', 'all'].includes(storedTab) ? storedTab : 'shelf';
+    if (offlineFallback) currentTab = 'downloaded';
+    syncLibraryTabs();
+    libraryList.innerHTML = data.books.map(book => renderBookCard(book, positions[book.id] || null, currentShelf.has(book.id))).join('');
+    libraryList.classList.toggle('offline-library-fallback', offlineFallback);
+    const continueEntries = data.books
+      .map(book => ({ book, progress: bookProgressInfo(book, positions[book.id]) }))
+      .filter(entry => entry.progress && !entry.progress.finished)
+      .filter(entry => !isRailDismissed(entry.book.id, entry.progress.updatedAtMs))
+      .sort((a, b) => (b.progress.updatedAtMs || 0) - (a.progress.updatedAtMs || 0))
+      .slice(0, 3);
+    renderContinueRail(continueEntries);
+    if (continueRail && librarySearch?.value.trim()) continueRail.hidden = true;
+    sortLibrary();
+    filterLibrary();
+    setupSwipeDelete();
+  } finally {
+    libraryList.setAttribute('aria-busy', 'false');
   }
-
-  if ('ontouchstart' in window || navigator.maxTouchPoints > 0) document.body.classList.add('touch-device');
-  currentShelf = new Set(Array.isArray(data.shelf) ? data.shelf : []);
-  // A new account opens on its own shelf, even when the shared library
-  // already contains books. Preserve an explicit tab choice on later visits.
-  const storedTab = readText(libraryTabStorageKey(), 'shelf');
-  currentTab = ['shelf', 'downloaded', 'all'].includes(storedTab) ? storedTab : 'shelf';
-  if (offlineFallback) currentTab = 'downloaded';
-  syncLibraryTabs();
-  libraryList.innerHTML = data.books.map(book => renderBookCard(book, positions[book.id] || null, currentShelf.has(book.id))).join('');
-  libraryList.classList.toggle('offline-library-fallback', offlineFallback);
-  const continueEntries = data.books
-    .map(book => ({ book, progress: bookProgressInfo(book, positions[book.id]) }))
-    .filter(entry => entry.progress && !entry.progress.finished)
-    .filter(entry => !isRailDismissed(entry.book.id, entry.progress.updatedAtMs))
-    .sort((a, b) => (b.progress.updatedAtMs || 0) - (a.progress.updatedAtMs || 0))
-    .slice(0, 3);
-  renderContinueRail(continueEntries);
-  if (continueRail && librarySearch?.value.trim()) continueRail.hidden = true;
-  sortLibrary();
-  filterLibrary();
-  setupSwipeDelete();
 }
 
 function refreshOfflineIndicators() {

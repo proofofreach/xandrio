@@ -133,12 +133,67 @@
           </div>
         </section>
 
-        <div id="library-list" class="book-list">
-          <div class="empty-state-modern">
-            <div class="empty-icon"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="icon-lg"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6.042A8.967 8.967 0 006 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 016 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 016-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0018 18a8.967 8.967 0 00-6 2.292m0-14.25v14.25"/></svg></div>
-            <h3>Your library is empty</h3>
-            <p>Add your first audiobook to get started</p>
-            <button class="btn-primary" data-add-book-empty>+ Add Book</button>
+        <div id="library-list" class="book-list" aria-busy="true">
+          <p id="library-loading-status" class="sr-only" role="status" aria-live="polite">Loading library…</p>
+          <div class="book-item skeleton" aria-hidden="true">
+            <div class="book-item-inner">
+              <div class="book-cover-wrap sk-block"></div>
+              <div class="book-item-info">
+                <div class="sk-line w-70"></div>
+                <div class="sk-line w-45"></div>
+                <div class="sk-line w-30"></div>
+              </div>
+            </div>
+          </div>
+          <div class="book-item skeleton" aria-hidden="true">
+            <div class="book-item-inner">
+              <div class="book-cover-wrap sk-block"></div>
+              <div class="book-item-info">
+                <div class="sk-line w-70"></div>
+                <div class="sk-line w-45"></div>
+                <div class="sk-line w-30"></div>
+              </div>
+            </div>
+          </div>
+          <div class="book-item skeleton" aria-hidden="true">
+            <div class="book-item-inner">
+              <div class="book-cover-wrap sk-block"></div>
+              <div class="book-item-info">
+                <div class="sk-line w-70"></div>
+                <div class="sk-line w-45"></div>
+                <div class="sk-line w-30"></div>
+              </div>
+            </div>
+          </div>
+          <div class="book-item skeleton" aria-hidden="true">
+            <div class="book-item-inner">
+              <div class="book-cover-wrap sk-block"></div>
+              <div class="book-item-info">
+                <div class="sk-line w-70"></div>
+                <div class="sk-line w-45"></div>
+                <div class="sk-line w-30"></div>
+              </div>
+            </div>
+          </div>
+          <div class="book-item skeleton" aria-hidden="true">
+            <div class="book-item-inner">
+              <div class="book-cover-wrap sk-block"></div>
+              <div class="book-item-info">
+                <div class="sk-line w-70"></div>
+                <div class="sk-line w-45"></div>
+                <div class="sk-line w-30"></div>
+              </div>
+            </div>
+          </div>
+          <div class="book-item skeleton" aria-hidden="true">
+            <div class="book-item-inner">
+              <div class="book-cover-wrap sk-block"></div>
+              <div class="book-item-info">
+                <div class="sk-line w-70"></div>
+                <div class="sk-line w-45"></div>
+                <div class="sk-line w-30"></div>
+              </div>
+            </div>
           </div>
         </div>
       </div>

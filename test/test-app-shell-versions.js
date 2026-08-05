@@ -112,6 +112,31 @@ assert(
     librarySource.includes("deviceHint.hidden = currentTab !== 'downloaded'"),
   'the populated Downloaded view explains that copies are device-local'
 );
+{
+  const initialLibraryMarkup = indexSource.slice(
+    indexSource.indexOf('<div id="library-list"'),
+    indexSource.indexOf('<!-- Search View -->')
+  );
+  assert(
+    initialLibraryMarkup.includes('aria-busy="true"') &&
+      initialLibraryMarkup.includes('Loading library…') &&
+      (initialLibraryMarkup.match(/class="book-item skeleton"/g) || []).length === 6 &&
+      !initialLibraryMarkup.includes('Your library is empty'),
+    'the initial library shell is a truthful accessible loading state'
+  );
+}
+{
+  const onlineLibraryBatch = librarySource.match(
+    /const \[libraryData, posData\] = await Promise\.all\(\[([\s\S]*?)\]\);/
+  )?.[1] || '';
+  assert(
+    onlineLibraryBatch.includes("apiGet('/api/library')") &&
+      onlineLibraryBatch.includes("apiGet('/api/positions')") &&
+      !onlineLibraryBatch.includes('verifiedOfflineBooks') &&
+      librarySource.includes('const offlineBooks = await verifiedOfflineBooks;'),
+    'successful online library rendering does not await offline-cache verification'
+  );
+}
 // A partial or unverified download used to be filed under Downloaded and
 // marked data-downloaded="1". Opening one and having it fail to play is
 // exactly the report this work came from.
