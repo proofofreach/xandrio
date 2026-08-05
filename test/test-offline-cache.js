@@ -95,6 +95,7 @@ function installBrowser({
   serviceWorkerController = { scriptURL: `https://reader.test/sw.js?v=${SW_CACHE_VERSION}` },
   verificationProbe = null
 }) {
+  global.__offlineToasts = [];
   const storage = sharedStorage || new Map();
   if (!storage.has('xandrio_offline_books')) {
     storage.set('xandrio_offline_books', JSON.stringify(manifest));
@@ -352,7 +353,7 @@ function installBrowser({
     )
     .replace("import { escapeHTML, formatDuration, relativeTime } from '../util/format.js';", "const escapeHTML = value => String(value); const relativeTime = () => ''; const formatDuration = () => '';")
     .replace("import { readJSON, writeJSON } from '../util/storage.js';", "const readJSON = (key, fallback = null) => { try { const value = localStorage.getItem(key); return value == null ? fallback : JSON.parse(value); } catch { return fallback; } }; const writeJSON = (key, value) => { try { localStorage.setItem(key, JSON.stringify(value)); return true; } catch { return false; } };")
-    .replace("import { showToast, showUndoToast } from '../ui/toast.js';", "const showToast = () => {}; const showUndoToast = () => {};")
+    .replace("import { showToast, showUndoToast } from '../ui/toast.js';", "const showToast = (...args) => globalThis.__offlineToasts.push(args); const showUndoToast = () => {};")
     .replace("import { confirmSheet } from '../ui/confirm.js';", "const confirmSheet = (...args) => globalThis.__offlineConfirmSheet(...args);")
     .replace(
       "import { planRollingOfflineWindow } from './rolling-offline.mjs';",
@@ -384,14 +385,14 @@ function installBrowser({
     assert.strictEqual(offline.offlineDownloadsSupported(), false);
   });
 
-  await test('offers server preparation before a device download', async () => {
+  await test('offers one device-neutral offline action before server status is known', async () => {
     const cache = makeCache();
     installBrowser({ book, chapters, cache });
 
     assert.strictEqual(offline.offlineStatusForBook(book.id).kind, 'ready-to-prepare');
     assert.strictEqual(
       offline.offlineStatusForBook(book.id).label,
-      'Prepare for offline'
+      'Make available offline'
     );
   });
 
@@ -408,6 +409,56 @@ function installBrowser({
       env.statusRequests.length <= 1,
       'device transfer must not poll generation status chapter by chapter'
     );
+  });
+
+  await test('one fresh-device action downloads audio already prepared on the server', async () => {
+    const cache = makeCache();
+    const env = installBrowser({ book, chapters, cache });
+
+    assert.strictEqual(await offline.prepareAndDownloadBookForOffline(
+      book,
+      chapters,
+      { confirmForeground: false }
+    ), true);
+    assert.deepStrictEqual(
+      env.preparationCalls.map(call => call.method),
+      ['POST', 'GET']
+    );
+    assert.deepStrictEqual(env.prepareCalls, []);
+    assert.deepStrictEqual(env.audioRequests, [0, 1]);
+    assert.strictEqual(offline.offlineStatusForBook(book.id).kind, 'downloaded');
+    assert(!global.__offlineToasts.some(([message]) => message === 'Audio is ready to download'));
+  });
+
+  await test('a fresh device stays neutral until shared server status is known', async () => {
+    const cache = makeCache();
+    let releasePreparation;
+    const preparationGate = new Promise(resolve => { releasePreparation = resolve; });
+    installBrowser({ book, chapters, cache, preparationGate });
+
+    const preparation = offline.prepareBookForOffline(book, chapters);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.strictEqual(offline.offlineStatusForBook(book.id).kind, 'ready-to-prepare');
+
+    releasePreparation();
+    assert.strictEqual(await preparation, true);
+  });
+
+  await test('notification setup does not delay the shared server-audio check', async () => {
+    const cache = makeCache();
+    const env = installBrowser({ book, chapters, cache });
+    let finishNotificationSetup;
+    const notificationSetup = new Promise(resolve => { finishNotificationSetup = resolve; });
+
+    const action = offline.prepareAndDownloadBookForOffline(book, chapters, {
+      notificationSetup,
+      confirmForeground: false
+    });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.strictEqual(env.preparationCalls[0]?.method, 'POST');
+
+    finishNotificationSetup(false);
+    assert.strictEqual(await action, true);
   });
 
   await test('reload resumes an interrupted device transfer without another confirmation', async () => {

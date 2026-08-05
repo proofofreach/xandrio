@@ -331,6 +331,16 @@ function fakeAudio() {
 
   await test('guards app-level chapter resume failures without an unhandled rejection', async () => {
     const appSource = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
+    const openBookSource = appSource.slice(
+      appSource.indexOf('async function openBook('),
+      appSource.indexOf('let loadChapterToken')
+    );
+    assert(
+      openBookSource.indexOf('void prioritizeForegroundBook(bookId);') !== -1 &&
+        openBookSource.indexOf('void prioritizeForegroundBook(bookId);') <
+          openBookSource.indexOf('await apiGet(`/api/book/${encodeURIComponent(bookId)}`)'),
+      'opening a book signals foreground priority before waiting for book data'
+    );
     const appImports = {
       createPlaybackSession: () => ({
         setBook() {},
@@ -394,6 +404,8 @@ function fakeAudio() {
       offlineWorkerControllerState: () => ({ controlled: true, compatible: false }),
       certifyOfflineWorkerController: async () => ({ controlled: true, compatible: false })
     };
+    appImports.apiSend = async (...args) => { appImports.apiSendCalls.push(args); };
+    appImports.apiSendCalls = [];
     appImports.transitionRequests = [];
     appImports.restoredPositions = [];
     appImports.transitionGate = null;
@@ -424,6 +436,7 @@ function fakeAudio() {
         },
         loadChapter,
         loadRestoredChapter,
+        prioritizeForegroundBook,
         recordPlaybackEvent,
         playbackEvents() { return playbackEventLedger.slice(); },
         handleChapterEnd,
@@ -494,6 +507,37 @@ function fakeAudio() {
         player,
         chapter: uiElement
       });
+
+      await globalThis.__playbackAppHarness.prioritizeForegroundBook();
+      await globalThis.__playbackAppHarness.prioritizeForegroundBook();
+      assert.deepStrictEqual(
+        appImports.apiSendCalls,
+        [['POST', '/api/playback/foreground/book-a']],
+        'the foreground book is signaled once without waiting for playback generation'
+      );
+      globalThis.__playbackAppHarness.configure({
+        book: { id: 'book-b' },
+        chapters: [{ title: 'Other' }],
+        player,
+        chapter: uiElement
+      });
+      await globalThis.__playbackAppHarness.prioritizeForegroundBook();
+      assert.deepStrictEqual(appImports.apiSendCalls.at(-1), [
+        'POST',
+        '/api/playback/foreground/book-b'
+      ]);
+      globalThis.__playbackAppHarness.configure({
+        book: { id: 'book-a' },
+        chapters: [{ title: 'One' }, { title: 'Two' }],
+        player,
+        chapter: uiElement
+      });
+      await globalThis.__playbackAppHarness.prioritizeForegroundBook();
+      assert.strictEqual(
+        appImports.apiSendCalls.length,
+        2,
+        'switching titles does not reset the per-title foreground debounce'
+      );
 
       // Opening a saved iOS HLS chapter must start the transport at the saved
       // chapter time. Loading at zero and seeking to 142 seconds made Safari

@@ -3282,6 +3282,13 @@ const offlinePreparationCoordinator = createOfflinePreparationCoordinator({
   }
 });
 
+function prioritizeForegroundBook(bookId) {
+  return {
+    queuedJobs: ttsQueue.prioritizeBook(bookId),
+    queuedPreparation: offlinePreparationCoordinator.prioritize(bookId)
+  };
+}
+
 registerPlaybackRoutes(app, {
   playbackOrchestrator,
   ttsForTier,
@@ -3303,6 +3310,7 @@ registerPlaybackRoutes(app, {
     return inspectOfflineChapterAudio(bookId, chapterIndex, { packageVariantKey });
   },
   offlineReadinessNotifications,
+  prioritizeForegroundBook,
   onCurrentChapterPrepared: ({ req, bookId, chapterIndex }) => observePlaybackHorizon({
     bookId,
     chapterIndex,

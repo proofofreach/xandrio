@@ -562,6 +562,56 @@ async function runTests() {
     assert.deepStrictEqual(order, ['active', 'chunk-6', 'chunk-1', 'chunk-2']);
   });
 
+  await test('foreground book moves ahead of other books within its scheduling band', async () => {
+    const q = new TestableQueue({ maxConcurrent: 1, generateDelay: 30 });
+
+    const blockerId = await q.enqueue({
+      text: 'active',
+      outputPath: '/tmp/foreground-book-active.mp3',
+      priority: 'immediate'
+    });
+    const otherOneId = await q.enqueue({
+      text: 'other-1',
+      outputPath: '/tmp/foreground-book-other-1.mp3',
+      priority: 'download',
+      activity: { bookId: 'other-book', chapterIndex: 0, origin: 'offline-download' }
+    });
+    const foregroundOneId = await q.enqueue({
+      text: 'foreground-1',
+      outputPath: '/tmp/foreground-book-target-1.mp3',
+      priority: 'download',
+      activity: { bookId: 'foreground-book', chapterIndex: 0, origin: 'offline-download' }
+    });
+    const otherTwoId = await q.enqueue({
+      text: 'other-2',
+      outputPath: '/tmp/foreground-book-other-2.mp3',
+      priority: 'download',
+      activity: { bookId: 'other-book', chapterIndex: 1, origin: 'offline-download' }
+    });
+    const foregroundTwoId = await q.enqueue({
+      text: 'foreground-2',
+      outputPath: '/tmp/foreground-book-target-2.mp3',
+      priority: 'download',
+      activity: { bookId: 'foreground-book', chapterIndex: 1, origin: 'offline-download' }
+    });
+    await sleep(5);
+
+    assert.strictEqual(q.prioritizeBook('foreground-book'), 2);
+
+    await Promise.all([
+      q.waitFor(blockerId),
+      q.waitFor(otherOneId),
+      q.waitFor(foregroundOneId),
+      q.waitFor(otherTwoId),
+      q.waitFor(foregroundTwoId)
+    ]);
+
+    assert.deepStrictEqual(
+      q.generationLog.map(entry => entry.text),
+      ['active', 'foreground-1', 'foreground-2', 'other-1', 'other-2']
+    );
+  });
+
   await test('foreground work bypasses an active background job', async () => {
     const q = new TestableQueue({ maxConcurrent: 1, generateDelay: 80 });
 

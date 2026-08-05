@@ -163,6 +163,70 @@ async function test(name, fn) {
     assert.strictEqual(status.packageVariantKey, 'voice-a:offline-mp3-v1:br48k');
   });
 
+  await test('a second device reuses ready server audio without downgrading or notifying again', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'offline-ready-reuse-'));
+    const journal = new GenerationJournal(path.join(dir, 'generation-state.json'));
+    let prepared = false;
+    let prepareCalls = 0;
+    let readyNotifications = 0;
+    const coordinator = createOfflinePreparationCoordinator({
+      stateStore: journal,
+      preparationIdentity: () => ({
+        packageVariantKey: 'voice-a:offline-mp3-v1:br48k',
+        sourceVariantKey: 'voice-a',
+        sourceVoice: 'voice-a',
+        sourceChunkSize: 4000,
+        bitrateKbps: 48
+      }),
+      getBookChapters: async bookId => ({
+        book: { id: bookId },
+        chapters: [{}]
+      }),
+      chapterStatus: async () => ({
+        ready: prepared,
+        size: prepared ? 480 : 0,
+        totalChunks: 1,
+        readyChunks: prepared ? 1 : 0,
+        errorChunks: 0
+      }),
+      prepareChapter: async () => {
+        prepareCalls += 1;
+        prepared = true;
+      },
+      onReady: async () => { readyNotifications += 1; }
+    });
+
+    await coordinator.request('shared-ready', { ownerId: 'account:device-a' });
+    await coordinator.waitForIdle('shared-ready');
+    assert.strictEqual((await coordinator.status('shared-ready')).state, 'ready');
+
+    const persistedStates = [];
+    const putOfflinePreparation = journal.putOfflinePreparation.bind(journal);
+    journal.putOfflinePreparation = async record => {
+      persistedStates.push(record.state);
+      return putOfflinePreparation(record);
+    };
+
+    const secondStatus = await coordinator.request('shared-ready', {
+      ownerId: 'account:device-b'
+    });
+    assert.strictEqual(secondStatus.state, 'ready');
+    await coordinator.waitForIdle('shared-ready');
+
+    const record = await journal.getOfflinePreparation('shared-ready');
+    assert.strictEqual(record.state, 'ready');
+    assert.deepStrictEqual(record.owners, ['account:device-a', 'account:device-b']);
+    assert(!persistedStates.includes('preparing'));
+    assert.strictEqual(prepareCalls, 1);
+    assert.strictEqual(readyNotifications, 1);
+
+    prepared = false;
+    await coordinator.request('shared-ready', { ownerId: 'account:device-c' });
+    await coordinator.waitForIdle('shared-ready');
+    assert.strictEqual(prepareCalls, 2);
+    assert.strictEqual(readyNotifications, 2);
+  });
+
   await test('a preparation failure retains the failing chapter cursor', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'offline-error-cursor-'));
     const journal = new GenerationJournal(path.join(dir, 'generation-state.json'));
@@ -495,6 +559,58 @@ async function test(name, fn) {
     await coordinator.cancel('book-one', { remove: true });
     await coordinator.cancel('book-two', { remove: true });
     gate.resolve();
+  });
+
+  await test('foreground title moves to the front of pending server preparation', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'offline-foreground-title-'));
+    const journal = new GenerationJournal(path.join(dir, 'generation-state.json'));
+    const gates = new Map([
+      ['book-one', deferred()],
+      ['book-two', deferred()],
+      ['book-three', deferred()]
+    ]);
+    const ready = new Set();
+    const started = [];
+    const coordinator = createOfflinePreparationCoordinator({
+      stateStore: journal,
+      maxConcurrentTitles: 1,
+      maxTrackedTitles: 3,
+      getBookChapters: async bookId => ({
+        book: { id: bookId },
+        chapters: [{}]
+      }),
+      chapterStatus: async ({ bookId }) => ({
+        ready: ready.has(bookId),
+        totalChunks: 1,
+        readyChunks: ready.has(bookId) ? 1 : 0,
+        errorChunks: 0
+      }),
+      prepareChapter: async ({ bookId }) => {
+        started.push(bookId);
+        await gates.get(bookId).promise;
+        ready.add(bookId);
+      }
+    });
+
+    await coordinator.request('book-one');
+    await coordinator.request('book-two');
+    await coordinator.request('book-three');
+    await eventually(() => started.length === 1);
+
+    assert.strictEqual(coordinator.prioritize('book-three'), true);
+    gates.get('book-one').resolve();
+    await eventually(() => started.length === 2);
+    assert.deepStrictEqual(started, ['book-one', 'book-three']);
+
+    gates.get('book-three').resolve();
+    await eventually(() => started.length === 3);
+    gates.get('book-two').resolve();
+    await Promise.all([
+      coordinator.waitForIdle('book-one'),
+      coordinator.waitForIdle('book-two'),
+      coordinator.waitForIdle('book-three')
+    ]);
+    assert.deepStrictEqual(started, ['book-one', 'book-three', 'book-two']);
   });
 
   await test('concurrent requests cannot exceed admission or lose device owners', async () => {
