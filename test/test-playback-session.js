@@ -329,6 +329,29 @@ function fakeAudio() {
     ]);
   });
 
+  await test('does not seek an iOS continuous stream that already opened at the saved offset', async () => {
+    const calls = [];
+    const continuous = {
+      chapterIndex: 6,
+      supportsChunkPositionRestore: false,
+      openedAtOffset(chapterIndex, seconds) {
+        return chapterIndex === 6 && Math.abs(seconds - 181.6667954586644) < 0.01;
+      },
+      async seek(seconds) { calls.push(['seek', seconds]); }
+    };
+
+    await restorePlaybackPosition(continuous, {
+      timestamp: 181.6667954586644,
+      chapterIndex: 6
+    });
+
+    assert.deepStrictEqual(
+      calls,
+      [],
+      'native HLS is left at stream time zero instead of being redundantly repositioned'
+    );
+  });
+
   await test('guards app-level chapter resume failures without an unhandled rejection', async () => {
     const appSource = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
     const openBookSource = appSource.slice(

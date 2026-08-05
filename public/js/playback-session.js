@@ -27,6 +27,11 @@ export async function restorePlaybackPosition(engine, position) {
     0,
     Number(position.timestamp ?? position.currentTime ?? position.chunkTime) || 0
   );
+  // A continuous HLS source opened at the saved chapter position maps that
+  // position to media time zero. Reassigning currentTime after metadata loads
+  // is redundant and can leave native iOS HLS stalled with buffered segments
+  // but no advancing media timeline.
+  if (engine.openedAtOffset?.(engine.chapterIndex, seconds)) return;
   await engine.seek(seconds);
 }
 
