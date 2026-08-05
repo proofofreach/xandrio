@@ -657,6 +657,7 @@ function handleChunkError(error) {
   if (
     error?.code === 'CONTINUOUS_STREAM_EOF'
     || error?.code === 'MEDIA_PLAY_TIMEOUT'
+    || error?.code === 'MEDIA_PROGRESS_TIMEOUT'
     // A rate limit is about the account, not the transport: it must be reported
     // even when the engine that failed had not reached continuous playback.
     || error?.status === 429

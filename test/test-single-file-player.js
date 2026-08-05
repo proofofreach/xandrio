@@ -141,9 +141,9 @@ function fakeAudio() {
 
     const play = player.play();
     audio.emit('playing');
-    await play;
     audio.currentTime = 45;
     audio.emit('timeupdate');
+    await play;
     audio.currentTime = 90;
     audio.emit('timeupdate');
 
@@ -669,6 +669,23 @@ function fakeAudio() {
     assert.strictEqual(player.isPlaying, false);
   });
 
+  await test('a stale stream that claims playing without advancing rejects', async () => {
+    const audio = fakeAudio();
+    const { player } = makePlayer(audio, { playProgressTimeoutMs: 25 });
+    const load = player.loadChapter('book1', 0);
+    audio.emit('loadedmetadata');
+    await load;
+
+    const play = player.play();
+    audio.emit('playing');
+
+    await assert.rejects(
+      play,
+      error => error.code === 'MEDIA_PROGRESS_TIMEOUT'
+    );
+    assert.strictEqual(player.isPlaying, false);
+  });
+
   await test('distinguishes app controls from native playback interruptions', async () => {
     const audio = fakeAudio();
     const changes = [];
@@ -682,6 +699,8 @@ function fakeAudio() {
     const play = player.play();
     audio.emit('play');
     audio.emit('playing');
+    audio.currentTime = 1;
+    audio.emit('timeupdate');
     await play;
     player.pause();
     audio.emit('pause');
