@@ -12,7 +12,7 @@ import {
   getVerifiedOfflineLibraryBooks,
   offlineDownloadsSupported,
   offlineStatusForBook,
-  prepareBookForOffline,
+  prepareAndDownloadBookForOffline,
   removeOfflineBook
 } from '../features/offline.js';
 
@@ -167,7 +167,7 @@ function offlineMenuActionContents(bookId) {
   if (status.kind === 'download-unavailable' || status.kind === 'download-offline') {
     return `<button type="button" role="menuitem" disabled>${escapeHTML(status.label)}</button>`;
   }
-  const label = status.kind === 'preparation-error' ? 'Retry audio preparation' : 'Prepare for offline';
+  const label = status.kind === 'preparation-error' ? 'Retry offline setup' : 'Make available offline';
   return `<button type="button" role="menuitem" data-download-book="${safeAttr(bookId)}">${label}</button>`;
 }
 
@@ -592,8 +592,10 @@ async function downloadBookFromLibrary(bookId) {
     ) {
       await downloadBookForOffline(data.book, data.chapters, { showOverlay: false });
     } else {
-      await notificationSetup;
-      await prepareBookForOffline(data.book, data.chapters);
+      await prepareAndDownloadBookForOffline(data.book, data.chapters, {
+        notificationSetup,
+        showOverlay: false
+      });
     }
   } catch (error) {
     console.error('Could not start offline download:', error);

@@ -26,7 +26,7 @@ const OFFLINE_CONTRACT_MARKER = 'x-xandrio-offline-contract';
  * with OFFLINE_ROUTE_CONTRACT_VERSION instead of tying downloads to a build id.
  * This value MUST equal CACHE_VERSION in public/sw.js.
  */
-export const EXPECTED_OFFLINE_SW_VERSION = 'xandrio-v126';
+export const EXPECTED_OFFLINE_SW_VERSION = 'xandrio-v127';
 export const MINIMUM_OFFLINE_ROUTE_CONTRACT = 1;
 // A chapter is only ever invalidated after this many playback failures whose
 // cheap probe still says the cache is fine. Below it, we assume Safari.
@@ -501,7 +501,7 @@ function availableDownloadStatus(cachedChapters = 0, totalChapters = 0) {
   }
   return {
     kind: 'ready-to-prepare',
-    label: 'Prepare for offline',
+    label: 'Make available offline',
     downloaded: false,
     cachedChapters,
     totalChapters
@@ -1152,7 +1152,7 @@ function preparationEntry(book, chapters, existing = null) {
   };
 }
 
-function applyPreparationStatus(bookId, status, seed = null) {
+function applyPreparationStatus(bookId, status, seed = null, { showReadyToast = true } = {}) {
   const id = String(bookId || '');
   const totalChapters = Math.max(0, Number(status?.totalChapters) || 0);
   if (!id || totalChapters === 0) return false;
@@ -1191,6 +1191,7 @@ function applyPreparationStatus(bookId, status, seed = null) {
   };
   saveOfflineManifest(manifest);
   if (
+    showReadyToast &&
     state === 'prepared' &&
     current.state !== 'prepared' &&
     offlineState(current) !== 'ready'
@@ -1214,7 +1215,7 @@ function schedulePreparationPoll(delayMs = 5000) {
   }, Math.max(1000, Number(delayMs) || 5000));
 }
 
-export async function prepareBookForOffline(book, chapters) {
+export async function prepareBookForOffline(book, chapters, options = {}) {
   if (!book?.id || !Array.isArray(chapters) || chapters.length === 0) return false;
   if (!navigator.onLine) {
     showToast('Connect to prepare this title for offline use', 'error');
@@ -1224,13 +1225,12 @@ export async function prepareBookForOffline(book, chapters) {
   const existing = offlineEntryForBook(id);
   if (offlineState(existing) === 'ready') return true;
   const entry = preparationEntry(book, chapters, existing);
-  persistWorkingEntry(id, entry);
   try {
     const status = await apiSend(
       'POST',
       `/api/offline/preparation/${encodeURIComponent(id)}`
     );
-    const ready = applyPreparationStatus(id, status, entry);
+    const ready = applyPreparationStatus(id, status, entry, options);
     if (!ready) {
       showToast(
         status?.state === 'error'
@@ -1241,9 +1241,22 @@ export async function prepareBookForOffline(book, chapters) {
     }
     return ready;
   } catch (error) {
-    setOfflineEntryState(id, 'preparation-error');
+    persistWorkingEntry(id, { ...entry, state: 'preparation-error' });
     throw error;
   }
+}
+
+export async function prepareAndDownloadBookForOffline(book, chapters, options = {}) {
+  const {
+    notificationSetup = Promise.resolve(false),
+    ...downloadOptions
+  } = options;
+  const notificationReady = Promise.resolve(notificationSetup).catch(() => false);
+  if (!await prepareBookForOffline(book, chapters, { showReadyToast: false })) {
+    await notificationReady;
+    return false;
+  }
+  return downloadBookForOffline(book, chapters, downloadOptions);
 }
 
 function applicationServerKeyBytes(value) {

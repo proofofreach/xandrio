@@ -35,6 +35,7 @@ The examples below omit authorization headers for readability.
 | POST | `/api/offline/notifications` | Save this device's Web Push subscription |
 | DELETE | `/api/offline/notifications` | Remove this device's Web Push subscription |
 | GET | [/api/book/:bookId](#get-apibookbookid) | Get book details and chapters |
+| POST | [/api/playback/foreground/:bookId](#post-apiplaybackforegroundbookid) | Prioritize queued audio for the foreground title |
 | GET | [/api/cover/:bookId](#get-apicoverbookid) | Get book cover image |
 | GET | [/api/audio-stream/:bookId/:chapterIndex](#get-apiaudio-streambookidchapterindex) | Stream generated chapter audio through one stable response |
 | GET | [/api/audio/:bookId/:chapterIndex](#get-apiaudiobookidchapterindex) | Get or generate chapter audio |
@@ -76,6 +77,7 @@ Regenerated from `server.js` and `lib/routes/*.js` on 2026-07-28.
 | GET | `/api/book/:bookId` |
 | POST | `/api/refresh-metadata/:bookId` |
 | GET | `/api/cover/:bookId` |
+| POST | `/api/playback/foreground/:bookId` |
 | GET | `/api/audio-stream/:bookId/:chapterIndex` |
 | GET | `/api/audio/:bookId/:chapterIndex` |
 | GET | `/api/audio-ios/:bookId/:chapterIndex` |
@@ -177,6 +179,7 @@ These endpoints are part of the current server surface but are newer than some o
 - `POST /api/voice`: sets the active TTS voice. Body: `voiceId`.
 - `GET /api/voice-cache/:bookId/:chapterIndex`: returns cache status for available voices for the chapter.
 - `GET /api/audio-ios/:bookId/:chapterIndex`: serves the single-file chapter-audio path used for iOS reliability.
+- `POST /api/playback/foreground/:bookId`: moves queued work for the opened title to the front of each existing priority band and moves its pending full-title preparation ahead of other pending titles. It does not interrupt active generation or promote background work above live playback.
 - `GET /api/chunks/:bookId/:chapterIndex/chapter-audio-status`: returns clean single-file chapter-audio status.
 - `POST /api/chunks/:bookId/:chapterIndex/prepare-chapter-audio`: starts single-file chapter-audio generation. Send `{ "purpose": "offline-download" }` to prioritize a user-requested offline title ahead of speculative background preparation without overtaking live playback.
 - `POST /api/chunks/:bookId/:chapterIndex/prepare`: prepares chunked audio, optionally with `targetChunk`.
@@ -1242,6 +1245,26 @@ Returned when chunk generation failed:
 ```json
 {
   "error": "Chunk not found"
+}
+```
+
+---
+
+## POST /api/playback/foreground/:bookId
+
+Signal that a title is open in the foreground. Queued narration jobs claimed
+by that title move to the front of their existing priority bands, and a pending
+full-title offline preparation moves ahead of other pending titles. Active jobs
+are not interrupted, and background work is not promoted above live playback.
+
+The PWA normally suppresses repeated signals for the same title for 30 seconds.
+The response reports how much pending work was reprioritized:
+
+```json
+{
+  "bookId": "book-123",
+  "queuedJobs": 4,
+  "queuedPreparation": true
 }
 ```
 

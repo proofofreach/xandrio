@@ -148,6 +148,7 @@ async function testBookPreparationRoutes() {
   const requested = [];
   const served = [];
   const subscriptions = [];
+  const foreground = [];
   registerPlaybackRoutes(app, {
     playbackOrchestrator: {
       startChapterAudio: async () => ({ ready: false })
@@ -194,6 +195,10 @@ async function testBookPreparationRoutes() {
       unsubscribe: async () => true
     },
     offlinePreparationOwner: () => 'account:device',
+    prioritizeForegroundBook: bookId => {
+      foreground.push(bookId);
+      return { queuedJobs: 4, queuedPreparation: true };
+    },
     ttsForTier: () => ({}),
     generationJournal: {},
     chapterAudioStreamer: {},
@@ -238,6 +243,18 @@ async function testBookPreparationRoutes() {
     errorChapters: 0,
     nextChapter: 1,
     percent: 50
+  });
+
+  await handlers.get('POST /api/playback/foreground/:bookId')({
+    params: { bookId: 'book' },
+    query: {},
+    body: {}
+  }, response);
+  assert.deepStrictEqual(foreground, ['book']);
+  assert.deepStrictEqual(body, {
+    bookId: 'book',
+    queuedJobs: 4,
+    queuedPreparation: true
   });
 
   await handlers.get('GET /api/offline/audio/:bookId/:chapterIndex')({
