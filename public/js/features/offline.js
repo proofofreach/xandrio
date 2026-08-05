@@ -26,7 +26,7 @@ const OFFLINE_CONTRACT_MARKER = 'x-xandrio-offline-contract';
  * with OFFLINE_ROUTE_CONTRACT_VERSION instead of tying downloads to a build id.
  * This value MUST equal CACHE_VERSION in public/sw.js.
  */
-export const EXPECTED_OFFLINE_SW_VERSION = 'xandrio-v127';
+export const EXPECTED_OFFLINE_SW_VERSION = 'xandrio-v128';
 export const MINIMUM_OFFLINE_ROUTE_CONTRACT = 1;
 // A chapter is only ever invalidated after this many playback failures whose
 // cheap probe still says the cache is fine. Below it, we assume Safari.
@@ -529,6 +529,15 @@ export function offlineStatusForBook(bookId) {
     return {
       kind: 'preparing',
       label: `Preparing audio · ${Number(entry.preparedChapters) || 0} of ${totalChapters} · Safe to close`,
+      downloaded: false,
+      cachedChapters,
+      totalChapters
+    };
+  }
+  if (state === 'preparation-paused') {
+    return {
+      kind: 'preparation-paused',
+      label: 'Offline setup paused · Resume',
       downloaded: false,
       cachedChapters,
       totalChapters
@@ -1168,7 +1177,9 @@ function applyPreparationStatus(bookId, status, seed = null, { showReadyToast = 
     ? 'prepared'
     : status?.state === 'error'
       ? 'preparation-error'
-      : 'preparing';
+      : status?.state === 'paused'
+        ? 'preparation-paused'
+        : 'preparing';
   manifest[id] = {
     ...current,
     bookId: id,
@@ -1184,7 +1195,11 @@ function applyPreparationStatus(bookId, status, seed = null, { showReadyToast = 
     progressPercent: state === 'prepared'
       ? 100
       : Math.max(0, Math.min(99, Math.round(Number(status?.percent) || 0))),
-    progressPhase: state === 'prepared' ? 'Ready to download' : 'Preparing audio',
+    progressPhase: state === 'prepared'
+      ? 'Ready to download'
+      : state === 'preparation-paused'
+        ? 'Offline setup paused'
+        : 'Preparing audio',
     manifestVersion: OFFLINE_MANIFEST_VERSION,
     mode: 'full',
     state
@@ -2061,7 +2076,8 @@ function offlineState(entry) {
   if (
     entry.state === 'preparing' ||
     entry.state === 'prepared' ||
-    entry.state === 'preparation-error'
+    entry.state === 'preparation-error' ||
+    entry.state === 'preparation-paused'
   ) return entry.state;
   if (!validTitleData(entry)) return 'incomplete';
   if (
@@ -2084,6 +2100,7 @@ function offlineStateLabel(entry) {
     case 'preparing': return `Preparing audio · ${Number(entry.preparedChapters) || 0}/${Number(entry.chapters) || 0}`;
     case 'prepared': return 'Ready to download to this device';
     case 'preparation-error': return 'Audio preparation needs attention';
+    case 'preparation-paused': return 'Offline setup paused · Resume';
     case 'ready': return `Offline ready · ${entry.voiceLabel || 'Voice'}`;
     case 'repairing': {
       const cached = entry.chapterEntries?.filter(Boolean).length || 0;

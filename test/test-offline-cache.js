@@ -1345,6 +1345,43 @@ function installBrowser({
     assert.strictEqual(offline.offlineStatusForBook(book.id).kind, 'downloaded');
   });
 
+  await test('paused server preparation is not reported as active zero-progress work', async () => {
+    const cache = makeCache();
+    const manifest = {
+      [book.id]: {
+        bookId: book.id,
+        title: book.title,
+        chapters: chapters.length,
+        chapterEntries: chapters.map(() => null),
+        titleData: { book, chapters },
+        preparedChapters: 0,
+        manifestVersion: 3,
+        mode: 'full',
+        state: 'preparing'
+      }
+    };
+    installBrowser({
+      book,
+      chapters,
+      cache,
+      manifest,
+      preparationResponse: {
+        state: 'paused',
+        readyChapters: 0,
+        percent: 0
+      }
+    });
+
+    assert.strictEqual(await offline.refreshOfflinePreparation(book.id), false);
+    assert.deepStrictEqual(offline.offlineStatusForBook(book.id), {
+      kind: 'preparation-paused',
+      label: 'Offline setup paused · Resume',
+      downloaded: false,
+      cachedChapters: 0,
+      totalChapters: chapters.length
+    });
+  });
+
   await test('downloads a prepared title while another title is still queueing generation', async () => {
     const cache = makeCache();
     let releasePreparation;
