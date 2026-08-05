@@ -1438,7 +1438,11 @@ async function prioritizeForegroundBook(bookId = currentBook?.id) {
   }
   foregroundPrioritySignals.set(bookId, signaledAt);
   try {
-    await apiSend('POST', `/api/playback/foreground/${encodeURIComponent(bookId)}`);
+    const result = await apiSend('POST', `/api/playback/foreground/${encodeURIComponent(bookId)}`);
+    if (result?.foregroundPreferred === false) {
+      console.warn('Server did not retain foreground audio preference:', bookId);
+      return false;
+    }
     return true;
   } catch (error) {
     if (foregroundPrioritySignals.get(bookId) === signaledAt) {
@@ -2410,6 +2414,7 @@ function beaconSavePosition(options = {}) {
 // Aggressive local checkpointing; server sync remains throttled.
 setInterval(() => {
   if (currentBook && chunkPlayer) checkpointPlayback();
+  if (currentBook && document.visibilityState === 'visible') void prioritizeForegroundBook();
   if (currentBook && chunkPlayer && chunkPlayer.isPlaying && Date.now() - lastServerPositionSaveAt > 7000) {
     savePosition();
   }

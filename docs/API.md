@@ -29,7 +29,7 @@ The examples below omit authorization headers for readability.
 | GET | [/api/offline/deletions](#get-apiofflinedeletions) | Reconcile device-local downloads with server deletions |
 | GET | [/api/offline/preparation/:bookId](#get-apiofflinepreparationbookid) | Get full-title audio preparation progress |
 | POST | [/api/offline/preparation/:bookId](#post-apiofflinepreparationbookid) | Start durable full-title audio preparation |
-| DELETE | [/api/offline/preparation/:bookId](#delete-apiofflinepreparationbookid) | Pause full-title audio preparation |
+| DELETE | [/api/offline/preparation/:bookId](#delete-apiofflinepreparationbookid) | Release this device's full-title preparation claim |
 | GET | `/api/offline/audio/:bookId/:chapterIndex` | Transfer a prepared 48 kbps offline chapter |
 | GET | `/api/offline/notifications` | Get Web Push readiness-notification configuration |
 | POST | `/api/offline/notifications` | Save this device's Web Push subscription |
@@ -723,8 +723,9 @@ the response.
 Record or resume a durable full-title preparation intent for the requesting
 account and device. Multiple devices share generated server audio while each
 retains its own preparation claim and local transfer. The coordinator
-materializes at most one chapter per title and works on at most two titles at a
-time. The request returns `202` after the intent is recorded; generation
+materializes at most one chapter per title and admits up to 24 tracked titles
+into the shared bounded chunk scheduler. The request returns `202` after the
+intent is recorded; generation
 continues if the initiating browser closes. Live playback remains higher
 priority, while a waiting download is admitted after four look-ahead chunks or
 30 seconds, whichever comes first.
@@ -750,7 +751,9 @@ Return server preparation progress independently of any device-local download:
 }
 ```
 
-`state` is `not-requested`, `preparing`, `paused`, `ready`, or `error`. A
+`state` is `not-requested`, `waiting`, `preparing`, `paused`, `ready`, or `error`.
+`waiting` is a runtime projection and is never persisted; it means the durable
+intent is accepted but has not yet entered its bounded worker. A
 client must wait for `ready` before starting the separate device transfer.
 `bytesTotal` is populated only at that point and is the exact compact-package
 size. Preparation may generate missing narration, then creates one 48 kbps MP3
@@ -760,9 +763,10 @@ generation during device transfer.
 ## DELETE /api/offline/preparation/:bookId
 
 Release the requesting account/device's preparation claim. If no other device
-still claims the title, pause preparation, cancel only queued or active
-generation tagged with its request id, and discard those recoverable chapter
-jobs. The durable title intent remains paused so a later `POST` can resume it.
+still claims an unfinished title, remove its durable preparation intent, cancel
+only queued or active generation tagged with its request id, and discard those
+recoverable chapter jobs. A later `POST` starts idempotently and reuses any
+server audio already completed.
 This does not delete already generated server audio or any device-local copy.
 
 ## GET /api/offline/audio/:bookId/:chapterIndex
@@ -1253,9 +1257,11 @@ Returned when chunk generation failed:
 ## POST /api/playback/foreground/:bookId
 
 Signal that a title is open in the foreground. Queued narration jobs claimed
-by that title move to the front of their existing priority bands, and a pending
-full-title offline preparation moves ahead of other pending titles. Active jobs
-are not interrupted, and background work is not promoted above live playback.
+by that title move to the front of their existing priority bands, and the
+download band retains that title preference for 45 seconds so newly
+materialized chunks also win their band. Visible clients refresh the preference
+before it expires. Active jobs are not interrupted, and offline work is not
+promoted above live playback.
 
 The PWA normally suppresses repeated signals for the same title for 30 seconds.
 The response reports how much pending work was reprioritized:

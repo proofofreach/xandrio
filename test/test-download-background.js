@@ -149,6 +149,7 @@ async function testBookPreparationRoutes() {
   const served = [];
   const subscriptions = [];
   const foreground = [];
+  const cancelled = [];
   registerPlaybackRoutes(app, {
     playbackOrchestrator: {
       startChapterAudio: async () => ({ ready: false })
@@ -182,6 +183,10 @@ async function testBookPreparationRoutes() {
           nextChapter: 1,
           percent: 50
         };
+      },
+      cancel: async (bookId, options) => {
+        cancelled.push([bookId, options]);
+        return { bookId, state: 'removed' };
       }
     },
     getOfflineChapterAudio: async ({ bookId, chapterIndex }) => ({
@@ -197,7 +202,7 @@ async function testBookPreparationRoutes() {
     offlinePreparationOwner: () => 'account:device',
     prioritizeForegroundBook: bookId => {
       foreground.push(bookId);
-      return { queuedJobs: 4, queuedPreparation: true };
+      return { queuedJobs: 4, queuedPreparation: true, foregroundPreferred: true };
     },
     ttsForTier: () => ({}),
     generationJournal: {},
@@ -233,6 +238,7 @@ async function testBookPreparationRoutes() {
 
   assert.strictEqual(response.statusCode, 202);
   assert.deepStrictEqual(requested, ['book']);
+  assert.deepStrictEqual(foreground, ['book']);
   assert.deepStrictEqual(body, {
     bookId: 'book',
     state: 'preparing',
@@ -250,12 +256,23 @@ async function testBookPreparationRoutes() {
     query: {},
     body: {}
   }, response);
-  assert.deepStrictEqual(foreground, ['book']);
+  assert.deepStrictEqual(foreground, ['book', 'book']);
   assert.deepStrictEqual(body, {
     bookId: 'book',
     queuedJobs: 4,
-    queuedPreparation: true
+    queuedPreparation: true,
+    foregroundPreferred: true
   });
+
+  await handlers.get('DELETE /api/offline/preparation/:bookId')({
+    params: { bookId: 'book' },
+    query: {},
+    body: {}
+  }, response);
+  assert.deepStrictEqual(cancelled, [[
+    'book',
+    { ownerId: 'account:device', remove: true }
+  ]]);
 
   await handlers.get('GET /api/offline/audio/:bookId/:chapterIndex')({
     params: { bookId: 'book', chapterIndex: '1' },
