@@ -446,6 +446,8 @@ async function installBrowserFixtures(page) {
 
   const fixtureState = {
     manifestUrls: [],
+    libraryDelayMs: 0,
+    libraryMode: 'populated',
     pronunciationRequests: [],
     pronunciationRules: [],
     downloadRequests: [],
@@ -514,7 +516,18 @@ async function installBrowserFixtures(page) {
       };
       return json(route, fixtureState.operatorPolicy);
     }
-    if (pathname === '/api/library') return json(route, { books: [book] });
+    if (pathname === '/api/library') {
+      if (fixtureState.libraryDelayMs > 0) {
+        await new Promise(resolve => setTimeout(resolve, fixtureState.libraryDelayMs));
+      }
+      if (fixtureState.libraryMode === 'error') {
+        return json(route, { error: 'Fixture library failure' }, 503);
+      }
+      if (fixtureState.libraryMode === 'empty') {
+        return json(route, { books: [], shelf: [] });
+      }
+      return json(route, { books: [book] });
+    }
     if (pathname === '/api/positions') return json(route, { positions: {} });
     if (pathname === '/api/settings/client') return json(route, { settings: {} });
     if (pathname === '/api/search/sources') return json(route, {
@@ -723,6 +736,85 @@ async function verifyPlayback(page, fixtureState) {
   await page.waitForFunction(() => document.getElementById('audio-loading')?.dataset.status === 'offline');
   const offlineMessage = await page.textContent('#loading-text');
   if (!offlineMessage.includes("You're offline")) throw new Error('Offline chapter state was not surfaced');
+}
+
+async function verifyLibraryLoadStates(page, fixtureState) {
+  fixtureState.libraryMode = 'populated';
+  fixtureState.libraryDelayMs = 1500;
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  const libraryRequestStarted = page.waitForRequest(request =>
+    new URL(request.url()).pathname === '/api/library'
+  );
+  await page.goto(`${origin}/?library-state=loading#/library`, { waitUntil: 'domcontentloaded' });
+  await libraryRequestStarted;
+  const loadingState = await page.locator('#library-list').evaluate(list => ({
+    busy: list.getAttribute('aria-busy'),
+    skeletons: list.querySelectorAll('.book-item.skeleton').length,
+    loadingText: list.querySelector('[role="status"]')?.textContent?.trim() || '',
+    emptyNotice: list.textContent.includes('Your library is empty')
+  }));
+  if (
+    loadingState.busy !== 'true' ||
+    loadingState.skeletons !== 6 ||
+    loadingState.loadingText !== 'Loading library…' ||
+    loadingState.emptyNotice
+  ) {
+    throw new Error(`Cold library load is not truthful: ${JSON.stringify(loadingState)}`);
+  }
+  if (await page.locator('#library-list .sk-line').first().evaluate(element => getComputedStyle(element).animationName) !== 'none') {
+    throw new Error('Library skeleton animation does not honor reduced motion');
+  }
+  await page.setViewportSize({ width: 390, height: 844 });
+  const mobileLoadingBounds = await page.locator('#library-list').evaluate(list => {
+    const bounds = list.getBoundingClientRect();
+    return {
+      left: Math.round(bounds.left),
+      right: Math.round(bounds.right),
+      viewport: window.innerWidth,
+      clientWidth: list.clientWidth,
+      scrollWidth: list.scrollWidth
+    };
+  });
+  if (
+    mobileLoadingBounds.left < 0 ||
+    mobileLoadingBounds.right > mobileLoadingBounds.viewport ||
+    mobileLoadingBounds.scrollWidth > mobileLoadingBounds.clientWidth
+  ) {
+    throw new Error(`Library skeleton overflows the mobile viewport: ${JSON.stringify(mobileLoadingBounds)}`);
+  }
+  await page.waitForSelector('.book-item:not(.skeleton)', { state: 'attached' });
+  await page.waitForFunction(() => document.getElementById('library-list')?.getAttribute('aria-busy') === 'false');
+  await page.waitForLoadState('networkidle');
+  if ((await page.textContent('#library-list')).includes('Your library is empty')) {
+    throw new Error('Populated library retained the empty notice after loading');
+  }
+
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
+  fixtureState.libraryDelayMs = 0;
+  fixtureState.libraryMode = 'empty';
+  await page.goto(`${origin}/?library-state=empty#/library`, { waitUntil: 'networkidle' });
+  await page.waitForFunction(() =>
+    document.querySelector('#library-list .empty-state-modern h3')?.textContent === 'Your library is empty'
+  );
+  if (await page.getAttribute('#library-list', 'aria-busy') !== 'false') {
+    throw new Error('True empty library remained marked busy');
+  }
+
+  fixtureState.libraryMode = 'error';
+  await page.goto(`${origin}/?library-state=error#/library`, { waitUntil: 'networkidle' });
+  await page.waitForFunction(() =>
+    document.querySelector('#library-list .empty-state-modern h3')?.textContent === "Couldn't load your library"
+  );
+  if (
+    await page.getAttribute('#library-list', 'aria-busy') !== 'false' ||
+    await page.locator('#library-list [role="alert"] [data-retry-library]').count() !== 1
+  ) {
+    throw new Error('Library failure did not settle into the accessible retry state');
+  }
+
+  fixtureState.libraryMode = 'populated';
 }
 
 async function verifyPronunciations(page, fixtureState) {
@@ -1487,6 +1579,20 @@ async function verifyRealServiceWorkerOffline(browser) {
     // media are native. Only the real public/sw.js can satisfy these requests.
     await context.setOffline(true);
     await page.waitForFunction(() => navigator.onLine === false);
+    await page.evaluate(() => { location.hash = '#/library'; });
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.waitForFunction(() => document.getElementById('library-list')?.getAttribute('aria-busy') === 'false');
+    const offlineLibraryState = await page.locator('#library-list').evaluate(list => ({
+      fallback: list.classList.contains('offline-library-fallback'),
+      bookPresent: Boolean(list.querySelector('[data-book-id="smoke-offline"]')),
+      bookVisible: !list.querySelector('[data-book-id="smoke-offline"]')?.classList.contains('hidden'),
+      text: list.textContent.trim(),
+      tab: document.querySelector('[data-library-tab][aria-selected="true"]')?.dataset.libraryTab || '',
+      manifest: localStorage.getItem('xandrio_offline_books:default')
+    }));
+    if (!offlineLibraryState.fallback || !offlineLibraryState.bookPresent || !offlineLibraryState.bookVisible) {
+      throw new Error(`Verified offline library did not replace the loading state after network loss: ${JSON.stringify(offlineLibraryState)}`);
+    }
     await page.goto(`${fixture.origin}/#/player/smoke-offline`, { waitUntil: 'domcontentloaded' });
     await page.waitForSelector('#player-view.active');
     await page.waitForFunction(() => document.getElementById('audio-loading')?.style.display === 'none');
@@ -1605,6 +1711,8 @@ async function main() {
     page.on('pageerror', err => pageErrors.push(err.message));
     const fixtureState = await installBrowserFixtures(page);
     traceSmoke('fixtures installed');
+    await verifyLibraryLoadStates(page, fixtureState);
+    traceSmoke('library load states verified');
     await verifyPlayback(page, fixtureState);
     traceSmoke('playback verified');
     await verifyPronunciations(page, fixtureState);
@@ -1616,7 +1724,7 @@ async function main() {
     if (pageErrors.length) throw new Error(`Browser page errors:\n${pageErrors.join('\n')}`);
     await verifyRealServiceWorkerOffline(browser);
     traceSmoke('service worker verified');
-    console.log('Browser smoke passed: playback/tier/pronunciation, library actions, search workspace, atomic shell upgrade failure, PWA icons, and real offline Range 206/416.');
+    console.log('Browser smoke passed: library loading/error/offline states, playback/tier/pronunciation, library actions, search workspace, atomic shell upgrade failure, PWA icons, and real offline Range 206/416.');
   } catch (err) {
     if (serverOutput) process.stderr.write(`\nServer output:\n${serverOutput}\n`);
     throw err;
