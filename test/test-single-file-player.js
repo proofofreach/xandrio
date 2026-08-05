@@ -391,6 +391,12 @@ function fakeAudio() {
 
     assert.strictEqual(player.streamStartOffset, 30);
     assert.strictEqual(player.getCurrentTime(), 30);
+    assert.strictEqual(player.requestedStartOffset, 40);
+    assert.strictEqual(
+      player.openedAtOffset(0, 40),
+      true,
+      'the immutable requested offset survives a mapped timeline update'
+    );
     player.dispose();
   });
 

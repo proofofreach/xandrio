@@ -55,6 +55,7 @@ export class SingleFileChapterPlayer {
     this.startChapterIndex = null;
     this.isContinuous = false;
     this.streamStartOffset = 0;
+    this.requestedStartOffset = 0;
     this.playbackSessionId = null;
     this.playbackOwnerId = this._newPlaybackSessionId();
     this.endChapterIndex = null;
@@ -118,6 +119,7 @@ export class SingleFileChapterPlayer {
     // and a seek to the same position resolves to the buffered start instead of
     // relocating. Overwritten below if a finite chapter source is used instead.
     this.streamStartOffset = startOffsetSeconds;
+    this.requestedStartOffset = startOffsetSeconds;
     this.playbackSessionId = null;
     this.endChapterIndex = Number.isInteger(options.endChapterIndex)
       ? this._normalizeEndChapter(options.endChapterIndex, chapterIndex)
@@ -762,7 +764,7 @@ export class SingleFileChapterPlayer {
     if (this.chapterIndex !== chapterIndex || this.startChapterIndex !== chapterIndex) return false;
     const target = Number(seconds);
     if (!Number.isFinite(target)) return false;
-    return Math.abs(this.streamStartOffset - target) < 0.01;
+    return Math.abs(this.requestedStartOffset - target) < 0.01;
   }
 
   /**
@@ -837,6 +839,7 @@ export class SingleFileChapterPlayer {
     this.audio.pause();
     this.startChapterIndex = this.chapterIndex;
     this.streamStartOffset = chapterTime;
+    this.requestedStartOffset = chapterTime;
     this.playbackSessionId = candidate.sessionId;
     this._timelineDurations.clear();
     this._attach();
