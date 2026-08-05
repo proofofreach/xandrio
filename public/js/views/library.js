@@ -167,7 +167,11 @@ function offlineMenuActionContents(bookId) {
   if (status.kind === 'download-unavailable' || status.kind === 'download-offline') {
     return `<button type="button" role="menuitem" disabled>${escapeHTML(status.label)}</button>`;
   }
-  const label = status.kind === 'preparation-error' ? 'Retry offline setup' : 'Make available offline';
+  const label = status.kind === 'preparation-error'
+    ? 'Retry offline setup'
+    : status.kind === 'preparation-paused'
+      ? 'Resume offline setup'
+      : 'Make available offline';
   return `<button type="button" role="menuitem" data-download-book="${safeAttr(bookId)}">${label}</button>`;
 }
 
@@ -571,7 +575,8 @@ async function downloadBookFromLibrary(bookId) {
   }
   const notificationSetup = (
     initialStatus.kind === 'ready-to-prepare' ||
-    initialStatus.kind === 'preparation-error'
+    initialStatus.kind === 'preparation-error' ||
+    initialStatus.kind === 'preparation-paused'
   )
     ? enableOfflineReadyNotifications()
     : Promise.resolve(false);
