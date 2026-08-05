@@ -88,6 +88,10 @@ const { registerBookmarksRoutes, removeBookBookmarks } = require('./lib/routes/b
 const { registerListeningQueueRoutes } = require('./lib/routes/listening-queue-routes');
 const { registerOperatorPolicyRoutes } = require('./lib/routes/operator-policy-routes');
 const jsonStore = require('./lib/json-store');
+const {
+  canonicalStorageDirectory,
+  reconcileBookArtifactPaths
+} = require('./lib/book-artifact-paths');
 const { createBooksStore } = require('./lib/books-store');
 const { computeListeningStats } = require('./lib/listening-stats');
 const { removeBookFromAllQueues } = require('./lib/listening-queue');
@@ -175,8 +179,8 @@ const PORT = process.env.PORT || 8181;
 const HOST = process.env.HOST || '127.0.0.1';
 const PREGENERATE_ON_IMPORT = process.env.XANDRIO_PREGENERATE_ON_IMPORT !== 'false';
 process.title = `xandrio-server:${PORT}`;
-const DATA_DIR = path.resolve(process.env.DATA_DIR || path.join(__dirname, 'data'));
-const CACHE_DIR = path.resolve(process.env.CACHE_DIR || path.join(__dirname, 'cache'));
+const DATA_DIR = canonicalStorageDirectory(process.env.DATA_DIR || path.join(__dirname, 'data'));
+const CACHE_DIR = canonicalStorageDirectory(process.env.CACHE_DIR || path.join(__dirname, 'cache'));
 const CHATTERBOX_VOICE_DIR = path.resolve(process.env.CHATTERBOX_VOICE_DIR || path.join(DATA_DIR, 'voice-references'));
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const PNG_IEND_CHUNK = Buffer.from([0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82]);
@@ -4075,6 +4079,17 @@ let runningServer = null;
 if (require.main === module) {
   // Start server
   ensureDirectories().then(async () => {
+    const artifactRepair = await reconcileBookArtifactPaths({
+      cacheDir: CACHE_DIR,
+      loadBooks: () => booksStore.load(),
+      saveBooks: books => booksStore.save(books)
+    });
+    if (artifactRepair.repairedBooks) {
+      console.log(
+        `Recovered ${artifactRepair.repairedPaths} stored artifact path(s) ` +
+        `for ${artifactRepair.repairedBooks} book(s)`
+      );
+    }
     narrationEngines.start('kokoro:af_heart');
     narrationEngines.start('chatterbox:brick-scott');
     startProviderServersForVoice(getActiveVoice());

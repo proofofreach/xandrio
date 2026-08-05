@@ -44,6 +44,7 @@ const tests = [
   'test-server.js',
   'test-json-store.js',
   'test-books-store.js',
+  'test-book-artifact-paths.js',
   'test-auth.js',
   'test-accounts.js',
   'test-shelves.js',

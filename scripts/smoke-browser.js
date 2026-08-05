@@ -1258,6 +1258,9 @@ async function verifyAtomicServiceWorkerUpgrade(page, fixture) {
 }
 
 async function verifyDownloadedPlaybackDuringWorkerHandoff(context, fixture) {
+  const workerSource = await fs.readFile(path.join(__dirname, '..', 'public', 'sw.js'), 'utf8');
+  const expectedWorkerVersion = workerSource.match(/const CACHE_VERSION = '([^']+)'/)?.[1] || '';
+  if (!expectedWorkerVersion) throw new Error('Could not discover the expected service-worker version');
   const activeLegacyPage = await context.newPage();
   let handoffPage = null;
   try {
@@ -1332,7 +1335,8 @@ async function verifyDownloadedPlaybackDuringWorkerHandoff(context, fixture) {
     await handoffPage.reload({ waitUntil: 'domcontentloaded' });
     await handoffPage.waitForSelector('#player-view.active');
     await handoffPage.waitForFunction(
-      () => navigator.serviceWorker.controller?.scriptURL.includes('/sw.js?v=xandrio-v123')
+      version => navigator.serviceWorker.controller?.scriptURL.includes(`/sw.js?v=${version}`),
+      expectedWorkerVersion
     );
     await handoffPage.waitForFunction(() =>
       document.getElementById('audio-player')?.src.includes('/api/audio/smoke-offline/0?xandrio-offline-scope=default')

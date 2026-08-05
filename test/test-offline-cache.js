@@ -363,6 +363,13 @@ function installBrowser({
   const book = { id: 'book-1', title: 'A Book' };
   const chapters = [{}, {}];
 
+  await test('uses a downloaded title snapshot when the server cannot open the source book', async () => {
+    assert.strictEqual(offline.shouldUseOfflineBookFallback({ status: 500 }, true), true);
+    assert.strictEqual(offline.shouldUseOfflineBookFallback({ status: 404 }, true), false);
+    assert.strictEqual(offline.shouldUseOfflineBookFallback(new TypeError('network failed'), true), true);
+    assert.strictEqual(offline.shouldUseOfflineBookFallback({ status: 500 }, false), true);
+  });
+
   await test('reports whether this browser can store offline audio', async () => {
     const cache = makeCache();
     installBrowser({ book, chapters, cache });
