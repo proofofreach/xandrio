@@ -36,6 +36,35 @@ test('expands larger ordinals and comma-grouped source numbers', () => {
   );
 });
 
+test('expands currency amounts before narration reaches a TTS engine', () => {
+  assert.equal(
+    prepareTtsText('The award was $3,000, plus $4.00 in costs and $0.50 in interest.'),
+    'The award was three thousand dollars, plus four dollars in costs and fifty cents in interest.'
+  );
+  assert.equal(
+    prepareTtsText('Balances were $1, $1.01, $1000, and $1,000,000.'),
+    'Balances were one dollar, one dollar and one cent, one thousand dollars, and one million dollars.'
+  );
+  assert.equal(
+    prepareTtsText('Other amounts were £1.01, €2.50, and ¥3,000.'),
+    'Other amounts were one pound and one penny, two euros and fifty cents, and three thousand yen.'
+  );
+});
+
+test('expands large cardinal numbers before narration reaches a TTS engine', () => {
+  assert.equal(
+    prepareTtsText('There were 90,000 claims among 110,000,000,000 records.'),
+    'There were ninety thousand claims among one hundred ten billion records.'
+  );
+});
+
+test('preserves decimal, malformed, and identifier forms while expanding ordinals', () => {
+  assert.equal(
+    prepareTtsText('Values 3,000.50 and 12,34,567; ordinal 1,000th; ISBN 9781862877337; docket 22-6810.'),
+    'Values 3,000.50 and 12,34,567; ordinal one thousandth; ISBN 9781862877337; docket 22-6810.'
+  );
+});
+
 test('preserves malformed ordinal suffixes instead of changing their meaning', () => {
   assert.equal(
     prepareTtsText('References 11st, 12nd, and 13rd are source errors.'),
