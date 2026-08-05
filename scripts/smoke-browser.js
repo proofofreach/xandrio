@@ -958,7 +958,7 @@ async function verifyLibraryActions(page) {
   }
   await page.click('[data-book-menu-toggle]');
   await page.waitForSelector('[data-download-book]', { state: 'visible' });
-  for (const label of ['Prepare for offline', 'Save to My Shelf', 'Add to Up Next', 'Share', 'Delete']) {
+  for (const label of ['Make available offline', 'Save to My Shelf', 'Add to Up Next', 'Share', 'Delete']) {
     if (!await page.getByRole('menuitem', { name: label, exact: true }).isVisible()) {
       throw new Error(`Library overflow menu is missing ${label}`);
     }
@@ -1495,25 +1495,23 @@ async function verifyRealServiceWorkerOffline(browser) {
     );
     await verifyAtomicServiceWorkerUpgrade(page, fixture);
 
-    // Exercise both explicit offline milestones without navigating into the
-    // player: durable server preparation, then device-local transfer.
+    // Exercise the shared server package and device-local transfer without
+    // navigating into the player. A ready package must continue from the
+    // single offline action into the foreground-download confirmation.
     await page.goto(`${fixture.origin}/#/library`, { waitUntil: 'networkidle' });
     await page.click('[data-book-menu-toggle]');
     await page.waitForSelector('[data-download-book="smoke-offline"]', { state: 'visible' });
-    if (!await page.getByRole('menuitem', { name: 'Prepare for offline', exact: true }).isVisible()) {
-      throw new Error('Ingested title does not offer server-side audio preparation');
+    if (!await page.getByRole('menuitem', { name: 'Make available offline', exact: true }).isVisible()) {
+      throw new Error('Ingested title does not offer offline setup');
     }
     await page.click('[data-download-book="smoke-offline"]');
     await page.waitForFunction(() => {
       const manifest = JSON.parse(localStorage.getItem('xandrio_offline_books:default') || '{}');
       return manifest['smoke-offline']?.state === 'prepared';
     });
-    await page.click('[data-book-menu-toggle]');
-    await page.waitForSelector('[data-download-book="smoke-offline"]', { state: 'visible' });
-    if (!await page.getByRole('menuitem', { name: 'Download to this device', exact: true }).isVisible()) {
-      throw new Error('Prepared title does not offer a device-local download');
+    if (!await page.getByRole('button', { name: 'Start download', exact: true }).isVisible()) {
+      throw new Error('Ready server audio did not continue into the device download');
     }
-    await page.click('[data-download-book="smoke-offline"]');
     await page.getByRole('button', { name: 'Start download', exact: true }).click();
     await page.waitForSelector('#audio-activity-sheet.active', { state: 'visible' });
     if (!await page.getByRole('progressbar', { name: 'Download progress' }).isVisible()) {
