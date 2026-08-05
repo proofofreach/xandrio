@@ -1625,13 +1625,11 @@ async function openBook(bookId) {
     // Restore sleep timer if active
     restoreSleepTimer();
 
-    const chapterLoad = await loadChapter(chapterToLoad);
+    const chapterLoad = await loadRestoredChapter(chapterToLoad, restorePosition);
     if (chapterLoad?.loaded !== true) {
       updatePlaybackUI(false);
       return true;
     }
-    // Seek to the saved chapter position on the persistent media element.
-    await restorePlaybackPosition(chunkPlayer, restorePosition);
     checkpointPlayback();
     updatePlaybackUI();
     if (reconcileBackward) {
@@ -1647,6 +1645,26 @@ async function openBook(bookId) {
 }
 
 let loadChapterToken = 0;
+
+async function loadRestoredChapter(index, position) {
+  const startOffsetSeconds = Math.max(
+    0,
+    Number(position?.timestamp ?? position?.currentTime ?? position?.chunkTime) || 0
+  );
+  const sourceTuple = startOffsetSeconds > 0
+    ? {
+        bookId: currentBook?.id,
+        chapterIndex: index,
+        startOffsetSeconds
+      }
+    : null;
+  const loaded = await loadChapter(index, { sourceTuple });
+  if (loaded?.loaded !== true) return loaded;
+  // Finite/local sources still need an ordinary seek. Continuous transports
+  // opened at startOffsetSeconds map this saved chapter time to stream time 0.
+  await restorePlaybackPosition(chunkPlayer, position);
+  return loaded;
+}
 
 function clearBlockedWorkerOnlineRetry() {
   if (!blockedWorkerOnlineRetry) return;

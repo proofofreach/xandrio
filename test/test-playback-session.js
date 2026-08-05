@@ -346,6 +346,9 @@ function fakeAudio() {
           return { stale: false };
         }
       }),
+      restorePlaybackPosition: async (player, position) => {
+        appImports.restoredPositions.push([player, position]);
+      },
       createSmartRewindController: () => ({
         recordPause() {},
         planResume() { return null; },
@@ -392,6 +395,7 @@ function fakeAudio() {
       certifyOfflineWorkerController: async () => ({ controlled: true, compatible: false })
     };
     appImports.transitionRequests = [];
+    appImports.restoredPositions = [];
     appImports.transitionGate = null;
     appImports.rollingCalls = 0;
     appImports.sleepTarget = false;
@@ -419,6 +423,7 @@ function fakeAudio() {
           playPauseBtn = chapter;
         },
         loadChapter,
+        loadRestoredChapter,
         recordPlaybackEvent,
         playbackEvents() { return playbackEventLedger.slice(); },
         handleChapterEnd,
@@ -489,6 +494,26 @@ function fakeAudio() {
         player,
         chapter: uiElement
       });
+
+      // Opening a saved iOS HLS chapter must start the transport at the saved
+      // chapter time. Loading at zero and seeking to 142 seconds made Safari
+      // wait 142 seconds for the EVENT playlist to grow to that timestamp.
+      appImports.transitionRequests.length = 0;
+      appImports.restoredPositions.length = 0;
+      const restored = { chapterIndex: 0, timestamp: 141.739 };
+      await globalThis.__playbackAppHarness.loadRestoredChapter(0, restored);
+      assert.strictEqual(
+        appImports.transitionRequests.at(-1).sourceTuple.startOffsetSeconds,
+        141.739,
+        'the initial transport opens at the saved chapter time'
+      );
+      assert.deepStrictEqual(
+        appImports.restoredPositions,
+        [[player, restored]],
+        'the loaded engine still applies the canonical saved position'
+      );
+      appImports.localSourceQueries.length = 0;
+      appImports.transitionRequests.length = 0;
 
       process.once('unhandledRejection', onUnhandled);
       globalThis.__playbackAppHarness.loadChapter(1);
