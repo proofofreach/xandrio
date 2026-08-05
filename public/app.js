@@ -54,6 +54,7 @@ const PLAYBACK_CHECKPOINT_PREFIX = 'xandrio_playback_checkpoint:';
 const PLAYBACK_EVENT_LEDGER_KEY = 'xandrio_playback_event_ledger';
 const PLAYBACK_EVENT_LEDGER_LIMIT = 80;
 const CHECKPOINT_SAVE_MIN_INTERVAL_MS = 1000;
+const FOREGROUND_PRIORITY_TTL_MS = 30_000;
 let lastCheckpointSaveAt = 0;
 let lastServerPositionSaveAt = 0;
 let pendingServerPositionTimer = null;
@@ -121,6 +122,7 @@ let shortcutOverlayController = null;
 let serviceWorkerReadiness = null;
 let serviceWorkerBootWindowOpen = true;
 let blockedWorkerOnlineRetry = null;
+const foregroundPrioritySignals = new Map();
 const OFFLINE_WORKER_RELOAD_KEY = 'xandrio_offline_worker_reload';
 const SERVICE_WORKER_BOOT_DEADLINE_MS = 6000;
 
@@ -1424,6 +1426,29 @@ function closeTransientSheets() {
   clearSheetStack();
 }
 
+async function prioritizeForegroundBook(bookId = currentBook?.id) {
+  if (!bookId || navigator.onLine === false) return false;
+  const signaledAt = Date.now();
+  const previousSignal = foregroundPrioritySignals.get(bookId) || 0;
+  if (signaledAt - previousSignal < FOREGROUND_PRIORITY_TTL_MS) return true;
+  for (const [id, timestamp] of foregroundPrioritySignals) {
+    if (signaledAt - timestamp >= FOREGROUND_PRIORITY_TTL_MS) {
+      foregroundPrioritySignals.delete(id);
+    }
+  }
+  foregroundPrioritySignals.set(bookId, signaledAt);
+  try {
+    await apiSend('POST', `/api/playback/foreground/${encodeURIComponent(bookId)}`);
+    return true;
+  } catch (error) {
+    if (foregroundPrioritySignals.get(bookId) === signaledAt) {
+      foregroundPrioritySignals.delete(bookId);
+    }
+    console.warn('Could not prioritize foreground book:', error);
+    return false;
+  }
+}
+
 async function clearDeletedBookFromPlayer(bookId) {
   if (!currentBook || String(currentBook.id) !== String(bookId)) return;
   loadChapterToken++;
@@ -1456,6 +1481,7 @@ async function openBook(bookId) {
   // Keep the address bar/history in sync no matter who called us (router,
   // library tap, post-download/upload flow).
   syncPlayerHash(bookId);
+  void prioritizeForegroundBook(bookId);
   try {
     let data;
     let usedOfflineFallback = false;
@@ -2220,6 +2246,7 @@ function setupLifecycleHandlers() {
     });
     checkpointPlayback();
     if (document.visibilityState === 'hidden' && !beaconSavePosition()) savePosition();
+    if (document.visibilityState === 'visible') void prioritizeForegroundBook();
     updatePlaybackUI();
   });
   window.addEventListener('pagehide', () => {
@@ -2229,6 +2256,7 @@ function setupLifecycleHandlers() {
   });
   window.addEventListener('pageshow', () => {
     recordPlaybackEvent({ type: 'pageshow', online: navigator.onLine });
+    void prioritizeForegroundBook();
     updatePlaybackUI();
     updateMediaSessionMetadata();
     updateMediaSessionPosition();
