@@ -42,6 +42,9 @@ export class SingleFileChapterPlayer {
     this.preferStandardAudio = Boolean(options.preferStandardAudio);
     this.loadTimeoutMs = Number(options.loadTimeoutMs) > 0 ? Number(options.loadTimeoutMs) : LOAD_TIMEOUT_MS;
     this.playTimeoutMs = Number(options.playTimeoutMs) > 0 ? Number(options.playTimeoutMs) : 10000;
+    this.playProgressTimeoutMs = Number(options.playProgressTimeoutMs) > 0
+      ? Number(options.playProgressTimeoutMs)
+      : 3000;
     this.backend = 'single-file';
     this.activeSource = null;
     this.servedTier = null;
@@ -79,6 +82,7 @@ export class SingleFileChapterPlayer {
     this._isLoading = false;
     this._eventScope = null;
     this._playWait = null;
+    this._playProgressWait = null;
     this._pauseReason = null;
     this._playReason = null;
     this._lastDiagnosticTimeUpdateAt = 0;
@@ -245,8 +249,59 @@ export class SingleFileChapterPlayer {
     this._loadWait = null;
     this._playWait?.cancel();
     this._playWait = null;
+    this._playProgressWait?.cancel();
+    this._playProgressWait = null;
     this._eventScope?.dispose();
     this._eventScope = null;
+  }
+
+  _waitForPlaybackProgress(startTime) {
+    let settled = false;
+    let timer = null;
+    let resolveWait;
+    let rejectWait;
+    const cleanup = () => {
+      if (timer !== null) clearTimeout(timer);
+      timer = null;
+      this.audio.removeEventListener('timeupdate', onTimeUpdate);
+      this.audio.removeEventListener('ended', onTimeUpdate);
+      this.audio.removeEventListener('error', onError);
+    };
+    const finish = (callback, value) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      callback(value);
+    };
+    const hasAdvanced = () => (
+      this.audio.ended
+      || (Number(this.audio.currentTime) || 0) - startTime >= 0.05
+    );
+    const onTimeUpdate = () => {
+      if (hasAdvanced()) finish(resolveWait);
+    };
+    const onError = () => finish(rejectWait, this._audioError());
+    const promise = new Promise((resolve, reject) => {
+      resolveWait = resolve;
+      rejectWait = reject;
+      this.audio.addEventListener('timeupdate', onTimeUpdate);
+      this.audio.addEventListener('ended', onTimeUpdate);
+      this.audio.addEventListener('error', onError);
+      timer = setTimeout(() => {
+        const error = new Error('Audio claimed to be playing but did not advance');
+        error.code = 'MEDIA_PROGRESS_TIMEOUT';
+        error.chapterTime = this.getCurrentTime();
+        finish(reject, error);
+      }, this.playProgressTimeoutMs);
+      onTimeUpdate();
+    });
+    return {
+      promise,
+      cancel: () => finish(
+        rejectWait,
+        new LifecycleCancelledError('Playback progress wait cancelled')
+      )
+    };
   }
 
   _audioError() {
@@ -619,6 +674,7 @@ export class SingleFileChapterPlayer {
     this._pauseReason = null;
     this._playReason = 'app';
     this._isPlaying = true;
+    const startTime = Number(this.audio.currentTime) || 0;
     const wait = waitForMediaEvents(this.audio, {
       resolveEvents: ['playing'],
       rejectEvents: ['error'],
@@ -631,6 +687,7 @@ export class SingleFileChapterPlayer {
       cancelledError: () => new LifecycleCancelledError('Playback start cancelled')
     });
     this._playWait = wait;
+    let progressWait = null;
     // Observe the event wait immediately. audio.play() can reject before the
     // next await, and teardown must not turn cancellation of this sibling
     // promise into an unhandled rejection.
@@ -640,6 +697,10 @@ export class SingleFileChapterPlayer {
       nativePlay.catch(() => {});
       await Promise.race([nativePlay, wait.promise]);
       await wait.promise;
+      progressWait = this._waitForPlaybackProgress(startTime);
+      this._playProgressWait = progressWait;
+      progressWait.promise.catch(() => {});
+      await progressWait.promise;
     } catch (error) {
       this._isPlaying = false;
       this.onPlaybackChange?.(false, { reason: 'app', error });
@@ -647,6 +708,8 @@ export class SingleFileChapterPlayer {
     } finally {
       wait.cancel();
       if (this._playWait === wait) this._playWait = null;
+      progressWait?.cancel();
+      if (this._playProgressWait === progressWait) this._playProgressWait = null;
       this._playReason = null;
     }
   }
