@@ -9,7 +9,7 @@
  * simulated by rewriting the stylesheet's env() expressions to the target
  * device's inset values before measuring.
  */
-const { chromium } = require('playwright');
+const { chromium, webkit } = require('playwright');
 const { startFixtureServer } = require('./verify-android-lockscreen');
 
 const IPHONE_UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1';
@@ -47,6 +47,18 @@ async function measureDevice(browser, origin, device, { standalone }) {
   await page.waitForFunction(() => document.getElementById('audio-loading')?.style.display === 'none', null, { timeout: 20000 });
   await page.waitForTimeout(400); // cover fade-in
 
+  // Use representative production-length labels. Short fixture copy can hide
+  // Safari min-content sizing regressions in the real player stack.
+  await page.evaluate(() => {
+    document.getElementById('book-title').textContent = "Napoleon Hill's Keys to Success: The 17 Principles of Personal Achievement";
+    document.getElementById('chapter-trigger-title').textContent = '1 - Develop Definiteness Of Purpose (28m)';
+    document.getElementById('book-progress-text').textContent = '20% · 4h 12m left';
+    document.getElementById('player-book-progress').hidden = false;
+    document.getElementById('player-voice-name').textContent = 'Kokoro Onyx · Kokoro';
+    document.getElementById('player-voice-cache').textContent = '4/65 ready';
+    document.getElementById('utility-speed-value').textContent = '1.2x';
+  });
+
   const metrics = await page.evaluate(() => {
     const box = id => {
       const el = document.getElementById(id) || document.querySelector(id);
@@ -55,10 +67,40 @@ async function measureDevice(browser, origin, device, { standalone }) {
       return { top: Math.round(rect.top), bottom: Math.round(rect.bottom), height: Math.round(rect.height) };
     };
     const view = document.getElementById('player-view');
+    const main = document.querySelector('.player-main');
+    const mainStyle = getComputedStyle(main);
+    const mainRect = main.getBoundingClientRect();
+    const viewportWidth = document.documentElement.clientWidth;
+    const overflowing = [...view.querySelectorAll('*')]
+      .filter(el => {
+        const style = getComputedStyle(el);
+        if (style.display === 'none' || style.visibility === 'hidden') return false;
+        const rect = el.getBoundingClientRect();
+        return rect.width > 0 && (rect.left < -1 || rect.right > viewportWidth + 1);
+      })
+      .map(el => {
+        const rect = el.getBoundingClientRect();
+        return {
+          selector: el.id ? `#${el.id}` : `.${[...el.classList].join('.')}`,
+          left: Math.round(rect.left),
+          right: Math.round(rect.right),
+          width: Math.round(rect.width)
+        };
+      })
+      .slice(0, 8);
     return {
       viewport: window.innerHeight,
+      viewportWidth,
       pageScroll: Math.round(document.documentElement.scrollHeight - window.innerHeight),
       viewScroll: Math.round(view.scrollHeight - view.clientHeight),
+      pageOverflowX: Math.round(document.documentElement.scrollWidth - viewportWidth),
+      viewOverflowX: Math.round(view.scrollWidth - view.clientWidth),
+      mainSizing: {
+        width: Math.round(mainRect.width),
+        minWidth: mainStyle.minWidth,
+        maxWidth: mainStyle.maxWidth
+      },
+      overflowing,
       bodyPaddingTop: Math.round(parseFloat(getComputedStyle(document.body).paddingTop)),
       topbar: box('.player-topbar'),
       cover: box('book-cover'),
@@ -76,24 +118,35 @@ async function measureDevice(browser, origin, device, { standalone }) {
 async function main() {
   const fixture = await startFixtureServer();
   fixture.state.chapterAudioReady = true;
-  const browser = await chromium.launch({ headless: true });
+  const failures = [];
   try {
-    for (const standalone of [false, true]) {
-      console.log(`\n=== ${standalone ? 'PWA standalone (body inset rule active)' : 'Browser tab'} ===`);
-      for (const device of DEVICES) {
-        const m = await measureDevice(browser, fixture.origin, device, { standalone });
-        const fold = m.viewport;
-        const primaryBottom = m.utility ? m.utility.bottom : (m.controls ? m.controls.bottom : null);
-        const fits = primaryBottom !== null && primaryBottom <= fold && m.pageScroll <= 0;
-        console.log(`${device.name} (${device.width}x${device.height}, insets ${device.insetTop}/${device.insetBottom})`);
-        console.log(`  bodyPadTop=${m.bodyPaddingTop} topbarH=${m.topbar?.height} coverH=${m.cover?.height} pageScroll=${m.pageScroll} viewScroll=${m.viewScroll}`);
-        console.log(`  controlsBottom=${m.controls?.bottom} utilityBottom=${m.utility?.bottom} viewport=${fold} -> primary controls ${fits ? 'FIT' : 'OVERFLOW by ' + (primaryBottom - fold + Math.max(m.pageScroll, 0)) + 'px'}`);
+    for (const [browserName, browserType] of [['Chromium', chromium], ['WebKit', webkit]]) {
+      const browser = await browserType.launch({ headless: true });
+      try {
+        for (const standalone of [false, true]) {
+          console.log(`\n=== ${browserName} · ${standalone ? 'PWA standalone' : 'browser tab'} ===`);
+          for (const device of DEVICES) {
+            const m = await measureDevice(browser, fixture.origin, device, { standalone });
+            const fold = m.viewport;
+            const primaryBottom = m.utility ? m.utility.bottom : (m.controls ? m.controls.bottom : null);
+            const fits = primaryBottom !== null && primaryBottom <= fold && m.pageScroll <= 0;
+            const mainIsContained = m.mainSizing.width <= m.viewportWidth + 1 && m.mainSizing.minWidth === '0px';
+            const fitsWidth = mainIsContained && m.pageOverflowX <= 0 && m.viewOverflowX <= 0 && m.overflowing.length === 0;
+            console.log(`${device.name} (${device.width}x${device.height}, insets ${device.insetTop}/${device.insetBottom})`);
+            console.log(`  bodyPadTop=${m.bodyPaddingTop} topbarH=${m.topbar?.height} coverH=${m.cover?.height} pageScroll=${m.pageScroll} viewScroll=${m.viewScroll}`);
+            console.log(`  controlsBottom=${m.controls?.bottom} utilityBottom=${m.utility?.bottom} viewport=${fold} -> primary controls ${fits ? 'FIT' : 'OVERFLOW by ' + (primaryBottom - fold + Math.max(m.pageScroll, 0)) + 'px'}`);
+            console.log(`  horizontal page=${m.pageOverflowX}px view=${m.viewOverflowX}px main=${JSON.stringify(m.mainSizing)} -> ${fitsWidth ? 'FIT' : 'UNCONTAINED'}${m.overflowing.length ? ` ${JSON.stringify(m.overflowing)}` : ''}`);
+            if (!fitsWidth) failures.push(`${browserName} ${device.name} ${standalone ? 'standalone' : 'tab'} is not horizontally contained`);
+          }
+        }
+      } finally {
+        await browser.close().catch(() => {});
       }
     }
   } finally {
-    await browser.close().catch(() => {});
     await fixture.close();
   }
+  if (failures.length) throw new Error(failures.join('\n'));
 }
 
 main().catch(err => {
