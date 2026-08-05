@@ -26,7 +26,7 @@ const OFFLINE_CONTRACT_MARKER = 'x-xandrio-offline-contract';
  * with OFFLINE_ROUTE_CONTRACT_VERSION instead of tying downloads to a build id.
  * This value MUST equal CACHE_VERSION in public/sw.js.
  */
-export const EXPECTED_OFFLINE_SW_VERSION = 'xandrio-v123';
+export const EXPECTED_OFFLINE_SW_VERSION = 'xandrio-v124';
 export const MINIMUM_OFFLINE_ROUTE_CONTRACT = 1;
 // A chapter is only ever invalidated after this many playback failures whose
 // cheap probe still says the cache is fine. Below it, we assume Safari.
@@ -34,6 +34,12 @@ const SUSPECT_FAILURES_BEFORE_HASH = 3;
 const FULL_DOWNLOAD_CONCURRENCY = 2;
 const DOWNLOAD_PREPARE_TIMEOUT_MS = 30 * 60 * 1000;
 const DOWNLOAD_RETRY_DELAYS_MS = [0, 350, 1000];
+
+export function shouldUseOfflineBookFallback(error, online = navigator.onLine) {
+  if (!online) return true;
+  const status = Number(error?.status);
+  return !Number.isFinite(status) || status >= 500;
+}
 
 let deps = {};
 let downloadAbort = null;

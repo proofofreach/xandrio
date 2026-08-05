@@ -8,7 +8,7 @@ import { showToast } from './js/ui/toast.js';
 import { initKeys, onActivate } from './js/ui/keys.js';
 import { registerSheet } from './js/ui/sheets.js';
 import { initBookmarks, renderBookmarksSection, addBookmarkAtCurrentPosition } from './js/features/bookmarks.js';
-import { initOffline, prepareOfflineStorage, renderOfflineState, queuePendingPosition, ensureRollingOfflineWindow, getOfflineBookData, offlinePlaybackUrl, localChapterSource, markLocalChapterSuspect, classifyLocalChapter, OFFLINE_WORKER_SCRIPT_URL, certifyOfflineWorkerController, offlineWorkerControllerState } from './js/features/offline.js';
+import { initOffline, prepareOfflineStorage, renderOfflineState, queuePendingPosition, ensureRollingOfflineWindow, getOfflineBookData, shouldUseOfflineBookFallback, offlinePlaybackUrl, localChapterSource, markLocalChapterSuspect, classifyLocalChapter, OFFLINE_WORKER_SCRIPT_URL, certifyOfflineWorkerController, offlineWorkerControllerState } from './js/features/offline.js';
 import { initPronunciationRepair } from './js/features/pronunciations.js';
 import { initQueueStatus } from './js/features/queue-status.js';
 import { loadClientSettings, getSkipInterval, isSmartRewindEnabled, isRollingOfflineEnabled } from './js/client-settings.js';
@@ -1465,7 +1465,7 @@ async function openBook(bookId) {
       // A full offline download includes the title/chapter snapshot needed to
       // rebuild the player after a cold launch. Do not mask authoritative
       // server errors (404/401) while online with an obsolete local copy.
-      const localData = (!navigator.onLine || !error?.status)
+      const localData = shouldUseOfflineBookFallback(error, navigator.onLine)
         ? getOfflineBookData(bookId)
         : null;
       if (!localData) throw error;
