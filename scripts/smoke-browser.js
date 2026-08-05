@@ -1332,7 +1332,7 @@ async function verifyDownloadedPlaybackDuringWorkerHandoff(context, fixture) {
     await handoffPage.reload({ waitUntil: 'domcontentloaded' });
     await handoffPage.waitForSelector('#player-view.active');
     await handoffPage.waitForFunction(
-      () => navigator.serviceWorker.controller?.scriptURL.includes('/sw.js?v=xandrio-v122')
+      () => navigator.serviceWorker.controller?.scriptURL.includes('/sw.js?v=xandrio-v123')
     );
     await handoffPage.waitForFunction(() =>
       document.getElementById('audio-player')?.src.includes('/api/audio/smoke-offline/0?xandrio-offline-scope=default')
