@@ -1238,6 +1238,113 @@ function fakeAudio() {
     assert.strictEqual(audio.loadCalls, 3, 'three loads, not six');
   });
 
+  // A manual clock plus a manual probe: the watchdog's decision is a pure
+  // function of two counters and elapsed time, so drive both by hand.
+  function stallHarness(extra = {}) {
+    const audio = fakeAudio();
+    audio.buffered = {
+      length: 1,
+      start: () => 0,
+      end: () => audio.bufferedEnd
+    };
+    audio.bufferedEnd = 10;
+    let clockMs = 0;
+    const errors = [];
+    const { player } = makePlayer(audio, {
+      isIOSLike: () => false,
+      stallTimeoutMs: 20000,
+      stallProbeIntervalMs: 2000,
+      now: () => clockMs,
+      onError: error => errors.push(error),
+      ...extra
+    });
+    return {
+      audio,
+      player,
+      errors,
+      advance: ms => { clockMs += ms; },
+      // One probe tick, as the interval would deliver it.
+      probe: () => player._checkForStall()
+    };
+  }
+
+  async function playingPlayer(harness, chapterIndex = 0) {
+    const load = harness.player.loadChapter('book1', chapterIndex);
+    harness.audio.emit('loadedmetadata');
+    await load;
+    harness.audio.paused = false;
+    harness.audio.emit('playing');
+    return harness;
+  }
+
+  await test('a frozen playhead and frozen buffer report a recoverable stall', async () => {
+    const harness = await playingPlayer(stallHarness());
+    harness.probe();
+    for (let elapsed = 0; elapsed < 20000; elapsed += 2000) {
+      harness.advance(2000);
+      harness.probe();
+    }
+    assert.strictEqual(harness.errors.length, 1, 'exactly one stall report');
+    assert.strictEqual(harness.errors[0].code, 'MEDIA_STALLED');
+    assert.strictEqual(harness.errors[0].recoverable, true);
+  });
+
+  await test('an advancing playhead never reports a stall', async () => {
+    const harness = await playingPlayer(stallHarness());
+    for (let elapsed = 0; elapsed < 120000; elapsed += 2000) {
+      harness.audio.currentTime += 2;
+      harness.advance(2000);
+      harness.probe();
+    }
+    assert.strictEqual(harness.errors.length, 0, 'playback that advances is alive');
+  });
+
+  await test('a growing buffer keeps a parked playhead alive', async () => {
+    // The live edge of a still-growing playlist: nothing plays out, but
+    // segments keep arriving. That is a slow transport, not a dead one.
+    const harness = await playingPlayer(stallHarness());
+    for (let elapsed = 0; elapsed < 120000; elapsed += 2000) {
+      harness.audio.bufferedEnd += 1;
+      harness.advance(2000);
+      harness.probe();
+    }
+    assert.strictEqual(harness.errors.length, 0, 'a filling buffer is liveness');
+  });
+
+  await test('a paused listener is never treated as stalled', async () => {
+    const harness = await playingPlayer(stallHarness());
+    harness.audio.paused = true;
+    harness.audio.emit('pause');
+    for (let elapsed = 0; elapsed < 120000; elapsed += 2000) {
+      harness.advance(2000);
+      harness.probe();
+    }
+    assert.strictEqual(harness.errors.length, 0, 'a pause is not a stall');
+  });
+
+  await test('the stall probe stops once playback pauses and restarts on play', async () => {
+    const harness = await playingPlayer(stallHarness());
+    assert(harness.player._stallWatchdog, 'watchdog runs while playing');
+    harness.audio.paused = true;
+    harness.audio.emit('pause');
+    assert.strictEqual(harness.player._stallWatchdog, null, 'watchdog stops on pause');
+    harness.audio.paused = false;
+    harness.audio.emit('playing');
+    assert(harness.player._stallWatchdog, 'watchdog resumes on play');
+  });
+
+  await test('a stall reports the position playback died at, once', async () => {
+    const harness = await playingPlayer(stallHarness());
+    harness.audio.currentTime = 137.5;
+    harness.probe();
+    for (let elapsed = 0; elapsed < 40000; elapsed += 2000) {
+      harness.advance(2000);
+      harness.probe();
+    }
+    assert.strictEqual(harness.errors.length, 1, 'a dead stream is reported once, not repeatedly');
+    assert.strictEqual(harness.errors[0].chapterTime, 137.5, 'recovery resumes where it died');
+  });
+
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);
 })().catch(error => {

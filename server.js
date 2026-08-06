@@ -3534,6 +3534,55 @@ app.get('/api/queue/status', async (req, res) => {
   }
 });
 
+// API: Move one title through the audio generation order.
+//
+// The order is a tie-break inside each priority band, never across them, so
+// this can rearrange a backlog but can never put speculative work in front of
+// the chapter someone is listening to. The move is expressed relative to the
+// list the reader is looking at: the account's own activity order is what gets
+// seeded, so a reader can only reposition titles they can already see.
+app.post('/api/queue/order', async (req, res) => {
+  try {
+    const bookId = String(req.body?.bookId || '');
+    const direction = req.body?.direction;
+    if (!isSafeBookId(bookId)) {
+      return res.status(400).json({ error: 'Invalid book identifier' });
+    }
+    if (direction !== 'up' && direction !== 'down') {
+      return res.status(400).json({ error: "Direction must be 'up' or 'down'" });
+    }
+    const userId = positionUserId(req);
+    const [shelvesStore, positionsStore] = await Promise.all([
+      loadJSON(SHELVES_FILE, {}),
+      loadJSON(POSITIONS_FILE, {})
+    ]);
+    const relevantBookIds = new Set([
+      ...shelves.shelfForUser(shelvesStore, userId),
+      ...Object.keys(positionsForUser(positionsStore, userId))
+    ]);
+    if (!relevantBookIds.has(bookId)) {
+      return res.status(404).json({ error: 'Book is not in this library' });
+    }
+    const visible = ttsQueue
+      .getQueueActivity({ bookIds: relevantBookIds })
+      .books.map(item => item.bookId);
+    const movedPreparation = offlinePreparationCoordinator.move(bookId, direction);
+    const order = ttsQueue.moveBook(bookId, direction, visible);
+    if (!order && !movedPreparation) {
+      // Nothing to reorder: either the title holds no queued work, or it is
+      // already at the end it was moved towards.
+      return res.status(409).json({
+        error: 'This title cannot move any further',
+        code: 'QUEUE_ORDER_UNCHANGED',
+        order: ttsQueue.bookOrder()
+      });
+    }
+    res.json({ bookId, direction, order: order || ttsQueue.bookOrder() });
+  } catch (err) {
+    sendServerError(res, err, 'Failed to reorder audio activity');
+  }
+});
+
 // =========================================================================
 
 // API: Save/load playback position

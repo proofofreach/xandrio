@@ -639,7 +639,23 @@ async function installBrowserFixtures(page) {
     });
     if (pathname.startsWith('/api/voice-cache/')) return json(route, { voices: [] });
     if (pathname.startsWith('/api/premium-prep/')) return json(route, { premiumActive: false, chapters: [] }, 404);
-    if (pathname.endsWith('/chapter-audio-status')) return json(route, { ready: false, variantKey: 'instant-fixture' });
+    // Playback now waits on the server-side runway before opening a transport,
+    // so a permanently not-ready answer here left the client polling forever
+    // and the loading overlay up. Every chunk this fixture serves is ready, and
+    // this must say so. The offline fixture above already does.
+    if (pathname.endsWith('/chapter-audio-status')) {
+      const chapterIndex = Number(pathname.split('/')[4]);
+      return json(route, {
+        ready: true,
+        status: 'ready',
+        variantKey: 'instant-fixture',
+        servedTier: url.searchParams.get('tier') || 'instant',
+        totalChunks: 2,
+        readyChunks: 2,
+        errorChunks: 0,
+        url: `/api/audio/smoke/${Number.isInteger(chapterIndex) ? chapterIndex : 0}`
+      });
+    }
     if (/^\/api\/chunks\/smoke\/\d+\/status$/.test(pathname)) {
       return json(route, { status: 'ready', servedTier: url.searchParams.get('tier') || 'instant' });
     }

@@ -1412,6 +1412,115 @@ async function runTests() {
     await q.waitFor(blocker);
   });
 
+  await test('an explicit book order decides which queued title generates next', async () => {
+    const q = new TestableQueue({ maxConcurrent: 1, generateDelay: 20 });
+    const blockerId = await q.enqueue({
+      text: 'active',
+      outputPath: '/tmp/order-active.mp3',
+      priority: 'immediate'
+    });
+    const ids = [];
+    for (const [bookId, text] of [['book-a', 'a'], ['book-b', 'b'], ['book-c', 'c']]) {
+      ids.push(await q.enqueue({
+        text,
+        outputPath: `/tmp/order-${text}.mp3`,
+        priority: 'background',
+        activity: { bookId, chapterIndex: 0 }
+      }));
+    }
+    await sleep(5);
+
+    q.setBookOrder(['book-c', 'book-a', 'book-b']);
+    await Promise.all([q.waitFor(blockerId), ...ids.map(id => q.waitFor(id))]);
+
+    assert.deepStrictEqual(
+      q.generationLog.map(entry => entry.text),
+      ['active', 'c', 'a', 'b'],
+      'the reader-chosen order wins inside the band'
+    );
+  });
+
+  await test('reordering never lifts a queued title above live playback', async () => {
+    const q = new TestableQueue({ maxConcurrent: 1, generateDelay: 20 });
+    const blockerId = await q.enqueue({
+      text: 'active',
+      outputPath: '/tmp/band-active.mp3',
+      priority: 'immediate'
+    });
+    const backgroundId = await q.enqueue({
+      text: 'background-favourite',
+      outputPath: '/tmp/band-bg.mp3',
+      priority: 'background',
+      activity: { bookId: 'favourite-book', chapterIndex: 0 }
+    });
+    const playbackId = await q.enqueue({
+      text: 'playback',
+      outputPath: '/tmp/band-playback.mp3',
+      priority: 'immediate',
+      activity: { bookId: 'other-book', chapterIndex: 0 }
+    });
+    await sleep(5);
+
+    q.setBookOrder(['favourite-book']);
+    await Promise.all([q.waitFor(blockerId), q.waitFor(backgroundId), q.waitFor(playbackId)]);
+
+    assert.deepStrictEqual(
+      q.generationLog.map(entry => entry.text),
+      ['active', 'playback', 'background-favourite'],
+      'band order still outranks the explicit book order'
+    );
+  });
+
+  await test('moveBook walks a title one place at a time and stops at the ends', async () => {
+    const q = new TestableQueue();
+    const seed = ['book-a', 'book-b', 'book-c'];
+
+    assert.deepStrictEqual(
+      q.moveBook('book-c', 'up', seed),
+      ['book-a', 'book-c', 'book-b']
+    );
+    assert.deepStrictEqual(q.moveBook('book-c', 'up'), ['book-c', 'book-a', 'book-b']);
+    assert.strictEqual(q.moveBook('book-c', 'up'), null, 'the first title cannot move up');
+    assert.strictEqual(q.moveBook('book-b', 'down'), null, 'the last title cannot move down');
+    assert.strictEqual(q.moveBook('unknown-book', 'up'), null, 'an absent title cannot move');
+    assert.strictEqual(q.moveBook('book-a', 'sideways'), null, 'only up and down are directions');
+    assert.deepStrictEqual(
+      q.bookOrder(),
+      ['book-c', 'book-a', 'book-b'],
+      'a refused move leaves the order untouched'
+    );
+  });
+
+  await test('the reader-facing activity list is presented in the chosen order', async () => {
+    const q = new TestableQueue({ maxConcurrent: 1, generateDelay: 400 });
+    await q.enqueue({
+      text: 'busy',
+      outputPath: '/tmp/activity-busy.mp3',
+      priority: 'background',
+      activity: { bookId: 'busy-book', chapterIndex: 0 }
+    });
+    await q.enqueue({
+      text: 'waiting',
+      outputPath: '/tmp/activity-waiting.mp3',
+      priority: 'background',
+      activity: { bookId: 'waiting-book', chapterIndex: 0 }
+    });
+    await sleep(10);
+
+    assert.deepStrictEqual(
+      q.getQueueActivity().books.map(book => book.bookId),
+      ['busy-book', 'waiting-book'],
+      'without an explicit order the active title leads'
+    );
+
+    q.setBookOrder(['waiting-book', 'busy-book']);
+    assert.deepStrictEqual(
+      q.getQueueActivity().books.map(book => book.bookId),
+      ['waiting-book', 'busy-book'],
+      'a moved title visibly moves'
+    );
+  });
+
   // ----- Summary -----
   console.log(`\n${passed + failed} tests: ${passed} passed, ${failed} failed\n`);
   process.exit(failed > 0 ? 1 : 0);

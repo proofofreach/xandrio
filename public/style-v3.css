@@ -3447,6 +3447,57 @@ body.sheet-open { overflow: hidden; }
   color: var(--text);
 }
 
+/* Reordering the preparation queue.
+   Buttons, not drag-and-drop: this list lives in a scrolling sheet on a phone,
+   where a drag gesture fights the scroll it sits inside and the iOS edge
+   gestures beside it. Explicit controls also stay reachable by keyboard and
+   VoiceOver, and they are always visible — there is no hover on touch to
+   reveal them with. Full 44px targets per --touch-min, which is what sets the
+   taller row height for reorderable entries. */
+.audio-activity-row[data-reorderable="true"] {
+  grid-template-columns: 44px minmax(0, 1fr) var(--touch-min);
+  min-height: 96px;
+}
+.audio-activity-reorder {
+  display: flex;
+  flex-direction: column;
+  align-self: center;
+  justify-self: end;
+}
+.audio-activity-move {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--touch-min);
+  height: var(--touch-min);
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.audio-activity-move svg {
+  width: 16px;
+  height: 16px;
+}
+.audio-activity-move:hover:not(:disabled) {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+.audio-activity-move:active:not(:disabled) {
+  color: var(--accent);
+}
+.audio-activity-move:disabled {
+  color: var(--text-muted);
+  opacity: 0.4;
+  cursor: default;
+}
+.audio-activity-move:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
 @media (min-width: 760px) {
   .audio-activity-sheet .voice-sheet-backdrop {
     background: transparent;

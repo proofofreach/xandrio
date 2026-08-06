@@ -45,6 +45,7 @@ The examples below omit authorization headers for readability.
 | GET | [/api/chunks/:bookId/:chapterIndex/status](#get-apichunksbookidchapterindexstatus) | Get chunk generation status |
 | GET | [/api/chunks/:bookId/:chapterIndex/:chunkIndex](#get-apichunksbookidchapterindexchunkindex) | Serve individual chunk MP3 |
 | GET | [/api/queue/status](#get-apiqueuestatus) | Get TTS queue status |
+| POST | [/api/queue/order](#post-apiqueueorder) | Move a title through the narration order |
 | GET | `/api/pronunciations` | List global, book, and effective pronunciation rules |
 | POST | `/api/pronunciations` | Create a pronunciation rule and invalidate affected audio |
 | PUT | `/api/pronunciations/:id` | Update a pronunciation rule |
@@ -104,6 +105,7 @@ Regenerated from `server.js` and `lib/routes/*.js` on 2026-07-28.
 | GET | `/api/chunks/:bookId/:chapterIndex/:chunkIndex` |
 | GET | `/api/voice-cache/:bookId/:chapterIndex` |
 | GET | `/api/queue/status` |
+| POST | `/api/queue/order` |
 | GET | `/api/sync/profile` |
 | POST | `/api/sync/profile` |
 | POST | `/api/sync/device` |
@@ -1313,6 +1315,54 @@ operator diagnostics.
 | `active` | integer | Relevant narration chunks currently generating |
 | `queued` | integer | Relevant narration chunks waiting to generate |
 | `books` | array | Relevant books with live work, grouped into chapter activity |
+
+Books appear in the order narration will reach them: any order the reader has
+set through `POST /api/queue/order` first, then the busiest remaining titles.
+
+---
+
+## POST /api/queue/order
+
+Move one title a single place through the narration order. Only books relevant
+to the requesting account (see `GET /api/queue/status`) can be moved.
+
+The order is a tie-break **within** a priority band, never across bands, so
+reordering a backlog can never place speculative work ahead of the chapter
+someone is listening to. It also repositions any waiting full-title offline
+preparation; a title already being prepared keeps its worker, because
+restarting it would discard finished chapters.
+
+### Request
+
+```json
+{
+  "bookId": "abc123",
+  "direction": "up"
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `bookId` | string | Book to move |
+| `direction` | string | `up` (earlier) or `down` (later) |
+
+### Response (200)
+
+```json
+{
+  "bookId": "abc123",
+  "direction": "up",
+  "order": ["abc123", "def456"]
+}
+```
+
+### Errors
+
+| Status | Meaning |
+|--------|---------|
+| 400 | Invalid book identifier, or a direction other than `up`/`down` |
+| 404 | The book is not in the requesting account's library |
+| 409 | `QUEUE_ORDER_UNCHANGED` — no queued work to move, or already at that end |
 
 ---
 

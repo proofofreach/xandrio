@@ -51,6 +51,18 @@ function fakeElement({ hidden = false, classes = [] } = {}) {
   };
 }
 
+// The reorder buttons render with one attribute per line, so read them as
+// structured data rather than trying to spell that layout in a regex.
+function moveButtons(markup) {
+  return [...markup.matchAll(/<button([^>]*data-move-queue-book[^>]*)>/g)]
+    .map(match => match[1])
+    .map(attributes => ({
+      bookId: /data-move-queue-book="([^"]+)"/.exec(attributes)?.[1],
+      direction: /data-move-direction="([^"]+)"/.exec(attributes)?.[1],
+      disabled: /\bdisabled\b/.test(attributes)
+    }));
+}
+
 function fakeActivityList() {
   const element = fakeElement();
   let markup = '';
@@ -146,6 +158,13 @@ function fakeActivityList() {
 
   let apiStatus = { active: 0, queued: 0, books: [] };
   global.__queueTestApiGet = async () => apiStatus;
+  const sentRequests = [];
+  let apiSendResult = async () => ({});
+  global.__queueTestApiSend = (...args) => {
+    sentRequests.push(args);
+    return apiSendResult(...args);
+  };
+  global.__queueTestToasts = [];
   global.__queueTestRegisterSheet = (element, options = {}) => ({
     open() {
       options.onOpen?.();
@@ -164,8 +183,9 @@ function fakeActivityList() {
     'utf8'
   )
     .replace(
-      "import { apiGet } from '../api.js';",
+      "import { apiGet, apiSend } from '../api.js';",
       'const apiGet = globalThis.__queueTestApiGet;'
+        + ' const apiSend = (...args) => globalThis.__queueTestApiSend(...args);'
     )
     .replace(
       "import { escapeHTML, coverImageHTML } from '../util/format.js';",
@@ -174,6 +194,10 @@ function fakeActivityList() {
     .replace(
       "import { registerSheet } from '../ui/sheets.js';",
       'const registerSheet = globalThis.__queueTestRegisterSheet;'
+    )
+    .replace(
+      "import { showToast } from '../ui/toast.js';",
+      'const showToast = (...args) => globalThis.__queueTestToasts.push(args);'
     );
   const moduleUrl = `data:text/javascript;base64,${Buffer.from(source).toString('base64')}`;
   const { initQueueStatus, stopQueueStatus } = await import(moduleUrl);
@@ -318,6 +342,122 @@ function fakeActivityList() {
     queueStatusElement.dispatch('click');
     assert.match(elements['audio-activity-list'].innerHTML, /Preparing audio · 4\/24/);
     assert.doesNotMatch(elements['audio-activity-list'].innerHTML, /Downloading · 17%/);
+  });
+
+  await test('queued titles carry reorder controls, bounded at both ends', async () => {
+    document.dispatchEvent({ type: 'xandrio:downloadactivity', detail: { downloads: [] } });
+    document.dispatchEvent({ type: 'xandrio:preparationactivity', detail: { preparations: [] } });
+    apiStatus = {
+      active: 1,
+      queued: 2,
+      books: [
+        { id: 'book-first', title: 'First', author: 'A', active: 1, queued: 0, chapters: [] },
+        { id: 'book-middle', title: 'Middle', author: 'A', active: 0, queued: 1, chapters: [] },
+        { id: 'book-last', title: 'Last', author: 'A', active: 0, queued: 1, chapters: [] }
+      ]
+    };
+    await [...timers.values()][0]();
+    await settle();
+    queueStatusElement.dispatch('click');
+
+    // The ends cannot travel further, and say so rather than failing on click.
+    assert.deepStrictEqual(moveButtons(elements['audio-activity-list'].innerHTML), [
+      { bookId: 'book-first', direction: 'up', disabled: true },
+      { bookId: 'book-first', direction: 'down', disabled: false },
+      { bookId: 'book-middle', direction: 'up', disabled: false },
+      { bookId: 'book-middle', direction: 'down', disabled: false },
+      { bookId: 'book-last', direction: 'up', disabled: false },
+      { bookId: 'book-last', direction: 'down', disabled: true }
+    ]);
+  });
+
+  await test('a lone title is offered no reorder controls at all', async () => {
+    apiStatus = {
+      active: 1,
+      queued: 0,
+      books: [{ id: 'book-only', title: 'Only', author: 'A', active: 1, queued: 0, chapters: [] }]
+    };
+    await [...timers.values()][0]();
+    await settle();
+    queueStatusElement.dispatch('click');
+    assert.doesNotMatch(elements['audio-activity-list'].innerHTML, /data-move-queue-book/);
+  });
+
+  await test('moving a title reorders on screen before the server answers', async () => {
+    apiStatus = {
+      active: 0,
+      queued: 2,
+      books: [
+        { id: 'book-one', title: 'One', author: 'A', active: 0, queued: 1, chapters: [] },
+        { id: 'book-two', title: 'Two', author: 'A', active: 0, queued: 1, chapters: [] }
+      ]
+    };
+    await [...timers.values()][0]();
+    await settle();
+    queueStatusElement.dispatch('click');
+    sentRequests.length = 0;
+    let resolveSend;
+    apiSendResult = () => new Promise(resolve => { resolveSend = resolve; });
+
+    elements['audio-activity-list'].dispatch('click', {
+      closest: selector => (selector === '[data-move-queue-book]'
+        ? { dataset: { moveQueueBook: 'book-two', moveDirection: 'up' }, disabled: false }
+        : null)
+    });
+
+    const rowOrder = [...elements['audio-activity-list'].innerHTML.matchAll(
+      /data-audio-activity-id="([^"]+)"/g
+    )].map(match => match[1]);
+    assert.deepStrictEqual(rowOrder, ['book-two', 'book-one'], 'the row moves immediately');
+    assert.deepStrictEqual(sentRequests[0], [
+      'POST',
+      '/api/queue/order',
+      { bookId: 'book-two', direction: 'up' }
+    ]);
+    assert.match(
+      elements['audio-activity-announcement'].textContent,
+      /Two moved to position 1 of 2\./,
+      'the move is announced for screen readers'
+    );
+    resolveSend?.({});
+    apiSendResult = async () => ({});
+  });
+
+  await test('a refused move snaps the list back to what the server has', async () => {
+    apiStatus = {
+      active: 0,
+      queued: 2,
+      books: [
+        { id: 'book-one', title: 'One', author: 'A', active: 0, queued: 1, chapters: [] },
+        { id: 'book-two', title: 'Two', author: 'A', active: 0, queued: 1, chapters: [] }
+      ]
+    };
+    await [...timers.values()][0]();
+    await settle();
+    queueStatusElement.dispatch('click');
+    global.__queueTestToasts.length = 0;
+    apiSendResult = async () => {
+      throw Object.assign(new Error('This title cannot move any further'), { status: 409 });
+    };
+
+    elements['audio-activity-list'].dispatch('click', {
+      closest: selector => (selector === '[data-move-queue-book]'
+        ? { dataset: { moveQueueBook: 'book-two', moveDirection: 'up' }, disabled: false }
+        : null)
+    });
+    await settle();
+    await settle();
+
+    const rowOrder = [...elements['audio-activity-list'].innerHTML.matchAll(
+      /data-audio-activity-id="([^"]+)"/g
+    )].map(match => match[1]);
+    assert.deepStrictEqual(rowOrder, ['book-one', 'book-two'], 'the optimistic move is undone');
+    assert.strictEqual(
+      global.__queueTestToasts.length,
+      0,
+      'an already-at-the-end move is not worth a toast'
+    );
+    apiSendResult = async () => ({});
   });
 
   await test('re-init without a status element still stops the old poller', () => {

@@ -16,6 +16,31 @@ const LOAD_TIMEOUT_MS = CLIENT_LOAD_DEADLINE_MS;
 // How many canonical request tuples keep a remembered session id. Small: a
 // listener only ever revisits the current chapter's handful of offsets.
 const MAX_REMEMBERED_ATTEMPTS = 16;
+
+// Mid-playback death is silent. A media element only raises `error` when the
+// *load* fails; once playing, a transport that stops delivering data leaves
+// iOS sitting in `waiting` with no further events, forever. That is how a
+// listener whose HLS session had been idle-evicted spent 34 minutes in silence
+// while the app kept polling as if nothing were wrong — the player never
+// learned the stream was dead, so none of the recovery machinery ran.
+//
+// Liveness is "the playhead advanced, or the buffer grew". Either one means
+// the transport is alive: a player parked at the live edge of a still-growing
+// playlist buffers without advancing, and a player draining a full buffer
+// advances without downloading. Only when *both* freeze has playback stopped.
+const STALL_PROBE_INTERVAL_MS = 2000;
+// Comfortably longer than any legitimate rebuffer, because the recovery this
+// arms is a reload. The server-side runway gate (lib/routes/playback-routes.js)
+// means a stream is only opened once its audio exists, so a freeze this long is
+// a broken transport rather than narration that has not been generated yet.
+const STALL_TIMEOUT_MS = 20000;
+// Below this, a difference is measurement noise rather than progress.
+const PROGRESS_EPSILON_SECONDS = 0.05;
+
+// Chapter-mapping timeline refresh, and how many ticks it skips while the
+// document is hidden (2s visible, 10s backgrounded).
+const TIMELINE_POLL_INTERVAL_MS = 2000;
+const TIMELINE_HIDDEN_POLL_RATIO = 5;
 const { DisposableScope, LifecycleCancelledError, waitForMediaEvents } = globalThis.XandrioLifecycle || {};
 
 export class SingleFileChapterPlayer {
@@ -49,6 +74,14 @@ export class SingleFileChapterPlayer {
     this.playProgressTimeoutMs = Number(options.playProgressTimeoutMs) > 0
       ? Number(options.playProgressTimeoutMs)
       : 3000;
+    this.stallTimeoutMs = Number(options.stallTimeoutMs) >= 0
+      ? Number(options.stallTimeoutMs)
+      : STALL_TIMEOUT_MS;
+    this.stallProbeIntervalMs = Number(options.stallProbeIntervalMs) > 0
+      ? Number(options.stallProbeIntervalMs)
+      : STALL_PROBE_INTERVAL_MS;
+    this.clock = options.clock || globalThis;
+    this.now = typeof options.now === 'function' ? options.now : () => Date.now();
     this.backend = 'single-file';
     this.activeSource = null;
     this.servedTier = null;
@@ -91,6 +124,10 @@ export class SingleFileChapterPlayer {
     this._playProgressWait = null;
     this._pauseReason = null;
     this._playReason = null;
+    // Disposer for the running stall probe, and the last observed liveness
+    // sample it compares against.
+    this._stallWatchdog = null;
+    this._stallMark = null;
     this._lastDiagnosticTimeUpdateAt = 0;
     this._boundTimeUpdate = this._handleTimeUpdate.bind(this);
     this._boundEnded = this._handleEnded.bind(this);
@@ -279,9 +316,15 @@ export class SingleFileChapterPlayer {
     for (const eventName of ['waiting', 'stalled', 'suspend', 'abort', 'emptied']) {
       this._eventScope.listen(this.audio, eventName, this._boundMediaState);
     }
+    // Re-attaching mid-playback (a relocation, for instance) tore down the
+    // previous scope and with it the stall probe. A fresh `playing` event is
+    // not guaranteed to follow, so restore the probe here rather than leaving
+    // an already-playing element unwatched.
+    if (this._isPlaying) this._startStallWatchdog();
   }
 
   _detach() {
+    this._stopStallWatchdog();
     this._loadWait?.cancel();
     this._loadWait = null;
     this._playWait?.cancel();
@@ -606,7 +649,23 @@ export class SingleFileChapterPlayer {
       }
     };
     void refresh();
-    this._eventScope.interval(() => { void refresh(); }, 2000);
+    // The timeline is what maps stream time onto chapters, so it cannot simply
+    // stop while the screen is locked — a chapter boundary crossed in the
+    // background still has to land. It can go a lot slower, though. At the
+    // foreground rate this single poll was a request every two seconds for the
+    // entire length of a book, for a payload that changes only as narration is
+    // generated.
+    let ticks = 0;
+    this._eventScope.interval(
+      () => {
+        ticks += 1;
+        const hidden = globalThis.document?.hidden;
+        if (hidden && ticks % TIMELINE_HIDDEN_POLL_RATIO !== 0) return;
+        void refresh();
+      },
+      TIMELINE_POLL_INTERVAL_MS,
+      this.clock
+    );
   }
 
   _estimatedDuration(chapterIndex) {
@@ -716,6 +775,69 @@ export class SingleFileChapterPlayer {
     this._emitDiagnostic(event?.type || 'media-state');
   }
 
+  /** End of the last buffered range, or 0 when nothing is buffered. */
+  _bufferedEnd() {
+    const buffered = this.audio.buffered;
+    const length = Number(buffered?.length) || 0;
+    if (length <= 0) return 0;
+    try {
+      return Number(buffered.end(length - 1)) || 0;
+    } catch {
+      return 0;
+    }
+  }
+
+  _startStallWatchdog() {
+    this._stopStallWatchdog();
+    if (!this._eventScope || this.stallTimeoutMs <= 0) return;
+    this._stallWatchdog = this._eventScope.interval(
+      () => this._checkForStall(),
+      this.stallProbeIntervalMs,
+      this.clock
+    );
+  }
+
+  _stopStallWatchdog() {
+    this._stallWatchdog?.();
+    this._stallWatchdog = null;
+    this._stallMark = null;
+  }
+
+  /**
+   * One liveness sample. Reports a recoverable stall only once both the
+   * playhead and the buffer have been frozen for the whole timeout, so a
+   * paused listener, a seek, or a slow-but-alive transport never trips it.
+   */
+  _checkForStall() {
+    if (this._isLoading || !this._isPlaying || this.audio.paused || this.audio.ended) {
+      this._stallMark = null;
+      return;
+    }
+    const currentTime = Number(this.audio.currentTime) || 0;
+    const bufferedEnd = this._bufferedEnd();
+    const mark = this._stallMark;
+    const advanced = !mark
+      || currentTime - mark.currentTime > PROGRESS_EPSILON_SECONDS
+      || bufferedEnd - mark.bufferedEnd > PROGRESS_EPSILON_SECONDS;
+    if (advanced) {
+      this._stallMark = { currentTime, bufferedEnd, since: this.now() };
+      return;
+    }
+    const stalledForMs = this.now() - mark.since;
+    if (stalledForMs < this.stallTimeoutMs) return;
+
+    // Stop probing before reporting: recovery reloads the chapter, and a second
+    // report from the same dead stream would race that attempt.
+    this._stopStallWatchdog();
+    this._emitDiagnostic('stalled-timeout', { stalledForMs, currentTime, bufferedEnd });
+    const error = new Error('Audio stopped advancing mid-playback');
+    error.code = 'MEDIA_STALLED';
+    error.recoverable = true;
+    error.chapterIndex = this.chapterIndex;
+    error.chapterTime = this.getCurrentTime();
+    this.onError?.(error);
+  }
+
   _handleTimeUpdate() {
     this._syncContinuousChapter();
     const now = Date.now();
@@ -744,6 +866,7 @@ export class SingleFileChapterPlayer {
 
   _handleEnded() {
     this._isPlaying = false;
+    this._stopStallWatchdog();
     if (this.isContinuous) {
       this._syncContinuousChapter(Number(this.audio.currentTime) || 0);
       if (Number.isInteger(this.endChapterIndex)) {
@@ -791,6 +914,8 @@ export class SingleFileChapterPlayer {
     this._playReason = null;
     this._pauseReason = null;
     this._isPlaying = true;
+    // Watch for silent death only while audio is actually meant to be running.
+    if (!this._stallWatchdog) this._startStallWatchdog();
     this._emitDiagnostic(event?.type || 'playing', { reason });
     if (wasPlaying && reason === 'external') return;
     this.onPlaybackChange?.(true, { reason });
@@ -799,6 +924,7 @@ export class SingleFileChapterPlayer {
   _handleNativePause() {
     if (this.audio.ended) return;
     this._isPlaying = false;
+    this._stopStallWatchdog();
     const reason = this._pauseReason || 'external';
     this._pauseReason = null;
     this._emitDiagnostic('pause', { reason });

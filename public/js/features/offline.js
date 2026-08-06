@@ -26,7 +26,7 @@ const OFFLINE_CONTRACT_MARKER = 'x-xandrio-offline-contract';
  * with OFFLINE_ROUTE_CONTRACT_VERSION instead of tying downloads to a build id.
  * This value MUST equal CACHE_VERSION in public/sw.js.
  */
-export const EXPECTED_OFFLINE_SW_VERSION = 'xandrio-v131';
+export const EXPECTED_OFFLINE_SW_VERSION = 'xandrio-v132';
 export const MINIMUM_OFFLINE_ROUTE_CONTRACT = 1;
 // A chapter is only ever invalidated after this many playback failures whose
 // cheap probe still says the cache is fine. Below it, we assume Safari.
@@ -34,6 +34,16 @@ const SUSPECT_FAILURES_BEFORE_HASH = 3;
 const FULL_DOWNLOAD_CONCURRENCY = 2;
 const DOWNLOAD_PREPARE_TIMEOUT_MS = 30 * 60 * 1000;
 const DOWNLOAD_RETRY_DELAYS_MS = [0, 350, 1000];
+// Waiting for a chapter to be narrated used to mean a status request every
+// 1.5 seconds for as long as DOWNLOAD_PREPARE_TIMEOUT_MS allows — up to 1200
+// requests for one chapter, all of them landing on the same server that is
+// trying to generate the audio. Poll quickly while progress is arriving and
+// back off when it is not; any real progress resets the interval.
+const PREPARE_POLL_MIN_MS = 1500;
+const PREPARE_POLL_MAX_MS = 15000;
+const PREPARE_POLL_BACKOFF = 1.5;
+// Cadence for on-screen preparation progress once nobody is looking at it.
+const PREPARATION_POLL_HIDDEN_MS = 30000;
 
 export function shouldUseOfflineBookFallback(error, online = navigator.onLine) {
   if (!online) return true;
@@ -1255,10 +1265,38 @@ function schedulePreparationPoll(delayMs = 5000) {
       ['preparing', 'preparation-waiting'].includes(offlineState(entry))
     )
   ) return;
+  // Server-side preparation continues whether or not anyone is looking at it,
+  // and its only consumer is on-screen progress. Backgrounded, this poll was
+  // pure overhead competing with the playback it was preparing for.
+  const interval = globalThis.document?.hidden
+    ? PREPARATION_POLL_HIDDEN_MS
+    : Math.max(1000, Number(delayMs) || 5000);
+  watchPreparationVisibility();
   preparationPollTimer = window.setTimeout(() => {
     preparationPollTimer = null;
     void refreshOfflinePreparations().finally(() => schedulePreparationPoll());
-  }, Math.max(1000, Number(delayMs) || 5000));
+  }, interval);
+}
+
+let preparationVisibilityWatched = false;
+
+/**
+ * Resume the visible cadence the moment the screen comes back, so returning to
+ * the app never shows progress frozen at whatever the slow poll last saw.
+ * Attached on first use rather than at import, because this module is also
+ * loaded outside a document.
+ */
+function watchPreparationVisibility() {
+  if (preparationVisibilityWatched || typeof globalThis.document?.addEventListener !== 'function') {
+    return;
+  }
+  preparationVisibilityWatched = true;
+  globalThis.document.addEventListener('visibilitychange', () => {
+    if (globalThis.document.hidden || preparationPollTimer === null) return;
+    window.clearTimeout(preparationPollTimer);
+    preparationPollTimer = null;
+    schedulePreparationPoll(1000);
+  });
 }
 
 export async function prepareBookForOffline(book, chapters, options = {}) {
@@ -1939,6 +1977,7 @@ async function prepareChapter(bookId, chapterIndex, signal, onProgress = null, p
 
   const deadline = Date.now() + DOWNLOAD_PREPARE_TIMEOUT_MS;
   let recoveryAttempts = 0;
+  const poll = preparePollBackoff();
   while (Date.now() < deadline) {
     throwIfDownloadAborted(signal);
     const status = await getChapterAudioStatus(bookId, chapterIndex, signal, 'active');
@@ -1958,13 +1997,35 @@ async function prepareChapter(bookId, chapterIndex, signal, onProgress = null, p
     if (Number(status.errorChunks) > 0) {
       throw new Error(`Audio generation failed for chapter ${chapterIndex + 1}`);
     }
-    await waitForDownloadRetry(1500, signal);
+    await waitForDownloadRetry(poll.next(ready), signal);
   }
   throw new Error(`Timed out preparing chapter ${chapterIndex + 1}`);
 }
 
+/**
+ * Poll interval that stays fast while chunks keep landing and stretches out
+ * while they do not. A chapter that is generating steadily is worth watching
+ * closely; one that has not moved in a minute is not.
+ */
+function preparePollBackoff() {
+  let delayMs = PREPARE_POLL_MIN_MS;
+  let lastReady = -1;
+  return {
+    next(readyChunks) {
+      if (readyChunks !== lastReady) {
+        lastReady = readyChunks;
+        delayMs = PREPARE_POLL_MIN_MS;
+      } else {
+        delayMs = Math.min(PREPARE_POLL_MAX_MS, Math.round(delayMs * PREPARE_POLL_BACKOFF));
+      }
+      return delayMs;
+    }
+  };
+}
+
 async function waitForPreparedChapter(bookId, chapterIndex, signal, onProgress = null) {
   const deadline = Date.now() + DOWNLOAD_PREPARE_TIMEOUT_MS;
+  const poll = preparePollBackoff();
   while (Date.now() < deadline) {
     throwIfDownloadAborted(signal);
     const status = await getChapterAudioStatus(bookId, chapterIndex, signal, 'active');
@@ -1979,7 +2040,7 @@ async function waitForPreparedChapter(bookId, chapterIndex, signal, onProgress =
     if (Number(status.errorChunks) > 0) {
       throw new Error(`Audio generation failed for chapter ${chapterIndex + 1}`);
     }
-    await waitForDownloadRetry(1500, signal);
+    await waitForDownloadRetry(poll.next(ready), signal);
   }
   throw new Error(`Timed out preparing chapter ${chapterIndex + 1}`);
 }
