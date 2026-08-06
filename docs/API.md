@@ -180,8 +180,9 @@ These endpoints are part of the current server surface but are newer than some o
 - `GET /api/voice-cache/:bookId/:chapterIndex`: returns cache status for available voices for the chapter.
 - `GET /api/audio-ios/:bookId/:chapterIndex`: serves the single-file chapter-audio path used for iOS reliability.
 - `POST /api/playback/foreground/:bookId`: moves queued work for the opened title to the front of each existing priority band and moves its pending full-title preparation ahead of other pending titles. It does not interrupt active generation or promote background work above live playback.
-- `GET /api/chunks/:bookId/:chapterIndex/chapter-audio-status`: returns clean single-file chapter-audio status.
-- `POST /api/chunks/:bookId/:chapterIndex/prepare-chapter-audio`: starts single-file chapter-audio generation. Send `{ "purpose": "offline-download" }` to prioritize a user-requested offline title ahead of speculative background preparation without overtaking live playback.
+- `GET /api/chunks/:bookId/:chapterIndex/chapter-audio-status`: returns single-file chapter-audio and chunk-generation status. `status` is `pending`, `generating`, `ready`, or `error`. Add `purpose=playback-runway` (and optional `endChapter`) to aggregate the current chapter with the next playable, non-structural chapter.
+- `POST /api/chunks/:bookId/:chapterIndex/prepare-chapter-audio`: starts single-file chapter-audio generation. Send `{ "purpose": "offline-download" }` to prioritize a user-requested offline title ahead of speculative background preparation without overtaking live playback. Send `{ "purpose": "playback-runway", "playbackRate": 1.25, "offsetSeconds": 45, "endChapterIndex": 8 }` to prepare the selected tier for the current and next playable chapters at foreground priority. A ready response is `200`; active preparation is `202`.
+- `GET /api/audio-stream/:bookId/:chapterIndex`, `GET /api/audio-continuous/:bookId/:chapterIndex`, and `GET /api/audio-hls/:bookId/:chapterIndex/index.m3u8` enforce that same current-plus-next-playable runway on the server. Structural chapters are skipped. The routes return `425` with `PLAYBACK_RUNWAY_NOT_READY` and `Retry-After: 1` instead of opening an encoder that can underrun.
 - `POST /api/chunks/:bookId/:chapterIndex/prepare`: prepares chunked audio, optionally with `targetChunk`.
 - `POST /api/chunks/:bookId/:chapterIndex/:chunkIndex/prioritize`: prioritizes one chunk.
 - `POST /api/chunks/:bookId/:chapterIndex/retry`: explicit user retry that clears the selected variant's bounded-failure quarantine and restarts generation. Automatic startup recovery never clears quarantine.
@@ -918,14 +919,17 @@ errors return `503` with the same failure headers.
 
 ## GET /api/audio-stream/:bookId/:chapterIndex
 
-Stream a chapter through one stable native-media response while its chunks are
-generated. Ready MP3 chunks are appended in order. WAV chunks are normalized
-into one streaming RIFF container. The response remains open while later
-chunks generate, so a browser does not need to change media sources or call
-`play()` again at chunk boundaries.
+Serve a prepared chapter through one stable native-media response. Clients
+first request the playback runway through `prepare-chapter-audio`. The server
+resolves the next playable chapter, skipping empty structural entries, and
+requires both selected-tier artifacts before opening the media response. This
+route returns `425 PLAYBACK_RUNWAY_NOT_READY` with `Retry-After: 1` while that
+runway is incomplete, preventing an encoder from consuming audio faster than
+the selected voice can supply it.
 
-Once the finalized chapter artifact exists, the same URL serves that file and
-supports normal byte-range requests.
+Once the finalized chapter artifact exists, this URL serves that file and
+supports normal byte-range requests. Continuous MP3 and HLS use the same
+runway requirement.
 
 ### Parameters
 
@@ -935,17 +939,15 @@ supports normal byte-range requests.
 | `chapterIndex` | integer | Zero-based chapter index |
 | `tier` | string | Optional playback tier pin |
 
-### Response — Progressive (200)
-
-- `Content-Type: audio/mpeg` or `audio/wav`
-- `Accept-Ranges: none`
-- `Cache-Control: no-store`
-- `X-Served-Tier` when tiered playback resolves a tier
-
 ### Response — Finalized (200 or 206)
 
 Returns the completed chapter audio. Range requests receive `206 Partial
 Content` with `Accept-Ranges: bytes`.
+
+### Response — Runway not ready (425)
+
+- `Retry-After: 1`
+- JSON code `PLAYBACK_RUNWAY_NOT_READY`
 
 ---
 
@@ -1007,7 +1009,7 @@ The endpoint checks for audio in this order:
 - Subsequent requests are served from cache instantly.
 - The voice is automatically selected based on the book's `language` field.
 - TTS timeout is 120 seconds per chunk (not per chapter).
-- For faster first-audio playback without client-side source changes, use the [stable audio stream](#get-apiaudio-streambookidchapterindex).
+- For uninterrupted online playback, prepare the selected-tier runway before opening a native media route.
 
 ---
 

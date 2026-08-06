@@ -203,6 +203,21 @@ function harness(overrides = {}) {
     assert.strictEqual(calls.find(call => call[0] === 'inspectAudio')[3].tier, 'active');
   });
 
+  await test('playback runway preparation keeps foreground generation priority', async () => {
+    const { orchestrator, calls } = harness({ ready: false });
+    await orchestrator.startChapterAudio({
+      bookId: 'book',
+      chapterIndex: 0,
+      requestedTier: 'instant',
+      priority: 'immediate'
+    });
+    assert(calls.some(call =>
+      call[0] === 'ensureAudio' &&
+      call[3].priority === 'immediate' &&
+      call[3].tier === 'instant'
+    ));
+  });
+
   await test('explicit tier inspection does not start full-book premium preparation', async () => {
     const { orchestrator, calls } = harness({ ready: false });
 

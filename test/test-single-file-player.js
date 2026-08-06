@@ -80,10 +80,131 @@ function fakeAudio() {
       onReady: () => ready.push(player.chapterIndex),
       loadTimeoutMs: 50,
       playTimeoutMs: 50,
+      preparePlaybackRunway: false,
       ...extra
     });
     return { player, ready };
   }
+
+  await test('continuous transports wait for the shared playback runway', async () => {
+    for (const iosLike of [false, true]) {
+      const audio = fakeAudio();
+      audio.canPlayType = type => type === 'application/vnd.apple.mpegurl' ? 'maybe' : '';
+      const requests = [];
+      let statusPolls = 0;
+      const { player } = makePlayer(audio, {
+        isIOSLike: () => iosLike,
+        getChapterCount: () => 4,
+        getContinuousEndChapter: () => 3,
+        resolveServedTier: async () => 'instant',
+        preparePlaybackRunway: true,
+        runwayPollIntervalMs: 1,
+        fetch: async (url, options = {}) => {
+          requests.push({ url, options });
+          const polls = options.method === 'POST' ? 0 : ++statusPolls;
+          const ready = options.method !== 'POST' && polls >= 2;
+          return {
+            ok: true,
+            status: ready ? 200 : 202,
+            async json() {
+              return {
+                ready,
+                status: ready ? 'ready' : 'generating',
+                readyChunks: ready ? 8 : polls,
+                totalChunks: 8
+              };
+            }
+          };
+        }
+      });
+      player.setSpeed(1.25);
+
+      const load = player.loadChapter('book1', 2, { startOffsetSeconds: 45 });
+      await new Promise(resolve => setTimeout(resolve, 1));
+      assert.strictEqual(audio.src, '', 'media transport stays closed while runway is generating');
+      await new Promise(resolve => setTimeout(resolve, 10));
+
+      const preparations = requests.filter(request => request.options.method === 'POST');
+      assert.strictEqual(preparations.length, 1, 'the server owns the complete runway');
+      assert.match(preparations[0].url, /\/api\/chunks\/book1\/2\/prepare-chapter-audio\?tier=/);
+      assert.deepStrictEqual(JSON.parse(preparations[0].options.body), {
+        purpose: 'playback-runway',
+        playbackRate: 1.25,
+        offsetSeconds: 45,
+        endChapterIndex: 3
+      });
+      assert(
+        requests.some(request => (
+          request.url.includes('/chapter-audio-status')
+          && request.url.includes('purpose=playback-runway')
+          && request.url.includes('endChapter=3')
+        )),
+        'readiness is polled without holding a media encoder open'
+      );
+      const mediaUrl = new URL(audio.src, 'https://xandrio.test');
+      assert.strictEqual(
+        mediaUrl.pathname,
+        iosLike
+          ? '/api/audio-hls/book1/2/index.m3u8'
+          : '/api/audio-continuous/book1/2'
+      );
+      assert(mediaUrl.searchParams.get('session'));
+
+      audio.emit('loadedmetadata');
+      await load;
+    }
+  });
+
+  await test('a failed runway stops preparation instead of polling forever', async () => {
+    const audio = fakeAudio();
+    const errors = [];
+    const { player } = makePlayer(audio, {
+      preparePlaybackRunway: true,
+      onError: error => errors.push(error),
+      fetch: async () => ({
+        ok: true,
+        status: 202,
+        async json() {
+          return { ready: false, status: 'error', errorChunks: 1, totalChunks: 8 };
+        }
+      })
+    });
+
+    await assert.rejects(
+      player.loadChapter('book1', 0),
+      /Narration generation failed while preparing playback runway/
+    );
+    assert.strictEqual(audio.src, '');
+    assert.strictEqual(errors.length, 1);
+  });
+
+  await test('an automatic runway tier pins the media transport when the tier probe fails', async () => {
+    const audio = fakeAudio();
+    const { player } = makePlayer(audio, {
+      preparePlaybackRunway: true,
+      resolveServedTier: async () => { throw new Error('tier probe unavailable'); },
+      fetch: async () => ({
+        ok: true,
+        status: 200,
+        async json() {
+          return {
+            ready: true,
+            status: 'ready',
+            servedTier: 'premium',
+            readyChunks: 8,
+            totalChunks: 8
+          };
+        }
+      })
+    });
+
+    const load = player.loadChapter('book1', 0);
+    await new Promise(resolve => setTimeout(resolve, 1));
+    const mediaUrl = new URL(audio.src, 'https://xandrio.test');
+    assert.strictEqual(mediaUrl.searchParams.get('tier'), 'premium');
+    audio.emit('loadedmetadata');
+    await load;
+  });
 
   await test('a superseded load rejects promptly and never fires onReady', async () => {
     const audio = fakeAudio();

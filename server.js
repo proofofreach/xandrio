@@ -1985,8 +1985,8 @@ const playbackPrefetch = createPlaybackPrefetchCoordinator({
   }
 });
 
-function observePlaybackHorizon({ bookId, chapterIndex, sessionId }) {
-  const tier = 'active';
+function observePlaybackHorizon({ bookId, chapterIndex, sessionId, tier: requestedTier = 'active' }) {
+  const tier = requestedTier === 'instant' ? 'instant' : 'active';
   const voice = voiceForTier(tier);
   const tts = ttsForTier(tier);
   return playbackPrefetch.observe({
@@ -2036,6 +2036,13 @@ async function inspectChapterAudio(bookId, chapterIndex, options = {}) {
   const status = {
     ready,
     preparing,
+    status: errorChunks > 0
+      ? 'error'
+      : ready
+        ? 'ready'
+        : preparing || readyChunks > 0
+          ? 'generating'
+          : 'pending',
     bookId,
     chapterIndex,
     totalChunks,
@@ -3313,10 +3320,11 @@ registerPlaybackRoutes(app, {
   },
   offlineReadinessNotifications,
   prioritizeForegroundBook,
-  onCurrentChapterPrepared: ({ req, bookId, chapterIndex }) => observePlaybackHorizon({
+  onCurrentChapterPrepared: ({ req, bookId, chapterIndex, prepared }) => observePlaybackHorizon({
     bookId,
     chapterIndex,
-    sessionId: `${req.user?.id || 'legacy'}:${syncDeviceId(req)}`
+    sessionId: `${req.user?.id || 'legacy'}:${syncDeviceId(req)}`,
+    tier: prepared?.servedTier === 'instant' ? 'instant' : 'active'
   }),
   offlinePreparationOwner: req =>
     `${req.user?.id || 'legacy'}:${syncDeviceId(req)}`,

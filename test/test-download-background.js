@@ -100,13 +100,32 @@ async function testRoutePurpose() {
     }
   };
   let request = null;
+  const requests = [];
+  const prepared = [];
   registerPlaybackRoutes(app, {
     playbackOrchestrator: {
       startChapterAudio: async value => {
         request = value;
-        return { ready: false };
+        requests.push(value);
+        return {
+          ready: value.priority === 'immediate' && value.chapterIndex === 2,
+          status: value.priority === 'immediate' && value.chapterIndex === 2 ? 'ready' : 'generating',
+          readyChunks: value.priority === 'immediate' && value.chapterIndex === 2 ? 4 : 1,
+          totalChunks: 4,
+          servedTier: 'instant'
+        };
       }
     },
+    getBookChapters: async () => ({
+      chapters: [
+        { text: 'Earlier playable chapter.' },
+        { text: 'Earlier playable chapter.' },
+        { text: 'Current playable chapter.' },
+        { text: '', empty: true },
+        { text: 'Next playable chapter.' }
+      ]
+    }),
+    onCurrentChapterPrepared: async value => prepared.push(value),
     ttsForTier: () => ({}),
     generationJournal: {},
     chapterAudioStreamer: {},
@@ -117,11 +136,12 @@ async function testRoutePurpose() {
   });
   const response = {
     statusCode: 200,
+    body: null,
     status(code) {
       this.statusCode = code;
       return this;
     },
-    json() {}
+    json(value) { this.body = value; }
   };
   await handlers.get('POST /api/chunks/:bookId/:chapterIndex/prepare-chapter-audio')({
     params: { bookId: 'book', chapterIndex: '2' },
@@ -130,6 +150,40 @@ async function testRoutePurpose() {
   }, response);
   assert.strictEqual(response.statusCode, 202);
   assert.strictEqual(request.priority, 'download');
+
+  await handlers.get('POST /api/chunks/:bookId/:chapterIndex/prepare-chapter-audio')({
+    params: { bookId: 'book', chapterIndex: '2' },
+    query: { tier: 'instant' },
+    body: { purpose: 'playback-runway', playbackRate: 1.25, offsetSeconds: 45 }
+  }, response);
+  assert.strictEqual(response.statusCode, 202);
+  assert.deepStrictEqual(requests.slice(-2).map(value => value.chapterIndex), [2, 4]);
+  assert(requests.slice(-2).every(value => value.priority === 'immediate'));
+  assert(requests.slice(-2).every(value => value.requestedTier === 'instant'));
+  assert.strictEqual(prepared.length, 1, 'runway preparation starts chapter look-ahead');
+  assert.deepStrictEqual(response.body, {
+    ready: false,
+    status: 'generating',
+    readyChunks: 5,
+    totalChunks: 8,
+    servedTier: 'instant',
+    runwayChapterIndexes: [2, 4],
+    runwayPolicy: 'complete-current-and-next-playable',
+    playbackRate: 1.25,
+    offsetSeconds: 45
+  });
+
+  requests.length = 0;
+  await handlers.get('POST /api/chunks/:bookId/:chapterIndex/prepare-chapter-audio')({
+    params: { bookId: 'book', chapterIndex: '2' },
+    query: {},
+    body: { purpose: 'playback-runway' }
+  }, response);
+  assert.deepStrictEqual(
+    requests.map(value => value.requestedTier),
+    [undefined, 'instant'],
+    'automatic tier resolution is pinned from the current chapter across the runway'
+  );
 }
 
 async function testBookPreparationRoutes() {

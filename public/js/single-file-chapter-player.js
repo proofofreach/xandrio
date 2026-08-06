@@ -40,6 +40,10 @@ export class SingleFileChapterPlayer {
     this.resolveOfflineAudioUrl = options.resolveOfflineAudioUrl || null;
     this.fetch = options.fetch || globalThis.fetch?.bind(globalThis) || null;
     this.preferStandardAudio = Boolean(options.preferStandardAudio);
+    this.preparePlaybackRunway = options.preparePlaybackRunway !== false;
+    this.runwayPollIntervalMs = Number(options.runwayPollIntervalMs) > 0
+      ? Number(options.runwayPollIntervalMs)
+      : 1000;
     this.loadTimeoutMs = Number(options.loadTimeoutMs) > 0 ? Number(options.loadTimeoutMs) : LOAD_TIMEOUT_MS;
     this.playTimeoutMs = Number(options.playTimeoutMs) > 0 ? Number(options.playTimeoutMs) : 10000;
     this.playProgressTimeoutMs = Number(options.playProgressTimeoutMs) > 0
@@ -80,6 +84,7 @@ export class SingleFileChapterPlayer {
     this._generation = 0;
     // Tears down the in-flight loadChapter() wait, if any.
     this._loadWait = null;
+    this._runwayController = null;
     this._isLoading = false;
     this._eventScope = null;
     this._playWait = null;
@@ -106,6 +111,7 @@ export class SingleFileChapterPlayer {
    */
   async loadChapter(bookId, chapterIndex, options = {}) {
     const gen = ++this._generation;
+    this._cancelRunwayPreparation();
     this.pause();
     const requestedOffset = Number(options.startOffsetSeconds);
     const startOffsetSeconds = Number.isFinite(requestedOffset) && requestedOffset > 0
@@ -134,7 +140,7 @@ export class SingleFileChapterPlayer {
     this.audio.preload = 'auto';
     this.audio.volume = this._volume;
     this.audio.playbackRate = this.playbackRate;
-    this._attach();
+    this._isLoading = true;
     this.onWaiting?.('Loading audio…');
     const encodedBookId = encodeURIComponent(bookId);
     const standardUrl = this.preferStandardAudio && this.resolveOfflineAudioUrl
@@ -164,6 +170,36 @@ export class SingleFileChapterPlayer {
         // The stream can still resolve its own default tier.
       }
     }
+    if (!this.preferStandardAudio && this.preparePlaybackRunway && this.fetch) {
+      this.onWaiting?.('Preparing uninterrupted audio…');
+      try {
+        const runway = await this._waitForPlaybackRunway({
+          encodedBookId,
+          chapterIndex,
+          tierQuery,
+          startOffsetSeconds,
+          endChapterIndex: this.endChapterIndex,
+          generation: gen
+        });
+        if (
+          !pinnedTier
+          && (runway?.servedTier === 'instant' || runway?.servedTier === 'premium')
+        ) {
+          this.servedTier = runway.servedTier;
+          tierQuery = `?tier=${encodeURIComponent(runway.servedTier)}`;
+        }
+      } catch (error) {
+        if (gen === this._generation) {
+          this._isLoading = false;
+          if (!error?.cancelled) this.onError?.(error);
+        }
+        throw error;
+      }
+      if (gen !== this._generation) {
+        throw new LifecycleCancelledError('Chapter runway preparation cancelled');
+      }
+    }
+    this._attach();
     const continuousCandidates = this._continuousCandidates(
       encodedBookId,
       chapterIndex,
@@ -177,7 +213,6 @@ export class SingleFileChapterPlayer {
           { url: `${standardUrl}${tierQuery}`, continuous: false }
         ];
     let lastError = null;
-    this._isLoading = true;
     try {
       for (const candidate of sourceCandidates) {
         if (gen !== this._generation) return;
@@ -397,6 +432,104 @@ export class SingleFileChapterPlayer {
     return Number.isInteger(chapterCount) && chapterCount > 0
       ? Math.min(endChapterIndex, chapterCount - 1)
       : endChapterIndex;
+  }
+
+  async _waitForPlaybackRunway({
+    encodedBookId,
+    chapterIndex,
+    tierQuery,
+    startOffsetSeconds,
+    endChapterIndex,
+    generation
+  }) {
+    const controller = new AbortController();
+    this._runwayController = controller;
+    const query = tierQuery || '';
+    const runwayUrl = action => {
+      const separator = query ? '&' : '?';
+      const endChapter = Number.isInteger(endChapterIndex)
+        ? `&endChapter=${endChapterIndex}`
+        : '';
+      return `/api/chunks/${encodedBookId}/${chapterIndex}/${action}${query}${separator}purpose=playback-runway${endChapter}`;
+    };
+    const cancelled = () => controller.signal.aborted || generation !== this._generation;
+    const cancellationError = () => new LifecycleCancelledError('Chapter runway preparation cancelled');
+    const readStatus = async (url, options = {}) => {
+      if (cancelled()) throw cancellationError();
+      let response;
+      try {
+        response = await this.fetch(url, { cache: 'no-store', signal: controller.signal, ...options });
+      } catch (error) {
+        if (cancelled() || error?.name === 'AbortError') throw cancellationError();
+        throw error;
+      }
+      if (!response.ok) {
+        const detail = await response.json().catch(() => ({}));
+        const error = new Error(detail.error || `Playback runway preparation failed (${response.status})`);
+        error.status = response.status;
+        throw error;
+      }
+      return response.json();
+    };
+
+    try {
+      let status = await readStatus(runwayUrl('prepare-chapter-audio'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          purpose: 'playback-runway',
+          playbackRate: this.playbackRate,
+          offsetSeconds: startOffsetSeconds,
+          endChapterIndex
+        })
+      });
+      while (!status?.ready) {
+        if (status?.status === 'error') {
+          throw new Error('Narration generation failed while preparing playback runway');
+        }
+        this.onPreparing?.({
+          targetChunk: 0,
+          targetStatus: 'generating',
+          readyChunks: Math.max(0, Number(status?.readyChunks) || 0),
+          totalChunks: Math.max(0, Number(status?.totalChunks) || 0),
+          purpose: 'playback-runway'
+        });
+        await this._waitForRunwayPoll(controller.signal, cancellationError);
+        status = await readStatus(runwayUrl('chapter-audio-status'));
+      }
+      this.onPreparing?.({
+        targetChunk: 0,
+        targetStatus: 'ready',
+        readyChunks: Math.max(0, Number(status?.readyChunks) || 0),
+        totalChunks: Math.max(0, Number(status?.totalChunks) || 0),
+        purpose: 'playback-runway'
+      });
+      return status;
+    } finally {
+      if (this._runwayController === controller) this._runwayController = null;
+    }
+  }
+
+  _waitForRunwayPoll(signal, cancellationError) {
+    return new Promise((resolve, reject) => {
+      let timer = null;
+      const onAbort = () => {
+        if (timer !== null) clearTimeout(timer);
+        signal.removeEventListener('abort', onAbort);
+        reject(cancellationError());
+      };
+      signal.addEventListener('abort', onAbort, { once: true });
+      if (signal.aborted) return onAbort();
+      timer = setTimeout(() => {
+        signal.removeEventListener('abort', onAbort);
+        resolve();
+      }, this.runwayPollIntervalMs);
+    });
+  }
+
+  _cancelRunwayPreparation() {
+    this._runwayController?.abort();
+    this._runwayController = null;
   }
 
   _continuousCandidates(
@@ -919,6 +1052,7 @@ export class SingleFileChapterPlayer {
   cancelPendingLoad() {
     this._generation++;
     this._isLoading = false;
+    this._cancelRunwayPreparation();
     this.pause();
     this._detach();
   }
