@@ -73,7 +73,7 @@
   },
   "devDependencies": {
     "@cyclonedx/cyclonedx-npm": "6.0.0",
-    "axios": "1.18.1",
+    "axios": "1.19.0",
     "nodemon": "^3.1.14"
   },
   "overrides": {
