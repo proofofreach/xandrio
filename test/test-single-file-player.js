@@ -80,10 +80,131 @@ function fakeAudio() {
       onReady: () => ready.push(player.chapterIndex),
       loadTimeoutMs: 50,
       playTimeoutMs: 50,
+      preparePlaybackRunway: false,
       ...extra
     });
     return { player, ready };
   }
+
+  await test('continuous transports wait for the shared playback runway', async () => {
+    for (const iosLike of [false, true]) {
+      const audio = fakeAudio();
+      audio.canPlayType = type => type === 'application/vnd.apple.mpegurl' ? 'maybe' : '';
+      const requests = [];
+      let statusPolls = 0;
+      const { player } = makePlayer(audio, {
+        isIOSLike: () => iosLike,
+        getChapterCount: () => 4,
+        getContinuousEndChapter: () => 3,
+        resolveServedTier: async () => 'instant',
+        preparePlaybackRunway: true,
+        runwayPollIntervalMs: 1,
+        fetch: async (url, options = {}) => {
+          requests.push({ url, options });
+          const polls = options.method === 'POST' ? 0 : ++statusPolls;
+          const ready = options.method !== 'POST' && polls >= 2;
+          return {
+            ok: true,
+            status: ready ? 200 : 202,
+            async json() {
+              return {
+                ready,
+                status: ready ? 'ready' : 'generating',
+                readyChunks: ready ? 8 : polls,
+                totalChunks: 8
+              };
+            }
+          };
+        }
+      });
+      player.setSpeed(1.25);
+
+      const load = player.loadChapter('book1', 2, { startOffsetSeconds: 45 });
+      await new Promise(resolve => setTimeout(resolve, 1));
+      assert.strictEqual(audio.src, '', 'media transport stays closed while runway is generating');
+      await new Promise(resolve => setTimeout(resolve, 10));
+
+      const preparations = requests.filter(request => request.options.method === 'POST');
+      assert.strictEqual(preparations.length, 1, 'the server owns the complete runway');
+      assert.match(preparations[0].url, /\/api\/chunks\/book1\/2\/prepare-chapter-audio\?tier=/);
+      assert.deepStrictEqual(JSON.parse(preparations[0].options.body), {
+        purpose: 'playback-runway',
+        playbackRate: 1.25,
+        offsetSeconds: 45,
+        endChapterIndex: 3
+      });
+      assert(
+        requests.some(request => (
+          request.url.includes('/chapter-audio-status')
+          && request.url.includes('purpose=playback-runway')
+          && request.url.includes('endChapter=3')
+        )),
+        'readiness is polled without holding a media encoder open'
+      );
+      const mediaUrl = new URL(audio.src, 'https://xandrio.test');
+      assert.strictEqual(
+        mediaUrl.pathname,
+        iosLike
+          ? '/api/audio-hls/book1/2/index.m3u8'
+          : '/api/audio-continuous/book1/2'
+      );
+      assert(mediaUrl.searchParams.get('session'));
+
+      audio.emit('loadedmetadata');
+      await load;
+    }
+  });
+
+  await test('a failed runway stops preparation instead of polling forever', async () => {
+    const audio = fakeAudio();
+    const errors = [];
+    const { player } = makePlayer(audio, {
+      preparePlaybackRunway: true,
+      onError: error => errors.push(error),
+      fetch: async () => ({
+        ok: true,
+        status: 202,
+        async json() {
+          return { ready: false, status: 'error', errorChunks: 1, totalChunks: 8 };
+        }
+      })
+    });
+
+    await assert.rejects(
+      player.loadChapter('book1', 0),
+      /Narration generation failed while preparing playback runway/
+    );
+    assert.strictEqual(audio.src, '');
+    assert.strictEqual(errors.length, 1);
+  });
+
+  await test('an automatic runway tier pins the media transport when the tier probe fails', async () => {
+    const audio = fakeAudio();
+    const { player } = makePlayer(audio, {
+      preparePlaybackRunway: true,
+      resolveServedTier: async () => { throw new Error('tier probe unavailable'); },
+      fetch: async () => ({
+        ok: true,
+        status: 200,
+        async json() {
+          return {
+            ready: true,
+            status: 'ready',
+            servedTier: 'premium',
+            readyChunks: 8,
+            totalChunks: 8
+          };
+        }
+      })
+    });
+
+    const load = player.loadChapter('book1', 0);
+    await new Promise(resolve => setTimeout(resolve, 1));
+    const mediaUrl = new URL(audio.src, 'https://xandrio.test');
+    assert.strictEqual(mediaUrl.searchParams.get('tier'), 'premium');
+    audio.emit('loadedmetadata');
+    await load;
+  });
 
   await test('a superseded load rejects promptly and never fires onReady', async () => {
     const audio = fakeAudio();
@@ -1115,6 +1236,113 @@ function fakeAudio() {
     assert.strictEqual(sessions.size, 1, 'one session id across all attempts');
     assert.strictEqual(new Set(sources).size, 1, 'one source URL across all attempts');
     assert.strictEqual(audio.loadCalls, 3, 'three loads, not six');
+  });
+
+  // A manual clock plus a manual probe: the watchdog's decision is a pure
+  // function of two counters and elapsed time, so drive both by hand.
+  function stallHarness(extra = {}) {
+    const audio = fakeAudio();
+    audio.buffered = {
+      length: 1,
+      start: () => 0,
+      end: () => audio.bufferedEnd
+    };
+    audio.bufferedEnd = 10;
+    let clockMs = 0;
+    const errors = [];
+    const { player } = makePlayer(audio, {
+      isIOSLike: () => false,
+      stallTimeoutMs: 20000,
+      stallProbeIntervalMs: 2000,
+      now: () => clockMs,
+      onError: error => errors.push(error),
+      ...extra
+    });
+    return {
+      audio,
+      player,
+      errors,
+      advance: ms => { clockMs += ms; },
+      // One probe tick, as the interval would deliver it.
+      probe: () => player._checkForStall()
+    };
+  }
+
+  async function playingPlayer(harness, chapterIndex = 0) {
+    const load = harness.player.loadChapter('book1', chapterIndex);
+    harness.audio.emit('loadedmetadata');
+    await load;
+    harness.audio.paused = false;
+    harness.audio.emit('playing');
+    return harness;
+  }
+
+  await test('a frozen playhead and frozen buffer report a recoverable stall', async () => {
+    const harness = await playingPlayer(stallHarness());
+    harness.probe();
+    for (let elapsed = 0; elapsed < 20000; elapsed += 2000) {
+      harness.advance(2000);
+      harness.probe();
+    }
+    assert.strictEqual(harness.errors.length, 1, 'exactly one stall report');
+    assert.strictEqual(harness.errors[0].code, 'MEDIA_STALLED');
+    assert.strictEqual(harness.errors[0].recoverable, true);
+  });
+
+  await test('an advancing playhead never reports a stall', async () => {
+    const harness = await playingPlayer(stallHarness());
+    for (let elapsed = 0; elapsed < 120000; elapsed += 2000) {
+      harness.audio.currentTime += 2;
+      harness.advance(2000);
+      harness.probe();
+    }
+    assert.strictEqual(harness.errors.length, 0, 'playback that advances is alive');
+  });
+
+  await test('a growing buffer keeps a parked playhead alive', async () => {
+    // The live edge of a still-growing playlist: nothing plays out, but
+    // segments keep arriving. That is a slow transport, not a dead one.
+    const harness = await playingPlayer(stallHarness());
+    for (let elapsed = 0; elapsed < 120000; elapsed += 2000) {
+      harness.audio.bufferedEnd += 1;
+      harness.advance(2000);
+      harness.probe();
+    }
+    assert.strictEqual(harness.errors.length, 0, 'a filling buffer is liveness');
+  });
+
+  await test('a paused listener is never treated as stalled', async () => {
+    const harness = await playingPlayer(stallHarness());
+    harness.audio.paused = true;
+    harness.audio.emit('pause');
+    for (let elapsed = 0; elapsed < 120000; elapsed += 2000) {
+      harness.advance(2000);
+      harness.probe();
+    }
+    assert.strictEqual(harness.errors.length, 0, 'a pause is not a stall');
+  });
+
+  await test('the stall probe stops once playback pauses and restarts on play', async () => {
+    const harness = await playingPlayer(stallHarness());
+    assert(harness.player._stallWatchdog, 'watchdog runs while playing');
+    harness.audio.paused = true;
+    harness.audio.emit('pause');
+    assert.strictEqual(harness.player._stallWatchdog, null, 'watchdog stops on pause');
+    harness.audio.paused = false;
+    harness.audio.emit('playing');
+    assert(harness.player._stallWatchdog, 'watchdog resumes on play');
+  });
+
+  await test('a stall reports the position playback died at, once', async () => {
+    const harness = await playingPlayer(stallHarness());
+    harness.audio.currentTime = 137.5;
+    harness.probe();
+    for (let elapsed = 0; elapsed < 40000; elapsed += 2000) {
+      harness.advance(2000);
+      harness.probe();
+    }
+    assert.strictEqual(harness.errors.length, 1, 'a dead stream is reported once, not repeatedly');
+    assert.strictEqual(harness.errors[0].chapterTime, 137.5, 'recovery resumes where it died');
   });
 
   console.log(`\n${passed} passed, ${failed} failed`);

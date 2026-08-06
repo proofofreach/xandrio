@@ -347,6 +347,14 @@ async function startFixtureServer(audioFixtures) {
     state.pendingAudio.push({ res, remainder });
   }
 
+  function releasePreparedRunway() {
+    state.starvationReleased = true;
+    const pending = state.pendingAudio.splice(0);
+    for (const { res, remainder } of pending) {
+      if (!res.destroyed) res.end(remainder);
+    }
+  }
+
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://fixture.local');
     const pathname = url.pathname;
@@ -393,6 +401,20 @@ async function startFixtureServer(audioFixtures) {
     if (pathname.startsWith('/api/voice-cache/')) return jsonResponse(res, { voices: [] });
     if (pathname.startsWith('/api/premium-prep/')) return jsonResponse(res, {}, 404);
     if (pathname === '/api/pronunciations') return jsonResponse(res, { book: [], global: [] });
+    if (/^\/api\/chunks\/lockscreen\/[01]\/prepare-chapter-audio$/.test(pathname)) {
+      // A ready runway means both selected-tier chapters are already complete;
+      // the media fixture must not reintroduce the server starvation this
+      // contract is designed to prevent.
+      releasePreparedRunway();
+      return jsonResponse(res, {
+        ready: true,
+        status: 'ready',
+        runwayPolicy: 'complete-current-and-next-playable'
+      });
+    }
+    if (/^\/api\/chunks\/lockscreen\/[01]\/chapter-audio-status$/.test(pathname)) {
+      return jsonResponse(res, { ready: true, status: 'ready' });
+    }
     if (pathname.startsWith('/api/audio-timeline/')) {
       return jsonResponse(res, {
         sessionId: pathname.split('/').at(-1),
@@ -443,10 +465,8 @@ async function startFixtureServer(audioFixtures) {
       const payload = audioFixtures.continuous.subarray(
         Math.floor(audioFixtures.continuous.length * startRatio)
       );
-      // Chromium needs several seconds of an open-ended MP3 before it emits
-      // canplay. Keep several seconds available, then withhold the remainder
-      // until 3.6 seconds after real playback begins to force a bounded,
-      // recoverable underrun.
+      // Retain the split-response path so the fixture still exercises streaming.
+      // A successful runway preflight releases both halves before media opens.
       const runwayRatio = startChapter === 0 ? 0.375 : 0.5;
       const splitAt = Math.max(1024, Math.floor(payload.length * runwayRatio));
       writeAudioHeaders(res);
@@ -510,14 +530,12 @@ async function startFixtureServer(audioFixtures) {
     state,
     origin: `http://127.0.0.1:${server.address().port}`,
     releaseStarvationAfter(delayMs) {
+      if (state.starvationReleased) return;
       state.starvationScheduledAt = performance.now();
       setTimeout(() => {
-        state.starvationReleased = true;
+        if (state.starvationReleased) return;
         state.starvationReleasedAt = performance.now();
-        const pending = state.pendingAudio.splice(0);
-        for (const { res, remainder } of pending) {
-          if (!res.destroyed) res.end(remainder);
-        }
+        releasePreparedRunway();
       }, delayMs);
     },
     close: () => new Promise(resolve => server.close(resolve))
@@ -882,9 +900,7 @@ async function benchmarkBrowser(fixture, transportValidation, profileConfig) {
         starvationDelayMs: fixture.state.starvationReleasedAt && fixture.state.starvationScheduledAt
           ? Number((fixture.state.starvationReleasedAt - fixture.state.starvationScheduledAt).toFixed(1))
           : null,
-        starvationMode: activeIsHls
-          ? 'append-only HLS playlist withheld across the chapter boundary'
-          : 'bounded open-response underrun after first sound',
+        starvationMode: 'selected-tier current-plus-next runway prepared before media open',
         jsBlockMs: JS_BLOCK_DURATION_MS
       },
       diagnostics: {

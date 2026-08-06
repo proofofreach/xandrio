@@ -157,10 +157,12 @@ function fakeAudio() {
     const ready = [];
     const first = new SingleFileChapterPlayer(audio, {
       onReady: () => ready.push(1),
+      preparePlaybackRunway: false,
       loadTimeoutMs: 1000
     });
     const second = new SingleFileChapterPlayer(audio, {
       onReady: () => ready.push(2),
+      preparePlaybackRunway: false,
       loadTimeoutMs: 1000
     });
     const session = createPlaybackSession();
