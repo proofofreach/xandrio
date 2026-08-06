@@ -965,6 +965,10 @@ function getChunkSizeForVoice(voiceId) {
   return narrationEngines.forVoice(voiceId || DEFAULT_VOICE).chunkSize;
 }
 
+function getSplitPolicyForVoice(voiceId) {
+  return narrationEngines.forVoice(voiceId || DEFAULT_VOICE).splitPolicy;
+}
+
 function getActiveChunkSize() {
   return getChunkSizeForVoice(readSettingsSync().voice || DEFAULT_VOICE);
 }
@@ -1460,6 +1464,7 @@ const chunkedTTS = new ChunkedTTS(CACHE_DIR, ttsQueue, {
   variantKeyProvider: getTTSVariantKey,
   outputFormatProvider: () => getTtsOutputFormatForVoice(getActiveVoice()),
   chunkSizeProvider: getActiveChunkSize,
+  splitPolicyProvider: () => getSplitPolicyForVoice(getActiveVoice()),
   textTransform: transformNarrationText,
   onChapterConcatenated: recordMeasuredChapterDuration,
   generationJournal,
@@ -1473,6 +1478,7 @@ const instantChunkedTTS = new ChunkedTTS(CACHE_DIR, ttsQueue, {
   variantKeyProvider: () => getTTSVariantKeyForVoice(getActiveInstantVoice() || getActiveVoice()),
   outputFormatProvider: () => getTtsOutputFormatForVoice(getActiveInstantVoice() || getActiveVoice()),
   chunkSizeProvider: () => getChunkSizeForVoice(getActiveInstantVoice() || getActiveVoice()),
+  splitPolicyProvider: () => getSplitPolicyForVoice(getActiveInstantVoice() || getActiveVoice()),
   textTransform: transformNarrationText,
   onChapterConcatenated: recordMeasuredChapterDuration,
   generationJournal,
@@ -1620,19 +1626,26 @@ async function ensureChapterAudioPrepared(bookId, chapterIndex, options = {}) {
   const tier = options.tier === 'instant' ? 'instant' : 'active';
   const tts = options.tts || ttsForTier(tier);
   const voice = options.voice || voiceForTier(tier);
+  const generationOrigin = options.origin || (
+    priority === GENERATION_PRIORITY.DOWNLOAD
+      ? GENERATION_ORIGIN.OFFLINE_DOWNLOAD
+      : GENERATION_ORIGIN.PLAYBACK_CURRENT
+  );
+  const playbackChunkIndexes = generationOrigin === GENERATION_ORIGIN.PLAYBACK_CURRENT
+    ? [0, 1]
+    : null;
   const jobs = clean ? cleanChapterAudioPrepareJobs : chapterAudioPrepareJobs;
   const key = `${bookId}:${chapterIndex}:${tts.variantKeyProvider()}`;
   if (jobs.has(key)) {
     throwIfAborted();
     await tts.claimChapter?.(bookId, chapterIndex, {
-      origin: options.origin || (
-        priority === GENERATION_PRIORITY.DOWNLOAD
-          ? GENERATION_ORIGIN.OFFLINE_DOWNLOAD
-          : GENERATION_ORIGIN.PLAYBACK_CURRENT
-      ),
+      origin: generationOrigin,
       requestId: options.requestId || null,
       sessionId: options.sessionId || null
-    }, priority, { signal: options.signal });
+    }, priority, {
+      signal: options.signal,
+      chunkIndexes: playbackChunkIndexes
+    });
     if (priority === 'download' || priority === 'lookahead') {
       const existingManifest = tts.getChapterManifest(bookId, chapterIndex);
       existingManifest?.chunks?.forEach((chunk, index) => {
@@ -1675,26 +1688,22 @@ async function ensureChapterAudioPrepared(bookId, chapterIndex, options = {}) {
           ? (() => priority)
           : getChapterGenerationPriority(0),
         voice,
-        origin: options.origin || (
-          priority === GENERATION_PRIORITY.DOWNLOAD
-            ? GENERATION_ORIGIN.OFFLINE_DOWNLOAD
-            : GENERATION_ORIGIN.PLAYBACK_CURRENT
-        ),
+        origin: generationOrigin,
         requestId: options.requestId || null,
         sessionId: options.sessionId || null,
+        chunkIndexes: playbackChunkIndexes,
         signal: options.signal
       });
     } else {
       throwIfAborted();
       await tts.claimChapter?.(bookId, chapterIndex, {
-        origin: options.origin || (
-          priority === GENERATION_PRIORITY.DOWNLOAD
-            ? GENERATION_ORIGIN.OFFLINE_DOWNLOAD
-            : GENERATION_ORIGIN.PLAYBACK_CURRENT
-        ),
+        origin: generationOrigin,
         requestId: options.requestId || null,
         sessionId: options.sessionId || null
-      }, priority, { signal: options.signal });
+      }, priority, {
+        signal: options.signal,
+        chunkIndexes: playbackChunkIndexes
+      });
       manifest.chunks.forEach((chunk, index) => {
         if (chunk.status !== 'ready') {
           const chunkPriority = deferredPriority
@@ -1707,10 +1716,7 @@ async function ensureChapterAudioPrepared(bookId, chapterIndex, options = {}) {
       });
     }
 
-    const pendingJobs = manifest.chunks
-      .filter(chunk => chunk.status !== 'ready' && chunk.jobId)
-      .map(chunk => ttsQueue.waitFor(chunk.jobId).catch(() => {}));
-    await Promise.all(pendingJobs);
+    await tts.waitForChapter(bookId, chapterIndex, { signal: options.signal });
     throwIfAborted();
 
     const refreshed = tts.getChapterManifest(bookId, chapterIndex) || manifest;
@@ -1781,13 +1787,9 @@ function premiumChunkSizeFromVariantKey(variantKey) {
 
 function createPremiumVariantWorker(variantKey) {
   const voice = premiumVoiceFromVariantKey(variantKey);
-  const fixedTts = new ChunkedTTS(CACHE_DIR, ttsQueue, {
-    variantKeyProvider: () => variantKey,
-    chunkSize: premiumChunkSizeFromVariantKey(variantKey),
-    textTransform: transformNarrationText,
-    onChapterConcatenated: recordMeasuredChapterDuration,
-    generationJournal,
-    validateRecoveryEntry: validateRecordedNarrationVariant
+  const fixedTts = chunkedTTS.workerForVariant(variantKey, {
+    voice,
+    chunkSize: premiumChunkSizeFromVariantKey(variantKey)
   });
   premiumVariantTtsWorkers.set(variantKey, fixedTts);
   return {
@@ -1985,8 +1987,8 @@ const playbackPrefetch = createPlaybackPrefetchCoordinator({
   }
 });
 
-function observePlaybackHorizon({ bookId, chapterIndex, sessionId }) {
-  const tier = 'active';
+function observePlaybackHorizon({ bookId, chapterIndex, sessionId, tier: requestedTier = 'active' }) {
+  const tier = requestedTier === 'instant' ? 'instant' : 'active';
   const voice = voiceForTier(tier);
   const tts = ttsForTier(tier);
   return playbackPrefetch.observe({
@@ -2036,6 +2038,13 @@ async function inspectChapterAudio(bookId, chapterIndex, options = {}) {
   const status = {
     ready,
     preparing,
+    status: errorChunks > 0
+      ? 'error'
+      : ready
+        ? 'ready'
+        : preparing || readyChunks > 0
+          ? 'generating'
+          : 'pending',
     bookId,
     chapterIndex,
     totalChunks,
@@ -3313,10 +3322,11 @@ registerPlaybackRoutes(app, {
   },
   offlineReadinessNotifications,
   prioritizeForegroundBook,
-  onCurrentChapterPrepared: ({ req, bookId, chapterIndex }) => observePlaybackHorizon({
+  onCurrentChapterPrepared: ({ req, bookId, chapterIndex, prepared }) => observePlaybackHorizon({
     bookId,
     chapterIndex,
-    sessionId: `${req.user?.id || 'legacy'}:${syncDeviceId(req)}`
+    sessionId: `${req.user?.id || 'legacy'}:${syncDeviceId(req)}`,
+    tier: prepared?.servedTier === 'instant' ? 'instant' : 'active'
   }),
   offlinePreparationOwner: req =>
     `${req.user?.id || 'legacy'}:${syncDeviceId(req)}`,
@@ -3523,6 +3533,55 @@ app.get('/api/queue/status', async (req, res) => {
     });
   } catch (err) {
     sendServerError(res, err, 'Failed to load audio activity');
+  }
+});
+
+// API: Move one title through the audio generation order.
+//
+// The order is a tie-break inside each priority band, never across them, so
+// this can rearrange a backlog but can never put speculative work in front of
+// the chapter someone is listening to. The move is expressed relative to the
+// list the reader is looking at: the account's own activity order is what gets
+// seeded, so a reader can only reposition titles they can already see.
+app.post('/api/queue/order', async (req, res) => {
+  try {
+    const bookId = String(req.body?.bookId || '');
+    const direction = req.body?.direction;
+    if (!isSafeBookId(bookId)) {
+      return res.status(400).json({ error: 'Invalid book identifier' });
+    }
+    if (direction !== 'up' && direction !== 'down') {
+      return res.status(400).json({ error: "Direction must be 'up' or 'down'" });
+    }
+    const userId = positionUserId(req);
+    const [shelvesStore, positionsStore] = await Promise.all([
+      loadJSON(SHELVES_FILE, {}),
+      loadJSON(POSITIONS_FILE, {})
+    ]);
+    const relevantBookIds = new Set([
+      ...shelves.shelfForUser(shelvesStore, userId),
+      ...Object.keys(positionsForUser(positionsStore, userId))
+    ]);
+    if (!relevantBookIds.has(bookId)) {
+      return res.status(404).json({ error: 'Book is not in this library' });
+    }
+    const visible = ttsQueue
+      .getQueueActivity({ bookIds: relevantBookIds })
+      .books.map(item => item.bookId);
+    const movedPreparation = offlinePreparationCoordinator.move(bookId, direction);
+    const order = ttsQueue.moveBook(bookId, direction, visible);
+    if (!order && !movedPreparation) {
+      // Nothing to reorder: either the title holds no queued work, or it is
+      // already at the end it was moved towards.
+      return res.status(409).json({
+        error: 'This title cannot move any further',
+        code: 'QUEUE_ORDER_UNCHANGED',
+        order: ttsQueue.bookOrder()
+      });
+    }
+    res.json({ bookId, direction, order: order || ttsQueue.bookOrder() });
+  } catch (err) {
+    sendServerError(res, err, 'Failed to reorder audio activity');
   }
 });
 
@@ -4179,6 +4238,10 @@ const shutdownController = createGracefulShutdown({
       console.warn(`Search-cover descriptor flush failed: ${err.message}`);
     }
     narrationEngines.stopAll();
+    // Background repair has nothing to repair once we are shutting down, and
+    // durable generation state resumes on restart either way.
+    chunkedTTS.stopReconcileLoop?.();
+    instantChunkedTTS.stopReconcileLoop?.();
     await hlsAudioStreamer.dispose();
     // Give the scraper's Chromium a moment to close, but never block exit.
     try {

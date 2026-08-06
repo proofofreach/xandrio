@@ -134,6 +134,7 @@ function harness(overrides = {}) {
     assert(generation);
     assert.strictEqual(generation[1], 'book');
     assert.strictEqual(generation[2], 2);
+    assert.deepStrictEqual(generation[6].chunkIndexes, [1, 2]);
   });
 
   await test('prioritizes an existing healthy manifest', async () => {
@@ -146,7 +147,8 @@ function harness(overrides = {}) {
       call[1] === 'book' &&
       call[2] === 0 &&
       call[3].origin === 'playback-current' &&
-      call[4] === 'immediate'
+      call[4] === 'immediate' &&
+      JSON.stringify(call[5].chunkIndexes) === JSON.stringify([0, 1])
     ));
     assert(!calls.some(call => call[0] === 'generate'));
   });
@@ -201,6 +203,21 @@ function harness(overrides = {}) {
     assert.strictEqual(result.servedTier, 'premium');
     assert.strictEqual(result.premiumReady, false);
     assert.strictEqual(calls.find(call => call[0] === 'inspectAudio')[3].tier, 'active');
+  });
+
+  await test('playback runway preparation keeps foreground generation priority', async () => {
+    const { orchestrator, calls } = harness({ ready: false });
+    await orchestrator.startChapterAudio({
+      bookId: 'book',
+      chapterIndex: 0,
+      requestedTier: 'instant',
+      priority: 'immediate'
+    });
+    assert(calls.some(call =>
+      call[0] === 'ensureAudio' &&
+      call[3].priority === 'immediate' &&
+      call[3].tier === 'instant'
+    ));
   });
 
   await test('explicit tier inspection does not start full-book premium preparation', async () => {

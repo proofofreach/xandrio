@@ -87,5 +87,26 @@ check('publication uses a durable checkpoint rather than unstable patch IDs', ()
   assert.match(source, /git\('push', '--force', PRIVATE_REMOTE, 'refs\/tags\/public-sync-base'\)/);
 });
 
+check('publication verifies the checkpoint against the published tree', () => {
+  const source = readFileSync(syncScript, 'utf8');
+  // A checkpoint seeded at the current head once asserted that two
+  // unpublished commits had shipped. Because it only moves forward, nothing
+  // downstream could notice; only the tree can falsify the claim.
+  const driftIndex = source.indexOf('const drifted = driftedPaths(');
+  const pendingIndex = source.indexOf("const pending = git('rev-list'");
+  assert(driftIndex !== -1, 'drift verification is missing');
+  assert(driftIndex < pendingIndex, 'drift must be checked before commits are selected');
+  assert.match(source, /git\(\s*'diff', '--name-only', `\$\{REMOTE\}\/\$\{TARGET\}`, baseLimit\s*\)/);
+  assert.match(source, /does not match public-sync-base/);
+});
+
+check('drift verification ignores only the deliberate public exclusions', () => {
+  const source = readFileSync(syncScript, 'utf8');
+  const body = source.slice(source.indexOf('export function driftedPaths'));
+  assert.match(body, /!PUBLIC_EXCLUDED_PATHS\.has\(filePath\)/);
+  // Anything else differing is unpublished work, so the guard must fail closed.
+  assert.match(source, /if \(drifted\.length\) \{\s*fail\(/);
+});
+
 console.log(`${passed} passed, ${failed} failed`);
 process.exitCode = failed ? 1 : 0;

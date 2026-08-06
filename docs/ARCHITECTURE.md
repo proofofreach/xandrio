@@ -47,6 +47,36 @@ Provider result labels communicate whether a result is an operator upload, carri
    Downloaded view and transferred Cache Storage entries are scoped to the
    current account, browser profile, and device.
 
+### Scheduling is reconciled, not remembered
+
+Generation used to advance only on queue events — `complete`, `error`,
+`settled` — matched back to a manifest through an in-memory job map. Every one
+of those edges can be missed: a completion whose mapping a concurrent pump has
+already removed is dropped, a cancelled job emits nothing that re-pumps its
+manifest, and a job whose queue record has aged out of the finished-job cache
+reports no status at all. Miss the last edge for a chapter and it stops dead —
+pending chunks, no jobs, and nothing that will ever look at it again — while
+chapter status still answers `preparing: true`. A production session lost 56 of
+91 minutes to exactly this.
+
+So the scheduler re-derives its state instead of trusting that it was told:
+
+- `ChunkedTTS.reconcile()` compares every live manifest against the queue and
+  re-materializes anything with outstanding work and no scheduled jobs. It runs
+  on an unref'd timer, is safe to call at any moment, and does nothing when
+  everything is healthy. It covers background and offline preparation, which no
+  waiter is watching, and variant workers inherit it.
+- `waitForChapter()` keeps its own bounded watchdog so a caller learns about a
+  chapter that cannot be revived (`CHAPTER_GENERATION_STRANDED`) rather than
+  awaiting forever.
+
+**Rendered audio is never re-synthesized.** Chunk paths are content-addressed —
+book, chapter, index, variant and output format — and stale audio is deleted
+wholesale when the source text hash changes, so a file at the expected path is
+that chunk's audio. Both the manifest pump and the queue check for it before
+generating. TTS is the most expensive thing this server does; that check is a
+`stat`.
+
 ## Local-first playback
 
 A chapter already on this device is played from this device, whether or not

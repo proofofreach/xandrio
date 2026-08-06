@@ -62,6 +62,14 @@ export function canAutoResolvePublicExclusions(paths) {
   return paths.length > 0 && paths.every(filePath => PUBLIC_EXCLUDED_PATHS.has(filePath));
 }
 
+// Paths where the published tree legitimately differs from the checkpoint are
+// only the ones the public repository deliberately omits; anything else means
+// work the checkpoint claims is published never actually shipped.
+export function driftedPaths(diffOutput) {
+  return String(diffOutput).split('\n').map(line => line.trim())
+    .filter(filePath => filePath && !PUBLIC_EXCLUDED_PATHS.has(filePath));
+}
+
 export function isPendingCheckRegistration(error) {
   return /no checks reported/i.test(String(error?.stderr || error?.message || ''));
 }
@@ -176,6 +184,21 @@ if (recoveredCheckpoint !== baseLimit) {
   persistCheckpoint(recoveredCheckpoint);
   baseLimit = recoveredCheckpoint;
   console.log(`Recovered public-sync-base at ${git('rev-parse', '--short', baseLimit)}.`);
+}
+
+// The checkpoint is a claim, not evidence. It once got seeded at the current
+// head, silently asserting that two unpublished commits had already shipped;
+// because it only ever moves forward they became invisible and the public tree
+// drifted 2020 lines behind the commit it pointed at. Verify the claim against
+// the only thing that can falsify it — the published tree itself.
+const drifted = driftedPaths(git(
+  'diff', '--name-only', `${REMOTE}/${TARGET}`, baseLimit
+));
+if (drifted.length) {
+  fail(`${REMOTE}/${TARGET} does not match public-sync-base ` +
+    `(${git('rev-parse', '--short', baseLimit)}); it differs in ` +
+    `${drifted.length} file(s): ${drifted.slice(0, 10).join(', ')}` +
+    `${drifted.length > 10 ? ', ...' : ''}. Publish the missing work before syncing.`);
 }
 
 // The checkpoint is authoritative. Patch IDs are not: excluding a private-only

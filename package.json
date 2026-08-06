@@ -24,6 +24,8 @@
     "dev": "node --env-file-if-exists=.env node_modules/nodemon/bin/nodemon.js server.js",
     "benchmark:pipeline": "node scripts/benchmark-pipeline.js",
     "benchmark:kokoro": "node scripts/benchmark-kokoro-quality.js",
+    "benchmark:kokoro-split": "node scripts/benchmark-kokoro-split-ab.js",
+    "benchmark:kokoro-split-sweep": "node scripts/benchmark-kokoro-split-sweep.js",
     "benchmark:pdf": "node scripts/benchmark-pdf-extraction.js",
     "benchmark:kindle": "node scripts/benchmark-kindle-extraction.js",
     "benchmark:tts": "node scripts/benchmark-tts.js",

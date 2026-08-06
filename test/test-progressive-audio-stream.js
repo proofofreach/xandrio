@@ -71,8 +71,24 @@ function routeHarness(source, streamerOptions = {}) {
     ...(streamerOptions.hlsOptions || {})
   });
   const playbackOrchestrator = new Proxy({
-    prepareAudioStream: async () => source,
-    prepareContinuousAudioStream: async () => source
+    prepareAudioStream: async options => {
+      streamerOptions.transportRequests?.push(options);
+      return source;
+    },
+    prepareContinuousAudioStream: async options => {
+      streamerOptions.transportRequests?.push(options);
+      return source;
+    },
+    chapterAudioStatus: async ({ chapterIndex, requestedTier }) => {
+      streamerOptions.runwayStatusChecks?.push(chapterIndex);
+      streamerOptions.runwayTierChecks?.push({ chapterIndex, requestedTier });
+      return {
+        ready: streamerOptions.runwayReadyByChapter
+          ? streamerOptions.runwayReadyByChapter[chapterIndex] !== false
+          : streamerOptions.runwayReady !== false,
+        servedTier: requestedTier || streamerOptions.autoServedTierByChapter?.[chapterIndex]
+      };
+    }
   }, {
     get(target, property) {
       if (property in target) return target[property];
@@ -92,7 +108,14 @@ function routeHarness(source, streamerOptions = {}) {
       if (!res.headersSent) res.status(500).json({ error: message });
       else res.destroy();
     },
-    fs: fsp
+    fs: fsp,
+    getBookChapters: async () => ({
+      chapters: streamerOptions.runwayChapters || [
+        { text: 'Playable chapter zero with enough narration text.' },
+        { text: 'Playable chapter one with enough narration text.' },
+        { text: 'Playable chapter two with enough narration text.' }
+      ]
+    })
   });
   app.locals.hlsAudioStreamer = hlsAudioStreamer;
   return app;
@@ -305,6 +328,7 @@ function zeroCrossingRate(pcm) {
     });
 
     await test('continuous endpoint keeps one valid encoder across chapter inputs', async () => {
+      const transportRequests = [];
       const chapterPaths = [];
       for (let index = 0; index < 3; index++) {
         const chapterPath = path.join(dir, `continuous-${index}.mp3`);
@@ -315,26 +339,99 @@ function zeroCrossingRate(pcm) {
         bookId: 'book_continuous',
         chapterIndex: 1,
         endChapterIndex: 3,
-        servedTier: 'instant',
+        servedTier: 'premium',
         format: 'mp3',
         async *iterateInputs() {
           for (const chapterPath of chapterPaths) yield chapterPath;
         }
       };
-      const server = await listen(routeHarness(source));
+      const server = await listen(routeHarness(source, {
+        autoServedTierByChapter: { 1: 'premium', 2: 'instant' },
+        transportRequests
+      }));
       const outputPath = path.join(dir, 'continuous-result.mp3');
       try {
         const response = await fetch(
           `http://127.0.0.1:${server.address().port}/api/audio-continuous/book_continuous/1`
         );
         assert.strictEqual(response.status, 200);
-        assert.strictEqual(response.headers.get('x-served-tier'), 'instant');
+        assert.strictEqual(response.headers.get('x-served-tier'), 'premium');
         await fsp.writeFile(outputPath, Buffer.from(await response.arrayBuffer()));
       } finally {
         await new Promise(resolve => server.close(resolve));
       }
       const actual = await decodedDuration(outputPath);
       assert(Math.abs(actual - 1.20) < 0.06, `continuous duration was ${actual.toFixed(3)}s`);
+      assert.strictEqual(
+        transportRequests[0].requestedTier,
+        'premium',
+        'the media source keeps the exact tier verified by the runway gate'
+      );
+    });
+
+    await test('continuous MP3 and HLS reject an unprepared server runway before encoding', async () => {
+      const source = {
+        bookId: 'book_unprepared',
+        chapterIndex: 0,
+        endChapterIndex: 0,
+        format: 'mp3',
+        async *iterateInputs() {
+          throw new Error('an encoder must not start without runway');
+        }
+      };
+      const server = await listen(routeHarness(source, { runwayReady: false }));
+      const origin = `http://127.0.0.1:${server.address().port}`;
+      try {
+        for (const url of [
+          `${origin}/api/audio-continuous/book_unprepared/0`,
+          `${origin}/api/audio-hls/book_unprepared/0/index.m3u8?session=session-test-1&owner=owner-test-1`,
+          `${origin}/api/audio-stream/book_unprepared/0`
+        ]) {
+          const response = await fetch(url);
+          assert.strictEqual(response.status, 425);
+          assert.strictEqual(response.headers.get('retry-after'), '1');
+          assert.strictEqual((await response.json()).code, 'PLAYBACK_RUNWAY_NOT_READY');
+        }
+      } finally {
+        await new Promise(resolve => server.close(resolve));
+      }
+    });
+
+    await test('the transport gate requires the next playable chapter and skips structural chapters', async () => {
+      const statusChecks = [];
+      const tierChecks = [];
+      const source = {
+        bookId: 'book_structural_runway',
+        chapterIndex: 0,
+        format: 'mp3',
+        async *iterateInputs() {
+          throw new Error('an encoder must not start before the next playable chapter is ready');
+        }
+      };
+      const server = await listen(routeHarness(source, {
+        runwayChapters: [
+          { text: 'Current playable chapter with narration.' },
+          { text: '', empty: true },
+          { text: 'Next playable chapter with narration.' }
+        ],
+        runwayReadyByChapter: { 0: true, 2: false },
+        runwayStatusChecks: statusChecks,
+        runwayTierChecks: tierChecks,
+        autoServedTierByChapter: { 0: 'premium', 2: 'instant' }
+      }));
+      try {
+        const response = await fetch(
+          `http://127.0.0.1:${server.address().port}/api/audio-continuous/book_structural_runway/0`
+        );
+        assert.strictEqual(response.status, 425);
+        assert.deepStrictEqual(statusChecks, [0, 2]);
+        assert.deepStrictEqual(tierChecks, [
+          { chapterIndex: 0, requestedTier: undefined },
+          { chapterIndex: 2, requestedTier: 'premium' }
+        ]);
+      } finally {
+        await new Promise(resolve => server.close(resolve));
+      }
     });
 
     await test('an overestimated chapter seek never skips into the next chapter', async () => {

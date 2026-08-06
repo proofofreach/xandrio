@@ -1,6 +1,19 @@
-import { apiGet } from '../api.js';
+import { apiGet, apiSend } from '../api.js';
 import { escapeHTML, coverImageHTML } from '../util/format.js';
 import { registerSheet } from '../ui/sheets.js';
+import { showToast } from '../ui/toast.js';
+
+// A title's place in the audio-preparation order is something the reader can
+// change; a transfer already in flight is not. Downloads are excluded for that
+// reason, not as an oversight.
+const REORDERABLE_KINDS = new Set(['queue', 'preparation']);
+
+// Chevrons rather than glyph characters: DESIGN.md rules out emoji UI icons,
+// and a stroked path stays crisp at the small size these controls need.
+const MOVE_ICON = {
+  up: '<svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M3.5 10 8 5.5 12.5 10" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  down: '<svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M3.5 6 8 10.5 12.5 6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>'
+};
 
 const { DisposableScope } = globalThis.XandrioLifecycle || {};
 let queueStatusEl = null;
@@ -134,6 +147,38 @@ function activityStructureFor(books) {
   })));
 }
 
+function isReorderable(book) {
+  return REORDERABLE_KINDS.has(book?.kind || 'queue');
+}
+
+/**
+ * The reorder control, or nothing at all when there is no second title to
+ * trade places with. A lone row with two dead arrows reads as broken.
+ */
+function reorderControlHTML(book, position, total) {
+  if (total < 2) return '';
+  const title = book.title || 'Untitled';
+  const button = direction => {
+    const atEnd = direction === 'up' ? position === 0 : position === total - 1;
+    const label = direction === 'up'
+      ? `Move ${title} earlier in the queue`
+      : `Move ${title} later in the queue`;
+    return `
+      <button type="button" class="audio-activity-move"
+              data-move-queue-book="${escapeHTML(book.id)}"
+              data-move-direction="${direction}"
+              aria-label="${escapeHTML(label)}"
+              ${atEnd ? 'disabled' : ''}>${MOVE_ICON[direction]}</button>
+    `;
+  };
+  return `
+    <div class="audio-activity-reorder" role="group"
+         aria-label="${escapeHTML(`Queue position for ${title}: ${position + 1} of ${total}`)}">
+      ${button('up')}${button('down')}
+    </div>
+  `;
+}
+
 function patchActivityRows(books) {
   const rows = Array.from(activityListEl?.querySelectorAll?.('[data-audio-activity-id]') || []);
   if (rows.length !== books.length) return false;
@@ -189,14 +234,19 @@ function renderActivityDetails(status = currentStatus) {
   const structureKey = activityStructureFor(books);
   if (structureKey === activityStructureKey && patchActivityRows(books)) return;
 
+  const reorderable = books.filter(isReorderable);
   activityListEl.innerHTML = books.map(book => {
     const active = Number(book.active || 0) > 0;
     const isDownload = book.kind === 'download';
     const isPreparation = book.kind === 'preparation';
+    const reorderControl = isReorderable(book)
+      ? reorderControlHTML(book, reorderable.indexOf(book), reorderable.length)
+      : '';
     return `
       <article class="audio-activity-row" data-state="${active ? 'active' : 'queued'}"
                data-audio-activity-id="${escapeHTML(book.id)}"
-               data-audio-activity-kind="${escapeHTML(book.kind || 'queue')}">
+               data-audio-activity-kind="${escapeHTML(book.kind || 'queue')}"
+               ${reorderControl ? 'data-reorderable="true"' : ''}>
         ${coverImageHTML(book, 'audio-activity-cover', '')}
         <div class="audio-activity-copy">
           <strong>${escapeHTML(book.title || 'Untitled')}</strong>
@@ -217,10 +267,49 @@ function renderActivityDetails(status = currentStatus) {
                     data-cancel-offline-book="${escapeHTML(book.id)}">Cancel</button>
           ` : ''}
         </div>
+        ${reorderControl}
       </article>
     `;
   }).join('');
   activityStructureKey = structureKey;
+}
+
+/**
+ * Reorder locally first, then confirm with the server. Waiting for the round
+ * trip would make the arrows feel dead for up to a poll interval; the next poll
+ * reconciles, and a rejected move snaps back immediately.
+ */
+async function moveQueueBook(bookId, direction) {
+  const books = currentStatus.books || [];
+  const reorderable = books.filter(isReorderable);
+  const from = reorderable.findIndex(book => book.id === bookId);
+  const to = direction === 'up' ? from - 1 : from + 1;
+  if (from < 0 || to < 0 || to >= reorderable.length) return;
+
+  const moved = reorderable[from];
+  const displaced = reorderable[to];
+  const reordered = books.slice();
+  reordered[books.indexOf(moved)] = displaced;
+  reordered[books.indexOf(displaced)] = moved;
+  currentStatus = { ...currentStatus, books: reordered };
+  activityStructureKey = '';
+  renderActivityDetails(currentStatus);
+  if (activityAnnouncementEl) {
+    activityAnnouncementEl.textContent =
+      `${moved.title || 'Untitled'} moved to position ${to + 1} of ${reorderable.length}.`;
+  }
+
+  try {
+    await apiSend('POST', '/api/queue/order', { bookId, direction });
+  } catch (error) {
+    // Put the list back the way the server sees it rather than leaving a
+    // rearrangement on screen that never happened.
+    activityStructureKey = '';
+    await pollQueueStatus();
+    if (error?.status !== 409) {
+      showToast(error?.message || 'Could not reorder audio preparation', 'error');
+    }
+  }
 }
 
 function announceBookCount(bookCount) {
@@ -273,6 +362,10 @@ function renderQueueStatus(status) {
 }
 
 async function pollQueueStatus(scope = pollScope) {
+  // A badge nobody can see is not worth a request. The visibilitychange
+  // listener below polls immediately on return, so nothing is stale by the
+  // time it matters.
+  if (document.hidden) return;
   try {
     const status = await apiGet('/api/queue/status');
     if (scope !== pollScope || scope?.closed) return;
@@ -342,6 +435,13 @@ export function initQueueStatus(options = {}) {
     renderQueueStatus(currentServerStatus);
   });
   scope.listen(activityListEl, 'click', event => {
+    const moveButton = event.target.closest?.('[data-move-queue-book]');
+    const moveBookId = moveButton?.dataset?.moveQueueBook;
+    const moveDirection = moveButton?.dataset?.moveDirection;
+    if (moveBookId && moveDirection && !moveButton.disabled) {
+      void moveQueueBook(moveBookId, moveDirection);
+      return;
+    }
     const button = event.target.closest?.('[data-cancel-offline-book]');
     const bookId = button?.dataset?.cancelOfflineBook;
     if (!bookId || typeof globalThis.CustomEvent !== 'function') return;
