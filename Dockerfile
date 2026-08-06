@@ -1,7 +1,7 @@
 # Pin the multi-architecture Node 24 LTS image. Dependabot proposes reviewed
 # digest updates; the scheduled rebuild refreshes packages available from the
 # pinned Debian base and detects new image vulnerabilities.
-FROM node:24-bookworm-slim@sha256:cb4e8f7c443347358b7875e717c29e27bf9befc8f5a26cf18af3c3dec80e58c5 AS deps
+FROM node:25-bookworm-slim@sha256:81db02c4b671288a03915da9534dbd54f96d0e7c24d80ccc54f5b36b2e684370 AS deps
 
 WORKDIR /app
 
@@ -21,7 +21,7 @@ RUN apt-get update \
   && npm cache clean --force \
   && rm -rf /var/lib/apt/lists/*
 
-FROM node:24-bookworm-slim@sha256:cb4e8f7c443347358b7875e717c29e27bf9befc8f5a26cf18af3c3dec80e58c5
+FROM node:25-bookworm-slim@sha256:81db02c4b671288a03915da9534dbd54f96d0e7c24d80ccc54f5b36b2e684370
 
 ARG VERSION=dev
 ARG VCS_REF=unknown
