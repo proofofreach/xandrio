@@ -8,7 +8,8 @@ const {
   fetchCoverFromGoogleBooks,
   fetchCoverFromOpenLibrary,
   fetchCoverByOpenLibraryWorkKey,
-  fetchCoverFromGutenbergId
+  fetchCoverFromGutenbergId,
+  resetRemoteRateLimits
 } = require('../lib/cover-service');
 
 let passed = 0;
@@ -251,6 +252,58 @@ function jsonResponse(value) {
         const outputPath = path.join(tempDir, `${name.replace(/\s+/g, '-').toLowerCase()}.jpg`);
         assert.strictEqual(await fetchCover(outputPath), false, `${name} accepted malformed image bytes`);
         await assert.rejects(fs.access(outputPath));
+      }
+    });
+
+    await test('a rate-limited provider is asked once, not once per search result', async () => {
+      resetRemoteRateLimits();
+      try {
+        let requests = 0;
+        const options = {
+          lookupImpl: async () => [{ address: '8.8.8.8', family: 4 }],
+          fetchImpl: async () => {
+            requests += 1;
+            return new Response('', { status: 429 });
+          }
+        };
+        for (let result = 0; result < 20; result += 1) {
+          const outputPath = path.join(tempDir, `rate-limited-${result}.jpg`);
+          assert.strictEqual(
+            await fetchCoverFromGoogleBooks(`Example Book ${result}`, 'Example Author', outputPath, options),
+            false
+          );
+          await assert.rejects(fs.access(outputPath));
+        }
+        assert.strictEqual(requests, 1, 'refused provider was retried for later results');
+      } finally {
+        resetRemoteRateLimits();
+      }
+    });
+
+    await test('a rate-limited provider is retried once its Retry-After window passes', async () => {
+      resetRemoteRateLimits();
+      try {
+        let requests = 0;
+        const options = {
+          lookupImpl: async () => [{ address: '8.8.8.8', family: 4 }],
+          fetchImpl: async () => {
+            requests += 1;
+            return new Response('', { status: 429, headers: { 'retry-after': '1' } });
+          }
+        };
+        const outputPath = path.join(tempDir, 'retry-after.jpg');
+        assert.strictEqual(
+          await fetchCoverFromGoogleBooks('Example Book', 'Example Author', outputPath, options),
+          false
+        );
+        await new Promise(resolve => setTimeout(resolve, 1150));
+        assert.strictEqual(
+          await fetchCoverFromGoogleBooks('Example Book', 'Example Author', outputPath, options),
+          false
+        );
+        assert.strictEqual(requests, 2, 'provider stayed suppressed past its Retry-After window');
+      } finally {
+        resetRemoteRateLimits();
       }
     });
   } finally {

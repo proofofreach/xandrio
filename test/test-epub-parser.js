@@ -8,6 +8,7 @@ const { parseEpub } = require('../lib/epub-parser');
 const { extractChapters } = require('../lib/chapter-extraction');
 const { extractCover } = require('../lib/cover-service');
 const { createBookDocument } = require('../lib/book-document');
+const { UNUSABLE_CHAPTER_THRESHOLD } = require('../lib/chapter-utils');
 
 const SCANNED_CHAPTER_TITLE_LINES = [
   ['Remembering Our Ancient Past'],
@@ -337,7 +338,7 @@ async function createScannedChapterBundleFixture() {
     const chapters = await document.extractChapters(headingSpineFixture.epubPath);
     const numbered = chapters.filter(chapter => /^(?:[1-8])\s/.test(chapter.title));
     assert.deepEqual(
-      numbered.map(chapter => chapter.title),
+      [...new Set(numbered.map(chapter => chapter.sourceTitle || chapter.title))],
       [
         '1 The First Chapter',
         '2 The Second Chapter',
@@ -351,7 +352,22 @@ async function createScannedChapterBundleFixture() {
       'heading-backed spine chapters keep their authored titles'
     );
     assert(numbered.every(chapter => chapter.type === 'chapter'));
-    assert.equal(chapters.some(chapter => chapter.splitFromOversizedChapter), false);
+    // The authored boundary is honoured up to the size at which a single
+    // section becomes unplayable; chapters 1 and 7 are built past that line and
+    // must be repaired rather than left to fail import.
+    assert.deepEqual(
+      [...new Set(
+        chapters
+          .filter(chapter => chapter.splitFromOversizedChapter)
+          .map(chapter => chapter.sourceTitle)
+      )],
+      ['1 The First Chapter', '7 The Seventh Chapter'],
+      'only sections past the unusable threshold are split'
+    );
+    assert(
+      chapters.every(chapter => (chapter.text || '').length <= UNUSABLE_CHAPTER_THRESHOLD),
+      'no extracted section is left above the size that rejects the import'
+    );
     assert.equal(chapters.find(chapter => chapter.title === 'INTRODUCTION Patterns').type, 'frontmatter');
     assert.equal(chapters.find(chapter => chapter.title === 'Acclaim for THE EXAMPLE BOOK').type, 'frontmatter');
     assert.equal(chapters.find(chapter => chapter.title === 'Notes').type, 'backmatter');
