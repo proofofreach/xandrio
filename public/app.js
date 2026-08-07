@@ -314,6 +314,27 @@ function handleContinuousChapterTransition(detail = {}) {
   if (stopForSleepTimer) expireSleepTimer('chapter');
 }
 
+/**
+ * A downloaded chapter handed straight to the element at the boundary.
+ *
+ * The engine has already swapped the source and called play(); nothing here
+ * may touch the media element, because this runs while the phone may be
+ * locked and any reload would strand playback exactly as the old
+ * load-after-`ended` path did. Chapter bookkeeping is all that is left.
+ */
+function handleGaplessChapterAdvance(detail = {}) {
+  const chapterIndex = Number(detail.chapterIndex);
+  if (!currentBook || !Number.isInteger(chapterIndex) || chapterIndex >= chapters.length) return;
+  recordPlaybackEvent({
+    type: 'chapter-advance',
+    reason: 'prewarmed',
+    previousChapterIndex: detail.previousChapterIndex,
+    chapterIndex
+  });
+  handleContinuousChapterTransition(detail);
+  updatePlaybackUI(true);
+}
+
 async function handleSleepTimerChapterTargetChange(target, detail = {}) {
   if (!chunkPlayer?.isContinuous || typeof chunkPlayer.setContinuousEndChapter !== 'function') return;
   // restoreSleepTimer() runs before the incoming book's engine is loaded. Do
@@ -774,7 +795,18 @@ function createSingleFileChapterEngine(options = {}) {
       isSleepTimerChapterTarget(bookId, chapterIndex) ? chapterIndex : null
     ),
     onChapterTransition: handleContinuousChapterTransition,
+    onChapterAdvance: handleGaplessChapterAdvance,
     onDiagnosticEvent: recordPlaybackEvent,
+    // Only a chapter that is already on this device is worth pulling into
+    // memory ahead of the boundary. A streamed chapter has the continuous
+    // transport, which never changes source at a chapter end in the first
+    // place, and downloading a whole chapter over the network mid-playback
+    // would compete with the audio being played.
+    resolveNextChapterUrl: async (bookId, chapterIndex) => {
+      if (!bookId || bookId !== currentBook?.id) return null;
+      const local = await localChapterSource(bookId, chapterIndex);
+      return local.available ? local.url : null;
+    },
     resolveServedTier: async (bookId, chapterIndex) => {
       const status = await apiGet(`/api/chunks/${encodeURIComponent(bookId)}/${chapterIndex}/status`);
       return status?.servedTier || null;
@@ -1200,6 +1232,17 @@ function setupPlaybackReportExport() {
     a.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
+  // A download is not a way to hand over a report on an iOS PWA, where there is
+  // no console and no obvious file to attach. The clipboard is.
+  document.getElementById('playback-report-copy')?.addEventListener('click', async () => {
+    const text = JSON.stringify(playbackReport(), null, 2);
+    try {
+      await navigator.clipboard.writeText(text);
+      showToast('Playback report copied');
+    } catch {
+      showToast('Could not copy the report — allow clipboard access', 'error');
+    }
+  });
 }
 
 // Event Listeners
@@ -2192,7 +2235,12 @@ async function resumeNativeSingleFileFromMediaSession() {
     chunkPlayer.pause();
     updatePlaybackUI(false);
     console.warn('Lock-screen native resume failed:', err);
-    return false;
+    // A resume that never reached playing is exactly the failure the recovery
+    // machinery exists for — most often a source the phone would not load
+    // while it was locked. Reporting it beats leaving the lock screen dead
+    // until the listener happens to open the app.
+    handleChunkError(err);
+    return true;
   }
 }
 

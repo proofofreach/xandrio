@@ -670,6 +670,282 @@ function fakeAudio() {
     assert.strictEqual(player.isContinuous, false);
   });
 
+  // A locked phone suspends the page and its service worker the moment audio
+  // stops, so a per-chapter source that is only fetched after `ended` never
+  // loads: the boundary becomes a permanent pause with a dead lock screen.
+  // These cover the pre-warm that keeps the handoff off the network.
+  async function playDownloadedChapter(player, audio, options = {}) {
+    const load = player.loadChapter('book1', options.chapterIndex ?? 0);
+    audio.emit('loadedmetadata');
+    await load;
+    const play = player.play();
+    audio.emit('playing');
+    audio.currentTime = 1;
+    audio.emit('timeupdate');
+    await play;
+    // Let the pre-warm fetch and its blob read settle.
+    await new Promise(resolve => setImmediate(resolve));
+    await new Promise(resolve => setImmediate(resolve));
+  }
+
+  function downloadedPlayer(audio, extra = {}) {
+    const fetched = [];
+    const advances = [];
+    const chapterEnds = [];
+    const { player } = makePlayer(audio, {
+      preferStandardAudio: true,
+      getChapterCount: () => 3,
+      resolveOfflineAudioUrl: (bookId, chapterIndex) => `/offline/${bookId}/${chapterIndex}`,
+      resolveNextChapterUrl: async (bookId, chapterIndex) => `/offline/${bookId}/${chapterIndex}`,
+      fetch: async url => {
+        fetched.push(url);
+        return { ok: true, status: 200, async blob() { return new Blob(['audio']); } };
+      },
+      onChapterAdvance: detail => advances.push(detail),
+      onChapterEnd: detail => chapterEnds.push(detail ?? null),
+      ...extra
+    });
+    return { player, fetched, advances, chapterEnds };
+  }
+
+  await test('a downloaded next chapter takes over the element inside the ended event', async () => {
+    const audio = fakeAudio();
+    const { player, fetched, advances, chapterEnds } = downloadedPlayer(audio);
+    await playDownloadedChapter(player, audio);
+
+    assert.deepStrictEqual(fetched, ['/offline/book1/1']);
+    const playCallsBeforeBoundary = audio.playCalls;
+
+    audio.currentTime = 10;
+    audio.ended = true;
+    audio.emit('ended');
+
+    // Asserted before any await: the swap and the play() call both have to
+    // happen in the media event's own task, with no load and no network.
+    assert.match(audio.src, /^blob:/);
+    assert.strictEqual(audio.playCalls, playCallsBeforeBoundary + 1);
+    assert.strictEqual(player.chapterIndex, 1);
+    assert.deepStrictEqual(advances, [{
+      previousChapterIndex: 0,
+      chapterIndex: 1,
+      chapterTime: 0
+    }]);
+    assert.deepStrictEqual(chapterEnds, []);
+    player.dispose();
+  });
+
+  await test('a chapter with no local successor still ends the ordinary way', async () => {
+    const audio = fakeAudio();
+    const { player, fetched, advances, chapterEnds } = downloadedPlayer(audio, {
+      resolveNextChapterUrl: async () => null
+    });
+    await playDownloadedChapter(player, audio);
+
+    assert.deepStrictEqual(fetched, []);
+    audio.ended = true;
+    audio.emit('ended');
+
+    assert.strictEqual(player.chapterIndex, 0);
+    assert.deepStrictEqual(advances, []);
+    assert.strictEqual(chapterEnds.length, 1);
+  });
+
+  await test('a chapter that cannot be pre-warmed is looked up once, not every timeupdate', async () => {
+    const audio = fakeAudio();
+    const lookups = [];
+    const { player, fetched } = downloadedPlayer(audio, {
+      resolveNextChapterUrl: async (_bookId, chapterIndex) => {
+        lookups.push(chapterIndex);
+        return null;
+      }
+    });
+    await playDownloadedChapter(player, audio);
+    for (let tick = 0; tick < 5; tick++) {
+      audio.currentTime += 1;
+      audio.emit('timeupdate');
+      await new Promise(resolve => setImmediate(resolve));
+    }
+
+    assert.deepStrictEqual(lookups, [1]);
+    assert.deepStrictEqual(fetched, []);
+  });
+
+  await test('a failed pre-warm is not retried for the rest of the chapter', async () => {
+    const audio = fakeAudio();
+    const attempts = [];
+    const { player } = downloadedPlayer(audio, {
+      fetch: async url => {
+        attempts.push(url);
+        return { ok: false, status: 503 };
+      }
+    });
+    await playDownloadedChapter(player, audio);
+    for (let tick = 0; tick < 5; tick++) {
+      audio.currentTime += 1;
+      audio.emit('timeupdate');
+      await new Promise(resolve => setImmediate(resolve));
+    }
+
+    assert.deepStrictEqual(attempts, ['/offline/book1/1']);
+  });
+
+  // A streamed session normally rides one continuous transport, which never
+  // changes source at a chapter end. When it has fallen back to finite chapter
+  // audio it has the same boundary to cross as a download, over the network.
+  await test('a streamed chapter fallback pre-warms its own next chapter source', async () => {
+    const audio = fakeAudio();
+    audio.canPlayType = () => '';
+    const fetched = [];
+    const advances = [];
+    const { player } = makePlayer(audio, {
+      isIOSLike: () => true,
+      getChapterCount: () => 3,
+      resolveServedTier: async () => 'premium',
+      resolveNextChapterUrl: async () => null,
+      fetch: async url => {
+        fetched.push(url);
+        return { ok: true, status: 200, async blob() { return new Blob(['audio']); } };
+      },
+      onChapterAdvance: detail => advances.push(detail)
+    });
+
+    const load = player.loadChapter('book1', 0);
+    await new Promise(resolve => setImmediate(resolve));
+    audio.emit('loadedmetadata');
+    await load;
+    assert.strictEqual(player.isContinuous, false, 'iOS without HLS uses finite chapter audio');
+
+    const play = player.play();
+    audio.emit('playing');
+    audio.currentTime = 1;
+    audio.emit('timeupdate');
+    await play;
+    await new Promise(resolve => setImmediate(resolve));
+    await new Promise(resolve => setImmediate(resolve));
+
+    assert.deepStrictEqual(fetched, ['/api/audio-ios/book1/1?tier=premium']);
+
+    audio.ended = true;
+    audio.emit('ended');
+    assert.match(audio.src, /^blob:/);
+    assert.strictEqual(advances.length, 1);
+    player.dispose();
+  });
+
+  await test('a download never pre-warms a streamed chapter behind the listener\'s back', async () => {
+    const audio = fakeAudio();
+    const fetched = [];
+    const { player } = downloadedPlayer(audio, {
+      resolveNextChapterUrl: async () => null,
+      fetch: async url => {
+        fetched.push(url);
+        return { ok: true, status: 200, async blob() { return new Blob(['audio']); } };
+      }
+    });
+    await playDownloadedChapter(player, audio);
+
+    assert.deepStrictEqual(fetched, []);
+  });
+
+  await test('a boundary reached mid-download abandons the pre-warm fetch', async () => {
+    const audio = fakeAudio();
+    audio.canPlayType = () => '';
+    let aborted = false;
+    const { player } = makePlayer(audio, {
+      isIOSLike: () => true,
+      getChapterCount: () => 3,
+      resolveNextChapterUrl: async () => null,
+      fetch: (_url, options = {}) => new Promise((resolve, reject) => {
+        options.signal?.addEventListener('abort', () => {
+          aborted = true;
+          reject(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+        });
+      })
+    });
+
+    const load = player.loadChapter('book1', 0);
+    await new Promise(resolve => setImmediate(resolve));
+    audio.emit('loadedmetadata');
+    await load;
+    const play = player.play();
+    audio.emit('playing');
+    audio.currentTime = 1;
+    audio.emit('timeupdate');
+    await play;
+    await new Promise(resolve => setImmediate(resolve));
+
+    audio.ended = true;
+    audio.emit('ended');
+    await new Promise(resolve => setImmediate(resolve));
+    assert.strictEqual(aborted, true);
+  });
+
+  await test('a sleep timer that stops at this chapter neither pre-warms nor advances', async () => {
+    const audio = fakeAudio();
+    const { player, fetched, advances, chapterEnds } = downloadedPlayer(audio, {
+      getContinuousEndChapter: () => 0
+    });
+    await playDownloadedChapter(player, audio);
+
+    assert.deepStrictEqual(fetched, []);
+    audio.ended = true;
+    audio.emit('ended');
+
+    assert.deepStrictEqual(advances, []);
+    assert.strictEqual(chapterEnds.length, 1);
+  });
+
+  await test('a sleep timer armed mid-chapter still stops at the boundary', async () => {
+    const audio = fakeAudio();
+    let stopAtCurrentChapter = false;
+    const { player, advances, chapterEnds } = downloadedPlayer(audio, {
+      getContinuousEndChapter: () => (stopAtCurrentChapter ? 0 : null)
+    });
+    await playDownloadedChapter(player, audio);
+    stopAtCurrentChapter = true;
+
+    audio.ended = true;
+    audio.emit('ended');
+
+    assert.deepStrictEqual(advances, []);
+    assert.strictEqual(chapterEnds.length, 1);
+  });
+
+  await test('a chapter further away than the lead is not pre-warmed yet', async () => {
+    const audio = fakeAudio();
+    audio.duration = 600;
+    const { player, fetched } = downloadedPlayer(audio, { prewarmLeadSeconds: 45 });
+    await playDownloadedChapter(player, audio);
+    assert.deepStrictEqual(fetched, []);
+
+    audio.currentTime = 580;
+    audio.emit('timeupdate');
+    await new Promise(resolve => setImmediate(resolve));
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepStrictEqual(fetched, ['/offline/book1/1']);
+    player.dispose();
+  });
+
+  await test('a pre-warmed chapter is released instead of pinning its blob forever', async () => {
+    const audio = fakeAudio();
+    const revoked = [];
+    const originalRevoke = URL.revokeObjectURL;
+    URL.revokeObjectURL = url => {
+      revoked.push(url);
+      return originalRevoke.call(URL, url);
+    };
+    try {
+      const { player } = downloadedPlayer(audio);
+      await playDownloadedChapter(player, audio);
+      const prewarmedUrl = player._prewarm?.objectUrl;
+      assert.match(String(prewarmedUrl), /^blob:/);
+      player.dispose();
+      assert.deepStrictEqual(revoked, [prewarmedUrl]);
+    } finally {
+      URL.revokeObjectURL = originalRevoke;
+    }
+  });
+
   await test('reports media starvation and lifecycle-relevant events with bounded details', async () => {
     const audio = fakeAudio();
     const events = [];

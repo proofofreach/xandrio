@@ -41,6 +41,24 @@ const PROGRESS_EPSILON_SECONDS = 0.05;
 // document is hidden (2s visible, 10s backgrounded).
 const TIMELINE_POLL_INTERVAL_MS = 2000;
 const TIMELINE_HIDDEN_POLL_RATIO = 5;
+
+// How long before the end of a finite chapter the next one is pulled into
+// memory.
+//
+// A per-chapter source (a download, or the streamed chapter fallback) has to
+// replace the media element's src at every chapter boundary. Doing that *after*
+// `ended` is what broke lock-screen listening: once playback stops on a locked
+// phone, iOS suspends the page and its service worker, so the new source never
+// loads. The element then sits with a src and no data, autoplay never fires,
+// and the lock-screen play button calls play() on an element that cannot fetch
+// anything — silence until the app is foregrounded again.
+//
+// While the current chapter is still playing the page is alive and allowed to
+// use the network, so the next chapter is fetched then and handed to the
+// element as an object URL, which needs neither network nor service worker at
+// the boundary. The lead has to cover a whole chapter download on a slow
+// connection; the fetch is cancelled implicitly by a chapter change.
+const CHAPTER_PREWARM_LEAD_SECONDS = 45;
 const { DisposableScope, LifecycleCancelledError, waitForMediaEvents } = globalThis.XandrioLifecycle || {};
 
 export class SingleFileChapterPlayer {
@@ -63,6 +81,14 @@ export class SingleFileChapterPlayer {
     this.getContinuousEndChapter = options.getContinuousEndChapter || (() => null);
     this.resolveServedTier = options.resolveServedTier || null;
     this.resolveOfflineAudioUrl = options.resolveOfflineAudioUrl || null;
+    // Resolves the media URL for a chapter that can be fetched ahead of time,
+    // or null when the next chapter has no such source. Only sources that are
+    // already on the device are worth pre-warming; see _prewarmChapter.
+    this.resolveNextChapterUrl = options.resolveNextChapterUrl || null;
+    this.onChapterAdvance = options.onChapterAdvance || null;
+    this.prewarmLeadSeconds = Number(options.prewarmLeadSeconds) > 0
+      ? Number(options.prewarmLeadSeconds)
+      : CHAPTER_PREWARM_LEAD_SECONDS;
     this.fetch = options.fetch || globalThis.fetch?.bind(globalThis) || null;
     this.preferStandardAudio = Boolean(options.preferStandardAudio);
     this.preparePlaybackRunway = options.preparePlaybackRunway !== false;
@@ -129,6 +155,18 @@ export class SingleFileChapterPlayer {
     this._stallWatchdog = null;
     this._stallMark = null;
     this._lastDiagnosticTimeUpdateAt = 0;
+    // The next chapter, already downloaded into an object URL, and the chapter
+    // index whose fetch is in flight. Both are cleared by any chapter change.
+    this._prewarm = null;
+    this._prewarmInFlight = null;
+    this._prewarmController = null;
+    // A chapter that has no local source, or whose fetch failed. Remembered
+    // because `timeupdate` fires several times a second: without it every one
+    // of them would re-run the cache lookup for a chapter that is not there.
+    this._prewarmDeclined = null;
+    // Object URL currently assigned to the media element, so it can be revoked
+    // once the element has moved on from it.
+    this._activeObjectUrl = null;
     this._boundTimeUpdate = this._handleTimeUpdate.bind(this);
     this._boundEnded = this._handleEnded.bind(this);
     this._boundError = this._handleError.bind(this);
@@ -149,6 +187,9 @@ export class SingleFileChapterPlayer {
   async loadChapter(bookId, chapterIndex, options = {}) {
     const gen = ++this._generation;
     this._cancelRunwayPreparation();
+    // An explicit load supersedes whatever was pre-warmed for the chapter that
+    // would have followed the one being left behind.
+    this._releasePrewarm();
     this.pause();
     const requestedOffset = Number(options.startOffsetSeconds);
     const startOffsetSeconds = Number.isFinite(requestedOffset) && requestedOffset > 0
@@ -180,11 +221,7 @@ export class SingleFileChapterPlayer {
     this._isLoading = true;
     this.onWaiting?.('Loading audio…');
     const encodedBookId = encodeURIComponent(bookId);
-    const standardUrl = this.preferStandardAudio && this.resolveOfflineAudioUrl
-      ? this.resolveOfflineAudioUrl(bookId, chapterIndex)
-      : this.isIOSLike() && !this.preferStandardAudio
-        ? `/api/audio-ios/${encodedBookId}/${chapterIndex}`
-        : `/api/audio/${encodedBookId}/${chapterIndex}`;
+    const standardUrl = this._standardChapterUrl(bookId, chapterIndex);
     let tierQuery = '';
     this.servedTier = null;
     // A recovery snapshot pins the tier it captured, so a retry cannot drift on
@@ -267,6 +304,9 @@ export class SingleFileChapterPlayer {
         });
         this._loadWait = wait;
         this.audio.src = candidate.url;
+        // The element has let go of the pre-warmed blob it may have been
+        // playing; holding the object URL any longer only pins its memory.
+        this._revokeObjectUrl(this._activeObjectUrl);
         this._emitDiagnostic('source-load', {
           sourceKind: candidate.continuous ? 'continuous' : 'chapter'
         });
@@ -840,6 +880,7 @@ export class SingleFileChapterPlayer {
 
   _handleTimeUpdate() {
     this._syncContinuousChapter();
+    this._maybePrewarmNextChapter();
     const now = Date.now();
     if (now - this._lastDiagnosticTimeUpdateAt >= 5000) {
       this._lastDiagnosticTimeUpdateAt = now;
@@ -864,7 +905,214 @@ export class SingleFileChapterPlayer {
     });
   }
 
+  /** The finite, per-chapter resource for a chapter, in this engine's mode. */
+  _standardChapterUrl(bookId, chapterIndex) {
+    const encodedBookId = encodeURIComponent(bookId);
+    if (this.preferStandardAudio && this.resolveOfflineAudioUrl) {
+      return this.resolveOfflineAudioUrl(bookId, chapterIndex);
+    }
+    return this.isIOSLike() && !this.preferStandardAudio
+      ? `/api/audio-ios/${encodedBookId}/${chapterIndex}`
+      : `/api/audio/${encodedBookId}/${chapterIndex}`;
+  }
+
+  /**
+   * The source a pre-warm should fetch when the app offers nothing local.
+   *
+   * Only for a streamed session that is already on the finite chapter fallback:
+   * that is the one streamed shape which has to replace the media source at a
+   * chapter boundary, and it downloads the whole chapter file either way — 45s
+   * earlier is the only difference. A downloaded book stays local-only, because
+   * quietly streaming a chapter the listener believes is on the device is a
+   * decision that belongs to loadChapter, with its own messaging.
+   */
+  _prewarmFallbackUrl(chapterIndex) {
+    if (this.preferStandardAudio || this.isContinuous) return null;
+    if (globalThis.navigator && globalThis.navigator.onLine === false) return null;
+    const url = this._standardChapterUrl(this.bookId, chapterIndex);
+    return this.servedTier ? `${url}?tier=${encodeURIComponent(this.servedTier)}` : url;
+  }
+
+  /** Whether a sleep timer means playback must stop at the current chapter. */
+  _stopsAtCurrentChapter() {
+    const limit = Number.isInteger(this.endChapterIndex)
+      ? this.endChapterIndex
+      : this.getContinuousEndChapter(this.bookId, this.chapterIndex);
+    return Number.isInteger(limit) && limit <= this.chapterIndex;
+  }
+
+  _releasePrewarm() {
+    this._abortPrewarm();
+    if (this._prewarm?.objectUrl) this._revokeObjectUrl(this._prewarm.objectUrl);
+    this._prewarm = null;
+    this._prewarmDeclined = null;
+  }
+
+  /**
+   * Stop a pre-warm that is still downloading.
+   *
+   * A streamed chapter can be tens of megabytes; once the boundary has been
+   * reached without it, the ordinary load is the one that needs the bandwidth.
+   */
+  _abortPrewarm() {
+    this._prewarmController?.abort();
+    this._prewarmController = null;
+    this._prewarmInFlight = null;
+  }
+
+  _revokeObjectUrl(objectUrl) {
+    if (!objectUrl) return;
+    try { globalThis.URL?.revokeObjectURL?.(objectUrl); } catch {}
+    if (this._activeObjectUrl === objectUrl) this._activeObjectUrl = null;
+  }
+
+  /**
+   * Fetch the next chapter while this one still has audio left to play.
+   *
+   * Deliberately driven from `timeupdate` rather than a timer: a backgrounded
+   * page keeps receiving media events while audio is playing, but its timers
+   * are throttled to the point where a boundary can pass unnoticed.
+   */
+  _maybePrewarmNextChapter() {
+    if (this.isContinuous || this._isLoading || !this._isPlaying) return;
+    if (!this.resolveNextChapterUrl || !this.fetch) return;
+    if (typeof globalThis.URL?.createObjectURL !== 'function') return;
+    if (this._stopsAtCurrentChapter()) return;
+    const nextChapterIndex = this.chapterIndex + 1;
+    if (nextChapterIndex >= this._chapterCount()) return;
+    if (this._prewarm?.chapterIndex === nextChapterIndex) return;
+    if (this._prewarmDeclined === nextChapterIndex) return;
+    if (this._prewarmInFlight !== null) return;
+    const duration = Number(this.audio.duration);
+    if (!Number.isFinite(duration) || duration <= 0) return;
+    const remaining = duration - (Number(this.audio.currentTime) || 0);
+    if (remaining > this.prewarmLeadSeconds) return;
+    void this._prewarmChapter(nextChapterIndex);
+  }
+
+  async _prewarmChapter(chapterIndex) {
+    const bookId = this.bookId;
+    const generation = this._generation;
+    const superseded = () => generation !== this._generation || bookId !== this.bookId;
+    const controller = typeof globalThis.AbortController === 'function'
+      ? new globalThis.AbortController()
+      : null;
+    this._prewarmController = controller;
+    this._prewarmInFlight = chapterIndex;
+    try {
+      const local = await this.resolveNextChapterUrl?.(bookId, chapterIndex);
+      if (superseded()) return;
+      const url = local || this._prewarmFallbackUrl(chapterIndex);
+      if (!url) {
+        this._prewarmDeclined = chapterIndex;
+        return;
+      }
+      const response = await this.fetch(url, controller ? { signal: controller.signal } : undefined);
+      if (!response?.ok) {
+        throw Object.assign(
+          new Error(`Next chapter could not be pre-warmed (${response?.status || 0})`),
+          { status: response?.status || 0 }
+        );
+      }
+      const blob = await response.blob();
+      if (superseded() || controller?.signal.aborted) return;
+      this._releasePrewarm();
+      this._prewarm = {
+        chapterIndex,
+        objectUrl: globalThis.URL.createObjectURL(blob)
+      };
+      this._emitDiagnostic('chapter-prewarmed', {
+        chapterIndex,
+        sourceKind: 'chapter'
+      });
+    } catch (error) {
+      // A chapter that cannot be pre-warmed still advances the ordinary way.
+      // One attempt per chapter: a failure that repeats every timeupdate would
+      // spend the rest of the chapter retrying a fetch that is not going to
+      // work, against the bandwidth the audio itself needs.
+      if (!superseded() && !controller?.signal.aborted) this._prewarmDeclined = chapterIndex;
+      this._emitDiagnostic('chapter-prewarm-failed', {
+        chapterIndex,
+        reason: error?.code || error?.name || 'prewarm-failed'
+      });
+    } finally {
+      if (this._prewarmController === controller) this._prewarmController = null;
+      if (this._prewarmInFlight === chapterIndex) this._prewarmInFlight = null;
+    }
+  }
+
+  /**
+   * Continue into the pre-warmed next chapter from inside the `ended` event.
+   *
+   * Nothing here awaits: the source is already in memory, so the swap and the
+   * play() call both happen in the same task as the media event. That is what
+   * keeps a locked phone playing — it needs no network, no service worker, and
+   * no fresh activation.
+   *
+   * @returns {boolean} true when the next chapter took over the element.
+   */
+  _advanceToPrewarmedChapter() {
+    if (this.isContinuous || !this._isPlaying) return false;
+    const nextChapterIndex = this.chapterIndex + 1;
+    const prewarmed = this._prewarm;
+    if (!prewarmed || prewarmed.chapterIndex !== nextChapterIndex) return false;
+    if (nextChapterIndex >= this._chapterCount()) return false;
+    if (this._stopsAtCurrentChapter()) return false;
+
+    const previousChapterIndex = this.chapterIndex;
+    const previousObjectUrl = this._activeObjectUrl;
+    this._prewarm = null;
+    this.chapterIndex = nextChapterIndex;
+    this.startChapterIndex = nextChapterIndex;
+    this.streamStartOffset = 0;
+    this.requestedStartOffset = 0;
+    this.playbackSessionId = null;
+    this.backend = 'single-file';
+    this.activeSource = prewarmed.objectUrl;
+    this._activeObjectUrl = prewarmed.objectUrl;
+    // The new resource starts at zero with an empty buffer; a liveness sample
+    // taken against the finished chapter would read that as a frozen stream.
+    this._stallMark = null;
+    this._playReason = 'chapter-advance';
+    // Belt and braces for mobile browsers that reject a programmatic play() on
+    // a backgrounded page: the element is already authorized to play, so let it
+    // start on its own the moment the blob is decodable. Cleared again as soon
+    // as playback starts, so an ordinary load() never autostarts.
+    this.audio.autoplay = true;
+    this.audio.src = prewarmed.objectUrl;
+    this.audio.load();
+    const started = Promise.resolve(this.audio.play());
+    started.catch(error => {
+      // Whether the element starts on its own is now out of this call's hands;
+      // leaving the attribute set would autostart the next ordinary load.
+      this.audio.autoplay = false;
+      this._emitDiagnostic('chapter-advance-failed', {
+        chapterIndex: nextChapterIndex,
+        reason: error?.name || 'play-rejected'
+      });
+      this._isPlaying = false;
+      this.onPlaybackChange?.(false, { reason: 'chapter-advance', error });
+    });
+    if (previousObjectUrl !== prewarmed.objectUrl) this._revokeObjectUrl(previousObjectUrl);
+    this._emitDiagnostic('chapter-advance', {
+      previousChapterIndex,
+      chapterIndex: nextChapterIndex
+    });
+    this.onChapterAdvance?.({
+      previousChapterIndex,
+      chapterIndex: nextChapterIndex,
+      chapterTime: 0
+    });
+    return true;
+  }
+
   _handleEnded() {
+    // Gapless first: the swap has to happen before anything reports a pause,
+    // or the media session state flickers on the lock screen.
+    if (this._advanceToPrewarmedChapter()) return;
+    // The boundary arrived first. Whatever is still downloading has lost its
+    // purpose and would only compete with the load that has to happen now.
+    this._abortPrewarm();
     this._isPlaying = false;
     this._stopStallWatchdog();
     if (this.isContinuous) {
@@ -909,6 +1157,7 @@ export class SingleFileChapterPlayer {
   }
 
   _handleNativePlay(event) {
+    this.audio.autoplay = false;
     const wasPlaying = this._isPlaying;
     const reason = this._playReason || 'external';
     this._playReason = null;
@@ -1186,6 +1435,8 @@ export class SingleFileChapterPlayer {
     this.cancelPendingLoad();
     this.audio.removeAttribute('src');
     this.audio.load();
+    this._releasePrewarm();
+    this._revokeObjectUrl(this._activeObjectUrl);
   }
   destroy() { this.dispose(); }
 }
