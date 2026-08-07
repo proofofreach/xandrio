@@ -7,6 +7,7 @@ const {
 } = require('../lib/book-deletion');
 const {
   REFRESH_BOOK_RESULT,
+  STRUCTURE_RECONCILE_RESULT,
   createBookAudioInvalidator,
   createBookMetadataRefreshService
 } = require('../lib/book-metadata-refresh');
@@ -549,6 +550,55 @@ function metadataHarness(options = {}) {
       harness.files.positions.owner.books.book_1.chapterStructureKey,
       'structure-new'
     );
+    assert(!harness.operations.includes('remove-positions:book_1'));
+  });
+
+  await test('unchanged chapter structure is reconciled without touching positions or audio', async () => {
+    const harness = metadataHarness({ chapterStructureKey: 'structure-new', chapterCount: 2 });
+    const result = await harness.service.reconcileChapterStructure('book_1', [{ title: 'One' }, { title: 'Two' }]);
+    assert.strictEqual(result.status, STRUCTURE_RECONCILE_RESULT.UNCHANGED);
+    assert.strictEqual(harness.files.positions.owner.books.book_1.chapterIndex, 3);
+    assert(!harness.operations.some(operation => operation.startsWith('invalidate-audio:')));
+    assert(!harness.operations.includes('remove-positions:book_1'));
+  });
+
+  await test('read-time re-segmentation drops positions instead of moving the reader', async () => {
+    const harness = metadataHarness({ chapterStructureKey: 'structure-old', chapterCount: 5 });
+    const chapters = Array.from({ length: 7 }, (_unused, index) => ({
+      title: `Chapter ${index + 1}`,
+      estimatedDuration: 100
+    }));
+    const result = await harness.service.reconcileChapterStructure('book_1', chapters);
+    assert.strictEqual(result.status, STRUCTURE_RECONCILE_RESULT.RESEGMENTED);
+    assert.strictEqual(result.book.chapterStructureKey, 'structure-new');
+    assert.strictEqual(result.book.chapterCount, 7);
+    assert.strictEqual(result.book.totalDuration, 700);
+    assert.strictEqual(result.book.chapterDurations, undefined);
+    assert.strictEqual(result.book.audioGenerationState, undefined);
+    assert.strictEqual(result.book.retainedConcurrentField, true);
+    // Chapter-indexed audio exists for both the old and the new shape.
+    assert(harness.operations.includes('invalidate-audio:book_1:7'));
+    assert(harness.operations.includes('remove-positions:book_1'));
+    assert.strictEqual(harness.files.positions.owner.books.book_1, undefined);
+  });
+
+  await test('a book with no recorded structure is stamped rather than reset', async () => {
+    const harness = metadataHarness({ chapterStructureKey: undefined });
+    const result = await harness.service.reconcileChapterStructure('book_1', [{ title: 'One' }]);
+    assert.strictEqual(result.status, STRUCTURE_RECONCILE_RESULT.STAMPED);
+    assert.strictEqual(
+      harness.files.positions.owner.books.book_1.chapterStructureKey,
+      'structure-new'
+    );
+    assert(!harness.operations.includes('remove-positions:book_1'));
+    assert(!harness.operations.some(operation => operation.startsWith('invalidate-audio:')));
+  });
+
+  await test('reconciliation is a no-op when the book was deleted underneath it', async () => {
+    const harness = metadataHarness({ chapterStructureKey: 'structure-old' });
+    delete harness.files.books.book_1;
+    const result = await harness.service.reconcileChapterStructure('book_1', [{ title: 'One' }]);
+    assert.strictEqual(result.status, STRUCTURE_RECONCILE_RESULT.UNCHANGED);
     assert(!harness.operations.includes('remove-positions:book_1'));
   });
 

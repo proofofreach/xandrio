@@ -949,6 +949,47 @@ section('11. Extracted chapter validation');
   assert(repairedQuality.isGoodStructure, 'Repaired oversized section passes chapter quality');
   assert(repairedValidation.valid, 'Repaired oversized section passes extracted-content validation');
   assert(repairedValidation.warnings.some(warning => warning.includes('Split 1 oversized source section')), 'Repair is reported as a validation warning');
+
+  // Jung's Red Book carries one authored 160K+ section among dozens of healthy
+  // ones. Honouring that boundary unconditionally left a section above the size
+  // at which import rejects the whole edition, so the book could never be added.
+  const authoredGiant = {
+    index: 0,
+    title: 'Liber Primus',
+    text: 'A complete sentence about the depths of the soul. '.repeat(3400),
+    type: 'content',
+    fromToc: true
+  };
+  const redBookChapters = [
+    authoredGiant,
+    ...Array.from({ length: 45 }, (_unused, index) => ({
+      index: index + 1,
+      title: `Chapter ${index + 1}`,
+      text: 'Readable narrative prose. '.repeat(800),
+      type: 'content',
+      fromToc: true
+    }))
+  ];
+  assertEqual(
+    buildChapterQuality(redBookChapters, 46).maxChapterSize > 150000,
+    true,
+    'Fixture reproduces the section size that rejects the import'
+  );
+  const redBookRepaired = splitOversizedChapters(redBookChapters);
+  const redBookQuality = buildChapterQuality(redBookRepaired, 46);
+  assert(redBookQuality.maxChapterSize <= 150000, 'Authored section past the unusable size is repaired before the import gate');
+  assert(redBookQuality.isGoodStructure, 'A book with one repaired authored section still imports');
+  assertEqual(redBookRepaired[0].sourceTitle, 'Liber Primus', 'Repaired parts retain the authored section title');
+  assertEqual(redBookRepaired.length, 47, 'Only the unusable section is split');
+
+  const authoredBelowLimit = splitOversizedChapters([{
+    index: 0,
+    title: 'Chapter 1: In Their Own Words',
+    text: 'Authored chapter prose continues. '.repeat(3600),
+    type: 'content',
+    fromToc: true
+  }]);
+  assertEqual(authoredBelowLimit.length, 1, 'An authored section short of the unusable size keeps its boundary');
 })();
 
 // ─── 12. Preferred Audio Start Chapter ──────────────────────────────────────

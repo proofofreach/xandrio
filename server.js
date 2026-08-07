@@ -2977,6 +2977,16 @@ app.get('/api/book/:bookId', async (req, res) => {
 
     // Extract chapters from the stored book/artifact (cached)
     const chapters = await getChaptersCached(book.path);
+    // Segmentation is derived, so verify it still matches what the book was
+    // imported with rather than assuming a stored position still addresses the
+    // same chapter.
+    const structureReconcile = await bookMetadataRefreshService
+      .reconcileChapterStructure(bookId, chapters)
+      .catch(err => {
+        console.error(`Chapter structure reconciliation failed for ${bookId}: ${err.message}`);
+        return null;
+      });
+    if (structureReconcile?.book) Object.assign(book, structureReconcile.book);
     const displayChapters = chapters.map(ch => ({
       ...ch,
       rawTitle: ch.rawTitle || ch.title,
