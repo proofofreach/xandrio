@@ -908,14 +908,66 @@ console.log('\n━━━ Work-first search grouping ━━━');
   ], { compareEditions: compareEdition });
   const road = works.find(work => canonicalWorkTitle(work.title) === 'on the road');
   equal(road.editionCount, 2, 'Bracketed reversed catalog alias groups with the canonical On the Road author');
-  const bluesPrimaryKerouac = works.find(work => canonicalWorkTitle(work.title) === 'book of blues' && work.primaryCreator === 'jack kerouac');
-  const bluesPrimaryGinsberg = works.find(work => canonicalWorkTitle(work.title) === 'book of blues' && work.primaryCreator === 'allen ginsberg');
-  equal(bluesPrimaryKerouac.editionCount, 2, 'Same title and primary creator group despite full contributor differences');
-  equal(works.length, 3, 'A different primary creator remains a separate work identity');
+  // Providers order contributor lists by their own conventions — alphabetically,
+  // or with the publisher first — so a reordered list is not evidence of a
+  // different work. Under one canonical title, a record whose primary creator is
+  // credited by the other record resolves to the same work.
+  const blues = works.find(work => canonicalWorkTitle(work.title) === 'book of blues');
+  equal(blues.editionCount, 3, 'A reordered contributor list does not fork one title into separate works');
+  equal(works.length, 2, 'Distinct titles remain distinct works');
 
   const intent = applySearchIntent('Jack Kerouac', works);
-  equal(intent.works.find(work => work.id === bluesPrimaryKerouac.id).searchGroup, 'authored', 'Kerouac Jack bracket alias is classified as authored');
-  equal(intent.works.find(work => work.id === bluesPrimaryGinsberg.id).searchGroup, 'authored', 'A work listing Kerouac as a contributor is classified as authored');
+  equal(intent.works.find(work => work.id === road.id).searchGroup, 'authored', 'Kerouac Jack bracket alias is classified as authored');
+  equal(intent.works.find(work => work.id === blues.id).searchGroup, 'authored', 'A work listing Kerouac as a contributor is classified as authored');
+})();
+
+// Anna's returns these three contributor orderings for one Red Book edition.
+// Trusting "first listed" made the publisher and the preface author look like
+// separate primary creators, so one work rendered as three search rows.
+(() => {
+  const works = buildSearchWorks([
+    edition({ id: 'jung-first', title: 'The Red Book', author: 'Carl Gustav Jung, Sonu Shamdasani, Mark Kyburz' }),
+    edition({ id: 'jung-initials', title: 'The Red Book', author: 'C G Jung; Sonu Shamdasani; Ulrich Hoerni' }),
+    edition({ id: 'publisher-first', title: 'The Red Book', author: 'W. W. Norton;Company.;Hoerni, Ulrich;Jung, Carl Gustav;Kyburz, Mark' }),
+    edition({ id: 'alphabetical', title: 'The Red Book', author: 'Hoerni, Ulrich; Jung, Carl Gustav; Kyburz, Mark; Peck, John' })
+  ], { compareEditions: compareEdition });
+  const red = works.find(work => canonicalWorkTitle(work.title) === 'the red book');
+  equal(works.length, 1, 'Publisher-first and alphabetical contributor lists resolve to one work');
+  equal(red.editionCount, 4, 'Every provider ordering stays selectable inside that work');
+})();
+
+// The relaxation is bounded by the title: a shared contributor cannot pull two
+// different works together.
+(() => {
+  const works = buildSearchWorks([
+    edition({ id: 'solo', title: 'Selected Poems', author: 'Allen Ginsberg' }),
+    edition({ id: 'anthology', title: 'Beat Anthology', author: 'Jack Kerouac; Allen Ginsberg' })
+  ], { compareEditions: compareEdition });
+  equal(works.length, 2, 'A shared contributor never merges works with different titles');
+})();
+
+// A reader's edition is a release label, and providers park it in every slot of
+// the title. Left in place it forks one work into a row per label position.
+(() => {
+  const works = buildSearchWorks([
+    edition({ id: 'reader-plain', title: 'The Red Book', author: 'C. G. Jung' }),
+    edition({ id: 'reader-trailing', title: "The Red Book: A Reader's Edition", author: 'C. G. Jung' }),
+    edition({ id: 'reader-doubled', title: "The Red Book: A Reader's Edition: A Reader's Edition", author: 'C. G. Jung' }),
+    edition({ id: 'reader-interior', title: "The Red Book: A Reader's Edition: Liber Novus", author: 'C. G. Jung' }),
+    edition({ id: 'reader-dash', title: "The Red Book - Reader's Edition", author: 'C. G. Jung' })
+  ], { compareEditions: compareEdition });
+  const red = works.find(work => canonicalWorkTitle(work.title) === 'the red book');
+  equal(red.editionCount, 5, "A reader's edition label groups wherever it sits in the title");
+  equal(
+    canonicalWorkTitle("The Red Book: A Reader's Edition: Liber Novus"),
+    'the red book liber novus',
+    'An interior edition label is dropped without losing the parallel title'
+  );
+  equal(
+    canonicalWorkTitle("Kindle: A History of Reading"),
+    'kindle a history of reading',
+    'A leading segment is never mistaken for an edition label'
+  );
 })();
 
 (() => {
