@@ -154,5 +154,27 @@ assert(
   );
 }
 
+// --- Gapless chapter boundary ----------------------------------------------
+// The engine hands the element the next chapter from inside the `ended` event.
+// Anything the app does afterwards runs on a phone that may already be locked,
+// where a load can no longer complete: bookkeeping only, never media work.
+
+{
+  const advanceBody = functionBody('handleGaplessChapterAdvance');
+  assert(advanceBody.length > 0, 'handleGaplessChapterAdvance is present');
+  assert(
+    !/loadChapter|audioPlayer\.|chunkPlayer\.(play|pause|seek|loadChapter)/.test(advanceBody),
+    'a gapless advance never reloads or re-drives the media element'
+  );
+  assert(
+    /onChapterAdvance: handleGaplessChapterAdvance/.test(appSource),
+    'the engine reports gapless advances to the app'
+  );
+  assert(
+    /resolveNextChapterUrl:/.test(appSource) && /localChapterSource\(/.test(functionBody('createSingleFileChapterEngine')),
+    'only a chapter already on this device is offered for pre-warming'
+  );
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);
