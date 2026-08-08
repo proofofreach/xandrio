@@ -1,7 +1,8 @@
 const assert = require('assert');
 const {
   normalizeChapterSequence,
-  repairTextArtifacts
+  repairTextArtifacts,
+  stripHTML
 } = require('../lib/chapter-utils');
 
 let passed = 0;
@@ -130,6 +131,20 @@ test('removes printed page numbers fused to Roman headings only', () => {
   assert.strictEqual(
     repairTextArtifacts('In section XXIX 32 examples were counted.'),
     'In section XXIX 32 examples were counted.'
+  );
+});
+
+test('removes semantic EPUB pagebreak markers before extracting text', () => {
+  assert.strictEqual(
+    stripHTML([
+      '<p>First printed page.</p>',
+      '<span epub:type="pagebreak" id="page_37" title="37">37</span>',
+      '<p>Second printed page.</p>',
+      '<a role="doc-pagebreak" aria-label="38">38</a>',
+      '<span epub:type="pagebreak" title="39"/>',
+      '<span>Closing prose.</span>'
+    ].join('')),
+    'First printed page.\n Second printed page.\n Closing prose.'
   );
 });
 

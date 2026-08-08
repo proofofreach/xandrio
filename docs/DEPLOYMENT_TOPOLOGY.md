@@ -33,8 +33,10 @@ Disabled (must stay off in production `.env`):
 
 ## Promotion — when a feature is "proven"
 
-Local is the proving ground; production only runs promoted work. A feature is
-promoted, in order:
+Promotion is gated by the test suite, by flag defaults, and by the deployment's
+own readiness checks — not by elapsed time. There is no soak period: work that
+is green and safely gated ships when it is ready. A feature is promoted, in
+order:
 
 1. Developed on a short-lived branch off `main`; merged back to `main` with the
    full `npm test` suite and `npm run test:browser` green. `main` is the only
@@ -43,10 +45,7 @@ promoted, in order:
 2. Any new runtime/engine capability is gated behind an env flag that defaults
    **off** and is documented in `.env.template`, so shipping the code is
    harmless before the flag is enabled anywhere.
-3. The feature runs enabled on the local M4 instance for a soak period of real
-   use (3–7 days as a default; longer for playback/audio-path changes) with no
-   regressions.
-4. Only then: run `npm run release:production` from `main`. This single command
+3. Run `npm run release:production` from `main`. This single command
    publishes the sanitized public PR, waits for every required check and the
    protected merge, and deploys that exact merged revision. The VPS stages an
    immutable release under `/opt/xandrio/releases/<sha>`, atomically switches

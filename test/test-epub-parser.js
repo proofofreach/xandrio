@@ -219,6 +219,33 @@ async function createNonLinearFootnoteFixture() {
   return { directory, epubPath };
 }
 
+async function createFrontMatterPartContextFixture() {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'xandrio-epub-frontmatter-parts-'));
+  const epubRoot = path.join(directory, 'book');
+  const oebps = path.join(epubRoot, 'OEBPS');
+  await fs.mkdir(path.join(epubRoot, 'META-INF'), { recursive: true });
+  await fs.mkdir(oebps, { recursive: true });
+  await fs.writeFile(path.join(epubRoot, 'mimetype'), 'application/epub+zip');
+  await fs.writeFile(path.join(epubRoot, 'META-INF', 'container.xml'), `<?xml version="1.0"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>`);
+  await fs.writeFile(path.join(oebps, 'content.opf'), `<?xml version="1.0" encoding="utf-8"?>
+<package version="2.0" xmlns="http://www.idpf.org/2007/opf"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>Four-Part Fixture</dc:title><dc:creator>Fixture Author</dc:creator><dc:language>en</dc:language></metadata><manifest><item id="htmltoc" href="htmltoc.xhtml" media-type="application/xhtml+xml"/><item id="title" href="title.xhtml" media-type="application/xhtml+xml"/><item id="part-one" href="part-one.xhtml" media-type="application/xhtml+xml"/><item id="one-a" href="one-a.xhtml" media-type="application/xhtml+xml"/><item id="part-two" href="part-two.xhtml" media-type="application/xhtml+xml"/><item id="one-b" href="one-b.xhtml" media-type="application/xhtml+xml"/><item id="twenty-five" href="twenty-five.xhtml" media-type="application/xhtml+xml"/><item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/></manifest><spine toc="ncx"><itemref idref="htmltoc"/><itemref idref="title"/><itemref idref="part-one"/><itemref idref="one-a"/><itemref idref="part-two"/><itemref idref="one-b"/><itemref idref="twenty-five"/></spine></package>`);
+  await fs.writeFile(path.join(oebps, 'toc.ncx'), `<?xml version="1.0" encoding="UTF-8"?>
+<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/"><navMap><navPoint id="title" playOrder="1"><navLabel><text>Four-Part Fixture</text></navLabel><content src="title.xhtml"/></navPoint><navPoint id="part-one" playOrder="2"><navLabel><text>Part I: The Beginning</text></navLabel><content src="part-one.xhtml"/><navPoint id="one-a" playOrder="3"><navLabel><text>Chapter I</text></navLabel><content src="one-a.xhtml"/></navPoint></navPoint><navPoint id="part-two" playOrder="4"><navLabel><text>Part II: The Continuation</text></navLabel><content src="part-two.xhtml"/><navPoint id="one-b" playOrder="5"><navLabel><text>Chapter I</text></navLabel><content src="one-b.xhtml"/></navPoint><navPoint id="twenty-five" playOrder="6"><navLabel><text>Chapter XXV</text></navLabel><content src="twenty-five.xhtml"/></navPoint></navPoint></navMap></ncx>`);
+  await fs.writeFile(path.join(oebps, 'htmltoc.xhtml'), `<html xmlns:epub="http://www.idpf.org/2007/ops"><body><h1>Four-Part Fixture</h1><h2>Table of Contents</h2><nav epub:type="toc"><ol><li><a href="title.xhtml">Four-Part Fixture</a></li><li><a href="part-one.xhtml">Part I: The Beginning</a><ol><li><a href="one-a.xhtml">Chapter I</a></li></ol></li><li><a href="part-two.xhtml">Part II: The Continuation</a><ol><li><a href="one-b.xhtml">Chapter I</a></li><li><a href="twenty-five.xhtml">Chapter XXV</a></li></ol></li></ol></nav><p>${'Chapter I Chapter XXV Part I Part II. '.repeat(35)}</p></body></html>`);
+  await fs.writeFile(path.join(oebps, 'title.xhtml'), `<html><body><h1>Four-Part Fixture</h1><p>Copyright © 2026 Fixture Author. All rights reserved.</p><p>${'Publication and edition notice. '.repeat(24)}</p></body></html>`);
+  await fs.writeFile(path.join(oebps, 'part-one.xhtml'), '<html><body><h1>Part I: The Beginning</h1></body></html>');
+  await fs.writeFile(path.join(oebps, 'one-a.xhtml'), `<html><body><h1>Chapter I</h1><p>${'The first part begins with authored narrative. '.repeat(80)}</p></body></html>`);
+  await fs.writeFile(path.join(oebps, 'part-two.xhtml'), '<html><body><h1>Part II: The Continuation</h1></body></html>');
+  await fs.writeFile(path.join(oebps, 'one-b.xhtml'), `<html><body><h1>Chapter I</h1><p>${'The second part repeats the chapter number. '.repeat(80)}</p></body></html>`);
+  await fs.writeFile(path.join(oebps, 'twenty-five.xhtml'), `<html><body><h1>Chapter XXV</h1><p>${'The later unique chapter remains inside the second part. '.repeat(80)}</p></body></html>`);
+
+  const epubPath = path.join(directory, 'fixture.epub');
+  execFileSync('zip', ['-qX0', epubPath, 'mimetype'], { cwd: epubRoot });
+  execFileSync('zip', ['-qr9', epubPath, 'META-INF', 'OEBPS'], { cwd: epubRoot });
+  return { directory, epubPath };
+}
+
 async function createScannedChapterBundleFixture() {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'xandrio-epub-scanned-bundle-'));
   const epubRoot = path.join(directory, 'book');
@@ -429,6 +456,22 @@ async function createScannedChapterBundleFixture() {
     console.log('Non-linear EPUB spine regression: 6 passed, 0 failed');
   } finally {
     await fs.rm(nonLinearFixture.directory, { recursive: true, force: true });
+  }
+
+  const frontMatterPartFixture = await createFrontMatterPartContextFixture();
+  try {
+    const document = createBookDocument({ log: { log() {}, error() {} } });
+    const chapters = await document.extractChapters(frontMatterPartFixture.epubPath);
+    assert.equal(chapters[0].type, 'toc', 'an HTML table of contents is non-narrative front matter');
+    assert.equal(chapters[1].type, 'copyright', 'a title/copyright leaf is non-narrative front matter');
+    assert.equal(
+      chapters.find(chapter => chapter.text.startsWith('Chapter XXV'))?.title,
+      'Part II: The Continuation — Chapter XXV',
+      'part context remains on unique Roman-numeral chapters after duplicate chapter numbers'
+    );
+    console.log('Front-matter and part-context regression: 3 passed, 0 failed');
+  } finally {
+    await fs.rm(frontMatterPartFixture.directory, { recursive: true, force: true });
   }
 
   const scannedFixture = await createScannedChapterBundleFixture();

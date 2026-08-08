@@ -27,6 +27,7 @@ Xandrio is a quiet product/tool interface: dense enough for repeated use, but vi
 - Sheets and modals use `registerSheet()` for focus trapping, `aria-hidden`, body state, and history-backed dismissal.
 - Skeletons appear only for cold loads to avoid flicker on refresh.
 - Continue-listening rail is hidden during library filtering and restored when filters clear.
+- Chapter transitions include five seconds of encoded silence so the listening rhythm survives background and lock-screen playback without relying on page timers.
 - Toasts are reserved for state changes and failures.
 
 ## Anti-Patterns
