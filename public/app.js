@@ -1527,7 +1527,12 @@ async function clearDeletedBookFromPlayer(bookId) {
 }
 
 // Player Functions
+let openBookToken = 0;
 async function openBook(bookId) {
+  const token = ++openBookToken;
+  // Retire chapter selection/transport work owned by the book being left.
+  // A later book response also checks `token` before touching shared state.
+  loadChapterToken++;
   // Keep the address bar/history in sync no matter who called us (router,
   // library tap, post-download/upload flow).
   syncPlayerHash(bookId);
@@ -1549,8 +1554,14 @@ async function openBook(bookId) {
       usedOfflineFallback = true;
     }
 
-    currentBook = data.book;
-    chapters = data.chapters;
+    if (token !== openBookToken) return false;
+    const nextBook = data.book;
+    const nextChapters = data.chapters;
+    const nextPlaybackSettings = await getBookPlaybackSettings(bookId);
+    if (token !== openBookToken) return false;
+
+    currentBook = nextBook;
+    chapters = nextChapters;
     currentBookOfflineFallback = usedOfflineFallback;
     if (usedOfflineFallback && !navigator.onLine) {
       const fallbackBookId = String(currentBook.id);
@@ -1559,7 +1570,7 @@ async function openBook(bookId) {
       }, { once: true });
     }
     currentBookFinished = false;
-    currentBookPlaybackSettings = await getBookPlaybackSettings(bookId);
+    currentBookPlaybackSettings = nextPlaybackSettings;
 
     // Cache chapter count for library progress bars (see bookProgressInfo)
     if (Array.isArray(chapters) && chapters.length > 0) {
@@ -1635,8 +1646,9 @@ async function openBook(bookId) {
     // Handle cover load error gracefully — fall back to a lettered placeholder
     // instead of hiding the cover entirely.
     bookCover.onerror = () => {
+      if (token !== openBookToken) return;
       bookCover.onerror = null;
-      bookCover.src = coverPlaceholderSrc(currentBook.title);
+      bookCover.src = coverPlaceholderSrc(nextBook.title);
       console.log('No cover available for this book');
     };
     updatePlayerAmbient(coverUrl);
@@ -1662,6 +1674,7 @@ async function openBook(bookId) {
     } catch (err) {
       console.warn('Failed to load server position:', err);
     }
+    if (token !== openBookToken || currentBook?.id !== nextBook.id) return false;
 
     const serverCheckpoint = normalizeServerPosition(positionData.position);
     const restorePosition = chooseFreshestPosition(localCheckpoint, serverCheckpoint);
@@ -1702,6 +1715,7 @@ async function openBook(bookId) {
     restoreSleepTimer();
 
     const chapterLoad = await loadRestoredChapter(chapterToLoad, restorePosition);
+    if (token !== openBookToken || currentBook?.id !== nextBook.id) return false;
     if (chapterLoad?.loaded !== true) {
       updatePlaybackUI(false);
       return true;
@@ -1714,6 +1728,7 @@ async function openBook(bookId) {
     
     return true;
   } catch (err) {
+    if (token !== openBookToken) return false;
     console.error('Failed to open book:', err);
     showToast("Couldn't open book", 'error');
     return false;

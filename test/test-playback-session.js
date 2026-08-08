@@ -367,6 +367,10 @@ function fakeAudio() {
       'opening a book signals foreground priority before waiting for book data'
     );
     const appImports = {
+      apiGet: (...args) => appImports.apiGetImpl(...args),
+      syncPlayerHash: (...args) => appImports.syncedPlayerHashes.push(args),
+      getOfflineBookData: () => null,
+      shouldUseOfflineBookFallback: () => false,
       createPlaybackSession: () => ({
         setBook() {},
         setFinished() {},
@@ -430,7 +434,9 @@ function fakeAudio() {
       certifyOfflineWorkerController: async () => ({ controlled: true, compatible: false })
     };
     appImports.apiSend = async (...args) => { appImports.apiSendCalls.push(args); };
+    appImports.apiGetImpl = async () => { throw Object.assign(new Error('not configured'), { status: 404 }); };
     appImports.apiSendCalls = [];
+    appImports.syncedPlayerHashes = [];
     appImports.transitionRequests = [];
     appImports.restoredPositions = [];
     appImports.transitionGate = null;
@@ -461,6 +467,8 @@ function fakeAudio() {
         },
         loadChapter,
         loadRestoredChapter,
+        openBook,
+        currentBook() { return currentBook; },
         prioritizeForegroundBook,
         recordPlaybackEvent,
         playbackEvents() { return playbackEventLedger.slice(); },
@@ -563,6 +571,43 @@ function fakeAudio() {
         2,
         'switching titles does not reset the per-title foreground debounce'
       );
+
+      // A slow response for an earlier title must not take ownership after a
+      // newer navigation. Otherwise the global title/chapters/player state can
+      // be assembled from two different books.
+      let resolveEarlierBook;
+      appImports.apiGetImpl = async url => {
+        if (url === '/api/book/book-a') {
+          return new Promise(resolve => { resolveEarlierBook = resolve; });
+        }
+        throw Object.assign(new Error('newer book unavailable'), { status: 404 });
+      };
+      globalThis.__playbackAppHarness.configure({
+        book: { id: 'book-initial' },
+        chapters: [{ title: 'Initial' }],
+        player,
+        chapter: uiElement
+      });
+      const earlierOpen = globalThis.__playbackAppHarness.openBook('book-a');
+      await Promise.resolve();
+      const newerOpen = globalThis.__playbackAppHarness.openBook('book-b');
+      await newerOpen;
+      resolveEarlierBook({
+        book: { id: 'book-a', title: 'Earlier title' },
+        chapters: [{ title: 'Earlier content' }]
+      });
+      await earlierOpen;
+      assert.strictEqual(
+        globalThis.__playbackAppHarness.currentBook().id,
+        'book-initial',
+        'a stale book response cannot replace the state owned by newer navigation'
+      );
+      globalThis.__playbackAppHarness.configure({
+        book: { id: 'book-a' },
+        chapters: [{ title: 'One' }, { title: 'Two' }],
+        player,
+        chapter: uiElement
+      });
 
       // Opening a saved iOS HLS chapter must start the transport at the saved
       // chapter time. Loading at zero and seeking to 142 seconds made Safari
