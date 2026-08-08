@@ -146,10 +146,25 @@ test('normalizes numeric and Roman constitutional amendment references', () => {
   );
 });
 
+test('narrates Roman chapter markers as cardinal numbers', () => {
+  assert.equal(
+    prepareTtsText('Chapter IV. Chapters IX–XI. Ch. XLII.'),
+    'Chapter four. Chapters nine through eleven. Ch. forty-two.'
+  );
+  assert.equal(
+    prepareTtsText('IV\n\nThe fourth chapter begins here.'),
+    'four\n\nThe fourth chapter begins here.'
+  );
+  assert.equal(
+    prepareTtsText('XIV: A Difficult Choice'),
+    'fourteen: A Difficult Choice'
+  );
+});
+
 test('does not reinterpret unmarked identifiers or ambiguous numeric forms', () => {
   assert.equal(
-    prepareTtsText('Chapter IV. Dr. Rivera arrived at 3.14 p.m. Room 138, version 3.4, code s90, docket 22-6810, ISBN 9781862877337, and 22/5/1990.'),
-    'Chapter IV. Dr. Rivera arrived at 3.14 p.m. Room 138, version 3.4, code s90, docket 22-6810, ISBN 9781862877337, and 22/5/1990.'
+    prepareTtsText('I was in Room 138 with version 3.4, code s90, docket 22-6810, ISBN 9781862877337, and date 22/5/1990.'),
+    'I was in Room 138 with version 3.4, code s90, docket 22-6810, ISBN 9781862877337, and date 22/5/1990.'
   );
 });
 

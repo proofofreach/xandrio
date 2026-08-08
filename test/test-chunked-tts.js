@@ -16,6 +16,7 @@ const os = require('os');
 const { EventEmitter } = require('events');
 const ChunkedTTS = require('../lib/chunked-tts');
 const { STATUS, DEFAULT_CHUNK_SIZE } = require('../lib/chunked-tts');
+const { CHAPTER_PAUSE_MS } = require('../lib/tts-engine-profile');
 const GenerationJournal = require('../lib/generation-journal');
 const TTSQueue = require('../lib/tts-queue');
 
@@ -261,6 +262,8 @@ section('2. Manifest tracking');
   // 2b. Queue received the job with correct priority
   assertEqual(mockQueue.jobs.length, 1, 'One job enqueued');
   assertEqual(mockQueue.jobs[0].priority, 'immediate', 'First chunk is immediate priority');
+  assertEqual(mockQueue.jobs[0].padEndMs, CHAPTER_PAUSE_MS,
+    'Final chapter chunk carries the inter-chapter pause');
   assert(Array.isArray(mockQueue.jobs[0].narration.segments), 'Structured narration segments reach queue');
 
   // 2c. getChapterManifest retrieves stored manifest
@@ -285,6 +288,10 @@ section('2. Manifest tracking');
   if (mockQueue2.jobs.length >= 2) {
     assertEqual(mockQueue2.jobs[0].priority, 'immediate', 'First pending chunk is immediate');
     assertEqual(mockQueue2.jobs[1].priority, 'next', 'Second pending chunk is next');
+    assert(mockQueue2.jobs.slice(0, -1).every(job => job.padEndMs < CHAPTER_PAUSE_MS),
+      'Only the final chunk carries the chapter pause');
+    assertEqual(mockQueue2.jobs.at(-1).padEndMs, CHAPTER_PAUSE_MS,
+      'Multi-chunk chapter ends with the inter-chapter pause');
   }
 
   // 2e. Status updates via queue events

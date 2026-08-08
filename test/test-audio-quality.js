@@ -36,13 +36,13 @@ async function run() {
     );
 
     assert.strictEqual(plan.blocks[0].kind, 'heading');
-    assert.strictEqual(plan.blocks[0].text, 'Chapter IV');
+    assert.strictEqual(plan.blocks[0].text, 'Chapter four');
     assert.deepStrictEqual(
       plan.blocks[1].sentences,
       ['Dr. Rivera arrived at 3.14 p.m.', 'She said, "We begin now."']
     );
     assert.strictEqual(plan.chunks.map(chunk => chunk.text).join('\n\n'),
-      'Chapter IV\n\nDr. Rivera arrived at 3.14 p.m.\n\nShe said, "We begin now."');
+      'Chapter four\n\nDr. Rivera arrived at 3.14 p.m.\n\nShe said, "We begin now."');
   });
 
   await test('chunk generation consumes the structured narration plan', () => {
@@ -84,6 +84,29 @@ async function run() {
     assert.strictEqual(args[args.indexOf('-c:a') + 1], 'pcm_s16le');
     assert.strictEqual(args.includes('-b:a'), false, 'WAV output should not get an MP3 bitrate flag');
     assert.strictEqual(args[args.length - 1], '/tmp/mastered.wav');
+  });
+
+  await test('chapter mastering encodes five seconds of trailing silence', async () => {
+    const TTSQueue = require('../lib/tts-queue');
+    const { CHAPTER_PAUSE_MS } = require('../lib/tts-engine-profile');
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'xandrio-chapter-pause-'));
+    const source = path.join(dir, 'source.wav');
+    const output = path.join(dir, 'paused.mp3');
+    try {
+      await runFile('ffmpeg', [
+        '-hide_banner', '-loglevel', 'error', '-y',
+        '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=24000:duration=0.25',
+        '-c:a', 'pcm_s16le', source
+      ]);
+      await new TTSQueue()._masterAudioFileToMp3(source, 'wav', output, CHAPTER_PAUSE_MS);
+      const duration = Number(await runFile('ffprobe', [
+        '-v', 'error', '-show_entries', 'format=duration',
+        '-of', 'default=noprint_wrappers=1:nokey=1', output
+      ]));
+      assert(duration >= 5.20 && duration <= 5.40, `encoded duration was ${duration.toFixed(3)}s`);
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
   });
 
   await test('audio response content type follows output container', () => {
