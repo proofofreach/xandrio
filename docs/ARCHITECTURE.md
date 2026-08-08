@@ -149,6 +149,12 @@ for the tap; any `await` first loses it.
   seconds of stable playback or real navigation.
 - The client session id is stable per canonical tuple, so retries join the
   existing server HLS session. A resume should create **one** session.
+- A ready, running HLS session is never reclaimed merely because the client is
+  request-silent. Native iOS can consume minutes of buffered audio without an
+  HTTP request, including while locked. Sessions remain bounded by active and
+  retained LRU counts plus the storage cap; they end on explicit owner
+  replacement, bounded eviction, or service shutdown. Elapsed request silence
+  alone never invalidates a native media resource the lock screen may still own.
 - One recovery attempt owns the player at a time; at most two automatic attempts;
   a `429` is reported with its `Retry-After` and never retried into.
 - The client abandons a load at `CLIENT_LOAD_DEADLINE_MS` (30 s). Cancellation is

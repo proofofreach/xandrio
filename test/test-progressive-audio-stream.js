@@ -721,71 +721,184 @@ function zeroCrossingRate(pcm) {
       }
     });
 
-    await test('idle HLS sessions are evicted within the configured bound', async () => {
-      const pendingSource = deferred();
+    await test('request-silent running HLS sessions survive while iOS consumes buffered audio', async () => {
+      const tonePath = path.join(dir, 'hls-buffered-ios.mp3');
+      // Ubuntu's ffmpeg may buffer a very short AAC input without publishing
+      // the first EVENT-playlist segment. Five seconds deterministically emits
+      // multiple one-second segments on both CI and the production platform.
+      await createTone(tonePath, 5, 440);
+      const keepRunning = deferred();
       let clock = 1_000;
-      const app = routeHarness(pendingSource.promise, {
+      const source = {
+        bookId: 'buffered_ios',
+        chapterIndex: 0,
+        endChapterIndex: 1,
+        format: 'mp3',
+        async *iterateInputs() {
+          yield { path: tonePath, chapterIndex: 0, lastInChapter: true };
+          await keepRunning.promise;
+        }
+      };
+      const app = routeHarness(source, {
         hlsRootDir: path.join(dir, 'hls-bounds'),
+        hlsSegmentSeconds: 1,
         hlsOptions: {
-          sessionIdleMs: 50,
-          sessionRetentionMs: 100,
           maxStorageBytes: 0,
           maintenanceIntervalMs: 0,
           now: () => clock
         }
       });
       const server = await listen(app);
-      const request = http.get(
-        `http://127.0.0.1:${server.address().port}/api/audio-hls/bounds_book/0/index.m3u8?session=bounds-session-01&owner=bounds-owner-01`
-      );
-      request.on('error', () => {});
+      const origin = `http://127.0.0.1:${server.address().port}`;
       try {
-        await waitUntil(
-          () => app.locals.hlsAudioStreamer.sessionsById.size === 1,
-          'the idle HLS session was never registered',
-          10_000
+        const playlistResponse = await fetch(
+          `${origin}/api/audio-hls/buffered_ios/0/index.m3u8?session=buffered-ios-session&owner=buffered-ios-owner`,
+          { signal: AbortSignal.timeout(10_000) }
         );
-        clock += 51;
+        assert.strictEqual(playlistResponse.status, 200);
+        const playlist = await playlistResponse.text();
+        const segmentUrl = playlist.split('\n').find(line => line.startsWith('/api/audio-hls-segment/'));
+        assert(segmentUrl, 'the playlist did not publish a buffered segment');
+
+        clock += 24 * 60 * 60 * 1000;
         await app.locals.hlsAudioStreamer.maintain();
-        assert.strictEqual(app.locals.hlsAudioStreamer.sessionsById.size, 0);
+
+        const resumedSegment = await fetch(`${origin}${segmentUrl}`, {
+          headers: { Range: 'bytes=0-31' }
+        });
+        assert.strictEqual(
+          resumedSegment.status,
+          206,
+          'locking past the request-idle bound must not expire the native iOS stream'
+        );
       } finally {
-        request.destroy();
+        keepRunning.resolve();
         await app.locals.hlsAudioStreamer.dispose();
         await new Promise(resolve => server.close(resolve));
       }
     });
 
-    await test('completed HLS sessions expire after the configured retention window', async () => {
-      const pendingSource = deferred();
+    await test('completed HLS sessions remain resumable after a long lock-screen pause', async () => {
+      const tonePath = path.join(dir, 'hls-completed-ios.mp3');
+      await createTone(tonePath, 5, 660);
       let clock = 5_000;
-      const app = routeHarness(pendingSource.promise, {
+      const source = {
+        bookId: 'completed_ios',
+        chapterIndex: 0,
+        endChapterIndex: 0,
+        format: 'mp3',
+        async *iterateInputs() {
+          yield { path: tonePath, chapterIndex: 0, lastInChapter: true };
+        }
+      };
+      const app = routeHarness(source, {
         hlsRootDir: path.join(dir, 'hls-retention'),
+        hlsSegmentSeconds: 1,
         hlsOptions: {
-          sessionIdleMs: 0,
-          sessionRetentionMs: 100,
           maxStorageBytes: 0,
           maintenanceIntervalMs: 0,
           now: () => clock
         }
       });
       const server = await listen(app);
-      const request = http.get(
-        `http://127.0.0.1:${server.address().port}/api/audio-hls/retention_book/0/index.m3u8?session=retention-session&owner=retention-owner`
-      );
-      request.on('error', () => {});
+      const origin = `http://127.0.0.1:${server.address().port}`;
       try {
+        const playlistResponse = await fetch(
+          `${origin}/api/audio-hls/completed_ios/0/index.m3u8?session=completed-ios-session&owner=completed-ios-owner`,
+          { signal: AbortSignal.timeout(10_000) }
+        );
+        assert.strictEqual(playlistResponse.status, 200);
+        const playlist = await playlistResponse.text();
+        const segmentUrl = playlist.split('\n').find(line => line.startsWith('/api/audio-hls-segment/'));
+        assert(segmentUrl, 'the completed playlist did not publish a segment');
         await waitUntil(
-          () => app.locals.hlsAudioStreamer.sessionsById.size === 1,
-          'the retained HLS session was never registered',
+          () => [...app.locals.hlsAudioStreamer.sessionsById.values()]
+            .some(session => !session.running),
+          'the HLS session never completed',
           10_000
         );
-        const session = [...app.locals.hlsAudioStreamer.sessionsById.values()][0];
-        session.running = false;
-        clock += 101;
+
+        clock += 24 * 60 * 60 * 1000;
         await app.locals.hlsAudioStreamer.maintain();
-        assert.strictEqual(app.locals.hlsAudioStreamer.sessionsById.size, 0);
+
+        const resumedSegment = await fetch(`${origin}${segmentUrl}`, {
+          headers: { Range: 'bytes=0-31' }
+        });
+        assert.strictEqual(
+          resumedSegment.status,
+          206,
+          'a completed native iOS stream must survive a long lock-screen pause'
+        );
       } finally {
-        request.destroy();
+        await app.locals.hlsAudioStreamer.dispose();
+        await new Promise(resolve => server.close(resolve));
+      }
+    });
+
+    await test('completed HLS sessions remain bounded by least-recently-used capacity', async () => {
+      const tonePath = path.join(dir, 'hls-retained-lru.mp3');
+      await createTone(tonePath, 5, 880);
+      let clock = 10_000;
+      const source = {
+        bookId: 'retained_lru',
+        chapterIndex: 0,
+        endChapterIndex: 0,
+        format: 'mp3',
+        async *iterateInputs() {
+          yield { path: tonePath, chapterIndex: 0, lastInChapter: true };
+        }
+      };
+      const app = routeHarness(source, {
+        hlsRootDir: path.join(dir, 'hls-retained-lru'),
+        hlsSegmentSeconds: 1,
+        hlsOptions: {
+          maxRetainedSessions: 1,
+          maxStorageBytes: 0,
+          maintenanceIntervalMs: 0,
+          now: () => clock
+        }
+      });
+      const server = await listen(app);
+      const origin = `http://127.0.0.1:${server.address().port}`;
+      const openCompletedSession = async (bookId, sessionId, ownerId) => {
+        const response = await fetch(
+          `${origin}/api/audio-hls/${bookId}/0/index.m3u8?session=${sessionId}&owner=${ownerId}`,
+          { signal: AbortSignal.timeout(10_000) }
+        );
+        assert.strictEqual(response.status, 200);
+        const playlist = await response.text();
+        const segmentUrl = playlist.split('\n').find(line => line.startsWith('/api/audio-hls-segment/'));
+        assert(segmentUrl, `${bookId} did not publish a segment`);
+        await waitUntil(
+          () => [...app.locals.hlsAudioStreamer.sessionsById.values()]
+            .filter(session => session.key.includes(bookId))
+            .some(session => !session.running),
+          `${bookId} never completed`,
+          10_000
+        );
+        return segmentUrl;
+      };
+      try {
+        const olderSegment = await openCompletedSession(
+          'retained_lru_one',
+          'retained-lru-session-1',
+          'retained-lru-owner-1'
+        );
+        clock += 1;
+        const newerSegment = await openCompletedSession(
+          'retained_lru_two',
+          'retained-lru-session-2',
+          'retained-lru-owner-2'
+        );
+
+        await app.locals.hlsAudioStreamer.maintain();
+        assert.strictEqual(app.locals.hlsAudioStreamer.sessionsById.size, 1);
+        assert.strictEqual((await fetch(`${origin}${olderSegment}`)).status, 410);
+        assert.strictEqual(
+          (await fetch(`${origin}${newerSegment}`, { headers: { Range: 'bytes=0-31' } })).status,
+          206
+        );
+      } finally {
         await app.locals.hlsAudioStreamer.dispose();
         await new Promise(resolve => server.close(resolve));
       }
@@ -849,8 +962,6 @@ function zeroCrossingRate(pcm) {
       const app = routeHarness(pendingSource.promise, {
         hlsRootDir: path.join(dir, 'hls-storage'),
         hlsOptions: {
-          sessionIdleMs: 0,
-          sessionRetentionMs: 60_000,
           maxStorageBytes: 1,
           maintenanceIntervalMs: 0
         }
