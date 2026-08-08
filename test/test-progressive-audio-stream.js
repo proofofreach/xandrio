@@ -723,7 +723,10 @@ function zeroCrossingRate(pcm) {
 
     await test('request-silent running HLS sessions survive while iOS consumes buffered audio', async () => {
       const tonePath = path.join(dir, 'hls-buffered-ios.mp3');
-      await createTone(tonePath, 1.5, 440);
+      // Ubuntu's ffmpeg may buffer a very short AAC input without publishing
+      // the first EVENT-playlist segment. Five seconds deterministically emits
+      // multiple one-second segments on both CI and the production platform.
+      await createTone(tonePath, 5, 440);
       const keepRunning = deferred();
       let clock = 1_000;
       const source = {
@@ -749,7 +752,8 @@ function zeroCrossingRate(pcm) {
       const origin = `http://127.0.0.1:${server.address().port}`;
       try {
         const playlistResponse = await fetch(
-          `${origin}/api/audio-hls/buffered_ios/0/index.m3u8?session=buffered-ios-session&owner=buffered-ios-owner`
+          `${origin}/api/audio-hls/buffered_ios/0/index.m3u8?session=buffered-ios-session&owner=buffered-ios-owner`,
+          { signal: AbortSignal.timeout(10_000) }
         );
         assert.strictEqual(playlistResponse.status, 200);
         const playlist = await playlistResponse.text();
@@ -776,7 +780,7 @@ function zeroCrossingRate(pcm) {
 
     await test('completed HLS sessions remain resumable after a long lock-screen pause', async () => {
       const tonePath = path.join(dir, 'hls-completed-ios.mp3');
-      await createTone(tonePath, 1.5, 660);
+      await createTone(tonePath, 5, 660);
       let clock = 5_000;
       const source = {
         bookId: 'completed_ios',
@@ -800,7 +804,8 @@ function zeroCrossingRate(pcm) {
       const origin = `http://127.0.0.1:${server.address().port}`;
       try {
         const playlistResponse = await fetch(
-          `${origin}/api/audio-hls/completed_ios/0/index.m3u8?session=completed-ios-session&owner=completed-ios-owner`
+          `${origin}/api/audio-hls/completed_ios/0/index.m3u8?session=completed-ios-session&owner=completed-ios-owner`,
+          { signal: AbortSignal.timeout(10_000) }
         );
         assert.strictEqual(playlistResponse.status, 200);
         const playlist = await playlistResponse.text();
@@ -832,7 +837,7 @@ function zeroCrossingRate(pcm) {
 
     await test('completed HLS sessions remain bounded by least-recently-used capacity', async () => {
       const tonePath = path.join(dir, 'hls-retained-lru.mp3');
-      await createTone(tonePath, 1.5, 880);
+      await createTone(tonePath, 5, 880);
       let clock = 10_000;
       const source = {
         bookId: 'retained_lru',
@@ -857,7 +862,8 @@ function zeroCrossingRate(pcm) {
       const origin = `http://127.0.0.1:${server.address().port}`;
       const openCompletedSession = async (bookId, sessionId, ownerId) => {
         const response = await fetch(
-          `${origin}/api/audio-hls/${bookId}/0/index.m3u8?session=${sessionId}&owner=${ownerId}`
+          `${origin}/api/audio-hls/${bookId}/0/index.m3u8?session=${sessionId}&owner=${ownerId}`,
+          { signal: AbortSignal.timeout(10_000) }
         );
         assert.strictEqual(response.status, 200);
         const playlist = await response.text();
