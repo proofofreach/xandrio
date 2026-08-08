@@ -168,5 +168,32 @@ test('does not reinterpret unmarked identifiers or ambiguous numeric forms', () 
   );
 });
 
+test('removes sequential standalone printed page markers before narration', () => {
+  assert.equal(
+    prepareTtsText([
+      'The opening paragraph continues across the printed edition.',
+      '37',
+      'The next page continues the same chapter without a numbered list.',
+      '38',
+      'The discussion continues with another paragraph.',
+      '39',
+      'The final paragraph belongs to the chapter.'
+    ].join('\n')),
+    [
+      'The opening paragraph continues across the printed edition.',
+      'The next page continues the same chapter without a numbered list.',
+      'The discussion continues with another paragraph.',
+      'The final paragraph belongs to the chapter.'
+    ].join('\n')
+  );
+});
+
+test('preserves low numbered lists and isolated high numbers', () => {
+  assert.equal(
+    prepareTtsText('1\nFirst choice\n2\nSecond choice\n3\nThird choice\n\nRoom\n37\nwas reserved.'),
+    '1\nFirst choice\n2\nSecond choice\n3\nThird choice\n\nRoom\n37\nwas reserved.'
+  );
+});
+
 console.log(`tts-text tests: ${passed} passed, ${failed} failed`);
 if (failed) process.exitCode = 1;
