@@ -5,6 +5,11 @@ const os = require('os');
 const GenerationScheduler = require('../lib/generation-scheduler');
 const GenerationJournal = require('../lib/generation-journal');
 const TTSQueue = require('../lib/tts-queue');
+const {
+  chapterGenerationScope,
+  GENERATION_ORIGIN,
+  GENERATION_PRIORITY
+} = require('../lib/audio-generation-intent');
 const { createPlaybackOrchestrator } = require('../lib/playback-orchestrator');
 const {
   registerPlaybackRoutes,
@@ -56,6 +61,24 @@ async function testOrchestratorPriority() {
   });
   await new Promise(resolve => setImmediate(resolve));
   assert.strictEqual(calls[0][2].priority, 'download');
+}
+
+function testPlaybackRunwayGenerationScope() {
+  assert.deepStrictEqual(chapterGenerationScope({
+    origin: GENERATION_ORIGIN.PLAYBACK_CURRENT,
+    priority: GENERATION_PRIORITY.IMMEDIATE
+  }), {
+    chunkIndexes: [0, 1],
+    uniformPriority: false
+  });
+  assert.deepStrictEqual(chapterGenerationScope({
+    origin: GENERATION_ORIGIN.PLAYBACK_CURRENT,
+    priority: GENERATION_PRIORITY.IMMEDIATE,
+    completeChapter: true
+  }), {
+    chunkIndexes: null,
+    uniformPriority: true
+  });
 }
 
 async function testTtsQueuePriority() {
@@ -159,6 +182,7 @@ async function testRoutePurpose() {
   assert.strictEqual(response.statusCode, 202);
   assert.deepStrictEqual(requests.slice(-2).map(value => value.chapterIndex), [2, 4]);
   assert(requests.slice(-2).every(value => value.priority === 'immediate'));
+  assert(requests.slice(-2).every(value => value.completeChapter === true));
   assert(requests.slice(-2).every(value => value.requestedTier === 'instant'));
   assert.strictEqual(prepared.length, 1, 'runway preparation starts chapter look-ahead');
   assert.deepStrictEqual(response.body, {
@@ -394,6 +418,8 @@ async function testOfflinePreparationRecovery() {
   console.log('  ✓ TTS queue orders downloads before speculative work');
   await testOrchestratorPriority();
   console.log('  ✓ download priority reaches chapter generation');
+  testPlaybackRunwayGenerationScope();
+  console.log('  ✓ playback runway promotes every unfinished chapter chunk');
   await testRoutePurpose();
   console.log('  ✓ offline-download requests select download priority');
   await testBookPreparationRoutes();
@@ -402,7 +428,7 @@ async function testOfflinePreparationRecovery() {
   console.log('  ✓ full-title preparation intent survives outside the browser');
   await testOfflinePreparationRecovery();
   console.log('  ✓ full-title preparation recovery delegates to the bounded durable coordinator');
-  console.log('\n7 passed, 0 failed');
+  console.log('\n8 passed, 0 failed');
 })().catch(error => {
   console.error(`  ✗ ${error.stack || error.message}`);
   console.log('\n0 passed, 1 failed');

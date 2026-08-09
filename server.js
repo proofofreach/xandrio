@@ -43,6 +43,7 @@ const {
   createOfflineReadinessNotifications
 } = require('./lib/offline-readiness-notifications');
 const {
+  chapterGenerationScope,
   GENERATION_ORIGIN,
   GENERATION_PRIORITY
 } = require('./lib/audio-generation-intent');
@@ -1631,9 +1632,15 @@ async function ensureChapterAudioPrepared(bookId, chapterIndex, options = {}) {
       ? GENERATION_ORIGIN.OFFLINE_DOWNLOAD
       : GENERATION_ORIGIN.PLAYBACK_CURRENT
   );
-  const playbackChunkIndexes = generationOrigin === GENERATION_ORIGIN.PLAYBACK_CURRENT
-    ? [0, 1]
-    : null;
+  const completeChapter = Boolean(options.completeChapter);
+  const {
+    chunkIndexes: playbackChunkIndexes,
+    uniformPriority
+  } = chapterGenerationScope({
+    origin: generationOrigin,
+    priority,
+    completeChapter
+  });
   const jobs = clean ? cleanChapterAudioPrepareJobs : chapterAudioPrepareJobs;
   const key = `${bookId}:${chapterIndex}:${tts.variantKeyProvider()}`;
   if (jobs.has(key)) {
@@ -1646,7 +1653,7 @@ async function ensureChapterAudioPrepared(bookId, chapterIndex, options = {}) {
       signal: options.signal,
       chunkIndexes: playbackChunkIndexes
     });
-    if (priority === 'download' || priority === 'lookahead') {
+    if (completeChapter || priority === 'download' || priority === 'lookahead') {
       const existingManifest = tts.getChapterManifest(bookId, chapterIndex);
       existingManifest?.chunks?.forEach((chunk, index) => {
         if (chunk.status !== 'ready') {
@@ -1677,14 +1684,11 @@ async function ensureChapterAudioPrepared(bookId, chapterIndex, options = {}) {
     } catch {}
 
     const bookLanguage = book.language || 'en';
-    const deferredPriority = priority === 'background' ||
-      priority === 'download' ||
-      priority === 'lookahead';
-    const firstChunkPriority = deferredPriority ? priority : 'immediate';
+    const firstChunkPriority = uniformPriority ? priority : 'immediate';
     let manifest = tts.getChapterManifest(bookId, chapterIndex);
     if (!manifest || manifestNeedsResume(manifest)) {
       manifest = await tts.generateChapter(bookId, chapterIndex, chapter.text, bookLanguage, priority, {
-        priorityForChunk: deferredPriority
+        priorityForChunk: uniformPriority
           ? (() => priority)
           : getChapterGenerationPriority(0),
         voice,
@@ -1706,7 +1710,7 @@ async function ensureChapterAudioPrepared(bookId, chapterIndex, options = {}) {
       });
       manifest.chunks.forEach((chunk, index) => {
         if (chunk.status !== 'ready') {
-          const chunkPriority = deferredPriority
+          const chunkPriority = uniformPriority
             ? priority
             : index === 0
               ? firstChunkPriority
