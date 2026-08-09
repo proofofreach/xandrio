@@ -211,11 +211,13 @@ function harness(overrides = {}) {
       bookId: 'book',
       chapterIndex: 0,
       requestedTier: 'instant',
-      priority: 'immediate'
+      priority: 'immediate',
+      completeChapter: true
     });
     assert(calls.some(call =>
       call[0] === 'ensureAudio' &&
       call[3].priority === 'immediate' &&
+      call[3].completeChapter === true &&
       call[3].tier === 'instant'
     ));
   });
