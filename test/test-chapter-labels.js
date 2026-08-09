@@ -85,6 +85,26 @@ function test(name, fn) {
     assert.strictEqual(chapterListOrdinal(chapters, 6), '02');
   });
 
+  test('Roman-authored chapters keep their exact ordinal in the list and player', () => {
+    const chapters = [
+      { title: 'Prologue: The Way of What Is to Come fol. i(r)', type: 'content' },
+      { title: 'Chapter I Refinding the Soul fol. ii(r)', type: 'chapter' },
+      { title: 'Chapter II Soul and God fol. ii(r)', type: 'chapter' },
+      { title: 'Chapter III On the Service of the Soul fol. ii(v)', type: 'chapter' },
+      { title: 'Chapter IV The Desert fol. iii(r)', type: 'chapter' },
+      { title: 'Experiences in the Desert fol. iii(r)', type: 'content' },
+      { title: 'Chapter V Descent into Hell in the Future fol. iii(v)', type: 'chapter' },
+      { title: 'Chapter VI Splitting of the Spirit fol. iv(r)', type: 'chapter' },
+      { title: 'Chapter XX The Way of the Cross fol. xii(r)', type: 'chapter' }
+    ];
+
+    assert.deepStrictEqual(
+      chapters.map((_, index) => chapterListOrdinal(chapters, index)),
+      ['', '01', '02', '03', '04', '', '05', '06', '20']
+    );
+    assert.strictEqual(chapterProgressContext(chapters, 2), 'Chapter 2 of 20');
+  });
+
   test('player start does not jump to a late generic chapter after real content', () => {
     const chapters = [
       { title: 'Copyright', type: 'copyright', text: 'x'.repeat(1200) },

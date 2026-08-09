@@ -103,13 +103,13 @@ function chapterNumberFromTitle(title) {
     const tokens = rest.split(/\s+/);
     const cardinal = cardinalChapterNumber(tokens.slice(0, 2).join(' ')) || cardinalChapterNumber(tokens[0]);
     if (cardinal) return cardinal;
-    const roman = romanChapterNumber(tokens[0]?.replace(/[.:-–—]$/, ''));
+    const roman = romanChapterNumber(tokens[0]?.replace(/[.:\-–—]$/, ''));
     if (roman) return roman;
   }
 
-  const leadingDigit = normalized.match(/^(\d+)(?:[.:-–—]|\s|$)/);
+  const leadingDigit = normalized.match(/^(\d+)(?:[.:\-–—]|\s|$)/);
   if (leadingDigit) return Number(leadingDigit[1]);
-  const leadingRoman = normalized.match(/^([IVXLCDM]+)[.:-–—](?:\s|$)/i);
+  const leadingRoman = normalized.match(/^([IVXLCDM]+)[.:\-–—](?:\s|$)/i);
   return leadingRoman ? romanChapterNumber(leadingRoman[1]) : null;
 }
 
