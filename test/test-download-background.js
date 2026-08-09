@@ -131,9 +131,9 @@ async function testRoutePurpose() {
         request = value;
         requests.push(value);
         return {
-          ready: value.priority === 'immediate' && value.chapterIndex === 2,
-          status: value.priority === 'immediate' && value.chapterIndex === 2 ? 'ready' : 'generating',
-          readyChunks: value.priority === 'immediate' && value.chapterIndex === 2 ? 4 : 1,
+          ready: false,
+          status: 'generating',
+          readyChunks: value.priority === 'immediate' && value.chapterIndex === 2 ? 2 : 1,
           totalChunks: 4,
           servedTier: 'instant'
         };
@@ -179,20 +179,29 @@ async function testRoutePurpose() {
     query: { tier: 'instant' },
     body: { purpose: 'playback-runway', playbackRate: 1.25, offsetSeconds: 45 }
   }, response);
-  assert.strictEqual(response.statusCode, 202);
+  assert.strictEqual(response.statusCode, 200);
   assert.deepStrictEqual(requests.slice(-2).map(value => value.chapterIndex), [2, 4]);
-  assert(requests.slice(-2).every(value => value.priority === 'immediate'));
+  assert.deepStrictEqual(
+    requests.slice(-2).map(value => value.priority),
+    ['immediate', 'lookahead'],
+    'the next chapter cannot compete with the current chapter for immediate generation'
+  );
+  assert.deepStrictEqual(
+    requests.slice(-2).map(value => value.origin),
+    [GENERATION_ORIGIN.PLAYBACK_CURRENT, GENERATION_ORIGIN.PLAYBACK_LOOKAHEAD]
+  );
   assert(requests.slice(-2).every(value => value.completeChapter === true));
   assert(requests.slice(-2).every(value => value.requestedTier === 'instant'));
   assert.strictEqual(prepared.length, 1, 'runway preparation starts chapter look-ahead');
   assert.deepStrictEqual(response.body, {
-    ready: false,
-    status: 'generating',
-    readyChunks: 5,
-    totalChunks: 8,
+    ready: true,
+    status: 'ready',
+    readyChunks: 2,
+    totalChunks: 4,
+    runwayRequiredChunks: 2,
     servedTier: 'instant',
     runwayChapterIndexes: [2, 4],
-    runwayPolicy: 'complete-current-and-next-playable',
+    runwayPolicy: 'buffer-current-lookahead-next-playable',
     playbackRate: 1.25,
     offsetSeconds: 45
   });

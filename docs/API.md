@@ -1302,8 +1302,8 @@ operator diagnostics.
       "active": 1,
       "queued": 2,
       "chapters": [
-        { "chapterIndex": 4, "active": 1, "queued": 0 },
-        { "chapterIndex": 5, "active": 0, "queued": 2 }
+        { "chapterIndex": 4, "title": "The First Decision", "active": 1, "queued": 0 },
+        { "chapterIndex": 5, "title": "The Next Step", "active": 0, "queued": 2 }
       ]
     }
   ]
@@ -1315,6 +1315,11 @@ operator diagnostics.
 | `active` | integer | Relevant narration chunks currently generating |
 | `queued` | integer | Relevant narration chunks waiting to generate |
 | `books` | array | Relevant books with live work, grouped into chapter activity |
+
+Each chapter activity entry includes its zero-based `chapterIndex`, extracted
+chapter `title` when available, and active/queued chunk counts. Clients should
+prefer `title` over presenting the raw spine index as a reader-facing chapter
+number because front matter is part of the EPUB spine.
 
 Books appear in the order narration will reach them: any order the reader has
 set through `POST /api/queue/order` first, then the busiest remaining titles.

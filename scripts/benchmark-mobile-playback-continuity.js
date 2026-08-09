@@ -409,7 +409,7 @@ async function startFixtureServer(audioFixtures) {
       return jsonResponse(res, {
         ready: true,
         status: 'ready',
-        runwayPolicy: 'complete-current-and-next-playable'
+        runwayPolicy: 'buffer-current-lookahead-next-playable'
       });
     }
     if (/^\/api\/chunks\/lockscreen\/[01]\/chapter-audio-status$/.test(pathname)) {

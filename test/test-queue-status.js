@@ -223,8 +223,8 @@ function fakeActivityList() {
         queued: 2,
         origins: { 'playback-lookahead': 3 },
         chapters: [
-          { chapterIndex: 3, active: 1, queued: 0 },
-          { chapterIndex: 4, active: 0, queued: 2 }
+          { chapterIndex: 3, title: 'Believe You Can Succeed', active: 1, queued: 0 },
+          { chapterIndex: 4, title: 'Cure Yourself of Excusitis', active: 0, queued: 2 }
         ]
       }]
     };
@@ -238,7 +238,37 @@ function fakeActivityList() {
     queueStatusElement.dispatch('click');
     assert.strictEqual(elements['audio-activity-sheet'].classList.contains('active'), true);
     assert.match(elements['audio-activity-list'].innerHTML, /A Long Book/);
-    assert.match(elements['audio-activity-list'].innerHTML, /Preparing chapters ahead · Chapter 4 · 1 next/);
+    assert.match(
+      elements['audio-activity-list'].innerHTML,
+      /Preparing chapters ahead · Believe You Can Succeed · 1 next/
+    );
+  });
+
+  await test('labels mixed playback work as the current chapter using its title', async () => {
+    apiStatus = {
+      active: 1,
+      queued: 1,
+      books: [{
+        id: 'book-current',
+        title: 'Thinking Clearly',
+        author: 'A. Reader',
+        active: 1,
+        queued: 1,
+        origins: { 'playback-current': 1, 'playback-lookahead': 1 },
+        chapters: [
+          { chapterIndex: 6, title: '1. Begin Here', active: 1, queued: 0 },
+          { chapterIndex: 7, title: '2. Continue', active: 0, queued: 1 }
+        ]
+      }]
+    };
+    await [...timers.values()][0]();
+    await settle();
+    queueStatusElement.dispatch('click');
+    assert.match(
+      elements['audio-activity-list'].innerHTML,
+      /Preparing current chapter · 1\. Begin Here · 1 next/
+    );
+    assert.doesNotMatch(elements['audio-activity-list'].innerHTML, /Chapter 7/);
   });
 
   await test('hides the activity affordance when user-relevant work completes', async () => {

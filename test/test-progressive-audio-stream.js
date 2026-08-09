@@ -397,15 +397,18 @@ function zeroCrossingRate(pcm) {
       }
     });
 
-    await test('the transport gate requires the next playable chapter and skips structural chapters', async () => {
+    await test('the transport gate admits buffered current audio and skips structural look-ahead chapters', async () => {
       const statusChecks = [];
       const tierChecks = [];
+      const currentPath = path.join(dir, 'structural-runway-current.mp3');
+      await createTone(currentPath, 0.35, 440);
       const source = {
         bookId: 'book_structural_runway',
         chapterIndex: 0,
+        servedTier: 'premium',
         format: 'mp3',
         async *iterateInputs() {
-          throw new Error('an encoder must not start before the next playable chapter is ready');
+          yield currentPath;
         }
       };
       const server = await listen(routeHarness(source, {
@@ -423,7 +426,9 @@ function zeroCrossingRate(pcm) {
         const response = await fetch(
           `http://127.0.0.1:${server.address().port}/api/audio-continuous/book_structural_runway/0`
         );
-        assert.strictEqual(response.status, 425);
+        assert.strictEqual(response.status, 200);
+        assert.strictEqual(response.headers.get('x-served-tier'), 'premium');
+        await response.arrayBuffer();
         assert.deepStrictEqual(statusChecks, [0, 2]);
         assert.deepStrictEqual(tierChecks, [
           { chapterIndex: 0, requestedTier: undefined },
