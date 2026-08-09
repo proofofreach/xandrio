@@ -21,6 +21,7 @@ const tests = [
   'test-playback-prefetch.js',
   'test-playback-routes.js',
   'test-pronunciation-repair.js',
+  'test-narration-artifact-cache.js',
   'test-queue.js',
   'test-tts-text.js',
   'test-tts-split-policy.js',

@@ -107,6 +107,7 @@ async function main() {
           completed: 4,
           byPriority: { immediate: 1, lookahead: 2, 'private-priority': 99 },
           byOrigin: { 'offline-download': 2, 'playback-lookahead': 1, 'private-origin': 99 },
+          artifacts: { hits: 12, misses: 3, published: 8, bytesAvoided: 4567, path: '/private/cache' },
           oldestQueuedAgeMs: 12_345,
           title: 'Private Book Title',
           username: 'private-user',
@@ -143,6 +144,7 @@ async function main() {
         completed: 4,
         byPriority: { immediate: 1, lookahead: 2 },
         byOrigin: { 'offline-download': 2, 'playback-lookahead': 1 },
+        artifacts: { hits: 12, misses: 3, published: 8, bytesAvoided: 4567 },
         oldestQueuedAgeMs: 12_345
       });
       assert.deepStrictEqual(report.engines.kokoro, {
