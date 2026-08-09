@@ -1,7 +1,7 @@
 importScripts('/js/offline-range.js');
 
 const APP_RELEASE = '1.1.0';
-const CACHE_VERSION = 'xandrio-v136';
+const CACHE_VERSION = 'xandrio-v137';
 const OFFLINE_ROUTE_CONTRACT_VERSION = 1;
 const OFFLINE_AUDIO_CACHE = 'xandrio-offline-audio';
 const OFFLINE_TITLE_CACHE = 'xandrio-offline-titles';

@@ -89,21 +89,26 @@ function chapterSummary(book) {
   const origins = book?.origins || {};
   const purpose = Number(origins['offline-download']) > 0
     ? 'Preparing for download'
-    : Number(origins['playback-lookahead']) > 0
-      ? 'Preparing chapters ahead'
-      : Number(origins['import-warmup']) > 0
-        ? 'Preparing starting chapter'
-        : Number(origins['playback-current']) > 0
-          ? 'Preparing current chapter'
+    : Number(origins['playback-current']) > 0
+      ? 'Preparing current chapter'
+      : Number(origins['playback-lookahead']) > 0
+        ? 'Preparing chapters ahead'
+        : Number(origins['import-warmup']) > 0
+          ? 'Preparing starting chapter'
           : 'Generating';
 
   if (active.length > 0) {
-    const chapterNumber = Number(active[0].chapterIndex) + 1;
+    const chapter = active[0];
+    const chapterLabel = String(chapter.title || '').trim() ||
+      `Chapter ${Number(chapter.chapterIndex) + 1}`;
     const nextCount = Math.max(0, chapters.length - active.length);
-    return `${purpose} · Chapter ${chapterNumber}${nextCount ? ` · ${nextCount} next` : ''}`;
+    return `${purpose} · ${chapterLabel}${nextCount ? ` · ${nextCount} next` : ''}`;
   }
   if (waiting.length === 1) {
-    return `Chapter ${Number(waiting[0].chapterIndex) + 1} · Waiting to prepare`;
+    const chapter = waiting[0];
+    const chapterLabel = String(chapter.title || '').trim() ||
+      `Chapter ${Number(chapter.chapterIndex) + 1}`;
+    return `${chapterLabel} · Waiting to prepare`;
   }
   if (waiting.length > 1) {
     return `${waiting.length} chapters waiting to prepare`;

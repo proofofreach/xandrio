@@ -3529,25 +3529,28 @@ app.get('/api/queue/status', async (req, res) => {
       ...Object.keys(positionsForUser(positionsStore, userId))
     ]);
     const activity = ttsQueue.getQueueActivity({ bookIds: relevantBookIds });
+    const activityBooks = await Promise.all(activity.books.map(async item => {
+      const book = books[item.bookId];
+      if (!book) return null;
+      const chapters = await getChaptersCached(book.path).catch(() => []);
+      return {
+        id: item.bookId,
+        title: book.title || 'Untitled',
+        author: book.author || 'Unknown Author',
+        hasCover: Boolean(book.coverPath),
+        active: item.active,
+        queued: item.queued,
+        origins: item.origins || {},
+        chapters: item.chapters.map(chapter => ({
+          ...chapter,
+          title: String(chapters[chapter.chapterIndex]?.title || '').trim() || undefined
+        }))
+      };
+    }));
     res.json({
       active: activity.active,
       queued: activity.queued,
-      books: activity.books
-        .map(item => {
-          const book = books[item.bookId];
-          if (!book) return null;
-          return {
-            id: item.bookId,
-            title: book.title || 'Untitled',
-            author: book.author || 'Unknown Author',
-            hasCover: Boolean(book.coverPath),
-            active: item.active,
-            queued: item.queued,
-            origins: item.origins || {},
-            chapters: item.chapters
-          };
-        })
-        .filter(Boolean)
+      books: activityBooks.filter(Boolean)
     });
   } catch (err) {
     sendServerError(res, err, 'Failed to load audio activity');
