@@ -458,8 +458,9 @@ function fakeAudio() {
     const appTestSource = appSource
       .replace(/^import \{([^}]+)\} from ['"][^'"]+['"];$/gm, 'const {$1} = globalThis.__playbackAppImports;')
       + `\nglobalThis.__playbackAppHarness = {
-        configure({ book, chapters: nextChapters, player, chapter }) {
+        configure({ book, chapters: nextChapters, player, chapter, openingBook = null }) {
           currentBook = book;
+          openingBookId = openingBook;
           currentChapter = 0;
           chapters = nextChapters;
           chunkPlayer = player;
@@ -536,6 +537,59 @@ function fakeAudio() {
       });
       const appUrl = `data:text/javascript;base64,${Buffer.from(appTestSource).toString('base64')}`;
       await import(appUrl);
+      globalThis.__playbackAppHarness.configure({
+        book: { id: 'book-a' },
+        chapters: [{ title: 'One' }, { title: 'Two' }],
+        player,
+        chapter: uiElement
+      });
+
+      // The player view can commit the newly selected title before its media
+      // transition has replaced the persistent audio element's old source.
+      // Play must never resume that source under the new title.
+      const staleBookPlayer = engine('stale-book-source', { backend: 'audio-stream' });
+      staleBookPlayer.bookId = 'red-book';
+      globalThis.__playbackAppHarness.configure({
+        book: { id: 'red-book' },
+        openingBook: 'outwitting-the-devil',
+        chapters: [{ title: 'Chapter One' }],
+        player: staleBookPlayer,
+        chapter: uiElement
+      });
+
+      await globalThis.__playbackAppHarness.togglePlayPause(true);
+
+      assert(
+        !staleBookPlayer.calls.some(call => call[0] === 'play'),
+        'Play cannot restart the outgoing book while a new title is opening'
+      );
+
+      globalThis.__playbackAppHarness.configure({
+        book: { id: 'outwitting-the-devil' },
+        chapters: [{ title: 'Chapter One' }],
+        player: staleBookPlayer,
+        chapter: uiElement
+      });
+
+      await globalThis.__playbackAppHarness.togglePlayPause(true);
+
+      assert(
+        !staleBookPlayer.calls.some(call => call[0] === 'play'),
+        'Play cannot resume media owned by the previously selected book'
+      );
+      assert(
+        appImports.reliabilityStates.some(([, label]) => label === 'Loading selected book'),
+        'a blocked stale Play reports that the selected title is still loading'
+      );
+
+      staleBookPlayer.bookId = 'outwitting-the-devil';
+      await globalThis.__playbackAppHarness.togglePlayPause(true);
+      assert.strictEqual(
+        staleBookPlayer.calls.filter(call => call[0] === 'play').length,
+        1,
+        'Play reaches the engine after it owns the selected book'
+      );
+
       globalThis.__playbackAppHarness.configure({
         book: { id: 'book-a' },
         chapters: [{ title: 'One' }, { title: 'Two' }],
@@ -636,6 +690,8 @@ function fakeAudio() {
 
       process.once('unhandledRejection', onUnhandled);
       appImports.chapterTimePaints.length = 0;
+      player.bookId = 'book-a';
+      player.isPlaying = true;
       globalThis.__playbackAppHarness.loadChapter(1);
       assert.deepStrictEqual(
         appImports.chapterTimePaints.at(-1),
@@ -705,6 +761,7 @@ function fakeAudio() {
           throw error;
         }
       });
+      timedOutPlayer.bookId = 'book-a';
       globalThis.__playbackAppHarness.configure({
         book: { id: 'book-a' },
         chapters: [{ title: 'One' }, { title: 'Two' }],

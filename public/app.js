@@ -1528,11 +1528,18 @@ async function clearDeletedBookFromPlayer(bookId) {
 
 // Player Functions
 let openBookToken = 0;
+let openingBookId = null;
 async function openBook(bookId) {
   const token = ++openBookToken;
+  openingBookId = String(bookId);
   // Retire chapter selection/transport work owned by the book being left.
   // A later book response also checks `token` before touching shared state.
   loadChapterToken++;
+  if (currentBook?.id && String(currentBook.id) !== String(bookId)) {
+    try { chunkPlayer?.pause?.(); } catch {}
+    updatePlaybackUI(false);
+    checkpointPlayback();
+  }
   // Keep the address bar/history in sync no matter who called us (router,
   // library tap, post-download/upload flow).
   syncPlayerHash(bookId);
@@ -1571,6 +1578,7 @@ async function openBook(bookId) {
     }
     currentBookFinished = false;
     currentBookPlaybackSettings = nextPlaybackSettings;
+    showAudioLoading('Loading selected book...');
 
     // Cache chapter count for library progress bars (see bookProgressInfo)
     if (Array.isArray(chapters) && chapters.length > 0) {
@@ -1732,6 +1740,8 @@ async function openBook(bookId) {
     console.error('Failed to open book:', err);
     showToast("Couldn't open book", 'error');
     return false;
+  } finally {
+    if (token === openBookToken) openingBookId = null;
   }
 }
 
@@ -2104,11 +2114,36 @@ function retryDeferredSmartRewind() {
   }
 }
 
+function playbackEngineOwnsSelectedBook() {
+  const selectedBookId = openingBookId || currentBook?.id;
+  return Boolean(
+    selectedBookId &&
+    chunkPlayer?.bookId &&
+    String(chunkPlayer.bookId) === String(selectedBookId)
+  );
+}
+
 async function togglePlayPause(forcePlay = false) {
   forcePlay = forcePlay === true;
   if (!currentBook || !chunkPlayer) return;
   try {
     if (forcePlay || !chunkPlayer.isPlaying) {
+      // The player view can commit a newly selected title while metadata and
+      // local-source checks are still pending. Until the media engine has been
+      // retargeted, its persistent audio element still belongs to the outgoing
+      // book. Never let a tap (or lock-screen command) resume that stale source.
+      if (!playbackEngineOwnsSelectedBook()) {
+        try { chunkPlayer.pause?.(); } catch {}
+        recordPlaybackEvent({
+          type: 'stale-play-blocked',
+          reason: 'book-switch',
+          chapterIndex: currentChapter,
+          sourceKind: chunkPlayer.backend || playbackBackend || 'unknown'
+        });
+        setPlaybackReliabilityState('active', 'Loading selected book');
+        updatePlaybackUI(false);
+        return;
+      }
       // Nothing may be awaited between here and play(): iOS revokes the user
       // activation from the tap at the first await.
       applySmartRewindForResume();
@@ -2248,7 +2283,8 @@ function isNativeSingleFileReady() {
   return Boolean(
     audioPlayer &&
     audioPlayer.src &&
-    chunkPlayer?.supportsNativeMediaSession
+    chunkPlayer?.supportsNativeMediaSession &&
+    playbackEngineOwnsSelectedBook()
   );
 }
 
