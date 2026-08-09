@@ -165,6 +165,7 @@ function fakeResponse() {
   const cacheFiles = [
     'alpha_ch0_chunk0.mp3',
     'alpha_ch0_chunk1.mp3',
+    'alpha_ch0_chunk1.mp3.narration-artifact.json',
     'alpha_ch0_chunk2.mp3',
     'alpha_tts0123456789_ch0_chunk1.mp3',
     'alpha_tts0123456789_ch0_chunk0.mp3',
@@ -177,7 +178,10 @@ function fakeResponse() {
     'beta_ch0_chunk1.mp3'
   ];
   await Promise.all(cacheFiles.map(name => fsp.writeFile(path.join(cacheDir, name), 'audio')));
-  const invalidate = createCacheInvalidator(cacheDir);
+  const invalidatedArtifacts = [];
+  const invalidate = createCacheInvalidator(cacheDir, {
+    invalidateArtifact: async request => invalidatedArtifacts.push(request)
+  });
   const removed = await invalidate([{
     bookId: 'alpha',
     chapterIndex: 0,
@@ -189,6 +193,8 @@ function fakeResponse() {
   assert(fs.existsSync(path.join(cacheDir, 'alpha_tts0123456789_ch0_chunk0.mp3')), 'mapped variants retain chunks before their own changed boundary');
   assert(removed.includes('alpha_ttsffffffffff_ch0_chunk0.mp3'), 'unknown historical variants invalidate conservatively from chunk zero');
   assert(removed.includes('alpha_tts0123456789_ch0.mp3') && removed.includes('alpha_tts0123456789_ch0.m4a'), 'stitched chapter outputs are removed');
+  assert(invalidatedArtifacts.some(item => item.outputPath.endsWith('alpha_ch0_chunk1.mp3')), 'chunk invalidation evicts its canonical narration artifact');
+  assert(!fs.existsSync(path.join(cacheDir, 'alpha_ch0_chunk1.mp3.narration-artifact.json')), 'chunk invalidation removes its narration artifact marker');
   assert(fs.existsSync(path.join(cacheDir, 'alpha_ch0_chunk0.mp3')), 'unchanged earlier chunks are retained');
   assert(fs.existsSync(path.join(cacheDir, 'alpha_ch1_chunk1.mp3')), 'other chapters are retained');
   assert(fs.existsSync(path.join(cacheDir, 'beta_ch0_chunk1.mp3')), 'other books are retained');

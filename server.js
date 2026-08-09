@@ -1463,6 +1463,7 @@ const ttsQueue = new TTSQueue({
 });
 const chunkedTTS = new ChunkedTTS(CACHE_DIR, ttsQueue, {
   variantKeyProvider: getTTSVariantKey,
+  voiceProvider: getActiveVoice,
   outputFormatProvider: () => getTtsOutputFormatForVoice(getActiveVoice()),
   chunkSizeProvider: getActiveChunkSize,
   splitPolicyProvider: () => getSplitPolicyForVoice(getActiveVoice()),
@@ -1477,6 +1478,7 @@ const chunkedTTS = new ChunkedTTS(CACHE_DIR, ttsQueue, {
 // instant voice, so instant and premium audio never collide.
 const instantChunkedTTS = new ChunkedTTS(CACHE_DIR, ttsQueue, {
   variantKeyProvider: () => getTTSVariantKeyForVoice(getActiveInstantVoice() || getActiveVoice()),
+  voiceProvider: () => getActiveInstantVoice() || getActiveVoice(),
   outputFormatProvider: () => getTtsOutputFormatForVoice(getActiveInstantVoice() || getActiveVoice()),
   chunkSizeProvider: () => getChunkSizeForVoice(getActiveInstantVoice() || getActiveVoice()),
   splitPolicyProvider: () => getSplitPolicyForVoice(getActiveInstantVoice() || getActiveVoice()),
@@ -1503,7 +1505,9 @@ function quiescePronunciationWorkers(item, workers) {
   )));
 }
 
-const invalidateChapterAudioCache = createCacheInvalidator(CACHE_DIR);
+const invalidateChapterAudioCache = createCacheInvalidator(CACHE_DIR, {
+  invalidateArtifact: request => ttsQueue.invalidateRenderedOutput(request)
+});
 pronunciationService = createPronunciationService({
   storeFile: PRONUNCIATIONS_FILE,
   jsonStore,
@@ -4073,6 +4077,51 @@ async function backfillChapterDurations() {
   }
 }
 
+async function backfillNarrationArtifacts() {
+  try {
+    const books = await loadJSON(BOOKS_FILE, {});
+    const variants = [
+      { tts: chunkedTTS, voice: getActiveVoice() },
+      { tts: instantChunkedTTS, voice: getActiveInstantVoice() || getActiveVoice() }
+    ].filter((entry, index, source) => source.findIndex(candidate =>
+      candidate.tts.currentVariantSegment() === entry.tts.currentVariantSegment()
+    ) === index);
+    let indexed = 0;
+    let chaptersVisited = 0;
+    for (const [bookId, book] of Object.entries(books)) {
+      if (!book?.path || deletedBookIds.has(bookId)) continue;
+      let chapters;
+      try {
+        chapters = await getChaptersCached(book.path);
+      } catch {
+        continue;
+      }
+      for (let chapterIndex = 0; chapterIndex < chapters.length; chapterIndex++) {
+        const chapter = chapters[chapterIndex];
+        if (!chapter?.text) continue;
+        for (const variant of variants) {
+          indexed += await variant.tts.indexChapterArtifacts(
+            bookId,
+            chapterIndex,
+            chapter.text,
+            book.language || 'en',
+            { voice: variant.voice }
+          );
+        }
+        chaptersVisited++;
+        if (chaptersVisited % 10 === 0) {
+          await new Promise(resolve => setImmediate(resolve));
+        }
+      }
+    }
+    if (indexed > 0) {
+      console.log(`[backfill] indexed ${indexed} existing narration chunk${indexed === 1 ? '' : 's'} for selective reuse`);
+    }
+  } catch (error) {
+    console.error('Narration artifact backfill error:', error.message);
+  }
+}
+
 const preferencesRoutes = registerPreferencesRoutes(app, {
   annasAuthFile: ANNAS_AUTH_FILE,
   chatterboxVoicesEnabled: !ALLOWED_VOICE_PROVIDERS || ALLOWED_VOICE_PROVIDERS.has('chatterbox'),
@@ -4229,7 +4278,9 @@ if (require.main === module) {
       backfillDurations()
         .catch(err => console.error('Backfill failed:', err.message))
         .then(() => backfillChapterDurations())
-        .catch(err => console.error('Chapter-duration backfill failed:', err.message));
+        .catch(err => console.error('Chapter-duration backfill failed:', err.message))
+        .then(() => backfillNarrationArtifacts())
+        .catch(err => console.error('Narration artifact backfill failed:', err.message));
     });
   }).catch(err => {
     console.error('Failed to start Xandrio:', err.message);
