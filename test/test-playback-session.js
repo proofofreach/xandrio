@@ -417,6 +417,7 @@ function fakeAudio() {
       refreshVoicePrepPanel() {},
       syncPlaybackProgressScope() {},
       updateChapterTrigger() {},
+      paintChapterTimes(data) { appImports.chapterTimePaints.push(data); },
       updateMediaSessionMetadata() {},
       updateMediaSessionPosition() {},
       updateBookProgress() {},
@@ -452,6 +453,7 @@ function fakeAudio() {
     appImports.toasts = [];
     appImports.localSourceQueries = [];
     appImports.suspectMarks = [];
+    appImports.chapterTimePaints = [];
     appImports.localSource = { available: false, url: null, mode: null };
     const appTestSource = appSource
       .replace(/^import \{([^}]+)\} from ['"][^'"]+['"];$/gm, 'const {$1} = globalThis.__playbackAppImports;')
@@ -604,7 +606,10 @@ function fakeAudio() {
       );
       globalThis.__playbackAppHarness.configure({
         book: { id: 'book-a' },
-        chapters: [{ title: 'One' }, { title: 'Two' }],
+        chapters: [
+          { title: 'Chapter I', estimatedDuration: 228 },
+          { title: 'Chapter II', estimatedDuration: 720 }
+        ],
         player,
         chapter: uiElement
       });
@@ -630,7 +635,13 @@ function fakeAudio() {
       appImports.transitionRequests.length = 0;
 
       process.once('unhandledRejection', onUnhandled);
+      appImports.chapterTimePaints.length = 0;
       globalThis.__playbackAppHarness.loadChapter(1);
+      assert.deepStrictEqual(
+        appImports.chapterTimePaints.at(-1),
+        { currentTime: 0, totalTime: 720, progressPercent: 0 },
+        'selecting a chapter resets stale scrubber state before narration is ready'
+      );
       await new Promise(resolve => setImmediate(resolve));
       await new Promise(resolve => setImmediate(resolve));
       process.removeListener('unhandledRejection', onUnhandled);

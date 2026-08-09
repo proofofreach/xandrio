@@ -1794,12 +1794,30 @@ async function loadChapter(index, options = {}) {
   });
   if (options.provisionalForward) playbackSession.markProvisionalForward(previousChapter, index);
   else if (options.commitImmediately) playbackSession.clearProvisionalForward();
-  const chapter = chapters[currentChapter];
+  const chapter = chapters[index];
   refreshVoicePrepPanel();
 
   chapterSelect.value = currentChapter;
   syncPlaybackProgressScope();
   updateChapterTrigger();
+  // Chapter identity changes before the replacement media emits timeupdate.
+  // Paint a chapter-local loading position now so the scrubber cannot keep
+  // the previous chapter's label and times throughout narration preparation.
+  const requestedStartTime = Math.max(
+    0,
+    Number(options.sourceTuple?.startOffsetSeconds ?? options.seekToSeconds) || 0
+  );
+  const estimatedTotalTime = Math.max(
+    requestedStartTime,
+    estimateChapterPlaybackDuration(chapter, index)
+  );
+  paintChapterTimes({
+    currentTime: requestedStartTime,
+    totalTime: estimatedTotalTime,
+    progressPercent: estimatedTotalTime > 0
+      ? (requestedStartTime / estimatedTotalTime) * 100
+      : 0
+  });
   renderChapterList();
   syncMiniPlayerInfo();
   updateMediaSessionMetadata();
