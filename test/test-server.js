@@ -173,6 +173,9 @@ section('1. stripHTML');
   const spacedScriptClose = stripHTML('<script>alert("x")</script ><p>Safe narration.</p>');
   assert(!spacedScriptClose.includes('alert'), 'Removes script content when the closing tag contains whitespace');
   assert(spacedScriptClose.includes('Safe narration.'), 'Preserves narration after a spaced script closing tag');
+  const malformedScriptClose = stripHTML('<script>alert("x")</script\t\n data-bad><p>Still safe.</p>');
+  assert(!malformedScriptClose.includes('alert'), 'Removes script content when a closing tag has malformed attributes');
+  assert(malformedScriptClose.includes('Still safe.'), 'Preserves narration after a malformed script closing tag');
 
   // 1e. Nested tags
   const r5 = stripHTML('<div><p><strong><em>Deep</em></strong></p></div>');
