@@ -104,7 +104,7 @@ const playbackSession = createPlaybackSession({
 let libraryView, searchView, playerView;
 let addBookBtn, backToLibraryBtn, backBtn;
 let bookTitle, bookAuthorHeader, bookDetailsText, bookDescription;
-let pdfStructureReview, pdfStructureReviewDetail, pdfReprocessBtn;
+let rebuildChaptersBtn;
 let bookCover, audioPlayer;
 let playPauseBtn, skipBackBtn, skipForwardBtn;
 let prevChapterBtn, nextChapterBtn;
@@ -140,9 +140,7 @@ function initializeDOMElements() {
   bookAuthorHeader = document.getElementById('book-author-header');
   bookDetailsText = document.getElementById('book-details-text');
   bookDescription = document.getElementById('book-description');
-  pdfStructureReview = document.getElementById('pdf-structure-review');
-  pdfStructureReviewDetail = document.getElementById('pdf-structure-review-detail');
-  pdfReprocessBtn = document.getElementById('pdf-reprocess-btn');
+  rebuildChaptersBtn = document.getElementById('rebuild-chapters-btn');
   bookCover = document.getElementById('book-cover');
   audioPlayer = document.getElementById('audio-player');
   playPauseBtn = document.getElementById('play-pause-btn');
@@ -982,6 +980,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       const pos = chunkPlayer?.getPosition?.();
       return pos ? (pos.totalEstimatedTime || pos.currentTime || 0) : 0;
     },
+    getCharacterOffset: () => playbackCharacterOffset(),
     getChapterTitle: (index) => displayChapterTitle(chapters[index], index),
     selectChapter: (index, options) => selectChapter(index, options),
     seek: (seconds) => {
@@ -1385,20 +1384,20 @@ function setupEventListeners() {
   bookmarkBtn?.addEventListener('click', () => {
     if (currentBook) addBookmarkAtCurrentPosition();
   });
-  pdfReprocessBtn?.addEventListener('click', async () => {
-    if (!currentBook?.id || !currentBook.pdfReprocessable) return;
+  rebuildChaptersBtn?.addEventListener('click', async () => {
+    if (!currentBook?.id || !currentBook.canRebuildChapters) return;
     const bookId = currentBook.id;
-    pdfReprocessBtn.disabled = true;
-    pdfReprocessBtn.textContent = 'Reprocessing…';
+    rebuildChaptersBtn.disabled = true;
+    rebuildChaptersBtn.textContent = 'Rebuilding…';
     try {
-      await apiSend('POST', `/api/book/${encodeURIComponent(bookId)}/reprocess-pdf`);
-      showToast('PDF chapters were rebuilt. Existing audio was cleared.', 'success');
+      const result = await apiSend('POST', `/api/book/${encodeURIComponent(bookId)}/rebuild-chapters`);
+      showToast(result.changed === false ? 'Chapters are already up to date.' : 'Chapters rebuilt.', 'success');
       await openBook(bookId);
     } catch (error) {
-      showToast(error.suggestion || error.message || 'Could not reprocess this PDF.', 'error');
+      showToast(error.suggestion || error.message || 'Could not rebuild chapters.', 'error');
     } finally {
-      pdfReprocessBtn.disabled = false;
-      pdfReprocessBtn.textContent = 'Reprocess chapters';
+      rebuildChaptersBtn.disabled = false;
+      rebuildChaptersBtn.textContent = 'Rebuild chapters';
     }
   });
 
@@ -1619,26 +1618,7 @@ async function openBook(bookId) {
     if (currentBook.sourceFormat) {
       detailsParts.push(`Source: ${currentBook.sourceFormat}`);
     }
-    const pdfStructure = currentBook.pdfExtraction?.structure;
-    if (pdfStructure?.mode) {
-      const modeLabel = {
-        outline: 'bookmarks',
-        toc: 'table of contents',
-        'detected-headings': 'detected headings',
-        'page-groups': 'page groups'
-      }[pdfStructure.mode] || pdfStructure.mode;
-      const confidence = Number(pdfStructure.confidence);
-      detailsParts.push(`PDF chapters: ${modeLabel}${Number.isFinite(confidence) ? ` (${Math.round(confidence * 100)}%)` : ''}`);
-    }
-    const pdfNeedsReview = currentBook.pdfExtraction?.status === 'review-needed';
-    if (pdfStructureReview) {
-      pdfStructureReview.hidden = !pdfNeedsReview;
-      if (pdfNeedsReview) {
-        pdfStructureReviewDetail.textContent = currentBook.pdfExtraction.statusReason ||
-          'Authored chapter boundaries could not be confirmed.';
-        pdfReprocessBtn.hidden = !currentBook.pdfReprocessable;
-      }
-    }
+    if (rebuildChaptersBtn) rebuildChaptersBtn.hidden = !currentBook.canRebuildChapters;
     
     if (detailsParts.length > 0) {
       bookDetailsText.textContent = detailsParts.join(' • ');
@@ -2497,10 +2477,34 @@ function positionPayload(options = {}) {
   if (!checkpoint) return null;
   return {
     ...checkpoint,
+    characterOffset: playbackCharacterOffset(checkpoint),
+    positionApproximate: true,
     userId: getCurrentUserId(),
     deviceId: getCurrentDeviceId(),
     allowBackward: Boolean(options.allowBackward)
   };
+}
+
+function playbackCharacterOffset(checkpoint = buildPlaybackCheckpoint()) {
+  const chapterTextLength = String(chapters[currentChapter]?.text || '')
+    .normalize('NFKC').replace(/\s+/gu, ' ').trim().length;
+  if (!chapterTextLength || !checkpoint) return undefined;
+  const textLengths = chunkPlayer?.manifest?.chunks?.map(chunk => Number(chunk.textLength) || 0) || [];
+  if (textLengths.length && Number.isInteger(checkpoint.chunkIndex)) {
+    const index = Math.max(0, Math.min(textLengths.length - 1, checkpoint.chunkIndex));
+    const before = textLengths.slice(0, index).reduce((sum, value) => sum + value, 0);
+    const duration = Math.max(0, Number(checkpoint.chunkDuration) || 0);
+    const chunkTime = Number(checkpoint.chunkTime);
+    if (duration && textLengths[index] && Number.isFinite(chunkTime)) {
+      const ratio = Math.max(0, Math.min(1, chunkTime / duration));
+      return Math.min(chapterTextLength, Math.round(before + textLengths[index] * ratio));
+    }
+  }
+  const duration = Math.max(0, Number(chunkPlayer?.getTotalTime?.()) || 0);
+  const timestamp = Number(checkpoint.timestamp);
+  if (!duration || !Number.isFinite(timestamp)) return undefined;
+  const ratio = Math.max(0, Math.min(1, timestamp / duration));
+  return Math.round(chapterTextLength * ratio);
 }
 
 async function savePosition(options = {}) {

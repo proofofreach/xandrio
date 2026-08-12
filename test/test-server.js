@@ -867,8 +867,8 @@ section('11. Extracted chapter validation');
     format: 'mobi',
     fileSize: 1024
   });
-  assert(!tinyValidation.valid, 'Insufficient extracted text is rejected');
-  assert(tinyValidation.errors[0].includes('Insufficient content'), 'Insufficient content error is reported');
+  assert(tinyValidation.valid, 'Short but narratable extracted text is accepted');
+  assertEqual(tinyValidation.errors.length, 0, 'Length alone does not create an import error');
 
   const completeShortChapters = [
     ...Array.from({ length: 4 }, (_, index) => ({
@@ -1393,26 +1393,46 @@ section('16. Import validation');
 
   const noisyContent = assessExtractedContent([
     { text: 'Readable text '.repeat(5000) },
-    { text: 'x'.repeat(160000) }
+    { text: 'A very long but speakable section. '.repeat(5000) }
   ], { format: 'pdf' });
-  assert(!noisyContent.valid, 'Import content validation rejects giant extracted sections');
+  assert(noisyContent.valid, 'Import content validation keeps narratable giant extracted sections');
+  assert(noisyContent.diagnostics.some(item => item.code === 'structure.low-confidence'),
+    'Giant extracted sections are recorded as nonblocking structure diagnostics');
 
   const completeShortContent = assessExtractedContent([
-    ...Array.from({ length: 8 }, () => ({ text: 'x'.repeat(5334) })),
-    { text: 'x'.repeat(5338) }
+    ...Array.from({ length: 8 }, () => ({ text: 'Readable short prose. '.repeat(300).slice(0, 5334) })),
+    { text: 'Readable short prose. '.repeat(300).slice(0, 5338) }
   ], { format: 'epub' });
   assert(completeShortContent.valid,
     'Import content validation accepts a structured 48,010-character short book');
   assert(completeShortContent.warnings.some(warning => warning.includes('48,010')),
     'Import content validation warns that the accepted book is short');
+  assert(completeShortContent.diagnostics.some(item => item.code === 'text.short-content'),
+    'Short but valid content uses a typed nonblocking diagnostic');
+
+  const sparseContent = assessExtractedContent([
+    { text: 'Readable narrative. '.repeat(3500) },
+    { text: 'short' },
+    { text: 'short' }
+  ], { format: 'epub' });
+  assert(sparseContent.diagnostics.some(item => item.code === 'structure.sparse-sections'),
+    'Sparse extracted sections use a typed nonblocking diagnostic');
+
+  const lowReadableRatio = assessExtractedContent([
+    { text: 'Readable !!! ??? ### '.repeat(3000) }
+  ], { format: 'epub' });
+  assert(lowReadableRatio.diagnostics.some(item => item.code === 'text.low-readable-ratio'),
+    'Low readable character ratio uses a typed nonblocking diagnostic');
 
   const lowScorePdf = assessExtractedContent([
     {
       text: 'Readable text '.repeat(5000),
-      pdfExtraction: { score: 40, warnings: ['low readable character ratio'] }
+      pdfExtraction: { status: 'review-needed', score: 40, warnings: ['low readable character ratio'] }
     }
   ], { format: 'pdf' });
-  assert(!lowScorePdf.valid, 'Import content validation rejects low-score PDF extraction');
+  assert(lowScorePdf.valid, 'Import content validation keeps meaningful low-score PDF extraction');
+  assert(lowScorePdf.diagnostics.some(item => item.code === 'structure.low-confidence'),
+    'Low-score PDF extraction records a nonblocking structure diagnostic');
 
   const ocrRequiredPdf = assessExtractedContent([
     {
@@ -1420,7 +1440,19 @@ section('16. Import validation');
       pdfExtraction: { status: 'ocr-required', score: 80, warnings: ['very low extracted text density'] }
     }
   ], { format: 'pdf' });
-  assert(!ocrRequiredPdf.valid, 'Import content validation rejects OCR-required PDF extraction');
+  assert(ocrRequiredPdf.valid, 'Import content validation keeps meaningful text despite an OCR status');
+  assert(ocrRequiredPdf.diagnostics.some(item => item.code === 'structure.low-confidence'),
+    'Meaningful OCR-status text records a nonblocking structure diagnostic');
+
+  const misclassifiedReadableContent = assessExtractedContent([
+    {
+      title: 'Publisher supplied label',
+      type: 'frontmatter',
+      text: 'Readable narrative text. '.repeat(1000)
+    }
+  ], { format: 'epub' });
+  assert(misclassifiedReadableContent.valid,
+    'A derived chapter-type mistake cannot reject meaningful narration');
 
   const metadata = assessMetadataConfidence({
     selectedTitle: 'The Hobbit',
@@ -1428,6 +1460,8 @@ section('16. Import validation');
     enrichedTitle: 'The Hobbit'
   });
   assert(metadata.needsReview, 'Metadata validation flags selected/embedded title conflicts');
+  assert(metadata.diagnostics.some(item => item.code === 'metadata.conflict'),
+    'Metadata conflicts use typed nonblocking diagnostics');
 
   const olDuplicate = findDuplicateBook({
     a: { id: 'a', title: 'Different Local Title', author: 'Unknown', openLibraryWorkKey: '/works/OL123W' }
@@ -1445,6 +1479,7 @@ section('16. Import validation');
 section('17. Open Library identity');
 
 pendingAsyncTests.push((async () => {
+  const publicLookup = async () => [{ address: '93.184.216.34', family: 4 }];
   const exact = scoreOpenLibraryDoc({
     key: '/works/OL1W',
     title: 'The Hobbit',
@@ -1568,6 +1603,7 @@ pendingAsyncTests.push((async () => {
     title: 'The Hobbit',
     author: 'J. R. R. Tolkien'
   }, {
+    lookupImpl: publicLookup,
     fetchImpl: async () => ({
       ok: true,
       async json() {
@@ -1593,6 +1629,7 @@ pendingAsyncTests.push((async () => {
     title: 'The Hobbit [retail]',
     author: 'J. R. R. Tolkien'
   }, {
+    lookupImpl: publicLookup,
     fetchImpl: async url => {
       const q = new URL(url).searchParams.get('q');
       return {
@@ -1617,6 +1654,7 @@ pendingAsyncTests.push((async () => {
   const queryResolved = await resolveOpenLibraryIdentity({
     query: 'There and Back Again Tolkien'
   }, {
+    lookupImpl: publicLookup,
     fetchImpl: async url => {
       const q = new URL(url).searchParams.get('q');
       return {
@@ -1645,6 +1683,7 @@ pendingAsyncTests.push((async () => {
     queryTitle: 'Slaughterhouse-Five',
     queryAuthor: 'Kurt Vonnegut'
   }, {
+    lookupImpl: publicLookup,
     fetchImpl: async url => {
       const q = new URL(url).searchParams.get('q');
       return {
@@ -1676,6 +1715,7 @@ pendingAsyncTests.push((async () => {
     title: 'The Hobbit [retail]',
     author: 'J. R. R. Tolkien'
   }, {
+    lookupImpl: publicLookup,
     fetchImpl: async url => {
       const q = new URL(url).searchParams.get('q');
       if (q.includes('[retail]')) throw new Error('temporary raw lookup failure');
@@ -1698,6 +1738,7 @@ pendingAsyncTests.push((async () => {
   assert(failOpenResolved.warnings.some(warning => warning.includes('unavailable')), 'Open Library resolver reports partial lookup failures');
 
   const failed = await resolveOpenLibraryIdentity({ title: 'The Hobbit' }, {
+    lookupImpl: publicLookup,
     fetchImpl: async () => { throw new Error('network down'); }
   });
   assertEqual(failed.confidence.level, 'low', 'Open Library resolver fails open on network errors');

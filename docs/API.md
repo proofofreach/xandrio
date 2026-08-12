@@ -508,7 +508,7 @@ job and returns HTTP 202.
 }
 ```
 
-Poll `GET /api/download/:jobId/status` or subscribe to `GET /api/download/:jobId/events`. The completed job contains `success`, `bookId`, the public book record, provenance, validation, and whether an alternative version was used.
+Poll `GET /api/download/:jobId/status` or subscribe to `GET /api/download/:jobId/events`. The completed job contains `success`, `bookId`, the public book record, `validation: { "valid": true }`, and whether an alternative version was used. Import diagnostics remain internal and do not create a review step.
 
 ### Response — Validation Failed (400)
 
@@ -539,7 +539,7 @@ Poll `GET /api/download/:jobId/status` or subscribe to `GET /api/download/:jobId
 
 ## POST /api/upload
 
-Upload a book file from the user's device. EPUB, MOBI/Kindle, and PDF are parsed inside Xandrio with bundled Node dependencies; Calibre is not required. By default, MOBI/Kindle/PDF sources are extracted to compact `.xbook.json` playback artifacts and the original source file is deleted after validation.
+Upload a book file from the user's device. EPUB, MOBI/Kindle, and PDF are parsed inside Xandrio with bundled Node dependencies; Calibre is not required. MOBI/Kindle/PDF sources can be extracted to compact `.xbook.json` playback artifacts. The original is retained unless a fresh rebuild from the retained artifact reproduces the exact narration bytes and a durable deletion intent is recorded.
 
 ### Request
 
@@ -568,7 +568,6 @@ curl -X POST http://localhost:8181/api/upload \
     "author": "Author Name",
     "language": "en",
     "filename": "a1b2c3d4e5f6.xbook.json",
-    "path": "/home/user/audiobook-player/cache/a1b2c3d4e5f6.xbook.json",
     "uploadedFile": "My Book.mobi",
     "sourceFormat": "MOBI",
     "sourceDeletedAfterExtract": true,
@@ -576,8 +575,7 @@ curl -X POST http://localhost:8181/api/upload \
     "addedAt": "2026-02-05T12:00:00.000Z"
   },
   "validation": {
-    "valid": true,
-    "warnings": []
+    "valid": true
   }
 }
 ```
@@ -616,9 +614,17 @@ curl -X POST http://localhost:8181/api/upload \
 - Accepted uploads: `.epub`, `.mobi`, `.prc`, `.azw`, `.azw3`, `.pdf`
 - Maximum 250 MB source upload
 - EPUB storage keeps the source file
-- MOBI/Kindle/PDF storage defaults to compact `.xbook.json`; set `XBOOK_DELETE_SOURCE_AFTER_EXTRACT=false` to retain original source files
+- MOBI/Kindle/PDF storage defaults to compact `.xbook.json`. Kindle sources are retained. A PDF source is removed only after exact recovery proof; set `XBOOK_DELETE_SOURCE_AFTER_EXTRACT=false` to retain all originals.
 - Scanned/image-only PDFs require OCR; set `XANDRIO_PDF_OCR=true` with OCRmyPDF/Tesseract installed to retry them during import
 - Duplicate detection by title + author match
+
+---
+
+## POST /api/book/:bookId/rebuild-chapters
+
+Rebuild derived chapter boundaries from retained recovery data. This endpoint is available only when the public book record has `canRebuildChapters: true`. It keeps the current book when narration text would change. Positions, bookmarks, and compatible audio are reconciled by the journaled rebuild transaction.
+
+`POST /api/book/:bookId/reprocess-pdf` is a compatibility alias and is scheduled for removal after 2026-12-31.
 
 ---
 
