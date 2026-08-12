@@ -906,6 +906,11 @@ section('11. Extracted chapter validation');
   const quality = buildChapterQuality(substantialChapters, 2);
   assert(quality.isGoodStructure, 'Normal extracted chapters have good structure');
   assertEqual(quality.contentChapters, 5, 'Quality counts content chapters');
+  const decodeLossQuality = buildChapterQuality([
+    { title: 'Chapter One', type: 'chapter', text: `Readable � text with � decode loss. ${'Prose. '.repeat(100)}` }
+  ], 1);
+  assertEqual(decodeLossQuality.replacementChars, 2,
+    'Chapter quality exposes decode-loss markers for candidate comparison');
 
   const nonLinearLeakQuality = buildChapterQuality(
     substantialChapters.map((chapter, index) => ({ ...chapter, originalIndex: index })),

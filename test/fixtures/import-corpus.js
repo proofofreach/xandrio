@@ -32,6 +32,7 @@ module.exports = Object.freeze([
     expected: {
       importable: true,
       diagnosticCodes: [],
+      importDiagnosticCodes: [DIAGNOSTIC_CODES.SHORT_CONTENT],
       mutationCodes: [],
       chapterCount: 3,
       sourceHash: 'f6249b7ba3dca86bcf58db853e4c4da1ed983c9bcd79f17bbb56d65302d3912e',
@@ -78,6 +79,10 @@ module.exports = Object.freeze([
     expected: {
       importable: true,
       diagnosticCodes: [DIAGNOSTIC_CODES.STRUCTURE_LOW_CONFIDENCE],
+      importDiagnosticCodes: [
+        DIAGNOSTIC_CODES.STRUCTURE_LOW_CONFIDENCE,
+        DIAGNOSTIC_CODES.SHORT_CONTENT
+      ],
       mutationCodes: [
         'mutation.whitespace-normalization',
         'mutation.semantic-page-marker-removal',
@@ -110,6 +115,10 @@ module.exports = Object.freeze([
     expected: {
       importable: true,
       diagnosticCodes: [DIAGNOSTIC_CODES.STRUCTURE_UNKNOWN],
+      importDiagnosticCodes: [
+        DIAGNOSTIC_CODES.STRUCTURE_UNKNOWN,
+        DIAGNOSTIC_CODES.SHORT_CONTENT
+      ],
       mutationCodes: [],
       chapterCount: 1,
       sourceHash: '8060ec3b21d62828217bd2790202624e4a633357fe21115e44d090b4e4fe4ccf',
@@ -126,17 +135,49 @@ module.exports = Object.freeze([
       originalIndex: 0,
       title: 'Continuous Narrative',
       type: 'content',
-      text: prose('Long unstructured EPUB narrative', 1900),
+      text: Array.from(
+        { length: 1900 },
+        (_value, index) => `Long unstructured EPUB narrative passage ${index + 1} remains readable and continuous.`
+      ).join(' '),
       estimatedDuration: 9000
     }],
     expected: {
       importable: true,
       diagnosticCodes: [],
+      importDiagnosticCodes: [DIAGNOSTIC_CODES.SPARSE_SECTIONS],
       mutationCodes: [],
-      chapterCount: 3,
-      sourceHash: 'f973f16669377f1b3f7cf1f0dc928116271538094fad3ff2e33d58e19e900995',
-      normalizedHash: '8e8c677fde86aea263c47d32980a16c372f96e1cd515e6fb241bb546c2477a59',
-      structureKey: 'v1-3c053b94e399a2250b12'
+      chapterCount: 2,
+      sourceHash: '35657d10b931b62ab8f3de8205918b3ce272a98970db56eb50a322642445814b',
+      normalizedHash: '86314caf142f3199954b284e90457cfa1ac801cb88168de7f036de2fb91eb09d',
+      structureKey: 'v1-71f000b387ae76f0e10d'
+    }
+  }),
+  corpusCase({
+    id: 'epub-decode-loss-readable',
+    sourceFormat: 'epub',
+    chapters: [1, 2, 3, 4].map((number, index) => ({
+      index,
+      originalIndex: index,
+      title: `Chapter ${number}`,
+      type: 'chapter',
+      fromToc: true,
+      sourceHref: `chapter-${number}.xhtml`,
+      text: `${prose(`Decode-loss EPUB chapter ${number}`, 24)}Damaged markers: ${'\uFFFD'.repeat(8)}`,
+      estimatedDuration: 180
+    })),
+    expected: {
+      importable: true,
+      diagnosticCodes: [DIAGNOSTIC_CODES.REPLACEMENT_CHARACTERS],
+      importDiagnosticCodes: [
+        DIAGNOSTIC_CODES.REPLACEMENT_CHARACTERS,
+        DIAGNOSTIC_CODES.SHORT_CONTENT
+      ],
+      mutationCodes: [],
+      chapterCount: 4,
+      sourceDefectCount: 32,
+      sourceHash: '1b54df53b9a4555ffa7a2847fec9d20154fa4cd86bc25fba7f7cd17ff4ca924e',
+      normalizedHash: '98ce1aa0017da6e8dafe1222af2ebbaaafdd216d2eb402fc160a1cd6f078c3ec',
+      structureKey: 'v1-c8033f132ee227551508'
     }
   }),
   corpusCase({
@@ -153,6 +194,10 @@ module.exports = Object.freeze([
     expected: {
       importable: false,
       diagnosticCodes: [DIAGNOSTIC_CODES.OCR_REQUIRED],
+      importDiagnosticCodes: [
+        DIAGNOSTIC_CODES.OCR_REQUIRED,
+        DIAGNOSTIC_CODES.SPARSE_SECTIONS
+      ],
       mutationCodes: [],
       chapterCount: 1,
       sourceHash: '5bd478cebdb91b9ff636999809d0a9ca1a9059735d9e9d20c1f4837a735458ee',
@@ -173,6 +218,7 @@ module.exports = Object.freeze([
     expected: {
       importable: false,
       diagnosticCodes: [DIAGNOSTIC_CODES.DRM_PROTECTED],
+      importDiagnosticCodes: [DIAGNOSTIC_CODES.DRM_PROTECTED],
       mutationCodes: [],
       chapterCount: 0,
       sourceHash: '270ba64f9fd4dca05f655ba70d9add47a32091ec81d4feac7b743f90177869dd',

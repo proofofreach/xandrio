@@ -451,6 +451,7 @@ async function installBrowserFixtures(page) {
     pronunciationRequests: [],
     pronunciationRules: [],
     downloadRequests: [],
+    downloadMode: 'failure',
     searchRequests: [],
     searchCoverRequests: [],
     operatorPolicy: {
@@ -610,6 +611,21 @@ async function installBrowserFixtures(page) {
     if (pathname === '/api/download' && method === 'POST') {
       const payload = request.postDataJSON();
       fixtureState.downloadRequests.push(payload);
+      if (fixtureState.downloadMode === 'warning-success') {
+        return json(route, {
+          success: true,
+          bookId: book.id,
+          book: {
+            ...book,
+            needsReview: true,
+            validationWarnings: ['Synthetic non-blocking extraction diagnostic']
+          },
+          validation: {
+            valid: true,
+            warnings: ['Synthetic non-blocking extraction diagnostic']
+          }
+        });
+      }
       const firstRecommendedImport = payload.hash === 'search-hemingway' &&
         fixtureState.downloadRequests.filter(item => item.hash === 'search-hemingway').length === 1;
       await new Promise(resolve => setTimeout(resolve, firstRecommendedImport ? 1150 : 120));
@@ -1316,6 +1332,17 @@ async function verifySearchWorkspace(page, fixtureState) {
   if (await page.getAttribute('#search-filter-toggle', 'aria-expanded') !== 'false') {
     throw new Error('Applying mobile filters did not close the filter sheet');
   }
+
+  fixtureState.downloadMode = 'warning-success';
+  await page.locator('.result-cover-action[data-work-add]').first().click();
+  await page.waitForSelector('#player-view.active');
+  if (await page.locator('.import-review-panel, [data-import-action="open-book"]').count() !== 0) {
+    throw new Error('A successful warning-bearing import still requires a review action');
+  }
+  if (await page.textContent('#book-title') !== 'Smoke Book') {
+    throw new Error('A successful warning-bearing import did not open the imported book');
+  }
+  fixtureState.downloadMode = 'failure';
 }
 
 async function verifyAtomicServiceWorkerUpgrade(page, fixture) {
@@ -1738,7 +1765,7 @@ async function main() {
     if (pageErrors.length) throw new Error(`Browser page errors:\n${pageErrors.join('\n')}`);
     await verifyRealServiceWorkerOffline(browser);
     traceSmoke('service worker verified');
-    console.log('Browser smoke passed: library loading/error/offline states, playback/tier/pronunciation, library actions, search workspace, atomic shell upgrade failure, PWA icons, and real offline Range 206/416.');
+    console.log('Browser smoke passed: library loading/error/offline states, playback/tier/pronunciation, library actions, search workspace, warning-bearing import auto-open, atomic shell upgrade failure, PWA icons, and real offline Range 206/416.');
   } catch (err) {
     if (serverOutput) process.stderr.write(`\nServer output:\n${serverOutput}\n`);
     throw err;
