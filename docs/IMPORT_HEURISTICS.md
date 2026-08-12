@@ -37,7 +37,7 @@ still exercises a general evidence class.
 | --- | --- | --- | --- |
 | Format dispatch | File extension and validated container/parser result | Selects EPUB, PDF, or Kindle extractor | `test-book-document.js` |
 | Compatible acquisition fallback | Canonical work identity, language, format, and provider compatibility | May try another edition; never combines unrelated works | `test-book-importer.js`, `test-search-work-groups.js` |
-| Candidate retention | Compatible candidates only; prefer the candidate that retains more narratable text after validity checks | Chooses one extraction candidate | `test-book-importer.js`, `test-pdf-extraction.js`, `test-kindle-extraction.js` |
+| Candidate retention | Compatible candidates only; prefer more narratable text. An equally structured candidate may replace one with decode-loss markers only when it retains at least 99% of the text, has the same chapter-structure key, and removes all or at least 75% of those markers. | Chooses one extraction candidate without trading material text or structure for cosmetic cleanup | `test-import-corpus.js`, `test-book-importer.js`, `test-pdf-extraction.js`, `test-kindle-extraction.js` |
 | Narration validity | Non-empty readable text and every planned TTS chunk within its engine limit | The only content gate after verified format/DRM failures; short works remain valid | `test-extraction-result.js`, `test-import-corpus.js` |
 | Confidence diagnostics | Parser score, structure confidence, replacement characters, OCR indicators | Emits typed diagnostics; meaningful text remains importable | `test-extraction-result.js`, `test-import-corpus.js`, format extractor tests |
 | Source recovery proof | Serialize the recovery data, re-extract it in a fresh call, and compare exact narration bytes and length | Original PDF may be removed only after exact recovery proof and a durable deletion intent; otherwise it is retained | `test-extraction-recovery.js`, `test-book-importer.js` |
@@ -74,6 +74,28 @@ transformation and extractor boundaries.
 | Oversized section split | More than 100,000 characters without an authored boundary, or more than 150,000 with one | Splits at punctuation/word boundaries and conserves normalized narration | `test-import-corpus.js`, `test-chapter-utils.js` |
 | Sequence/title repair | A complete generic numeric or Roman-numeral series with local structural evidence | Changes display metadata, not narration text | `test-chapter-utils.js`, `test-epub-parser.js` |
 | Chapter rebuild | Retained source plus exact continuous normalized narration match | Commits only text-conserving boundary changes | `test-chapter-rebuild.js`, `test-chapter-transition-state.js` |
+
+## Previous-versus-current release benchmark
+
+Run `npm run benchmark:imports -- --candidate HEAD` before releasing an import-policy change. The command binds the comparison to the approved previous-system commit `b2873a24f7bd1c1ecc02c882abfb9321284d7bbd`, the committed candidate at `HEAD`, and exactly the five most recent private imports. It rejects a dirty worktree, a different baseline, an uncommitted candidate, or a different private-corpus size.
+
+Both revisions run through `createBookImporter`, including rejection and compatible-candidate acquisition paths. Real synthetic EPUB/PDF/Kindle adapters feed that importer. A headless browser then performs clean, warning-bearing, and empty-warning successful imports against each revision and counts the post-success actions in the rendered UI. `npm run release:production` reruns the full suite, browser smoke, and this exact paired benchmark before publication can start.
+
+The release gate requires:
+
+- all expected import and rejection decisions to match;
+- all required typed diagnostics and candidate selections to match;
+- at least one previously rejected listenable class to improve;
+- no import, narration, chapter-structure, or content-defect regression;
+- exact normalized narration conservation for comparable cases;
+- zero unexpected defects in synthetic and format output after accounting for
+  defects deliberately present in a characterization source; and
+- zero manual actions after either a clean or warning-bearing successful import.
+
+Private results are opaque. The report contains no book metadata, paths, text,
+or content hashes. Existing defects in an unrebuildable legacy artifact remain
+visible in the aggregate but do not authorize a lossy repair or a title-specific
+rule.
 
 ## Safe chapter rebuild
 

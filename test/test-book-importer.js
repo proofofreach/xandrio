@@ -564,6 +564,96 @@ section('Successful direct import');
   assert(retainedVerifiedShort.usedAlternative && retainedVerifiedShort.book.id === 'unverified-large',
     'prefers a compatible alternative that retains substantially more meaningful text');
 
+  const cleanerAlternative = createFixture({
+    checkChapterQuality: async source => source.includes('primary')
+      ? {
+          isGoodStructure: true,
+          structureVerified: true,
+          reasons: [],
+          contentChapters: 4,
+          maxChapterSize: 20_000,
+          totalChars: 60_000,
+          replacementChars: 196,
+          structureKey: 'same-boundaries'
+        }
+      : {
+          isGoodStructure: true,
+          structureVerified: true,
+          reasons: [],
+          contentChapters: 4,
+          maxChapterSize: 20_000,
+          totalChars: 59_500,
+          replacementChars: 0,
+          structureKey: 'same-boundaries'
+        }
+  });
+  const cleanerAlternativeResult = await cleanerAlternative.importer.import(command({
+    id: 'primary',
+    sourcePath: '/uploads/primary.epub',
+    alternatives: [{
+      id: 'cleaner',
+      originalName: 'cleaner.epub',
+      sourcePath: '/uploads/cleaner.epub'
+    }]
+  }));
+  assert(cleanerAlternativeResult.usedAlternative && cleanerAlternativeResult.book.id === 'cleaner',
+    'prefers an equally complete compatible edition with materially less decode loss');
+
+  const laterCleanerAlternative = createFixture({
+    checkChapterQuality: async source => {
+      if (source.includes('primary')) {
+        return {
+          isGoodStructure: true, structureVerified: true, reasons: [], contentChapters: 4,
+          maxChapterSize: 20_000, totalChars: 60_000, replacementChars: 196,
+          structureKey: 'same-boundaries'
+        };
+      }
+      if (source.includes('noisy-longer')) {
+        return {
+          isGoodStructure: true, structureVerified: true, reasons: [], contentChapters: 4,
+          maxChapterSize: 20_000, totalChars: 60_050, replacementChars: 196,
+          structureKey: 'same-boundaries'
+        };
+      }
+      return {
+        isGoodStructure: true, structureVerified: true, reasons: [], contentChapters: 4,
+        maxChapterSize: 20_000, totalChars: 59_500, replacementChars: 0,
+        structureKey: 'same-boundaries'
+      };
+    }
+  });
+  const laterCleanerResult = await laterCleanerAlternative.importer.import(command({
+    id: 'primary',
+    sourcePath: '/uploads/primary.epub',
+    alternatives: [
+      { id: 'noisy-longer', originalName: 'noisy-longer.epub', sourcePath: '/uploads/noisy-longer.epub' },
+      { id: 'cleaner', originalName: 'cleaner.epub', sourcePath: '/uploads/cleaner.epub' }
+    ]
+  }));
+  assert(laterCleanerResult.usedAlternative && laterCleanerResult.book.id === 'cleaner',
+    'continues past a slightly longer damaged edition to an equally complete clean edition');
+
+  const differentlyStructuredCleaner = createFixture({
+    checkChapterQuality: async source => source.includes('primary')
+      ? {
+          isGoodStructure: true, structureVerified: true, reasons: [], contentChapters: 4,
+          maxChapterSize: 20_000, totalChars: 60_000, replacementChars: 196,
+          structureKey: 'primary-boundaries'
+        }
+      : {
+          isGoodStructure: true, structureVerified: true, reasons: [], contentChapters: 4,
+          maxChapterSize: 20_000, totalChars: 59_500, replacementChars: 0,
+          structureKey: 'different-boundaries'
+        }
+  });
+  const differentlyStructuredResult = await differentlyStructuredCleaner.importer.import(command({
+    id: 'primary',
+    sourcePath: '/uploads/primary.epub',
+    alternatives: [{ id: 'cleaner', originalName: 'cleaner.epub', sourcePath: '/uploads/cleaner.epub' }]
+  }));
+  assert(!differentlyStructuredResult.usedAlternative && differentlyStructuredResult.book.id === 'primary',
+    'does not trade chapter boundaries for cosmetic decode cleanup');
+
   const alternative = createFixture({
     checkChapterQuality: async source => source.includes('primary')
       ? { isGoodStructure: false, reasons: ['poor structure'], contentChapters: 0, maxChapterSize: 200_000 }

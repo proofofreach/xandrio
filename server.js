@@ -4455,6 +4455,7 @@ async function checkChapterQuality(epubPath) {
     }
 
     const quality = buildChapterQuality(chapters, tocCount, { nonLinearSpineIndexes });
+    quality.structureKey = chapterStructureKey(chapters);
     if (!spineLinearityVerified) {
       quality.isGoodStructure = false;
       quality.structureVerified = false;

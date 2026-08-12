@@ -34,10 +34,16 @@ async function check(name, callback) {
         phases.push({ name, script, args });
       }
     });
-    assert.deepEqual(phases.map(phase => phase.name), ['publish', 'deploy']);
-    assert.match(phases[0].script, /sync-public\.mjs$/);
-    assert.match(phases[1].script, /deploy-production\.mjs$/);
-    assert.deepEqual(phases[1].args, ['--dry-run']);
+    assert.deepEqual(phases.map(phase => phase.name), [
+      'tests', 'browser', 'import-benchmark', 'publish', 'deploy'
+    ]);
+    assert.match(phases[0].script, /test\/run-all\.js$/);
+    assert.match(phases[1].script, /scripts\/smoke-browser\.js$/);
+    assert.match(phases[2].script, /scripts\/benchmark-import-reliability\.js$/);
+    assert.deepEqual(phases[2].args, ['--candidate', 'HEAD']);
+    assert.match(phases[3].script, /sync-public\.mjs$/);
+    assert.match(phases[4].script, /deploy-production\.mjs$/);
+    assert.deepEqual(phases[4].args, ['--dry-run']);
   });
 
   await check('publication failure prevents any production mutation', () => {
@@ -45,10 +51,10 @@ async function check(name, callback) {
     assert.throws(() => release.releaseProduction({
       runPhase(name) {
         phases.push(name);
-        if (name === 'publish') throw new Error('checks failed');
+        if (name === 'tests') throw new Error('checks failed');
       }
     }), /checks failed/);
-    assert.deepEqual(phases, ['publish']);
+    assert.deepEqual(phases, ['tests']);
   });
 
   console.log(`${passed} passed, ${failed} failed`);
