@@ -871,9 +871,9 @@ function renderImportReview(data, previousResultsHtml = '') {
   const book = data?.book || {};
   const warnings = getImportWarnings(data).slice(0, 5);
   lastImportReviewResultsHtml = previousResultsHtml || '';
-  const warningList = warnings.length
-    ? `<ul>${warnings.map(warning => `<li>${escapeHTML(warning)}</li>`).join('')}</ul>`
-    : '<p>No specific warning details were returned.</p>';
+  const warningSection = warnings.length
+    ? `<div class="import-review-warnings"><ul>${warnings.map(warning => `<li>${escapeHTML(warning)}</li>`).join('')}</ul></div>`
+    : '';
   const restoreButton = previousResultsHtml
     ? '<button class="btn-secondary" data-import-action="restore-results">Back to results</button>'
     : '';
@@ -885,9 +885,7 @@ function renderImportReview(data, previousResultsHtml = '') {
         <h3>${escapeHTML(book.title || 'Imported book')}</h3>
         <p class="import-review-author">by ${escapeHTML(book.author || 'Unknown')}</p>
       </div>
-      <div class="import-review-warnings">
-        ${warningList}
-      </div>
+      ${warningSection}
       <div class="import-review-actions">
         <button class="btn-primary" data-import-action="open-book" data-book-id="${safeAttr(data.bookId || book.id || '')}">Open book</button>
         ${restoreButton}

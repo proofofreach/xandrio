@@ -315,6 +315,20 @@ section('Kindle Extraction');
   }
 
   {
+    const damaged = {
+      ok: true,
+      quality: {
+        score: 77,
+        warnings: ['replacement characters: 196'],
+        stats: { replacementChars: 196 }
+      }
+    };
+    const status = __test.classifyKindleExtractionStatus(damaged);
+    assert(status.status === 'review-needed',
+      'requires review when many characters were irreversibly lost despite a passing aggregate score');
+  }
+
+  {
     const metadata = await extractKindleMetadata('/tmp/book.azw3', 'azw3', {
       parserFactories: parserFactories({
         kf8: goodKindleConfig({ metadata: { title: 'Embedded Title', author: ['Embedded Author'], language: ['en'] } }),

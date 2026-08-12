@@ -100,6 +100,7 @@ const tests = [
   'test-chunk-player-cancellation.js',
   'test-queue-status.js',
   'test-toast-actions.js',
+  'test-import-review-ui.js',
   'test-sharing.js',
   'test-service-worker-media-routing.js',
   'test-offline-range.js',
