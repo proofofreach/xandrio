@@ -8,6 +8,7 @@ const {
   __test
 } = require('../lib/kindle-extraction');
 const { assessExtractedContent } = require('../lib/import-validation');
+const { DIAGNOSTIC_CODES } = require('../lib/extraction-result');
 
 let passed = 0;
 let failed = 0;
@@ -297,6 +298,8 @@ section('Kindle Extraction');
       error = err;
     }
     assert(error?.kindleExtraction?.status === 'drm-protected', 'rejects DRM-protected Kindle files with diagnostics');
+    assert(__test.classifyKindleParserError(new Error('rights metadata field is unavailable')) === 'failed',
+      'does not infer DRM from a near-miss metadata error');
   }
 
   {
@@ -312,6 +315,28 @@ section('Kindle Extraction');
     const status = __test.classifyKindleExtractionStatus({ ...low, quality });
     assert(quality.score < 55, 'scores tiny Kindle extraction below import threshold');
     assert(status.status === 'failed', 'classifies low-confidence Kindle extraction as failed');
+  }
+
+  {
+    const readableButLowConfidence = {
+      spine: [{ id: 'c1' }],
+      toc: [],
+      metadata: {},
+      chapters: {
+        c1: `<html><body><p>${'�'.repeat(30)} ${prose(41, 45)}</p></body></html>`
+      }
+    };
+    const chapters = await extractKindleChapters('/tmp/low-confidence.mobi', {
+      format: 'mobi',
+      warn: false,
+      container: { available: true, extension: 'mobi', likelyMobi7: true },
+      parserFactories: parserFactories({
+        mobi: readableButLowConfidence,
+        kf8: new Error('not KF8')
+      })
+    });
+    assert(chapters[0]?.kindleExtraction?.status === 'failed' && chapters[0].text.length > 500,
+      'returns meaningful Kindle text even when confidence scoring fails');
   }
 
   {
@@ -347,8 +372,10 @@ section('Kindle Extraction');
         kindleExtraction: { status: 'failed', score: 20, warnings: ['low text length'] }
       }
     ], { format: 'mobi' });
-    assert(!validation.valid, 'import validation rejects failed Kindle extraction reports');
-    assert(validation.errors.some(error => /Kindle extraction failed/.test(error)), 'reports Kindle extraction validation error');
+    assert(validation.valid, 'import validation accepts meaningful Kindle text despite a failed confidence score');
+    assert(validation.diagnostics.some(diagnostic =>
+      diagnostic.code === DIAGNOSTIC_CODES.STRUCTURE_LOW_CONFIDENCE && diagnostic.severity === 'warning'),
+    'reports low Kindle confidence as a typed nonblocking diagnostic');
   }
 
   {

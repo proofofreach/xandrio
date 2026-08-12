@@ -163,6 +163,7 @@ export function createPlaybackSession(options = {}) {
       chunk: chunkIndex,
       chunkIndex,
       chunkTime: Math.max(0, Number(position.chunkTime) || 0),
+      chunkDuration: Math.max(0, Number(position.chunkDuration) || 0),
       wasPlaying: Boolean(state.engine?.isPlaying),
       playbackRate: options.playbackRate,
       finished: Boolean(options.finished) || state.finished,

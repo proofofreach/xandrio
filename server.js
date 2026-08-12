@@ -53,6 +53,12 @@ const { createPronunciationService, createCacheInvalidator } = require('./lib/pr
 const { registerPronunciationRoutes } = require('./lib/routes/pronunciation-routes');
 const { createXBookStore } = require('./lib/xbook-store');
 const { createBookDocument } = require('./lib/book-document');
+const { proveArtifactRecovery } = require('./lib/extraction-recovery');
+const { createBookMutationLocks } = require('./lib/book-mutation-lock');
+const { createChapterRebuildService } = require('./lib/chapter-rebuild');
+const { createChapterAudioReconciler } = require('./lib/chapter-audio-reconcile');
+const { mapStateWriteToCurrent } = require('./lib/chapter-transition-state');
+const { removeLegacyImportReviewState } = require('./lib/import-state-migration');
 const {
   DELETE_BOOK_RESULT,
   createBookArtifactCleaner,
@@ -65,11 +71,6 @@ const {
   createBookMetadataRefreshService
 } = require('./lib/book-metadata-refresh');
 const { chapterStructureKey, positionMatchesChapterStructure } = require('./lib/chapter-structure');
-const {
-  buildChapterIndexMap,
-  remapBookPositions,
-  remapBookBookmarks
-} = require('./lib/chapter-reprocess');
 const { parseEpub } = require('./lib/epub-parser');
 const { BookImportError, createBookImporter } = require('./lib/book-importer');
 const { createImportAudioWarmup } = require('./lib/import-audio-warmup');
@@ -364,6 +365,7 @@ const SETTINGS_FILE = path.join(DATA_DIR, 'settings.json');
 const ANNAS_AUTH_FILE = path.join(DATA_DIR, 'annas-auth.json');
 const USERS_FILE = path.join(DATA_DIR, 'users.json');
 const BOOKMARKS_FILE = path.join(DATA_DIR, 'bookmarks.json');
+const CHAPTER_TRANSITIONS_FILE = path.join(DATA_DIR, 'chapter-transitions.json');
 const SHELVES_FILE = path.join(DATA_DIR, 'shelves.json');
 const CLIENT_SETTINGS_FILE = path.join(DATA_DIR, 'client-settings.json');
 const LISTENING_QUEUE_FILE = path.join(DATA_DIR, 'listening-queues.json');
@@ -386,6 +388,7 @@ const searchCoverService = createSearchCoverService({
   resolveOpenLibraryIdentity
 });
 const deletedBookIds = new Set();
+const bookMutationLocks = createBookMutationLocks();
 const MAX_DELETED_BOOK_IDS = 200;
 
 // Record a deleted book id, evicting the oldest-inserted entries beyond the cap.
@@ -1000,6 +1003,7 @@ function startProviderServersForVoice(voice) {
 }
 
 let xbookStore;
+let chapterRebuildService;
 const bookDocument = createBookDocument({
   supportedFormats: SUPPORTED_BOOK_FORMATS,
   largeBookWarningSize: LARGE_BOOK_WARNING_SIZE,
@@ -1043,8 +1047,7 @@ const {
   getXBookPath,
   invalidateXBookArtifactCache,
   writeXBookArtifact,
-  shouldDiscardSourceAfterExtract,
-  reprocessXBookArtifact
+  shouldDiscardSourceAfterExtract
 } = xbookStore;
 
 async function removeFileIfExists(filePath) {
@@ -1357,6 +1360,7 @@ const bookImporter = createBookImporter({
   createArtifact: writeXBookArtifact,
   writeArtifactData: (artifactPath, artifact) => fs.writeFile(artifactPath, JSON.stringify(artifact)),
   assessExtractedContent,
+  proveArtifactRecovery,
   metadata: {
     resolveSeed: resolveMetadataSeed,
     enrich: enrichBookMetadata,
@@ -1388,7 +1392,7 @@ const bookImporter = createBookImporter({
   },
   removeFile: removeFileIfExists,
   afterPersist: (record, bookPath) => {
-    if (!PREGENERATE_ON_IMPORT || record.pdfExtraction?.status === 'review-needed') return;
+    if (!PREGENERATE_ON_IMPORT) return;
     console.log(`Warming starting chapter for ${record.id}`);
     warmImportedBookAudio(record.id, bookPath).catch(error => {
       console.error(`Failed to warm starting chapter:`, error);
@@ -2516,10 +2520,12 @@ function downloadImportCommand(body, { download = searchProviders.download.bind(
 async function importDownloadedBook(body, progress, { addedBy = null } = {}) {
   const command = downloadImportCommand(body);
   if (addedBy) command.addedBy = addedBy;
-  deletedBookIds.delete(command.id);
-  const result = await bookImporter.import(command, progress);
-  if (addedBy && result?.bookId) await addBookToShelf(addedBy, result.bookId);
-  return result;
+  return bookMutationLocks.withBookMutationLock(command.id, async () => {
+    deletedBookIds.delete(command.id);
+    const result = await bookImporter.import(command, progress);
+    if (addedBy && result?.bookId) await addBookToShelf(addedBy, result.bookId);
+    return result;
+  });
 }
 
 // Imports land on the importer's personal shelf automatically.
@@ -2563,8 +2569,8 @@ async function handleDownloadRequest(req, res) {
       success: true,
       bookId: result.bookId,
       book: publicBookRecord(result.book),
-      usedAlternative: result.usedAlternative,
-      validation: result.validation
+      validation: result.validation,
+      usedAlternative: result.usedAlternative
     });
   } catch (error) {
     const response = downloadImportFailureResponse(error, req.body);
@@ -2616,8 +2622,8 @@ app.post('/api/download', async (req, res) => {
         success: true,
         bookId: result.bookId,
         book: publicBookRecord(result.book),
-        usedAlternative: result.usedAlternative,
-        validation: result.validation
+        validation: result.validation,
+        usedAlternative: result.usedAlternative
       };
       job.status = 'complete';
       job.result = payload;
@@ -2669,16 +2675,19 @@ async function handleUploadImport(req, res) {
     .digest('hex');
   const uploadUserId = positionUserId(req);
   try {
-    const result = await bookImporter.import({
-      kind: 'upload',
-      id: bookId,
-      originalName,
-      sourcePath: req.file.path,
-      selected: { language: 'en' },
-      downloadSource: 'upload',
-      addedBy: uploadUserId
+    const result = await bookMutationLocks.withBookMutationLock(bookId, async () => {
+      const imported = await bookImporter.import({
+        kind: 'upload',
+        id: bookId,
+        originalName,
+        sourcePath: req.file.path,
+        selected: { language: 'en' },
+        downloadSource: 'upload',
+        addedBy: uploadUserId
+      });
+      if (imported?.bookId) await addBookToShelf(uploadUserId, imported.bookId);
+      return imported;
     });
-    if (result?.bookId) await addBookToShelf(uploadUserId, result.bookId);
     return res.json({
       success: true,
       bookId: result.bookId,
@@ -2714,9 +2723,22 @@ function publicBookRecord(book) {
     retainedSourcePath: _retainedSourcePath,
     sourceHash,
     importValidation,
+    needsReview: _needsReview,
+    validationWarnings: _validationWarnings,
+    pdfExtraction: _pdfExtraction,
+    pdfReprocessable: _pdfReprocessable,
+    candidates: _candidates,
+    diagnostics: _diagnostics,
+    diagnosticEvidence: _diagnosticEvidence,
+    extractionReport: _extractionReport,
+    importDiagnosticCodes: _importDiagnosticCodes,
+    textIntegrity: _textIntegrity,
+    sourceRecovery: _sourceRecovery,
+    processingVersion: _processingVersion,
     metadataRefreshReconciliation,
     ...pub
   } = book;
+  pub.canRebuildChapters = Boolean(book.canRebuildChapters) || undefined;
   pub.hasCover = Boolean(coverPath);
   return pub;
 }
@@ -2921,7 +2943,9 @@ const bookMetadataRefreshService = createBookMetadataRefreshService({
   }),
   removeBookPositions: (positions, bookId) => removeBookPositions(positions, bookId),
   setBookPositionsStructureKey: (positions, bookId, structureKey) =>
-    setBookPositionsStructureKey(positions, bookId, structureKey)
+    setBookPositionsStructureKey(positions, bookId, structureKey),
+  withBookStateLock: (bookId, operation) =>
+    bookMutationLocks.withBookStateLock(bookId, operation)
 });
 
 // API: Delete book
@@ -2931,7 +2955,9 @@ app.delete('/api/book/:bookId', async (req, res) => {
     if (!isSafeBookId(bookId)) {
       return res.status(400).json({ error: 'Invalid book identifier' });
     }
-    const deletion = await bookDeletionService.deleteBook({ bookId, actor: req.user });
+    const deletion = await bookMutationLocks.withBookMutationLock(bookId, () =>
+      bookDeletionService.deleteBook({ bookId, actor: req.user })
+    );
     if (deletion.status === DELETE_BOOK_RESULT.FORBIDDEN) {
       return res.status(403).json({ error: 'Only the book owner or an admin can delete this book' });
     }
@@ -2958,7 +2984,9 @@ app.post('/api/refresh-metadata/:bookId', async (req, res) => {
     if (!isSafeBookId(bookId)) {
       return res.status(400).json({ error: 'Invalid book identifier' });
     }
-    const refresh = await bookMetadataRefreshService.refreshBook(bookId);
+    const refresh = await bookMutationLocks.withBookMutationLock(bookId, () =>
+      bookMetadataRefreshService.refreshBook(bookId)
+    );
     if (refresh.status === REFRESH_BOOK_RESULT.NOT_FOUND) {
       return res.status(404).json({ error: 'Book not found' });
     }
@@ -2976,147 +3004,114 @@ app.get('/api/book/:bookId', async (req, res) => {
     if (!isSafeBookId(bookId)) {
       return res.status(400).json({ error: 'Invalid book identifier' });
     }
-    const books = await loadJSON(BOOKS_FILE, {});
-    const book = books[bookId];
-    
-    if (!book) {
-      return res.status(404).json({ error: 'Book not found' });
-    }
+    await chapterRebuildService?.recoverBook(bookId);
+    const details = await bookMutationLocks.withBookMutationLock(bookId, async () => {
+      const books = await loadJSON(BOOKS_FILE, {});
+      const book = books[bookId];
+      if (!book) return null;
 
-    // Extract chapters from the stored book/artifact (cached)
-    const chapters = await getChaptersCached(book.path);
-    // Segmentation is derived, so verify it still matches what the book was
-    // imported with rather than assuming a stored position still addresses the
-    // same chapter.
-    const structureReconcile = await bookMetadataRefreshService
-      .reconcileChapterStructure(bookId, chapters)
-      .catch(err => {
-        console.error(`Chapter structure reconciliation failed for ${bookId}: ${err.message}`);
-        return null;
-      });
-    if (structureReconcile?.book) Object.assign(book, structureReconcile.book);
-    const displayChapters = chapters.map(ch => ({
-      ...ch,
-      rawTitle: ch.rawTitle || ch.title,
-      title: normalizeChapterTitleForDisplay(ch.title || `Chapter ${ch.index + 1}`)
-    }));
+      // Keep extraction and any resulting structure reconciliation under the
+      // same per-book lock as rebuild, refresh, re-import, and deletion.
+      const chapters = await getChaptersCached(book.path);
+      const structureReconcile = await bookMetadataRefreshService
+        .reconcileChapterStructure(bookId, chapters)
+        .catch(err => {
+          console.error(`Chapter structure reconciliation failed for ${bookId}: ${err.message}`);
+          return null;
+        });
+      if (structureReconcile?.book) Object.assign(book, structureReconcile.book);
+      const displayChapters = chapters.map(ch => ({
+        ...ch,
+        rawTitle: ch.rawTitle || ch.title,
+        title: normalizeChapterTitleForDisplay(ch.title || `Chapter ${ch.index + 1}`)
+      }));
 
-    // Backfill totalDuration/chapterCount if missing
-    if (book.totalDuration === undefined || book.chapterCount === undefined) {
-      if (book.totalDuration === undefined) {
-        book.totalDuration = chapters.reduce((sum, ch) => sum + (ch.estimatedDuration || 0), 0);
-      }
-      if (book.chapterCount === undefined) {
-        book.chapterCount = chapters.length;
-      }
-      const totalDuration = book.totalDuration;
-      const chapterCount = book.chapterCount;
-      updateJSON(BOOKS_FILE, (books) => {
-        const current = books[bookId];
-        if (!current) return jsonStore.SKIP_SAVE;
-        let updated = false;
-        if (current.totalDuration === undefined) {
-          current.totalDuration = totalDuration;
-          updated = true;
+      if (book.totalDuration === undefined || book.chapterCount === undefined) {
+        if (book.totalDuration === undefined) {
+          book.totalDuration = chapters.reduce((sum, ch) => sum + (ch.estimatedDuration || 0), 0);
         }
-        if (current.chapterCount === undefined) {
-          current.chapterCount = chapterCount;
-          updated = true;
-        }
-        if (!updated) return jsonStore.SKIP_SAVE;
-      }).catch(err => console.warn(`book metadata backfill failed for ${bookId}: ${err.message}`));
-    }
+        if (book.chapterCount === undefined) book.chapterCount = chapters.length;
+        const totalDuration = book.totalDuration;
+        const chapterCount = book.chapterCount;
+        await updateJSON(BOOKS_FILE, (currentBooks) => {
+          const current = currentBooks[bookId];
+          if (!current) return jsonStore.SKIP_SAVE;
+          let updated = false;
+          if (current.totalDuration === undefined) {
+            current.totalDuration = totalDuration;
+            updated = true;
+          }
+          if (current.chapterCount === undefined) {
+            current.chapterCount = chapterCount;
+            updated = true;
+          }
+          if (!updated) return jsonStore.SKIP_SAVE;
+        });
+      }
 
-    // Check if cover exists
-    const publicBook = await publicBookRecordWithCoverArtifact(book);
-    const pdfExtraction = chapters.find(chapter => chapter?.pdfExtraction)?.pdfExtraction || book.pdfExtraction;
-    if (pdfExtraction) publicBook.pdfExtraction = pdfExtraction;
-    if (String(book.sourceFormat || '').toUpperCase() === 'PDF') {
-      publicBook.pdfReprocessable = Boolean(chapters.sourceDocument?.pages?.length);
-    }
-    res.json({ book: publicBook, chapters: displayChapters, hasCover: publicBook.hasCover });
+      const publicBook = await publicBookRecordWithCoverArtifact(book);
+      publicBook.canRebuildChapters = Boolean(
+        book.canRebuildChapters || chapters.sourceDocument?.pages?.length
+      ) || undefined;
+      return { book: publicBook, chapters: displayChapters, hasCover: publicBook.hasCover };
+    });
+    if (!details) return res.status(404).json({ error: 'Book not found' });
+    res.json(details);
   } catch (err) {
     console.error('Book details error:', err);
     sendServerError(res, err, "Failed to load book");
   }
 });
 
-app.post('/api/book/:bookId/reprocess-pdf', async (req, res) => {
+async function handleRebuildChapters(req, res) {
   try {
     const { bookId } = req.params;
     if (!isSafeBookId(bookId)) {
       return res.status(400).json({ error: 'Invalid book identifier' });
     }
+    const result = await chapterRebuildService.rebuild(bookId);
+    if (result.reason === 'book-not-found') return res.status(404).json({ error: 'Book not found' });
+    if (result.reason === 'unsafe-rebuild') {
+      return res.status(409).json({
+        error: 'Chapters could not be rebuilt without changing narration text. The current chapters were kept.'
+      });
+    }
+
     const books = await loadJSON(BOOKS_FILE, {});
     const book = books[bookId];
     if (!book) return res.status(404).json({ error: 'Book not found' });
-    if (String(book.sourceFormat || '').toUpperCase() !== 'PDF' || !isXBookPath(book.path)) {
-      return res.status(409).json({ error: 'This book is not a reprocessable PDF artifact' });
-    }
-
-    const previousChapters = await getChaptersCached(book.path);
-    const artifact = await reprocessXBookArtifact(book.path);
-    const nextChapters = artifact.chapters || [];
-    const structureKey = chapterStructureKey(nextChapters) || undefined;
-    const indexMap = buildChapterIndexMap(previousChapters, nextChapters);
-    const extraction = nextChapters.find(chapter => chapter?.pdfExtraction)?.pdfExtraction;
-    const maxChapterCount = Math.max(previousChapters.length, nextChapters.length);
-
-    for (const tts of new Set([chunkedTTS, instantChunkedTTS, ...premiumVariantTtsWorkers.values()])) {
-      tts.cancelBook?.(bookId);
-    }
-    await invalidateChapterAudioCache(Array.from({ length: maxChapterCount }, (_, chapterIndex) => ({
-      bookId,
-      chapterIndex,
-      fromChunkIndex: 0
-    })));
-
-    await Promise.all([
-      updateJSON(POSITIONS_FILE, positions => remapBookPositions(positions, bookId, indexMap, structureKey)),
-      updateJSON(BOOKMARKS_FILE, bookmarks => remapBookBookmarks(bookmarks, bookId, indexMap))
-    ]);
-
-    let updatedBook;
-    await updateJSON(BOOKS_FILE, currentBooks => {
-      const current = currentBooks[bookId];
-      if (!current) return jsonStore.SKIP_SAVE;
-      const remainingWarnings = (current.validationWarnings || [])
-        .filter(warning => !/^PDF extraction(?: needs review|:)/i.test(warning));
-      updatedBook = {
-        ...current,
-        chapterCount: nextChapters.length,
-        totalDuration: nextChapters.reduce((sum, chapter) => sum + (chapter.estimatedDuration || 0), 0),
-        chapterStructureKey: structureKey,
-        pdfExtraction: extraction,
-        pdfReprocessable: true,
-        needsReview: extraction?.status === 'review-needed' || undefined,
-        validationWarnings: remainingWarnings.length ? remainingWarnings : undefined,
-        reprocessedAt: new Date().toISOString()
-      };
-      currentBooks[bookId] = updatedBook;
-    });
-
-    const displayChapters = nextChapters.map(chapter => ({
+    const chapters = await getChaptersCached(book.path);
+    const displayChapters = chapters.map(chapter => ({
       ...chapter,
       rawTitle: chapter.rawTitle || chapter.title,
       title: normalizeChapterTitleForDisplay(chapter.title || `Chapter ${chapter.index + 1}`)
     }));
     res.json({
       success: true,
-      book: publicBookRecord(updatedBook),
-      chapters: displayChapters,
-      pdfExtraction: extraction
+      changed: Boolean(result.changed),
+      reason: result.changed ? undefined : result.reason,
+      book: publicBookRecord(book),
+      chapters: displayChapters
     });
   } catch (err) {
-    if (err.code === 'PDF_SOURCE_DATA_UNAVAILABLE') {
+    if (err.code === 'PDF_SOURCE_DATA_UNAVAILABLE' || err.code === 'XBOOK_REPROCESS_UNSUPPORTED') {
       return res.status(409).json({
-        error: err.message,
-        suggestion: 'Re-upload the original PDF to rebuild its chapter structure.'
+        error: 'This book does not contain a retained source document that can rebuild chapters.'
       });
     }
-    console.error('PDF reprocessing error:', err);
-    sendServerError(res, err, 'Failed to reprocess PDF chapters');
+    console.error('Chapter rebuild error:', err);
+    sendServerError(res, err, 'Failed to rebuild chapters');
   }
+}
+
+app.post('/api/book/:bookId/rebuild-chapters', handleRebuildChapters);
+// Compatibility alias. Remove after 2026-12-31, once pre-capability clients
+// have aged out. It executes the same generic rebuild transaction.
+app.post('/api/book/:bookId/reprocess-pdf', (req, res) => {
+  res.setHeader('Deprecation', 'true');
+  res.setHeader('Sunset', 'Thu, 31 Dec 2026 23:59:59 GMT');
+  res.setHeader('Link', `</api/book/${encodeURIComponent(req.params.bookId)}/rebuild-chapters>; rel="successor-version"`);
+  return handleRebuildChapters(req, res);
 });
 
 // API: Get book cover image
@@ -3306,6 +3301,52 @@ const offlinePreparationCoordinator = createOfflinePreparationCoordinator({
   ),
   onError: (error, request) => {
     console.warn(`Offline preparation failed for ${request.bookId}: ${error.message}`);
+  }
+});
+
+const chapterAudioReconciler = createChapterAudioReconciler({
+  cacheDir: CACHE_DIR,
+  workers: () => [
+    chunkedTTS,
+    instantChunkedTTS,
+    ...premiumVariantTtsWorkers.values()
+  ],
+  invalidateCache: invalidateChapterAudioCache,
+  removeGenerationClaims: (bookId, chapterIndexes) =>
+    generationJournal.removeChapterIndexes(bookId, chapterIndexes)
+});
+
+chapterRebuildService = createChapterRebuildService({
+  files: {
+    books: BOOKS_FILE,
+    positions: POSITIONS_FILE,
+    bookmarks: BOOKMARKS_FILE,
+    transitions: CHAPTER_TRANSITIONS_FILE
+  },
+  xbookStore,
+  locks: bookMutationLocks,
+  loadJSON,
+  saveJSON,
+  afterCommit: async ({ bookId, plan }) => {
+    await Promise.all([
+      premiumPrep.stopBook(bookId),
+      playbackPrefetch.removeBook(bookId),
+      offlinePreparationCoordinator.cancel(bookId, { remove: true })
+    ]);
+    await Promise.all([
+      premiumPrep.waitForIdle(bookId),
+      offlinePreparationCoordinator.waitForIdle(bookId)
+    ]);
+    const books = await loadJSON(BOOKS_FILE, {});
+    await chapterAudioReconciler.reconcile({
+      bookId,
+      transition: plan.transition,
+      nextChapters: plan.candidate.chapters,
+      language: books[bookId]?.language || 'en'
+    });
+  },
+  onPostCommitError: ({ bookId, error }) => {
+    console.error(`Chapter rebuild committed for ${bookId}, but audio reconciliation failed: ${error.message}`);
   }
 });
 
@@ -3721,11 +3762,12 @@ app.post('/api/sync/device', async (req, res) => {
 
 app.post('/api/position', async (req, res) => {
   try {
-    const { bookId, chapterIndex, timestamp, chunkIndex, chunkTime, chapterStructureKey: suppliedStructureKey, playbackRate, wasPlaying, updatedAt, allowBackward, finished } = req.body;
+    const { bookId, chapterIndex, timestamp, chunkIndex, chunkTime, characterOffset, positionApproximate, chapterStructureKey: suppliedStructureKey, playbackRate, wasPlaying, updatedAt, allowBackward, finished } = req.body;
     const parsedChapterIndex = parseNonNegativeInteger(chapterIndex);
     const parsedTimestamp = Number(timestamp);
     const parsedChunkIndex = chunkIndex === undefined ? null : parseNonNegativeInteger(chunkIndex);
     const parsedChunkTime = chunkTime === undefined ? null : Number(chunkTime);
+    const parsedCharacterOffset = characterOffset === undefined ? null : parseNonNegativeInteger(characterOffset);
     if (!isSafeBookId(bookId) || parsedChapterIndex === null || !Number.isFinite(parsedTimestamp) || parsedTimestamp < 0) {
       return res.status(400).json({ error: 'Invalid playback position' });
     }
@@ -3735,29 +3777,57 @@ app.post('/api/position', async (req, res) => {
     if (chunkTime !== undefined && (!Number.isFinite(parsedChunkTime) || parsedChunkTime < 0)) {
       return res.status(400).json({ error: 'Invalid playback chunk time' });
     }
+    if (characterOffset !== undefined && parsedCharacterOffset === null) {
+      return res.status(400).json({ error: 'Invalid playback character offset' });
+    }
 
     const userId = positionUserId(req);
-    const books = await loadJSON(BOOKS_FILE, {});
-    const book = books[bookId];
-    if (!book) return res.status(404).json({ error: 'Book not found' });
-    if (!positionMatchesChapterStructure({ chapterStructureKey: suppliedStructureKey }, book)) {
-      const existing = positionForBook(await loadJSON(POSITIONS_FILE, {}), userId, bookId);
-      return res.json({
-        success: true,
-        ignored: true,
-        reason: 'chapter-structure-changed',
-        position: positionMatchesChapterStructure(existing, book) ? existing : null
+    const write = await bookMutationLocks.withBookStateLock(bookId, async () => {
+      const books = await loadJSON(BOOKS_FILE, {});
+      const book = books[bookId];
+      if (!book) return { status: 404 };
+      const transitions = positionMatchesChapterStructure(
+        { chapterStructureKey: suppliedStructureKey },
+        book
+      ) ? {} : await loadJSON(CHAPTER_TRANSITIONS_FILE, {});
+      const mapped = mapStateWriteToCurrent({
+        bookId,
+        suppliedStructureKey,
+        book,
+        transitions,
+        state: {
+          chapterIndex: parsedChapterIndex,
+          timestamp: parsedTimestamp,
+          chunkIndex: parsedChunkIndex ?? undefined,
+          chunkTime: parsedChunkTime ?? undefined,
+          characterOffset: parsedCharacterOffset ?? undefined,
+          positionApproximate: positionApproximate === true || undefined
+        }
       });
-    }
-    let outcome;
-    await updateJSON(POSITIONS_FILE, (data) => {
-      outcome = recordPosition(data, {
+      if (mapped.stale) {
+        const existing = positionForBook(await loadJSON(POSITIONS_FILE, {}), userId, bookId);
+        return {
+          status: 200,
+          outcome: {
+            success: true,
+            ignored: true,
+            reason: 'chapter-structure-changed',
+            position: positionMatchesChapterStructure(existing, book) ? existing : null
+          }
+        };
+      }
+
+      let outcome;
+      await updateJSON(POSITIONS_FILE, (data) => {
+        outcome = recordPosition(data, {
         userId,
         bookId,
-        chapterIndex: parsedChapterIndex,
-        timestamp: parsedTimestamp,
-        chunkIndex: parsedChunkIndex ?? undefined,
-        chunkTime: parsedChunkTime ?? undefined,
+        chapterIndex: mapped.state.chapterIndex,
+        timestamp: mapped.state.timestamp,
+        chunkIndex: mapped.state.chunkIndex,
+        chunkTime: mapped.state.chunkTime,
+        characterOffset: mapped.state.characterOffset,
+        positionApproximate: mapped.state.positionApproximate,
         chapterStructureKey: book.chapterStructureKey || undefined,
         playbackRate,
         wasPlaying,
@@ -3765,13 +3835,17 @@ app.post('/api/position', async (req, res) => {
         allowBackward,
         updatedAtMs: updatedAt
       });
-      return outcome.ignored ? jsonStore.SKIP_SAVE : undefined;
+        return outcome.ignored ? jsonStore.SKIP_SAVE : undefined;
+      });
+      return { status: 200, outcome, chapterIndex: mapped.state.chapterIndex };
     });
+    if (write.status === 404) return res.status(404).json({ error: 'Book not found' });
+    const outcome = write.outcome;
     const prefetchSessionId = `${userId}:${syncDeviceId(req)}`;
     if (!outcome.ignored && Boolean(wasPlaying) && !Boolean(finished)) {
       observePlaybackHorizon({
         bookId,
-        chapterIndex: parsedChapterIndex,
+        chapterIndex: write.chapterIndex,
         sessionId: prefetchSessionId
       }).catch(error => {
         console.warn(`Playback look-ahead observation failed for ${bookId}: ${error.message}`);
@@ -4166,10 +4240,13 @@ registerDiagnosticsRoutes(app, {
 
 registerBookmarksRoutes(app, {
   bookmarksFile: BOOKMARKS_FILE,
+  booksFile: BOOKS_FILE,
   clientSettingsFile: CLIENT_SETTINGS_FILE,
   jsonStore,
   loadJSON,
-  updateJSON
+  transitionsFile: CHAPTER_TRANSITIONS_FILE,
+  updateJSON,
+  withBookStateLock: bookMutationLocks.withBookStateLock
 });
 
 registerListeningQueueRoutes(app, {
@@ -4214,6 +4291,9 @@ let runningServer = null;
 if (require.main === module) {
   // Start server
   ensureDirectories().then(async () => {
+    await updateJSON(BOOKS_FILE, books => (
+      removeLegacyImportReviewState(books) ? undefined : jsonStore.SKIP_SAVE
+    ));
     const artifactRepair = await reconcileBookArtifactPaths({
       cacheDir: CACHE_DIR,
       loadBooks: () => booksStore.load(),
@@ -4224,6 +4304,10 @@ if (require.main === module) {
         `Recovered ${artifactRepair.repairedPaths} stored artifact path(s) ` +
         `for ${artifactRepair.repairedBooks} book(s)`
       );
+    }
+    const recoveredRebuilds = await chapterRebuildService.recoverAll();
+    if (recoveredRebuilds.length) {
+      console.log(`Recovered ${recoveredRebuilds.length} interrupted chapter rebuild(s)`);
     }
     narrationEngines.start('kokoro:af_heart');
     narrationEngines.start('chatterbox:brick-scott');

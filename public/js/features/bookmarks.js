@@ -17,6 +17,7 @@ let bookmarksCache = [];
 //   getCurrentBook,            // () => current book object (needs .id)
 //   getCurrentChapter,         // () => current chapter index
 //   getCurrentTime,            // () => current playback position in seconds
+//   getCharacterOffset,        // () => current normalized chapter-text offset
 //   getChapterTitle,           // (chapterIndex) => display title for a chapter
 //   selectChapter,             // (chapterIndex, options) => Promise, commits a chapter selection
 //   seek,                      // (seconds) => seek the active player
@@ -142,7 +143,14 @@ export async function addBookmarkAtCurrentPosition() {
   if (!Number.isFinite(chapterIndex) || !Number.isFinite(timestamp)) return;
 
   try {
-    await apiSend('POST', '/api/bookmarks', { bookId: book.id, chapterIndex, timestamp });
+    await apiSend('POST', '/api/bookmarks', {
+      bookId: book.id,
+      chapterIndex,
+      timestamp,
+      characterOffset: deps.getCharacterOffset?.(),
+      positionApproximate: true,
+      chapterStructureKey: book.chapterStructureKey
+    });
 
     const label = `Bookmarked at ${formatTime(timestamp)}`;
     showToast(label);

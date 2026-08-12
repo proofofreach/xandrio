@@ -400,6 +400,15 @@ async function runFixtureTests() {
     assert(error && error.pdfExtraction?.ocr?.attempted === false, 'records OCR-disabled diagnostic by default');
   });
 
+  await withTempPdf('short-readable-low-confidence.pdf', [
+    ['Short Book', ...repeatedLines('This readable sentence is preserved for narration.', 20)],
+    [...repeatedLines('The second page continues the meaningful short work.', 20)]
+  ], async pdfPath => {
+    const chapters = await extractPdfChapters(pdfPath, { warn: false });
+    assert(chapters[0]?.pdfExtraction?.status === 'failed' && chapters[0].text.length > 500,
+      'returns meaningful PDF text even when confidence scoring fails');
+  });
+
   await withTempPdf('scanned-retry.pdf', [
     ['scan'],
     ['scan'],

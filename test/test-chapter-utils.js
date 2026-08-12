@@ -4,6 +4,10 @@ const {
   repairTextArtifacts,
   stripHTML
 } = require('../lib/chapter-utils');
+const {
+  ALLOWED_TEXT_MUTATIONS,
+  createMutationCollector
+} = require('../lib/extraction-result');
 
 let passed = 0;
 let failed = 0;
@@ -92,6 +96,32 @@ test('does not reinterpret a short incidental Roman-numbered run', () => {
   assert.ok(chapters.every(chapter => chapter.type === 'content'));
 });
 
+test('does not promote generic attribution prose as a Roman-series subtitle', () => {
+  const chapters = normalizeChapterSequence(Array.from({ length: 5 }, (_, index) => {
+    const roman = toRoman(index + 1);
+    return {
+      title: roman,
+      type: 'content',
+      text: `${roman}\nA. Writer, with B. Editor: To the readers of this edition\n${'Substantive essay prose. '.repeat(100)}`
+    };
+  }));
+  assert.deepStrictEqual(chapters.map(chapter => chapter.title), ['I', 'II', 'III', 'IV', 'V']);
+  assert.ok(chapters.every(chapter => chapter.type === 'chapter'));
+});
+
+test('keeps concise authored subtitles in a Roman-numbered series', () => {
+  const chapters = normalizeChapterSequence(Array.from({ length: 5 }, (_, index) => {
+    const roman = toRoman(index + 1);
+    return {
+      title: roman,
+      type: 'content',
+      text: `${roman}\nA Quiet Beginning\n${'Substantive chapter prose. '.repeat(100)}`
+    };
+  }));
+  assert.strictEqual(chapters[0].title, 'I: A Quiet Beginning');
+  assert.strictEqual(chapters[4].title, 'V: A Quiet Beginning');
+});
+
 test('preserves trusted TOC titles while correcting their chapter type', () => {
   const fixture = Array.from({ length: 5 }, (_, index) => {
     const number = index + 1;
@@ -146,6 +176,27 @@ test('removes semantic EPUB pagebreak markers before extracting text', () => {
     ].join('')),
     'First printed page.\n Second printed page.\n Closing prose.'
   );
+});
+
+test('records each heuristic text mutation through the closed registry at the transformation site', () => {
+  const collector = createMutationCollector();
+  stripHTML([
+    '<style>.hidden { display: none; }</style>',
+    '<p>First­word.</p>',
+    '<span epub:type="pagebreak">37</span>',
+    '<p>self-\ncriticism and W I N D.</p>',
+    '<table><tr><td>1</td><td>2</td><td>3</td><td>4</td></tr></table>'
+  ].join(''), { mutationRecorder: collector.record });
+  const codes = new Set(collector.values().map(mutation => mutation.code));
+  for (const policy of [
+    ALLOWED_TEXT_MUTATIONS.RECOGNIZED_BOILERPLATE_REMOVAL,
+    ALLOWED_TEXT_MUTATIONS.INVISIBLE_CHARACTER_REMOVAL,
+    ALLOWED_TEXT_MUTATIONS.SEMANTIC_PAGE_MARKER_REMOVAL,
+    ALLOWED_TEXT_MUTATIONS.LINE_WRAP_DEHYPHENATION,
+    ALLOWED_TEXT_MUTATIONS.SPACED_CAPS_NORMALIZATION
+  ]) {
+    assert(codes.has(policy.code), `missing registered activation for ${policy.code}`);
+  }
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

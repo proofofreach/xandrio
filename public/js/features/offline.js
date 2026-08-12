@@ -26,7 +26,7 @@ const OFFLINE_CONTRACT_MARKER = 'x-xandrio-offline-contract';
  * with OFFLINE_ROUTE_CONTRACT_VERSION instead of tying downloads to a build id.
  * This value MUST equal CACHE_VERSION in public/sw.js.
  */
-export const EXPECTED_OFFLINE_SW_VERSION = 'xandrio-v138';
+export const EXPECTED_OFFLINE_SW_VERSION = 'xandrio-v139';
 export const MINIMUM_OFFLINE_ROUTE_CONTRACT = 1;
 // A chapter is only ever invalidated after this many playback failures whose
 // cheap probe still says the cache is fine. Below it, we assume Safari.

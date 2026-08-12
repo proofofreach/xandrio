@@ -104,6 +104,9 @@ function createFixture(overrides = {}) {
     removeFile: async filePath => {
       calls.push(`remove:${filePath}`);
     },
+    writeArtifactData: async filePath => {
+      calls.push(`write-artifact:${filePath}`);
+    },
     writeArtifact: async () => {},
     path: { basename: value => value.split('/').pop() },
     now: () => '2026-07-11T00:00:00.000Z',
@@ -192,6 +195,23 @@ section('Successful direct import');
   assert(artifactSourceInfo?.sourceDocument?._pdfStructureVersion === 2,
     'passes versioned PDF page data into the XBook artifact');
 
+  const provenPdf = createFixture({
+    normalizeBook: async ({ id }) => ({
+      finalPath: `/library/${id}.pdf`, filename: `${id}.pdf`, originalFormat: 'PDF',
+      originalSize: 12 * 1024, finalSize: 12 * 1024, largeSource: false, resized: false
+    }),
+    document: { extractChapters: async () => reviewChapters },
+    shouldDiscardSourceAfterExtract: () => true,
+    createArtifact: async () => ({
+      xbookPath: '/library/book-1.xbook.json',
+      artifact: { sourceFormat: 'PDF', metadata: {}, chapters: reviewChapters }
+    }),
+    proveArtifactRecovery: async () => ({ proven: true, reason: 'round-trip-equivalent' })
+  });
+  const provenPdfResult = await provenPdf.importer.import(command({ originalName: 'book.pdf' }));
+  assert(provenPdf.calls.includes('remove:/library/book-1.pdf') && provenPdfResult.book.sourceDeletedAfterExtract,
+    'deletes a new raw source only after an equivalent artifact round trip is proven');
+
   let kindleCoverRecord;
   const manualKindle = createFixture({
     normalizeBook: async ({ id }) => ({
@@ -225,6 +245,9 @@ section('Successful direct import');
       kindleCoverRecord?.coverSource === 'embedded',
     'manual Kindle imports retain exact-edition embedded cover provenance'
   );
+  assert(manualKindleResult.book.sourceRetainedAfterExtract === true &&
+    !manualKindle.calls.includes('remove:/library/book-1.azw3'),
+  'retains a compacted Kindle source when the artifact cannot prove rebuild equivalence');
 
   const normalizedAuthor = createFixture({
     document: {
@@ -357,19 +380,24 @@ section('Successful direct import');
       maxChapterSize: 20_000
     })
   });
-  let unverifiedStructureError;
-  try {
-    await unverifiedStructure.importer.import(command());
-  } catch (error) {
-    unverifiedStructureError = error;
-  }
-  assert(
-    unverifiedStructureError instanceof BookImportError &&
-      unverifiedStructureError.response?.error === 'Downloaded book has unusable chapter structure',
-    'rejects a structurally unverified primary when no compatible alternative is available'
-  );
-  assert(unverifiedStructure.calls.includes('remove:/library/book-1.epub'),
-    'cleans up a structurally unverified normalized source');
+  const unverifiedStructureResult = await unverifiedStructure.importer.import(command());
+  assert(unverifiedStructureResult.book.id === 'book-1',
+    'accepts a meaningful primary when chapter structure cannot be verified');
+  assert(!unverifiedStructure.calls.includes('remove:/library/book-1.epub'),
+    'retains the playable source when only structure confidence is unknown');
+
+  const misclassifiedStructure = createFixture({
+    checkChapterQuality: async () => ({
+      isGoodStructure: false,
+      structureVerified: false,
+      reasons: ['No content chapters after derived type classification'],
+      contentChapters: 0,
+      maxChapterSize: 20_000
+    })
+  });
+  const misclassifiedResult = await misclassifiedStructure.importer.import(command());
+  assert(misclassifiedResult.book.id === 'book-1',
+    'does not turn a derived zero-content-chapter score into an import rejection');
 
   section('Late failure cleanup');
   const enrichmentFailure = createFixture({
@@ -504,8 +532,8 @@ section('Successful direct import');
       sourcePath: '/uploads/verified-short.epub'
     }]
   }));
-  assert(verifiedShortResult.usedAlternative && verifiedShortResult.book.id === 'verified-short',
-    'prefers a verified short alternative over an unverified larger primary');
+  assert(!verifiedShortResult.usedAlternative && verifiedShortResult.book.id === 'primary',
+    'does not discard a larger meaningful primary solely for verified structure');
 
   const unverifiedLargeAlternative = createFixture({
     checkChapterQuality: async source => source.includes('primary')
@@ -533,8 +561,8 @@ section('Successful direct import');
       sourcePath: '/uploads/unverified-large.epub'
     }]
   }));
-  assert(!retainedVerifiedShort.usedAlternative && retainedVerifiedShort.book.id === 'primary',
-    'does not replace a verified short primary with an unverified larger alternative');
+  assert(retainedVerifiedShort.usedAlternative && retainedVerifiedShort.book.id === 'unverified-large',
+    'prefers a compatible alternative that retains substantially more meaningful text');
 
   const alternative = createFixture({
     checkChapterQuality: async source => source.includes('primary')

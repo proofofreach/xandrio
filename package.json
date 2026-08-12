@@ -35,6 +35,7 @@
     "verify:audio:ci": "node scripts/verify-audio-quality.js --calibration-fixtures",
     "audit:production": "npm audit --omit=dev",
     "audit:release": "npm audit --omit=dev --audit-level=high",
+    "audit:imports": "node scripts/audit-private-import-corpus.js",
     "sbom:npm": "npx @cyclonedx/cyclonedx-npm --omit dev --output-format JSON --output-file artifacts/xandrio-npm.cdx.json",
     "sbom:python": "node scripts/release/generate-python-sboms.mjs",
     "notices": "node scripts/generate-third-party-notices.mjs",

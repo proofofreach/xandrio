@@ -275,6 +275,14 @@ function metadataHarness(options = {}) {
         if (user.books?.[bookId]) user.books[bookId].chapterStructureKey = structureKey;
       }
     },
+    withBookStateLock: async (bookId, operation) => {
+      operations.push(`state-lock:${bookId}:begin`);
+      try {
+        return await operation();
+      } finally {
+        operations.push(`state-lock:${bookId}:end`);
+      }
+    },
     now: () => new Date('2026-07-24T12:00:00.000Z'),
     log: { warn: message => operations.push(`warn:${message}`) }
   });
@@ -490,6 +498,7 @@ function metadataHarness(options = {}) {
     assert(harness.operations.includes('invalidate-audio:book_1:2'));
     assert(harness.operations.includes('remove-cover:/cache/book_1_cover.jpg'));
     assert(harness.operations.includes('remove-positions:book_1'));
+    assert(harness.operations.includes('state-lock:book_1:begin'));
   });
 
   await test('metadata refresh rejects a storage id title in favor of trusted search metadata', async () => {
