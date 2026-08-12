@@ -8,3 +8,11 @@ condition = "AND"
 regexTarget = "line"
 regexes = ['''variantKey:\s*'historical-v2',''']
 paths = ['''^test/test-chunked-tts\.js$''']
+
+[[allowlists]]
+description = "Synthetic chapter structure fingerprints are not credentials"
+targetRules = ["generic-api-key"]
+condition = "AND"
+regexTarget = "line"
+regexes = ['''^\s*structureKey:\s*'v1-[0-9a-f]{20}',?\s*$''']
+paths = ['''^test/fixtures/import-corpus\.js$''']
