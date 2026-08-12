@@ -51,6 +51,8 @@ Test Books
 screenshots
 test-results
 playwright-report
+scripts/audit-private-import-corpus.js
+test/test-import-benchmark-private.js
 
 npm-debug.log*
 *.log

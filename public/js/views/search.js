@@ -41,7 +41,6 @@ let editionAlternativesByHash = new Map();
 let visibleWorkCount = 0;
 let searchLoadObserver = null;
 let searchLoadMore = null;
-let lastImportReviewResultsHtml = '';
 let dragDepth = 0;
 let sourceAvailability = new Map();
 let selectedSources = new Set();
@@ -569,7 +568,6 @@ function resetSourceShelf() {
 
 function resetSearchWorkspace() {
   clearRenderedSearchResults();
-  lastImportReviewResultsHtml = '';
   if (searchInput) searchInput.value = '';
   updateSearchUrl('');
   if (searchSort) searchSort.value = 'relevance';
@@ -859,61 +857,14 @@ function updateDownloadProgress(panel, result, state) {
   }
 }
 
-function getImportWarnings(data) {
-  const warnings = [
-    ...(data?.book?.validationWarnings || []),
-    ...(data?.validation?.warnings || [])
-  ].filter(Boolean);
-  return [...new Set(warnings)];
-}
-
-function renderImportReview(data, previousResultsHtml = '') {
-  const book = data?.book || {};
-  const warnings = getImportWarnings(data).slice(0, 5);
-  lastImportReviewResultsHtml = previousResultsHtml || '';
-  const warningList = warnings.length
-    ? `<ul>${warnings.map(warning => `<li>${escapeHTML(warning)}</li>`).join('')}</ul>`
-    : '<p>No specific warning details were returned.</p>';
-  const restoreButton = previousResultsHtml
-    ? '<button class="btn-secondary" data-import-action="restore-results">Back to results</button>'
-    : '';
-
-  return `
-    <div class="import-review-panel" role="status" aria-live="polite">
-      <div>
-        <p class="import-review-eyebrow">Review import</p>
-        <h3>${escapeHTML(book.title || 'Imported book')}</h3>
-        <p class="import-review-author">by ${escapeHTML(book.author || 'Unknown')}</p>
-      </div>
-      <div class="import-review-warnings">
-        ${warningList}
-      </div>
-      <div class="import-review-actions">
-        <button class="btn-primary" data-import-action="open-book" data-book-id="${safeAttr(data.bookId || book.id || '')}">Open book</button>
-        ${restoreButton}
-      </div>
-    </div>
-  `;
-}
-
 async function finishSuccessfulImport(data, options = {}) {
-  const { previousResultsHtml = '', downloadProgress = null } = options;
+  const { downloadProgress = null } = options;
   downloadProgress?.complete?.('Adding to library');
   downloadError.style.display = 'none';
-
-  const warnings = getImportWarnings(data);
-  const needsReview = Boolean(data?.book?.needsReview) || warnings.length > 0;
-
   await loadLibrary();
-  if (needsReview) {
-    downloadProgress?.stop?.();
-    searchResults.innerHTML = renderImportReview(data, previousResultsHtml);
-    return;
-  }
-
   searchResults.innerHTML = '';
   deps.navigateTo?.('library');
-  deps.openBook?.(data.bookId);
+  deps.openBook?.(data.bookId || data?.book?.id);
   downloadProgress?.stop?.();
 }
 
@@ -1432,19 +1383,6 @@ export function initSearch(options = {}) {
   });
   document.addEventListener('xandrio:search-sources-changed', loadSearchSources);
   document.addEventListener('click', (e) => {
-    const importBtn = e.target.closest('[data-import-action]');
-    if (importBtn && searchResults?.contains(importBtn)) {
-      e.preventDefault();
-      e.stopPropagation();
-      if (importBtn.dataset.importAction === 'open-book' && importBtn.dataset.bookId) {
-        deps.navigateTo?.('library');
-        deps.openBook?.(importBtn.dataset.bookId);
-      } else if (importBtn.dataset.importAction === 'restore-results') {
-        searchResults.innerHTML = lastImportReviewResultsHtml || '';
-      }
-      return;
-    }
-
     const loadMore = e.target.closest('[data-search-load-more]');
     if (loadMore && searchResults?.contains(loadMore)) {
       e.preventDefault();

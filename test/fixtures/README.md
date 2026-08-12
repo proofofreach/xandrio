@@ -24,3 +24,17 @@
   scores, formats, and source associations are synthetic.
 - **Reuse basis:** This minimal factual test-data compilation was created for
   this repository and is distributed under the repository's MIT licence.
+
+## `import-corpus.js`
+
+- **Created:** 2026-08-12 by the Xandrio project contributors for import-policy characterization.
+- **Source:** Programmatically constructed import-policy cases, supplemented by `test-import-format-corpus.js`, which passes synthetic stored PDF pages and a synthetic Kindle parser container through the real format adapters. `test-epub-parsing.js` builds and parses a real synthetic EPUB ZIP. All prose, metadata, diagnostics, and structural variants are synthetic.
+- **Sanitization:** Contains no imported book text, filenames, paths, hashes, titles, authors, provider records, credentials, or user data. The cases reproduce only general failure classes observed by the importer.
+- **Reuse basis:** This fixture was created for this repository and is distributed under the repository's MIT licence.
+
+The paired import-reliability benchmark also creates a real EPUB ZIP, stored
+PDF page data, a Kindle parser container, and clean/decode-loss compatible
+candidate editions at runtime. Their prose and metadata are synthetic. The
+browser harness performs successful imports in the rendered application.
+Temporary fixtures and private comparison reports are deleted after the run
+and are never added to the repository.

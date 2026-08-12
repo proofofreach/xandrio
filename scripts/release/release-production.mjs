@@ -9,6 +9,9 @@ import { execFileSync } from 'node:child_process';
 import { resolve } from 'node:path';
 
 const REPO_ROOT = resolve(import.meta.dirname, '..', '..');
+const TEST_SCRIPT = resolve(REPO_ROOT, 'test', 'run-all.js');
+const BROWSER_SCRIPT = resolve(REPO_ROOT, 'scripts', 'smoke-browser.js');
+const IMPORT_BENCHMARK_SCRIPT = resolve(REPO_ROOT, 'scripts', 'benchmark-import-reliability.js');
 const SYNC_SCRIPT = resolve(import.meta.dirname, 'sync-public.mjs');
 const DEPLOY_SCRIPT = resolve(import.meta.dirname, 'deploy-production.mjs');
 
@@ -23,6 +26,9 @@ export function releaseProduction({
   deploymentArgs = [],
   runPhase = defaultRunPhase
 } = {}) {
+  runPhase('tests', TEST_SCRIPT, []);
+  runPhase('browser', BROWSER_SCRIPT, []);
+  runPhase('import-benchmark', IMPORT_BENCHMARK_SCRIPT, ['--candidate', 'HEAD']);
   runPhase('publish', SYNC_SCRIPT, []);
   runPhase('deploy', DEPLOY_SCRIPT, deploymentArgs);
 }

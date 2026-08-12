@@ -15,6 +15,7 @@ const { tmpdir } = require('node:os');
 const { resolve } = require('node:path');
 
 const prepareScript = resolve(__dirname, '..', 'scripts', 'release', 'prepare-public-root.mjs');
+const gitleaksConfig = resolve(__dirname, '..', '.gitleaks.toml');
 let passed = 0;
 let failed = 0;
 
@@ -115,6 +116,20 @@ exit 0
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /must be outside the private source repository/);
     assert.equal(existsSync(unsafeOutput), false);
+  });
+
+  check('allows only generated structure fingerprints in the synthetic import corpus', () => {
+    const config = readFileSync(gitleaksConfig, 'utf8');
+    assert.equal((config.match(/\[\[allowlists\]\]/g) || []).length, 2);
+    const expectedAllowlist = String.raw`[[allowlists]]
+description = "Synthetic chapter structure fingerprints are not credentials"
+targetRules = ["generic-api-key"]
+condition = "AND"
+regexTarget = "line"
+regexes = ['''^\s*structureKey:\s*'v1-[0-9a-f]{20}',?\s*$''']
+paths = ['''^test/fixtures/import-corpus\.js$''']`;
+    assert.match(config, new RegExp(expectedAllowlist.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    assert.doesNotMatch(expectedAllowlist, /apiKey|token|secret/i);
   });
 } finally {
   rmSync(fixture, { recursive: true, force: true });

@@ -3,8 +3,10 @@ const os = require('os');
 const path = require('path');
 const { createBookDocument } = require('../lib/book-document');
 const { createXBookStore } = require('../lib/xbook-store');
+const { ALLOWED_TEXT_MUTATIONS, attachMutationActivations } = require('../lib/extraction-result');
 const {
   buildChapterIndexMap,
+  buildChapterTransition,
   remapBookPositions,
   remapBookBookmarks
 } = require('../lib/chapter-reprocess');
@@ -38,7 +40,9 @@ function createFixture(options = {}) {
     getXBookStore: () => xbook,
     extractEpubChapters: async source => {
       calls.push(`chapters:epub:${source}`);
-      return [chapter('EPUB chapter')];
+      const chapters = [chapter('EPUB chapter')];
+      if (options.epubMutations) attachMutationActivations(chapters, options.epubMutations);
+      return chapters;
     },
     extractPdfChapters: async source => {
       calls.push(`chapters:pdf:${source}`);
@@ -108,6 +112,23 @@ section('Format dispatch, metadata, and covers');
   const sourceDocumentChapters = await sourceDocumentFixture.document.extractChapters('/library/source-data.pdf');
   assert(sourceDocumentChapters.sourceDocument?._pdfStructureVersion === 2,
     'preserves PDF reprocessing data through chapter normalization');
+
+  const extractionResult = await sourceDocumentFixture.document.extractResult('/library/source-data.pdf');
+  assert(extractionResult.sourceFormat === 'pdf' &&
+    extractionResult.sourceDocument?._pdfStructureVersion === 2 &&
+    extractionResult.chapters.extractionResult === extractionResult,
+  'exposes one extraction result while preserving the chapter-array adapter');
+
+  const mutationFixture = createFixture({
+    epubMutations: [{
+      code: ALLOWED_TEXT_MUTATIONS.INVISIBLE_CHARACTER_REMOVAL.code,
+      count: 2
+    }]
+  });
+  const normalizedResult = await mutationFixture.document.extractResult('/library/mutations.epub');
+  assert(normalizedResult.mutations.some(mutation =>
+    mutation.code === ALLOWED_TEXT_MUTATIONS.INVISIBLE_CHARACTER_REMOVAL.code && mutation.count === 2),
+  'preserves extractor-site mutation activations through document normalization');
 
   const metadata = await Promise.all([
     document.extractMetadata('/library/book.epub'),
@@ -248,11 +269,13 @@ section('Format dispatch, metadata, and covers');
     const reloaded = await store.readXBookArtifact(written.xbookPath);
     assert(reloaded.sourceDocument?._pdfStructureVersion === 2,
       'persists PDF page data separately from narrated chapters');
-    const reprocessedArtifact = await store.reprocessXBookArtifact(written.xbookPath);
-    assert(reprocessedArtifact.chapters[0].title === 'Reprocessed chapter' &&
-      reprocessedArtifact.sourceDocument.reprocessedAt,
-    'rewrites XBook chapters from persisted PDF page data');
-
+    assert(reloaded.processingVersion === 1,
+      'new XBook artifacts record the extraction processing version');
+    const rebuildPlan = await store.planXBookRebuild(written.xbookPath);
+    assert(rebuildPlan.safe && rebuildPlan.candidate.chapters[0].title === 'Reprocessed chapter',
+      'plans a text-conserving rebuild without mutating the artifact');
+    assert((await store.readXBookArtifact(written.xbookPath)).chapters[0].title === 'Persisted PDF chapter',
+      'a rebuild plan is a dry run until a transaction commits it');
     const legacyPath = path.join(xbookDir, 'legacy.xbook.json');
     await fs.writeFile(legacyPath, JSON.stringify({
       _xbookVersion: 1,
@@ -263,20 +286,22 @@ section('Format dispatch, metadata, and covers');
     }));
     assert((await store.readXBookArtifact(legacyPath)).id === 'legacy',
       'keeps existing version-one XBook artifacts readable after the version bump');
+    assert((await store.readXBookArtifact(legacyPath)).processingVersion === undefined,
+      'treats a missing legacy processing version in memory without rewriting on read');
   } finally {
     await fs.rm(xbookDir, { recursive: true, force: true });
   }
 
   section('PDF chapter state remapping');
   const previousChapters = [
-    { title: 'Pages 1-20', pageStart: 1, pageEnd: 20 },
-    { title: 'Pages 21-40', pageStart: 21, pageEnd: 40 },
-    { title: 'Pages 41-60', pageStart: 41, pageEnd: 60 }
+    { title: 'Pages 1-20', pageStart: 1, pageEnd: 20, text: 'Alpha prose. '.repeat(100), estimatedDuration: 100 },
+    { title: 'Pages 21-40', pageStart: 21, pageEnd: 40, text: 'Beta prose. '.repeat(100), estimatedDuration: 100 },
+    { title: 'Pages 41-60', pageStart: 41, pageEnd: 60, text: 'Gamma prose. '.repeat(100), estimatedDuration: 100 }
   ];
   const authoredChapters = [
-    { title: 'Introduction', pageStart: 5, pageEnd: 12 },
-    { title: 'Chapter 1: First Steps', pageStart: 13, pageEnd: 31 },
-    { title: 'Chapter 2: Going Further', pageStart: 32, pageEnd: 60 }
+    { title: 'Introduction', pageStart: 5, pageEnd: 12, text: previousChapters[0].text, estimatedDuration: 100 },
+    { title: 'Chapter 1: First Steps', pageStart: 13, pageEnd: 31, text: previousChapters[1].text, estimatedDuration: 100 },
+    { title: 'Chapter 2: Going Further', pageStart: 32, pageEnd: 60, text: previousChapters[2].text, estimatedDuration: 100 }
   ];
   const chapterIndexMap = buildChapterIndexMap(previousChapters, authoredChapters);
   assert(JSON.stringify(chapterIndexMap) === JSON.stringify([0, 1, 2]),
@@ -285,28 +310,34 @@ section('Format dispatch, metadata, and covers');
   const positions = {
     users: {
       reader: {
-        book: { chapterIndex: 1, timestamp: 120, chunkIndex: 3, chunkTime: 10 }
+        book: { chapterIndex: 1, timestamp: 50, chunkIndex: 3, chunkTime: 10 }
       }
     }
   };
-  remapBookPositions(positions, 'book', chapterIndexMap, 'v1-new');
+  const transition = buildChapterTransition(previousChapters, authoredChapters);
+  assert(transition.safe, 'builds a safe character-offset transition when narration text is conserved');
+  remapBookPositions(positions, 'book', transition, 'v1-new');
   assert(positions.users.reader.book.chapterIndex === 1 &&
-    positions.users.reader.book.timestamp === 0 &&
+    positions.users.reader.book.timestamp === 50 &&
     positions.users.reader.book.chapterStructureKey === 'v1-new' &&
-    positions.users.reader.book.chunkIndex === undefined,
-  'remaps playback positions and clears stale within-chapter anchors');
+    positions.users.reader.book.chunkIndex === 3,
+  'remaps playback positions without resetting time or unchanged chunk anchors');
 
   const bookmarks = {
     users: {
       reader: {
-        book: [{ id: 'bm-1', chapterIndex: 2, timestamp: 15 }]
+        book: [{ id: 'bm-1', chapterIndex: 2, timestamp: 25 }]
       }
     }
   };
-  remapBookBookmarks(bookmarks, 'book', chapterIndexMap);
+  remapBookBookmarks(bookmarks, 'book', transition);
   assert(bookmarks.users.reader.book[0].chapterIndex === 2 &&
-    bookmarks.users.reader.book[0].timestamp === 0,
-  'remaps bookmarks and clears stale within-chapter anchors');
+    bookmarks.users.reader.book[0].timestamp === 25,
+  'remaps bookmarks without resetting their within-chapter position');
+
+  const unsafeTransition = buildChapterTransition(previousChapters, authoredChapters.slice(0, 2));
+  assert(!unsafeTransition.safe && unsafeTransition.reason === 'narration-text-mismatch',
+    'refuses a transition that loses narration text');
 
   console.log(`\nBook Document tests: ${passed} passed, ${failed} failed`);
   if (failed) process.exit(1);
