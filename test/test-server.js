@@ -44,6 +44,8 @@ const {
 } = require('../lib/chapter-utils');
 const {
   isGarbageTitle,
+  isGarbageAuthor,
+  cleanTitleForIdentity,
   normalizeAuthorForDisplay,
   resolveMetadataSeed,
   scoreOpenLibraryDoc,
@@ -1160,6 +1162,10 @@ section('13. Metadata seed cleanup');
   const hash = '5ad3364e164db174680b270182cf1fd0';
   assert(isGarbageTitle(hash), 'MD5 hashes are treated as garbage titles');
   assert(isGarbageTitle('T H E'), 'Spaced letter fragments are treated as garbage titles');
+  assert(isGarbageTitle('DemocracyThe God That Failed'), 'Fused title words are treated as damaged metadata');
+  assert(isGarbageAuthor('2000 (Z-Library)'), 'A source-labelled year is not accepted as an author');
+  assertEqual(cleanTitleForIdentity('DemocracyThe God That Failed'), 'Democracy The God That Failed',
+    'Identity lookup repairs fused title words');
   assertEqual(normalizeAuthorForDisplay('Yogananda, Paramhansa'), 'Paramhansa Yogananda',
     'Catalog-order embedded author names are normalized for display');
 
@@ -1181,6 +1187,49 @@ section('13. Metadata seed cleanup');
   assertEqual(mismatched.title, 'The Left Hand of Darkness', 'Selected search title wins over unrelated embedded metadata');
   assertEqual(mismatched.author, 'Ursula K. Le Guin', 'Selected search author wins when embedded title is unrelated');
   assert(mismatched.embeddedLooksWrong, 'Unrelated embedded metadata is marked mismatched');
+
+  const sourceLabelAuthor = resolveMetadataSeed(
+    { title: 'The Way of Hermes', author: '2000 (Z-Library)' },
+    null,
+    null,
+    'The Way of Hermes - 2000 (Z-Library).mobi'
+  );
+  assertEqual(sourceLabelAuthor.author, null, 'Source-labelled years are discarded from embedded and filename authors');
+
+  assertEqual(normalizeChapterTitleForDisplay("It'scalled Responsibility"), "It's called Responsibility",
+    'Chapter titles separate words fused after contractions');
+  assertEqual(normalizeChapterTitleForDisplay('What’slove Got To Do With It?'), "What's love Got To Do With It?",
+    'Chapter titles separate words fused after curly-apostrophe contractions');
+  assertEqual(stripHTML('<p>It\'scalled responsibility.</p>'), "It's called responsibility.",
+    'Narration text separates words fused after contractions');
+  assertEqual(normalizeChapterType({
+    title: "It'scalled Responsibility",
+    type: 'content',
+    text: "It'scalled responsibility. " + 'Reader prose. '.repeat(80)
+  }).title, "It's called Responsibility", 'Stored chapter titles receive display normalization');
+
+  const numberedProse = normalizeChapterType({
+    title: 'They Saw It on TV',
+    type: 'content',
+    text: [
+      'THEY SAW IT ON TV',
+      'This opening paragraph contains a full discussion rather than navigation. '.repeat(5),
+      '1. Parents should take time and get involved with their children. '.repeat(4),
+      '2. The input in our minds influences our outlook on life. '.repeat(4),
+      '3. Children should see their parents as role models they can copy. '.repeat(4)
+    ].join('\n')
+  });
+  assertEqual(numberedProse.title, 'They Saw It on TV', 'A prose chapter with a numbered list is not renamed Contents');
+  assertEqual(numberedProse.type, 'content', 'A prose chapter with a numbered list remains reader content');
+  const staleNumberedProse = normalizeChapterType({
+    ...numberedProse,
+    title: 'Contents',
+    type: 'toc',
+    rawTitle: 'They Saw It on TV',
+    rawType: 'content'
+  });
+  assertEqual(staleNumberedProse.title, 'They Saw It on TV', 'A stale false Contents title is restored from its recorded source title');
+  assertEqual(staleNumberedProse.type, 'content', 'A stale false Contents type is restored to reader content');
 
   assertEqual(serverTestHooks.publishedYearFromMetadata('2024-03-10', 1999), 2024, 'Metadata date extracts published year');
   assertEqual(serverTestHooks.publishedYearFromMetadata('not a date', 1999), 1999, 'Invalid metadata date uses fallback year');
