@@ -1,19 +1,13 @@
 const assert = require('node:assert/strict');
 const { execFileSync } = require('node:child_process');
-const { mkdtempSync, mkdirSync, rmSync, writeFileSync } = require('node:fs');
+const { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } = require('node:fs');
 const { tmpdir } = require('node:os');
 const { join } = require('node:path');
 
 const root = process.cwd();
 const checker = join(root, 'scripts/release/check-docker-context.mjs');
 const fixture = mkdtempSync(join(tmpdir(), 'xandrio-docker-context-'));
-const requiredIgnore = [
-  '.git', '.env', '.env.*', '.npmrc', 'data', 'cache', 'logs',
-  'alexandrio-xandrio/data', 'tts-benchmark-samples', 'Test Books', 'node_modules',
-  'kokoro-venv', 'chatterbox-venv', 'mlx-venv', '*-venv', '.claude', '.codex',
-  '.clawpatch', '.playwright-cli', 'output', 'nanobanana-output', '*.pem',
-  '*.key', '*.mp3', '*.wav', '*.epub', '*.pdf', '*.mobi', '*.azw3'
-].join('\n') + '\n!.env.template';
+const projectDockerIgnore = readFileSync(join(root, '.dockerignore'), 'utf8');
 
 function run() {
   return execFileSync('node', [checker, `--root=${fixture}`], {
@@ -24,9 +18,13 @@ function run() {
 }
 
 try {
-  writeFileSync(join(fixture, '.dockerignore'), `${requiredIgnore}\n`);
+  writeFileSync(join(fixture, '.dockerignore'), projectDockerIgnore);
   writeFileSync(join(fixture, '.env.template'), 'SAFE_TEMPLATE=true\n');
   writeFileSync(join(fixture, 'app.js'), 'console.log("safe");\n');
+  mkdirSync(join(fixture, 'scripts'), { recursive: true });
+  mkdirSync(join(fixture, 'test'), { recursive: true });
+  writeFileSync(join(fixture, 'scripts', 'audit-private-import-corpus.js'), 'audit-only fixture\n');
+  writeFileSync(join(fixture, 'test', 'test-import-benchmark-private.js'), 'audit-only fixture\n');
   mkdirSync(join(fixture, '.git'));
   writeFileSync(join(fixture, '.git', 'config'), 'not a real repository\n');
 

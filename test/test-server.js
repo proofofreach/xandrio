@@ -170,6 +170,9 @@ section('1. stripHTML');
   assert(r4.includes('Content'), 'Preserves content after script/style removal');
   assert(!r4.includes('color'), 'Removes style content');
   assert(!r4.includes('alert'), 'Removes script content');
+  const spacedScriptClose = stripHTML('<script>alert("x")</script ><p>Safe narration.</p>');
+  assert(!spacedScriptClose.includes('alert'), 'Removes script content when the closing tag contains whitespace');
+  assert(spacedScriptClose.includes('Safe narration.'), 'Preserves narration after a spaced script closing tag');
 
   // 1e. Nested tags
   const r5 = stripHTML('<div><p><strong><em>Deep</em></strong></p></div>');

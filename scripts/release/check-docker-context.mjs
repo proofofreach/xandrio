@@ -17,7 +17,9 @@ const requiredRules = [
   'node_modules', 'kokoro-venv', 'chatterbox-venv', 'mlx-venv', '*-venv',
   '.claude', '.codex', '.clawpatch', '.playwright-cli', 'output',
   'nanobanana-output', '*.pem', '*.key',
-  '*.mp3', '*.wav', '*.epub', '*.pdf', '*.mobi', '*.azw3'
+  '*.mp3', '*.wav', '*.epub', '*.pdf', '*.mobi', '*.azw3',
+  'scripts/audit-private-import-corpus.js',
+  'test/test-import-benchmark-private.js'
 ];
 
 for (const rule of requiredRules) {
