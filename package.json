@@ -62,7 +62,7 @@
     "cors": "^2.8.5",
     "epub": "2.1.1",
     "express": "5.2.1",
-    "express-rate-limit": "8.6.0",
+    "express-rate-limit": "8.6.2",
     "https-proxy-agent": "^9.1.0",
     "multer": "2.2.0",
     "node-edge-tts": "1.2.10",
