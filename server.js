@@ -89,6 +89,11 @@ const { createOperatorDiagnostics } = require('./lib/operator-diagnostics');
 const { registerBookmarksRoutes, removeBookBookmarks } = require('./lib/routes/bookmarks-routes');
 const { registerListeningQueueRoutes } = require('./lib/routes/listening-queue-routes');
 const { registerOperatorPolicyRoutes } = require('./lib/routes/operator-policy-routes');
+const { registerBookGuideRoutes } = require('./lib/routes/book-guide-routes');
+const { createBookGuideJournal } = require('./lib/book-guide-journal');
+const { createOllamaBookGuideProvider } = require('./lib/book-guide-provider');
+const { createBookGuideService } = require('./lib/book-guide-service');
+const { createBookGuideStore } = require('./lib/book-guide-store');
 const jsonStore = require('./lib/json-store');
 const {
   canonicalStorageDirectory,
@@ -372,6 +377,10 @@ const LISTENING_QUEUE_FILE = path.join(DATA_DIR, 'listening-queues.json');
 const BOOK_DELETIONS_FILE = path.join(DATA_DIR, 'book-deletions.json');
 const CUSTOM_VOICES_FILE = path.join(DATA_DIR, 'custom-voices.json');
 const PRONUNCIATIONS_FILE = path.join(DATA_DIR, 'pronunciations.json');
+const BOOK_GUIDE_JOBS_FILE = path.join(DATA_DIR, 'book-guide-jobs.json');
+const BOOK_GUIDE_CONFIG_FILE = path.join(DATA_DIR, 'book-guide-config.json');
+const BOOK_GUIDE_CERTIFICATION_FILE = path.join(DATA_DIR, 'book-guide-certification.json');
+const BOOK_GUIDE_ARTIFACT_DIR = path.join(CACHE_DIR, 'book-guides');
 const searchCoverService = createSearchCoverService({
   cacheDir: path.join(CACHE_DIR, 'search-covers'),
   getDimensions: getJpegDimensions,
@@ -2082,6 +2091,30 @@ function invalidateChapterCache(bookPath) {
   bookDocument.invalidateChapterCache(bookPath);
 }
 
+const bookGuideStore = createBookGuideStore({
+  artifactDir: BOOK_GUIDE_ARTIFACT_DIR,
+  configFile: BOOK_GUIDE_CONFIG_FILE,
+  certificationFile: BOOK_GUIDE_CERTIFICATION_FILE,
+  jsonStore
+});
+const bookGuideJournal = createBookGuideJournal({
+  filePath: BOOK_GUIDE_JOBS_FILE,
+  jsonStore
+});
+const bookGuideProvider = createOllamaBookGuideProvider({
+  timeoutMs: positiveInteger(process.env.XANDRIO_BOOK_GUIDE_MODEL_TIMEOUT_MS, 180_000)
+});
+const bookGuideService = createBookGuideService({
+  loadBook: async bookId => (await loadJSON(BOOKS_FILE, {}))[bookId] || null,
+  getChapters: bookPath => getChaptersCached(bookPath),
+  store: bookGuideStore,
+  journal: bookGuideJournal,
+  provider: bookGuideProvider,
+  scheduler: generationScheduler,
+  withBookStateLock: bookMutationLocks.withBookStateLock,
+  maxConcurrent: 1
+});
+
 // Multer configuration for file uploads
 const storage = multer.diskStorage({
   destination: async (req, file, cb) => {
@@ -2868,7 +2901,8 @@ const bookDeletionService = createBookDeletionService({
     const cancelledJobs = chunkedTTS.cancelBook(bookId) + instantChunkedTTS.cancelBook(bookId);
     await Promise.all([
       playbackPrefetch.removeBook(bookId),
-      offlinePreparationCoordinator.cancel(bookId, { remove: true })
+      offlinePreparationCoordinator.cancel(bookId, { remove: true }),
+      bookGuideService.removeBook(bookId)
     ]);
     return cancelledJobs;
   },
@@ -4263,6 +4297,11 @@ registerOperatorPolicyRoutes(app, {
   updateSettingsCache
 });
 
+registerBookGuideRoutes(app, {
+  service: bookGuideService,
+  requireAdmin
+});
+
 registerPronunciationRoutes(app, { pronunciationService });
 
 function createConfiguredServer() {
@@ -4308,6 +4347,10 @@ if (require.main === module) {
     const recoveredRebuilds = await chapterRebuildService.recoverAll();
     if (recoveredRebuilds.length) {
       console.log(`Recovered ${recoveredRebuilds.length} interrupted chapter rebuild(s)`);
+    }
+    const recoveredGuides = await bookGuideService.restore();
+    if (recoveredGuides.resumed) {
+      console.log(`Recovered ${recoveredGuides.resumed} interrupted book guide job(s)`);
     }
     narrationEngines.start('kokoro:af_heart');
     narrationEngines.start('chatterbox:brick-scott');
@@ -4380,7 +4423,7 @@ const shutdownController = createGracefulShutdown({
   isIdle: () => {
     const queue = ttsQueue.getQueueStatus();
     return requestConcurrencyLimiter.isIdle() && downloadImportGate.active === 0 &&
-      queue.active === 0 && queue.queued === 0;
+      queue.active === 0 && queue.queued === 0 && bookGuideService.isIdle();
   },
   cleanup: async ({ drained }) => {
     if (!drained) console.warn('Shutdown drain deadline reached; durable generation state will recover on restart.');

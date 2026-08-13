@@ -30,6 +30,7 @@
     "benchmark:kindle": "node scripts/benchmark-kindle-extraction.js",
     "benchmark:imports": "node scripts/benchmark-import-reliability.js",
     "benchmark:imports:bakeoff": "node scripts/benchmark-import-bakeoff.js",
+    "benchmark:book-guides": "node scripts/benchmark-book-guides.js",
     "benchmark:tts": "node scripts/benchmark-tts.js",
     "benchmark:first-play": "node scripts/benchmark-mobile-playback-continuity.js",
     "benchmark:mobile-playback": "node scripts/benchmark-mobile-playback-continuity.js",

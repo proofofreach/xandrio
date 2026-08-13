@@ -89,6 +89,17 @@ export function initSettings(options = {}) {
   const operatorDiagnosticsRefresh = document.getElementById('operator-diagnostics-refresh');
   const operatorDiagnosticsCopy = document.getElementById('operator-diagnostics-copy');
 
+  // Admin-only experimental study guides
+  const bookGuidesSettingsSection = document.getElementById('book-guides-settings-section');
+  const bookGuidesSettingsStatus = document.getElementById('book-guides-settings-status');
+  const bookGuidesEnabled = document.getElementById('book-guides-enabled');
+  const bookGuidesBaseUrl = document.getElementById('book-guides-base-url');
+  const bookGuidesGeneratorModel = document.getElementById('book-guides-generator-model');
+  const bookGuidesVerifierModel = document.getElementById('book-guides-verifier-model');
+  const bookGuidesSave = document.getElementById('book-guides-save');
+  const bookGuidesClear = document.getElementById('book-guides-clear');
+  const bookGuidesSettingsError = document.getElementById('book-guides-settings-error');
+
   // Playback settings
   const skipIntervalControl = document.getElementById('skip-interval-control');
   const defaultSpeedLabel = document.getElementById('default-speed-label');
@@ -122,6 +133,7 @@ export function initSettings(options = {}) {
     checkZlibStatus();
     loadProviderStatus();
     loadAccountOrSync();
+    loadBookGuideSettings();
     loadOperatorDiagnostics();
     renderClientSettings();
     loadPremiumPrepSetting();
@@ -763,6 +775,85 @@ export function initSettings(options = {}) {
     if (user) loadAccountSection();
     else loadSyncStatus();
   }
+
+  // ---- Admin: experimental study guides ----
+
+  function setBookGuideSettingsError(message = '') {
+    if (!bookGuidesSettingsError) return;
+    bookGuidesSettingsError.textContent = message;
+    bookGuidesSettingsError.style.display = message ? 'block' : 'none';
+  }
+
+  function renderBookGuideSettings(config = {}) {
+    if (bookGuidesEnabled) bookGuidesEnabled.checked = config.enabled === true;
+    if (bookGuidesBaseUrl) bookGuidesBaseUrl.value = config.baseUrl || 'http://127.0.0.1:11434';
+    if (bookGuidesGeneratorModel) bookGuidesGeneratorModel.value = config.generator?.name || '';
+    if (bookGuidesVerifierModel) bookGuidesVerifierModel.value = config.verifier?.name || '';
+    if (bookGuidesSettingsStatus) {
+      bookGuidesSettingsStatus.textContent = config.ready ? 'Ready' : (config.enabled ? 'Needs certification' : 'Disabled');
+      bookGuidesSettingsStatus.className = `settings-status ${config.ready ? 'settings-status-ok' : (config.enabled ? 'settings-status-warning' : '')}`.trim();
+    }
+  }
+
+  async function loadBookGuideSettings() {
+    if (!bookGuidesSettingsSection) return;
+    const user = getCurrentUser();
+    if (user && user.role !== 'admin') {
+      bookGuidesSettingsSection.style.display = 'none';
+      return;
+    }
+    setBookGuideSettingsError('');
+    try {
+      const config = await apiGet('/api/book-guides/config');
+      bookGuidesSettingsSection.style.display = 'block';
+      renderBookGuideSettings(config);
+    } catch (err) {
+      if (err.status === 403) {
+        bookGuidesSettingsSection.style.display = 'none';
+        return;
+      }
+      bookGuidesSettingsSection.style.display = 'block';
+      setBookGuideSettingsError(err.message || 'Could not load study-guide settings.');
+    }
+  }
+
+  bookGuidesSave?.addEventListener('click', async () => {
+    setBookGuideSettingsError('');
+    bookGuidesSave.disabled = true;
+    try {
+      const config = await apiSend('PUT', '/api/book-guides/config', {
+        enabled: bookGuidesEnabled?.checked === true,
+        baseUrl: bookGuidesBaseUrl?.value.trim() || '',
+        generatorModel: bookGuidesGeneratorModel?.value.trim() || '',
+        verifierModel: bookGuidesVerifierModel?.value.trim() || ''
+      });
+      renderBookGuideSettings(config);
+      showToast(config.ready ? 'Study guides enabled' : 'Study-guide configuration saved');
+    } catch (err) {
+      setBookGuideSettingsError(err.message || 'Could not save study-guide settings.');
+    } finally {
+      bookGuidesSave.disabled = false;
+    }
+  });
+
+  bookGuidesClear?.addEventListener('click', async () => {
+    const confirmed = await confirmSheet({
+      title: 'Clear study-guide configuration?',
+      message: 'This disables new guide generation. Existing guide artifacts remain available until deleted.',
+      confirmLabel: 'Clear configuration'
+    });
+    if (!confirmed) return;
+    setBookGuideSettingsError('');
+    bookGuidesClear.disabled = true;
+    try {
+      renderBookGuideSettings(await apiSend('DELETE', '/api/book-guides/config'));
+      showToast('Study guides disabled');
+    } catch (err) {
+      setBookGuideSettingsError(err.message || 'Could not clear study-guide settings.');
+    } finally {
+      bookGuidesClear.disabled = false;
+    }
+  });
 
   // ---- Admin: operational diagnostics ----
 

@@ -2,7 +2,7 @@
 //
 // Wraps the existing showView()/openBook() rendering path — the router decides
 // *when* they run, never *how* they render. Routes:
-//   #/library (default) · #/search · #/settings · #/player/:bookId
+//   #/library (default) · #/search · #/settings · #/player/:bookId · #/guide/:bookId
 //
 // Transient sheets/modals get history-backed close: opening one pushes a
 // history entry so the back button dismisses the sheet instead of leaving the
@@ -20,17 +20,23 @@ function parseHash() {
   if (playerMatch) {
     return { view: 'player', bookId: decodeURIComponent(playerMatch[1]) };
   }
+  const guideMatch = hash.match(/^#\/guide\/([^/?#]+)/);
+  if (guideMatch) {
+    return { view: 'guide', bookId: decodeURIComponent(guideMatch[1]) };
+  }
   const viewMatch = hash.match(/^#\/(library|search|settings|stats)\b/);
   return { view: viewMatch ? viewMatch[1] : 'library', bookId: null };
 }
 
 function routeKey(route) {
-  return route.view === 'player' ? `player:${route.bookId}` : route.view;
+  return route.view === 'player' || route.view === 'guide' ? `${route.view}:${route.bookId}` : route.view;
 }
 
 function keyToView(key) {
   if (!key) return null;
-  return key.startsWith('player:') ? 'player' : key;
+  if (key.startsWith('player:')) return 'player';
+  if (key.startsWith('guide:')) return 'guide';
+  return key;
 }
 
 function prefersReducedMotion() {
@@ -76,13 +82,38 @@ async function route({ force = false } = {}) {
         navigateTo('library', null, { replace: true });
       }
     }
+  } else if (target.view === 'guide') {
+    if (!config.isBookOpen(target.bookId)) {
+      try {
+        const opened = await config.openBook(target.bookId);
+        if (opened === false) {
+          navigateTo('library', null, { replace: true });
+          return;
+        }
+        // openBook keeps playback deep links canonical. Restore the requested
+        // guide route once its async book load has finished.
+        if (window.location.hash !== `#/guide/${encodeURIComponent(target.bookId)}`) {
+          lastRenderedKey = null;
+          navigateTo('guide', target.bookId, { replace: true });
+          return;
+        }
+      } catch (err) {
+        console.error('Router: failed to open guide book from hash:', err);
+        navigateTo('library', null, { replace: true });
+        return;
+      }
+    }
+    runViewTransition(previousView, 'guide', () => config.showView('guide'));
+    await config.openGuide?.(target.bookId);
   } else {
     runViewTransition(previousView, target.view, () => config.showView(target.view));
   }
 }
 
 export function navigateTo(view, bookId = null, { replace = false } = {}) {
-  const hash = view === 'player' ? `#/player/${encodeURIComponent(bookId)}` : `#/${view}`;
+  const hash = view === 'player' || view === 'guide'
+    ? `#/${view}/${encodeURIComponent(bookId)}`
+    : `#/${view}`;
   if (window.location.hash === hash) {
     route({ force: true });
     return;

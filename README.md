@@ -61,6 +61,10 @@ Chatterbox can use an operator-supplied voice reference. Use one only with autho
 
 See [docs/PRIVACY.md](docs/PRIVACY.md) for the outbound-data matrix, retention, and disablement controls. See [docs/SELF_HOSTING.md](docs/SELF_HOSTING.md) for private deployment, backups, upgrades, and deletion.
 
+## Experimental book guides
+
+Book Guides are disabled by default. V1 is for English nonfiction only and begins with a local Ollama-compatible generator/verifier path; it sends no book text to an external model provider. An admin must attest that a book is nonfiction before generation. Guides are evidence-linked, versioned artifacts that are deleted with their book. See [docs/BOOK_GUIDES.md](docs/BOOK_GUIDES.md) for the local hardware, certification, privacy, and evaluation requirements. Fiction support is future scope, not a fallback mode.
+
 ## Configuration
 
 Copy [`.env.template`](.env.template) to `.env` and set only the features you use. `ANNAS_SECRET_KEY` is optional. The default Anna origin is allowed automatically; an operator-selected mirror must also appear in `ANNAS_ALLOWED_ORIGINS` so a browser client cannot redirect the fallback toward an internal service. Z-Library credentials are entered in Settings; a successful connection retains session data, not the submitted password. Search resolves only high-confidence cross-source work aliases; operators can temporarily set `SEARCH_WORK_GROUPING_MODE=exact` to disable typo and publisher/imprint alias resolution. The standard container defaults to Edge and disables local engine auto-start.
@@ -80,6 +84,7 @@ Multiple people can share one instance: create username/password accounts with `
 - [Support](SUPPORT.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [Feature and verification matrix](docs/FEATURE_MATRIX.md)
+- [Experimental Book Guides](docs/BOOK_GUIDES.md)
 - [API reference](docs/API.md)
 - [Umbrel packaging](docs/UMBREL.md)
 - [Contributing](CONTRIBUTING.md)
