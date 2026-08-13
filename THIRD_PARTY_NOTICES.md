@@ -60,7 +60,7 @@ This file is generated from the locked installed Node dependency tree by `npm ru
 | bl | 4.1.0 | MIT | https://github.com/rvagg/bl.git |
 | bn.js | 4.12.5 | MIT | git@github.com:indutny/bn.js |
 | body-parser | 2.3.0 | MIT | expressjs/body-parser |
-| brace-expansion | 1.1.16 | MIT | git://github.com/juliangruber/brace-expansion.git |
+| brace-expansion | 1.1.18 | MIT | git://github.com/juliangruber/brace-expansion.git |
 | braces | 3.0.3 | MIT | micromatch/braces |
 | buffer | 5.7.1 | MIT | git://github.com/feross/buffer.git |
 | buffer-equal-constant-time | 1.0.1 | BSD-3-Clause | git@github.com:goinstant/buffer-equal-constant-time.git |
@@ -125,7 +125,7 @@ This file is generated from the locked installed Node dependency tree by `npm ru
 | express-rate-limit | 8.6.0 | MIT | https://github.com/express-rate-limit/express-rate-limit.git |
 | extend | 3.0.2 | MIT | https://github.com/justmoon/node-extend.git |
 | fast-deep-equal | 3.1.3 | MIT | https://github.com/epoberezkin/fast-deep-equal.git |
-| fast-uri | 3.1.4 | BSD-3-Clause | https://github.com/fastify/fast-uri.git |
+| fast-uri | 3.1.5 | BSD-3-Clause | https://github.com/fastify/fast-uri.git |
 | fast-xml-builder | 1.3.0 | MIT | https://github.com/NaturalIntelligence/fast-xml-builder.git |
 | fast-xml-parser | 5.10.1 | MIT | https://github.com/NaturalIntelligence/fast-xml-parser.git |
 | fdir | 6.5.0 | MIT | https://github.com/thecodrr/fdir.git |
@@ -196,7 +196,7 @@ This file is generated from the locked installed Node dependency tree by `npm ru
 | isexe | 3.1.5 | BlueOak-1.0.0 | https://github.com/isaacs/isexe |
 | isobject | 3.0.1 | MIT | jonschlinkert/isobject |
 | jackspeak | 3.4.3 | BlueOak-1.0.0 | https://github.com/isaacs/jackspeak.git |
-| js-yaml | 4.3.0 | MIT | nodeca/js-yaml |
+| js-yaml | 4.3.1 | MIT | nodeca/js-yaml |
 | json-schema-traverse | 1.0.0 | MIT | https://github.com/epoberezkin/json-schema-traverse.git |
 | jsonfile | 6.2.0 | MIT | git@github.com:jprichardson/node-jsonfile.git |
 | jszip | 3.10.1 | (MIT OR GPL-3.0-or-later) | https://github.com/Stuk/jszip.git |
@@ -353,7 +353,7 @@ This file is generated from the locked installed Node dependency tree by `npm ru
 | strip-json-comments | 2.0.1 | MIT | sindresorhus/strip-json-comments |
 | strnum | 2.4.1 | MIT | https://github.com/NaturalIntelligence/strnum |
 | supports-color | 5.5.0 | MIT | chalk/supports-color |
-| tar | 7.5.18 | BlueOak-1.0.0 | https://github.com/isaacs/node-tar.git |
+| tar | 7.5.22 | BlueOak-1.0.0 | https://github.com/isaacs/node-tar.git |
 | tar-fs | 2.1.5 | MIT | https://github.com/mafintosh/tar-fs.git |
 | tar-stream | 2.2.0 | MIT | https://github.com/mafintosh/tar-stream.git |
 | tinyglobby | 0.2.17 | MIT | https://github.com/SuperchupuDev/tinyglobby.git |
