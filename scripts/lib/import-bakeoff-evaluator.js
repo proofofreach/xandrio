@@ -229,6 +229,7 @@ async function evaluateBakeoffVersion({
     let importable = false;
     const warnings = [];
     const errors = [];
+    const diagnostics = [];
     try {
       const response = await importer.import({
         kind: 'upload',
@@ -241,6 +242,7 @@ async function evaluateBakeoffVersion({
       chapters = await document.extractChapters(record.path);
       warnings.push(...(record.importValidation?.warnings || []));
       errors.push(...(record.importValidation?.errors || []));
+      diagnostics.push(...(record.importValidation?.diagnostics || []));
     } catch (error) {
       warnings.push(...(error?.response?.warnings || []));
       errors.push(
@@ -252,13 +254,15 @@ async function evaluateBakeoffVersion({
       } catch {}
     }
     const content = importValidation.assessExtractedContent(chapters, { format: value.format });
-    warnings.push(...(content.warnings || []), ...(content.diagnostics || []));
+    warnings.push(...(content.warnings || []));
+    diagnostics.push(...(content.diagnostics || []));
     if (!importable) errors.push(...(content.errors || []));
     const text = normalizedNarration(chapters);
     const chunks = chapters.flatMap(chapter => planNarration(chapter?.text || '', { maxChars: 4000 }).chunks || []);
     const minimumNormalizedChars = Math.max(1, Number(value.minimumNormalizedChars) || 1);
     const warningKeys = diagnosticKeys(warnings, 'warning');
     const errorKeys = diagnosticKeys(errors, 'error');
+    const diagnosticIdentityKeys = diagnosticKeys(diagnostics, 'diagnostic');
     results.push({
       id: value.id,
       expectedImportable: value.expectedImportable !== false,
@@ -277,8 +281,10 @@ async function evaluateBakeoffVersion({
       defectCount: defectCount(chapters),
       warningCount: warningKeys.length,
       errorCount: errorKeys.length,
+      diagnosticCount: diagnosticIdentityKeys.length,
       warningKeys,
-      errorKeys
+      errorKeys,
+      diagnosticKeys: diagnosticIdentityKeys
     });
   }
 

@@ -113,6 +113,7 @@ const diagnosticRegression = compareImportBakeoff({
   }
 });
 assert.equal(diagnosticRegression.passed, false);
+assert.equal(diagnosticRegression.summary.warningChanges, 1);
 assert.equal(diagnosticRegression.summary.warningRegressions, 1);
 assert.equal(diagnosticRegression.summary.errorRegressions, 1);
 assert.deepEqual(diagnosticRegression.differences.map(value => value.id), ['new:4']);
@@ -131,9 +132,40 @@ const replacedWarning = compareImportBakeoff({
       : value)
   }
 });
-assert.equal(replacedWarning.passed, false);
-assert.equal(replacedWarning.summary.warningRegressions, 1);
+assert.equal(replacedWarning.passed, true);
+assert.equal(replacedWarning.summary.warningChanges, 1);
 assert.equal(replacedWarning.differences[0].warningsChanged, true);
+
+const addedInternalDiagnostic = compareImportBakeoff({
+  baseline,
+  candidate: {
+    ...candidate,
+    cases: candidate.cases.map(value => value.id === 'known:2'
+      ? { ...value, diagnosticCount: 1, diagnosticKeys: ['structure.low-confidence'] }
+      : value)
+  }
+});
+assert.equal(addedInternalDiagnostic.passed, true);
+assert.equal(addedInternalDiagnostic.summary.diagnosticChanges, 1);
+assert.equal(addedInternalDiagnostic.differences[0].diagnosticsChanged, true);
+
+const replacedError = compareImportBakeoff({
+  baseline: {
+    ...baseline,
+    cases: baseline.cases.map(value => value.id === 'known:3'
+      ? { ...value, errorCount: 1, errorKeys: ['existing-error'] }
+      : value)
+  },
+  candidate: {
+    ...candidate,
+    cases: candidate.cases.map(value => value.id === 'known:3'
+      ? { ...value, errorCount: 1, errorKeys: ['new-error'] }
+      : value)
+  }
+});
+assert.equal(replacedError.passed, false);
+assert.equal(replacedError.summary.errorRegressions, 1);
+assert.equal(replacedError.differences[0].errorsChanged, true);
 
 const stillRejected = compareImportBakeoff({
   baseline: {
@@ -163,4 +195,4 @@ assert.equal(uxRegression.passed, false);
 assert.equal(uxRegression.summary.userActionRegressions, 2);
 assert(uxRegression.gates.some(value => value.id === 'no-empty-warning-message' && !value.passed));
 
-console.log('38 passed, 0 failed');
+console.log('45 passed, 0 failed');
