@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "selectedAt": "2026-08-12T23:20:00Z",
+  "selectionRule": "Four previously unused public-domain books selected before old/new evaluation",
+  "sources": [
+    {
+      "url": "https://www.gutenberg.org/ebooks/11.epub3.images",
+      "sourcePage": "https://www.gutenberg.org/ebooks/11",
+      "filename": "holdout-01.epub",
+      "format": "epub",
+      "sha256": "6b79f2d23b804172816e81c463dbcea689593bbde63ef200d52b6c0da7ef629c",
+      "minimumNormalizedChars": 20000,
+      "rights": "Public domain in the USA"
+    },
+    {
+      "url": "https://www.gutenberg.org/ebooks/2701.epub3.images",
+      "sourcePage": "https://www.gutenberg.org/ebooks/2701",
+      "filename": "holdout-02.epub",
+      "format": "epub",
+      "sha256": "2f39814cbc740d02e0a12aa82952e7ee489a831ff56a7cac77b28ce13f4e0ee1",
+      "minimumNormalizedChars": 20000,
+      "rights": "Public domain in the USA"
+    },
+    {
+      "url": "https://www.gutenberg.org/ebooks/84.epub3.images",
+      "sourcePage": "https://www.gutenberg.org/ebooks/84",
+      "filename": "holdout-03.epub",
+      "format": "epub",
+      "sha256": "dd7ec02d2c8db4162bf587aa09a692ed5394ead3dfb12d8cc14b449d89795a6a",
+      "minimumNormalizedChars": 20000,
+      "rights": "Public domain in the USA"
+    },
+    {
+      "url": "https://www.gutenberg.org/ebooks/1342.epub3.images",
+      "sourcePage": "https://www.gutenberg.org/ebooks/1342",
+      "filename": "holdout-04.epub",
+      "format": "epub",
+      "sha256": "2c1a5bce2f7fb394609372442c56c49d87e87b94657ccf90c2b90b571a9dfed6",
+      "minimumNormalizedChars": 20000,
+      "rights": "Public domain in the USA"
+    }
+  ]
+}
