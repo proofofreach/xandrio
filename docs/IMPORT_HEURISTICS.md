@@ -97,6 +97,27 @@ or content hashes. Existing defects in an unrebuildable legacy artifact remain
 visible in the aggregate but do not authorize a lossy repair or a title-specific
 rule.
 
+## Bounded old-versus-new confirmation
+
+Use `npm run benchmark:imports:bakeoff -- --historical-manifest <path>` when a
+small directional check is more useful than another broad release gate. The
+private manifest must contain `{"schemaVersion":1,"paths":[...]}` with exactly
+four distinct sources already present in the library. Choose sources that
+represent known processing problems before running the comparison.
+
+The command runs those four sources and four checksum-pinned, previously unused
+public-domain holdouts through the approved previous system and the committed
+candidate at `HEAD`. It compares import success, narration validity and length,
+chapter structure, content defects, warnings, errors, and post-import user
+actions. It fails on any regression or on any candidate that is not listenable.
+The report uses opaque case IDs and excludes metadata, paths, text, content
+hashes, and source digests.
+
+This check does not add a review step to the product. Unchanged cases need no
+manual inspection. Any narration or chapter-structure change stops automatic
+confirmation. The report lists only changed case IDs so a developer can inspect
+or listen to those outputs before deciding whether the change is an improvement.
+
 ## Safe chapter rebuild
 
 Rebuild is a journaled per-book transaction. It backs up the XBook, records the
