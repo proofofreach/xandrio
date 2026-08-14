@@ -28,6 +28,7 @@ function childResult({ stdout = '', stderr = '', code = 0, stayOpen = false } = 
 
 async function run() {
   const calls = [];
+  const ensuredHomes = [];
   let connected = true;
   const spawnImpl = (_binary, args, options) => {
     calls.push({ args, options });
@@ -35,7 +36,7 @@ async function run() {
       return childResult(connected ? { stdout: 'Logged in using ChatGPT\n' } : { stderr: 'Not logged in\n', code: 1 });
     }
     if (args[0] === 'login' && args[1] === '--device-auth') {
-      return childResult({ stdout: 'Open https://auth.openai.com/codex/device and enter ABCD-EFGH\n', stayOpen: true });
+      return childResult({ stdout: 'Use the command-line flow. Open https://auth.openai.com/codex/device and enter ABCD-EFGH\n', stayOpen: true });
     }
     if (args[0] === 'logout') {
       connected = false;
@@ -43,12 +44,17 @@ async function run() {
     }
     return childResult({ stdout: '{"claims":[]}\n' });
   };
-  const provider = createCodexBookGuideProvider({ codexHome: '/private/codex-home', spawnImpl });
+  const provider = createCodexBookGuideProvider({
+    codexHome: '/private/codex-home',
+    spawnImpl,
+    ensureHomeImpl: async home => ensuredHomes.push(home)
+  });
 
   await test('uses a dedicated Codex home and supported subscription model identity', async () => {
     const model = await provider.inspect({ model: 'gpt-5.6-luna' });
     assert.deepStrictEqual(model, { name: 'gpt-5.6-luna', digest: codexDigest('gpt-5.6-luna') });
     assert.strictEqual(calls[0].options.env.CODEX_HOME, '/private/codex-home');
+    assert.deepStrictEqual(ensuredHomes, ['/private/codex-home']);
     await assert.rejects(provider.inspect({ model: 'unknown' }), error => error.code === 'BOOK_GUIDE_MODEL_REQUIRED');
   });
 
