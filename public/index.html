@@ -527,7 +527,6 @@
             </div>
             <div class="settings-form">
               <label class="admin-role-check"><input id="book-guides-enabled" type="checkbox" /> Enable experimental guides</label>
-              <label class="admin-role-check"><input id="book-guides-allow-uncertified" type="checkbox" /> Testing mode (use before quality certification)</label>
               <input id="book-guides-api-key" type="password" placeholder="PPQ.ai API key (leave blank to keep the saved key)" autocomplete="new-password" spellcheck="false" />
               <label for="book-guides-generator-model">Generator model</label>
               <select id="book-guides-generator-model">
@@ -548,7 +547,7 @@
               </div>
             </div>
             <p id="book-guides-settings-error" class="settings-error" aria-live="polite" style="display:none"></p>
-            <p id="book-guides-certification-note" class="settings-hint">Turn on Testing mode to generate your first guide. Test guides are marked as unverified until this exact model setup passes the quality benchmark. The API key is write-only. Use a dedicated PPQ.ai key with a strict spending limit.</p>
+            <p id="book-guides-key-note" class="settings-hint">The API key is write-only. Use a dedicated PPQ.ai key with a strict spending limit. The connection test sends a small paid request.</p>
           </div>
         </details>
 
@@ -1185,6 +1184,6 @@
 
   <script src="/js/lifecycle.js?v=1"></script>
   <script src="/js/chunk-player.js?v=23"></script>
-  <script type="module" src="app.js?v=120"></script>
+  <script type="module" src="app.js?v=121"></script>
 </body>
 </html>

@@ -27,13 +27,15 @@ assert(guide.includes("/api/book/${encodeURIComponent(bookId)}/guide"), 'guide u
 assert(guide.includes("apiSend('POST', guidePath(activeBookId))"), 'guide generation relies on persisted title and provider policy');
 assert(!guide.includes('guide-nonfiction-confirmed'), 'guide creation does not repeat provider rights acknowledgement');
 assert(index.includes('book-guides-api-key'), 'settings expose a write-only PPQ.ai API key field');
-assert(index.includes('book-guides-allow-uncertified'), 'settings expose an explicit uncertified evaluation mode');
+assert(!index.includes('book-guides-allow-uncertified') && settings.includes('allowUncertified: true'), 'experimental guides permit test runs without exposing certification policy as an operator setting');
 assert(index.includes('deepseek/deepseek-v4-flash-0731'), 'settings default to the exact DeepSeek V4 Flash 0731 route');
 assert(index.includes('glm-5.2'), 'settings offer a ZDR-capable independent verifier');
 assert(settings.includes("'/api/book-guides/config/test'"), 'settings can run a bounded paid provider test');
 assert(settings.includes('This acknowledgement applies to the provider configuration, not each title.'), 'provider acknowledgement occurs at configuration time');
 assert(library.includes('data-book-guide-tag') && library.includes('Mark as nonfiction'), 'admins can explicitly tag nonfiction titles');
 assert(library.includes('data-book-guide=') && library.includes('Study guide'), 'tagged titles expose a study-guide action');
+assert(guide.includes('data-guide-tag-nonfiction') && guide.includes("apiSend('PUT', `${guidePath(activeBookId)}/category`"), 'untagged guide state can mark the title as nonfiction without leaving the view');
+assert(guide.includes('Mark this title as nonfiction') && guide.includes("status === 'needs-classification'"), 'untagged titles explain the exact eligibility action instead of reporting configuration unavailable');
 assert(guide.includes('getCurrentUser') && guide.includes("user.role === 'admin'"), 'guide limits generation controls to administrators');
 assert(guide.includes("/cancel") && guide.includes("apiSend('DELETE', guidePath(activeBookId))") && guide.includes("/anchors/${encodeURIComponent(anchorId)}/context"), 'guide supports cancellation, deletion, and source context');
 assert(guide.includes('anchor.audioSeconds') && !guide.includes('seekToSeconds = Number(anchor.timestamp)'), 'guide only seeks when an explicit audio offset exists');
@@ -49,11 +51,12 @@ assert(style.includes('grid-template-columns: repeat(5, minmax(0, 1fr))'), 'mobi
 assert(style.includes('#guide-view') && style.includes('.guide-source-link'), 'guide has view and source-link styles');
 assert(style.includes('.guide-narration') && style.includes('.guide-narration-sections'), 'guide narration has responsive player styles');
 
-assert(index.includes('id="book-guides-settings-section"') && index.includes('id="book-guides-certification-note"'), 'settings disclose experimental guide configuration and certification gate');
+assert(index.includes('id="book-guides-settings-section"') && index.includes('id="book-guides-key-note"'), 'settings disclose provider cost and write-only key handling');
+assert(!index.toLowerCase().includes('certif') && !settings.includes('Needs certification') && !guide.includes('Uncertified evaluation run'), 'operator UI does not expose internal certification terminology');
 assert(settings.includes("apiGet('/api/book-guides/config')") && settings.includes("apiSend('PUT', '/api/book-guides/config'") && settings.includes("apiSend('DELETE', '/api/book-guides/config')"), 'admin settings load, save, and clear guide configuration');
 assert(settings.includes("user.role !== 'admin'") && settings.includes("err.status === 403"), 'guide settings remain hidden from non-admin users');
 assert(guide.includes('await refreshGuideState();'), 'generation refreshes the canonical server state');
 assert(index.includes('id="guide-btn"') && index.includes('id="utility-guide-btn"') && guide.includes("toggleAttribute('hidden', !showEntry)"), 'player guide entry points follow feature or artifact availability');
-assert(guide.includes('previously verified guide remains available'), 'disabling generation preserves verified guide access');
+assert(guide.includes('existing guide remains available'), 'disabling generation preserves existing guide access');
 
-console.log('30 passed, 0 failed');
+console.log('33 passed, 0 failed');

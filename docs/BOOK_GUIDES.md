@@ -36,7 +36,7 @@ These are product controls, not a legal conclusion about any work or use. Operat
 
 ## Certification and release gate
 
-Generation stays unavailable until the selected model pair and prompt recipe are certified, unless an admin explicitly enables uncertified evaluation runs. Evaluation mode exists only to test a candidate model pair. Its artifacts record that they were generated without certification and must not be treated as production-quality guides. Certification requires a legally usable evaluation corpus of at least 12 English nonfiction works across at least three of these shapes: prescriptive, argumentative, historical, biographical, narrative, and technical.
+Enabling the experimental feature permits generation before certification; the UI does not expose certification as an operator setting or badge. Artifacts retain the internal certification state for evaluation and release decisions. Certification changes that internal quality status only after the exact model pair and prompt recipe pass a legally usable evaluation corpus of at least 12 English nonfiction works across at least three of these shapes: prescriptive, argumentative, historical, biographical, narrative, and technical.
 
 The verifier needs a frozen calibration set of exactly 200 human-labelled claims: 100 supported and 100 unsupported, from at least six corpus works. Unsupported-claim recall and precision must both be at least 90%.
 
@@ -56,10 +56,10 @@ Run the benchmark from the Xandrio project directory. The server reads that exac
 
 The manifest contains local paths and rights attestations but the report is aggregate-only. It rejects titles, authors, source paths, book text, quotes, credentials, prompts, and raw model responses in calibration/results data. The harness makes no provider or model call. Use the admin connection test for a small paid provider probe. Never put an API key in benchmark files or command history.
 
-Any change to generator model, verifier model, extraction/normalization version, or recipe hash invalidates certification for new guides. Re-run calibration and representative-corpus evaluation before re-enabling generation.
+Any change to generator model, verifier model, extraction/normalization version, or recipe hash invalidates certification for new guides. New output returns to test-guide status until calibration and representative-corpus evaluation pass again.
 
 ## Cost and operations
 
-V1 admits one background guide job at a time through a dedicated network scheduler. PPQ.ai calls are paid and can retry up to three durable attempts. The UI connection test is also a small paid call. Operators must use a dedicated key, set a provider-side spending limit, monitor account activity, and keep the feature disabled until the selected model pair passes the evaluation gate.
+V1 admits one background guide job at a time through a dedicated network scheduler. PPQ.ai calls are paid and can retry up to three durable attempts. The UI connection test is also a small paid call. Operators must use a dedicated key, set a provider-side spending limit, monitor account activity, and keep uncertified output limited to deliberate testing until the selected model pair passes the evaluation gate.
 
 The feature must be kept behind an instance-level experimental flag. Start with public-domain or licensed works and an opt-in beta. The rollback is to disable guide generation and hide entry points for books without an existing guide. Existing verified guides remain locally readable and deletable; cleanup of guide artifacts is an explicit destructive action.

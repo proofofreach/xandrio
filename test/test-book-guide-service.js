@@ -219,6 +219,12 @@ async function run() {
       assert.strictEqual(configured.configured, true);
       assert.strictEqual(configured.certified, true);
       assert.strictEqual(configured.ready, true);
+      const untagged = await h.service.get('book_1');
+      assert.strictEqual(untagged.feature.enabled, true);
+      assert.strictEqual(untagged.feature.ready, true);
+      assert.strictEqual(untagged.eligibility.nonfictionTagged, false);
+      assert.strictEqual(untagged.status, 'needs-classification');
+      assert.strictEqual(untagged.message, 'Mark this title as nonfiction to enable its study guide.');
       await assert.rejects(h.service.start('book_1'), error => error.code === 'BOOK_GUIDE_NONFICTION_TAG_REQUIRED');
       h.setCategory('nonfiction');
     });

@@ -42,6 +42,7 @@ function statusLabel(status) {
     case 'processing': return 'Creating guide';
     case 'verifying': return 'Checking evidence';
     case 'error': return 'Could not create guide';
+    case 'needs-classification': return 'Mark as nonfiction';
     case 'unavailable': return 'Unavailable';
     default: return status ? String(status) : 'Not created';
   }
@@ -241,9 +242,7 @@ function generationDisclosure(data) {
   const verifier = text(data?.verifierModel || data?.generation?.verifierModel);
   const duration = text(data?.estimatedDuration || data?.generation?.estimatedDuration);
   const cost = text(data?.estimatedCost || data?.generation?.estimatedCost);
-  const uncertified = data?.generation && data.generation.certified === false;
   const details = [
-    uncertified && 'Test guide · quality not yet certified',
     destination && `External destination: ${destination}`,
     generator && `Generator: ${generator}`,
     verifier && `Verifier: ${verifier}`,
@@ -263,7 +262,15 @@ function statusHTML(data) {
   const message = text(data?.message || data?.error || data?.reason);
   const canGenerate = Boolean(data?.canGenerate) && isAdmin();
   if (data?.artifact && !data?.featureEnabled) {
-    return `<section class="guide-stale" aria-live="polite"><strong>Guide generation is disabled.</strong><span>This previously verified guide remains available.</span></section>${readyGuideHTML(data)}${guideManagementActions(data)}`;
+    return `<section class="guide-stale" aria-live="polite"><strong>Guide generation is disabled.</strong><span>The existing guide remains available.</span></section>${readyGuideHTML(data)}${guideManagementActions(data)}`;
+  }
+  if (status === 'needs-classification') {
+    return `<section class="guide-state" data-state="needs-classification">
+      <h3>Mark this title as nonfiction</h3>
+      <p>This enables study-guide generation for this book. It does not start processing yet.</p>
+      ${isAdmin() && data?.canManage !== false ? '<button class="btn-primary" type="button" data-guide-tag-nonfiction>Mark as nonfiction</button>' : ''}
+      <p id="guide-action-error" class="settings-error" role="alert" hidden></p>
+    </section>`;
   }
   if (!data?.featureEnabled || status === 'disabled' || status === 'unavailable') {
     return `<section class="guide-state" data-state="unavailable"><h3>Study guides are unavailable</h3><p>${escapeHTML(message || 'This instance has not enabled Book Guides.')}</p></section>`;
@@ -379,6 +386,7 @@ function attachNarrationInteractions() {
 }
 
 function attachInteractions() {
+  guideBody?.querySelector('[data-guide-tag-nonfiction]')?.addEventListener('click', markAsNonfiction);
   guideBody?.querySelector('[data-guide-generate]')?.addEventListener('click', generateGuide);
   guideBody?.querySelector('[data-guide-cancel]')?.addEventListener('click', cancelGuide);
   guideBody?.querySelector('[data-guide-delete]')?.addEventListener('click', deleteGuide);
@@ -467,6 +475,21 @@ async function generateGuide() {
     await refreshGuideState();
   } catch (error) {
     errorText(error.message || 'Could not start guide generation.');
+  }
+}
+
+async function markAsNonfiction() {
+  if (!activeBookId || !isAdmin()) return;
+  errorText('');
+  try {
+    await apiSend('PUT', `${guidePath(activeBookId)}/category`, { category: 'nonfiction' });
+    const book = currentBook();
+    if (book && String(book.id) === activeBookId) book.studyGuideCategory = 'nonfiction';
+    await deps.onCategoryChanged?.(activeBookId, 'nonfiction');
+    showToast('Marked as nonfiction');
+    await refreshGuideState();
+  } catch (error) {
+    errorText(error.message || 'Could not mark this title as nonfiction.');
   }
 }
 

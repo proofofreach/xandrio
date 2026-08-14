@@ -93,7 +93,6 @@ export function initSettings(options = {}) {
   const bookGuidesSettingsSection = document.getElementById('book-guides-settings-section');
   const bookGuidesSettingsStatus = document.getElementById('book-guides-settings-status');
   const bookGuidesEnabled = document.getElementById('book-guides-enabled');
-  const bookGuidesAllowUncertified = document.getElementById('book-guides-allow-uncertified');
   const bookGuidesApiKey = document.getElementById('book-guides-api-key');
   const bookGuidesGeneratorModel = document.getElementById('book-guides-generator-model');
   const bookGuidesVerifierModel = document.getElementById('book-guides-verifier-model');
@@ -791,7 +790,6 @@ export function initSettings(options = {}) {
       bookGuidesSettingsSection.dataset.externalProcessingAcknowledged = config.externalProcessingAcknowledgedAt ? '1' : '0';
     }
     if (bookGuidesEnabled) bookGuidesEnabled.checked = config.enabled === true;
-    if (bookGuidesAllowUncertified) bookGuidesAllowUncertified.checked = config.allowUncertified === true;
     if (bookGuidesApiKey) {
       bookGuidesApiKey.value = '';
       bookGuidesApiKey.placeholder = config.credentialsConfigured
@@ -806,8 +804,8 @@ export function initSettings(options = {}) {
     }
     if (bookGuidesSettingsStatus) {
       bookGuidesSettingsStatus.textContent = config.ready
-        ? (config.certified ? 'Ready' : 'Testing mode')
-        : (config.enabled ? 'Needs certification' : 'Disabled');
+        ? 'Ready'
+        : (config.enabled ? 'Setup incomplete' : 'Disabled');
       bookGuidesSettingsStatus.className = `settings-status ${config.ready ? 'settings-status-ok' : (config.enabled ? 'settings-status-warning' : '')}`.trim();
     }
   }
@@ -852,7 +850,7 @@ export function initSettings(options = {}) {
       }
       const config = await apiSend('PUT', '/api/book-guides/config', {
         enabled: bookGuidesEnabled?.checked === true,
-        allowUncertified: bookGuidesAllowUncertified?.checked === true,
+        allowUncertified: true,
         externalProcessingAcknowledged,
         baseUrl: 'https://api.ppq.ai',
         ...(apiKey ? { apiKey } : {}),

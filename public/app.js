@@ -901,6 +901,12 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
   initBookGuide({
     getCurrentBook: () => currentBook,
+    onCategoryChanged: async (bookId, category) => {
+      if (String(currentBook?.id || '') === String(bookId)) {
+        currentBook = { ...currentBook, studyGuideCategory: category };
+      }
+      await loadLibrary();
+    },
     selectChapter: (index, options) => selectChapter(index, options),
     pauseBookPlayback: () => {
       try { chunkPlayer?.pause?.(); } catch {}
