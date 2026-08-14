@@ -902,6 +902,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   initBookGuide({
     getCurrentBook: () => currentBook,
     selectChapter: (index, options) => selectChapter(index, options),
+    pauseBookPlayback: () => {
+      try { chunkPlayer?.pause?.(); } catch {}
+      updatePlaybackUI(false);
+    },
     navigateTo
   });
   syncTimeDisplayModeFromClientSettings();

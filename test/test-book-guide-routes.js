@@ -23,7 +23,9 @@ function response() {
   return {
     statusCode: 200,
     body: null,
+    headers: {},
     status(value) { this.statusCode = value; return this; },
+    set(name, value) { this.headers[name] = value; return this; },
     json(value) { this.body = value; return this; }
   };
 }
@@ -44,10 +46,20 @@ async function run() {
     clearConfig: async () => ({ enabled: false })
   };
   const setBookCategory = async (bookId, category) => (calls.push(['category', bookId, category]), { bookId, category });
+  const prepareNarrationAudio = async (bookId, sectionId) => (
+    calls.push(['narration', bookId, sectionId]), { path: '/cache/guide.mp3', sectionId }
+  );
+  const serveAudioFile = async (_req, res, filePath) => {
+    calls.push(['serve-audio', filePath]);
+    res.body = { filePath };
+  };
   registerBookGuideRoutes(app, {
     service,
     requireAdmin,
     setBookCategory,
+    prepareNarrationAudio,
+    narrationVariant: () => '_ttsvoice123',
+    serveAudioFile,
     isSafeBookId: value => /^book_/.test(value),
     log: { error() {} }
   });
@@ -55,6 +67,7 @@ async function run() {
   await test('registers the complete route contract', () => {
     assert.deepStrictEqual(app.map(route => `${route.method.toUpperCase()} ${route.path}`), [
       'GET /api/book/:bookId/guide/anchors/:anchorId/context',
+      'GET /api/book/:bookId/guide/narration/:sectionId/audio',
       'GET /api/book/:bookId/guide',
       'POST /api/book/:bookId/guide',
       'PUT /api/book/:bookId/guide/category',
@@ -96,9 +109,20 @@ async function run() {
     assert.deepStrictEqual(calls.at(-1), ['category', 'book_1', 'nonfiction']);
   });
 
+  await test('prepares and streams a shared guide narration section', async () => {
+    const route = app.find(item => item.method === 'get' && item.path.endsWith('/narration/:sectionId/audio'));
+    const res = response();
+    await route.handlers[0]({ params: { bookId: 'book_1', sectionId: 'overview' }, headers: {} }, res);
+    assert.deepStrictEqual(calls.slice(-2), [
+      ['narration', 'book_1', 'overview'],
+      ['serve-audio', '/cache/guide.mp3']
+    ]);
+    assert.strictEqual(res.headers['X-Study-Guide-Section'], 'overview');
+  });
+
   await test('derives management and generation capability from the authenticated role', async () => {
     const route = app.find(item => item.method === 'get' && item.path === '/api/book/:bookId/guide');
-    service.get = async () => ({ status: 'not-generated', canGenerate: true, canManage: true, generation: { destination: 'http://127.0.0.1:11434' } });
+    service.get = async () => ({ status: 'not-generated', canGenerate: true, canManage: true, generation: { destination: 'https://api.ppq.ai' } });
     const memberResponse = response();
     await route.handlers[0]({ params: { bookId: 'book_1' }, user: { role: 'member' } }, memberResponse);
     assert.strictEqual(memberResponse.body.canManage, false);
@@ -108,7 +132,19 @@ async function run() {
     await route.handlers[0]({ params: { bookId: 'book_1' }, user: { role: 'admin' } }, adminResponse);
     assert.strictEqual(adminResponse.body.canManage, true);
     assert.strictEqual(adminResponse.body.canGenerate, true);
-    assert.deepStrictEqual(adminResponse.body.generation, { destination: 'http://127.0.0.1:11434' });
+    assert.deepStrictEqual(adminResponse.body.generation, { destination: 'https://api.ppq.ai' });
+  });
+
+  await test('versions narration URLs by guide artifact and active voice', async () => {
+    const route = app.find(item => item.method === 'get' && item.path === '/api/book/:bookId/guide');
+    service.get = async () => ({
+      status: 'ready',
+      artifact: { createdAt: '2026-08-14T12:00:00.000Z', guide: { orientation: { thesis: 'A grounded thesis.' } } }
+    });
+    const res = response();
+    await route.handlers[0]({ params: { bookId: 'book_1' }, user: { role: 'member' } }, res);
+    assert.strictEqual(res.body.narration.available, true);
+    assert.match(res.body.narration.version, /^[a-f0-9]{12}-_ttsvoice123$/);
   });
 
   await test('rejects an unsafe book id before calling the service', async () => {

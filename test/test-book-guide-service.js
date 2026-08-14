@@ -132,6 +132,7 @@ async function harness() {
   let category = 'unknown';
   let sourceText = EVIDENCE.join(' ');
   let chapterStructureKey = 'structure-1';
+  const narrationLifecycle = [];
   const service = createBookGuideService({
     loadBook: async bookId => bookId === 'book_1'
       ? {
@@ -149,7 +150,9 @@ async function harness() {
     provider,
     now: () => new Date('2026-08-13T12:00:00.000Z'),
     createId: (() => { let id = 0; return () => String(++id); })(),
-    log: { error() {} }
+    onArtifactPublished: async (bookId, artifact) => narrationLifecycle.push(['published', bookId, artifact.createdAt]),
+    onArtifactRemoved: async bookId => narrationLifecycle.push(['removed', bookId]),
+    log: { error() {}, warn() {} }
   });
   const certifiedProvenance = certificationProvenance({
     generator: { name: 'guide:1', digest: DIGEST },
@@ -167,7 +170,7 @@ async function harness() {
   };
   await jsonStore.save(certificationFile, certificationReport);
   return {
-    temp, provider, service, store, journal, certificationFile, certificationReport,
+    temp, provider, service, store, journal, certificationFile, certificationReport, narrationLifecycle,
     setLanguage(value) { language = value; },
     setCategory(value) { category = value; },
     setChapterStructureKey(value) { chapterStructureKey = value; },
@@ -358,6 +361,8 @@ async function run() {
       assert.strictEqual(removal.artifactRemoved, true);
       assert.strictEqual(await h.store.read('book_1'), null);
       assert.strictEqual(await h.journal.get('book_1'), null);
+      assert(h.narrationLifecycle.some(event => event[0] === 'published' && event[1] === 'book_1'));
+      assert.deepStrictEqual(h.narrationLifecycle.at(-1), ['removed', 'book_1']);
     });
   } finally {
     await fs.rm(h.temp, { recursive: true, force: true });

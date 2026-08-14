@@ -38,10 +38,16 @@ assert(guide.includes('getCurrentUser') && guide.includes("user.role === 'admin'
 assert(guide.includes("/cancel") && guide.includes("apiSend('DELETE', guidePath(activeBookId))") && guide.includes("/anchors/${encodeURIComponent(anchorId)}/context"), 'guide supports cancellation, deletion, and source context');
 assert(guide.includes('anchor.audioSeconds') && !guide.includes('seekToSeconds = Number(anchor.timestamp)'), 'guide only seeks when an explicit audio offset exists');
 assert(guide.includes('recallQuestions') && guide.includes('Reveal answer') && guide.includes('chapterMap'), 'guide renders recall and chapter-map layers');
+assert(guide.includes('Listen to guide') && guide.includes('guide-narration-audio'), 'ready guides expose an audio playlist');
+assert(guide.includes('/narration/${encodeURIComponent(section.id)}/audio'), 'guide audio streams section-level TTS from the server');
+assert(guide.includes("addEventListener('ended'") && guide.includes('playNarrationSection(narrationIndex + 1)'), 'guide audio advances through the section playlist');
+assert(guide.includes('data-guide-audio-speed') && guide.includes('playbackRate'), 'guide audio supports independent playback speed');
+assert(app.includes('pauseBookPlayback') && guide.includes('deps.pauseBookPlayback?.()'), 'guide narration pauses book playback before starting');
 assert(guide.includes('LAST_SECTION_PREFIX') && guide.includes('localStorage.setItem'), 'guide keeps only browser-local section state');
 
 assert(style.includes('grid-template-columns: repeat(5, minmax(0, 1fr))'), 'mobile player utilities support guide access');
 assert(style.includes('#guide-view') && style.includes('.guide-source-link'), 'guide has view and source-link styles');
+assert(style.includes('.guide-narration') && style.includes('.guide-narration-sections'), 'guide narration has responsive player styles');
 
 assert(index.includes('id="book-guides-settings-section"') && index.includes('id="book-guides-certification-note"'), 'settings disclose experimental guide configuration and certification gate');
 assert(settings.includes("apiGet('/api/book-guides/config')") && settings.includes("apiSend('PUT', '/api/book-guides/config'") && settings.includes("apiSend('DELETE', '/api/book-guides/config')"), 'admin settings load, save, and clear guide configuration');
@@ -50,4 +56,4 @@ assert(guide.includes('await refreshGuideState();'), 'generation refreshes the c
 assert(index.includes('id="guide-btn"') && index.includes('id="utility-guide-btn"') && guide.includes("toggleAttribute('hidden', !showEntry)"), 'player guide entry points follow feature or artifact availability');
 assert(guide.includes('previously verified guide remains available'), 'disabling generation preserves verified guide access');
 
-console.log('24 passed, 0 failed');
+console.log('30 passed, 0 failed');

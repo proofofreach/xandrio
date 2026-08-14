@@ -6,7 +6,7 @@ Book Guides are an experimental, instance-wide study-guide artifact for an impor
 
 V1 is English nonfiction only. An admin explicitly tags eligible titles as nonfiction. The application does not classify fiction automatically. Fiction guides are future scope; they need a separate product and evaluation decision. A guide is shared with readers who can access its book. V1 does not add personal learning history, saved quiz state, bookmarks, or spaced-repetition state.
 
-A ready guide contains a brief orientation, concept cards, a chapter map, active-recall prompts, and a small supporting-passage layer. It is concept-first and chapter-linked. Every material claim and answer has an evidence anchor into the imported edition. Quotes support an idea; they are not the primary product.
+A ready guide contains a brief orientation, concept cards, a chapter map, active-recall prompts, and a small supporting-passage layer. It is concept-first and chapter-linked. Every material claim and answer has an evidence anchor into the imported edition. Quotes support an idea; they are not the primary product. The same structured artifact also produces a section-level audio playlist with the active Xandrio voice. Audio is generated on demand, cached by guide version and voice, and does not require an EPUB export.
 
 ## PPQ.ai initial path
 
@@ -22,7 +22,7 @@ A guide records its book id, source fingerprint, chapter-structure key, normaliz
 
 Every guide publish is atomic. The pipeline extracts candidate claims, composes the guide, performs deterministic anchor and quotation checks, then verifies every material claim and recall answer. A failed or cancelled job publishes nothing. A previous verified guide remains available.
 
-Changing source text or chapter structure marks a guide stale. The app revalidates its anchors; unproven links are disabled. A regenerated guide replaces the previous artifact atomically only after verification succeeds. Deleting a book cancels its guide jobs and removes guide artifacts with the rest of the book's local data.
+Changing source text or chapter structure marks a guide stale. The app revalidates its anchors; unproven links are disabled. A regenerated guide replaces the previous artifact atomically only after verification succeeds. Obsolete narration caches are removed after replacement. Deleting a book cancels its guide and narration jobs and removes guide artifacts and cached guide audio with the rest of the book's local data.
 
 ## Passage controls
 

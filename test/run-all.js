@@ -16,6 +16,7 @@ const tests = [
   'test-book-guide-store.js',
   'test-book-guide-service.js',
   'test-book-guide-routes.js',
+  'test-book-guide-narration.js',
   'test-book-guide-evaluation.js',
   'test-book-guide-ui.js',
   'test-download-background.js',

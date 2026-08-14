@@ -1,4 +1,4 @@
-import { apiGet, apiSend, getCurrentUser } from '../api.js';
+import { API_BASE, apiGet, apiSend, getCurrentUser } from '../api.js';
 import { escapeHTML, safeAttr } from '../util/format.js';
 import { showToast } from '../ui/toast.js';
 import { confirmSheet } from '../ui/confirm.js';
@@ -12,6 +12,8 @@ let guideData = null;
 let requestToken = 0;
 let pollTimer = null;
 let lastSectionKey = null;
+let guideAudio = null;
+let narrationIndex = -1;
 
 const LAST_SECTION_PREFIX = 'xandrio_book_guide_section:';
 const GENERATING_STATUSES = new Set(['queued', 'generating', 'processing', 'verifying']);
@@ -206,6 +208,33 @@ function renderGuide(artifact) {
   return `${overviewHTML(guide)}${conceptsHTML(guide)}${chaptersHTML(guide)}${recallHTMLSection(guide)}${passagesHTML(guide)}${renderSourceContext()}`;
 }
 
+function narrationHTML(data) {
+  const sections = normalizeList(data?.narration?.sections);
+  if (!data?.narration?.available || !sections.length) return '';
+  return `<section class="guide-narration" aria-labelledby="guide-narration-title">
+    <div class="guide-narration-heading">
+      <div><span>Audio study guide</span><h3 id="guide-narration-title">Listen with your Xandrio voice</h3></div>
+      <button class="btn-primary btn-sm" type="button" data-guide-listen>Listen to guide</button>
+    </div>
+    <div class="guide-narration-player" hidden>
+      <p class="guide-narration-now" aria-live="polite">Choose a section to begin.</p>
+      <audio class="guide-narration-audio" controls preload="none"></audio>
+      <div class="guide-narration-controls">
+        <button class="btn-ghost btn-sm" type="button" data-guide-audio-previous disabled>Previous</button>
+        <label>Speed <select data-guide-audio-speed aria-label="Study guide playback speed">
+          <option value="1">1×</option><option value="1.25">1.25×</option><option value="1.5">1.5×</option><option value="1.75">1.75×</option><option value="2">2×</option>
+        </select></label>
+        <button class="btn-ghost btn-sm" type="button" data-guide-audio-next>Next</button>
+      </div>
+      <ol class="guide-narration-sections">${sections.map((item, index) => `<li><button type="button" data-guide-audio-section="${index}">${escapeHTML(text(item.title) || `Section ${index + 1}`)}</button></li>`).join('')}</ol>
+    </div>
+  </section>`;
+}
+
+function readyGuideHTML(data) {
+  return `${narrationHTML(data)}${renderGuide(data.artifact)}`;
+}
+
 function generationDisclosure(data) {
   const destination = text(data?.localDestination || data?.generation?.destination);
   const generator = text(data?.generatorModel || data?.generation?.generatorModel);
@@ -234,7 +263,7 @@ function statusHTML(data) {
   const message = text(data?.message || data?.error || data?.reason);
   const canGenerate = Boolean(data?.canGenerate) && isAdmin();
   if (data?.artifact && !data?.featureEnabled) {
-    return `<section class="guide-stale" aria-live="polite"><strong>Guide generation is disabled.</strong><span>This previously verified guide remains available.</span></section>${renderGuide(data.artifact)}${guideManagementActions(data)}`;
+    return `<section class="guide-stale" aria-live="polite"><strong>Guide generation is disabled.</strong><span>This previously verified guide remains available.</span></section>${readyGuideHTML(data)}${guideManagementActions(data)}`;
   }
   if (!data?.featureEnabled || status === 'disabled' || status === 'unavailable') {
     return `<section class="guide-state" data-state="unavailable"><h3>Study guides are unavailable</h3><p>${escapeHTML(message || 'This instance has not enabled Book Guides.')}</p></section>`;
@@ -249,12 +278,12 @@ function statusHTML(data) {
     </section>`;
   }
   if (status === 'error') {
-    return `<section class="guide-state" data-state="error"><h3>Could not create the guide</h3><p>${escapeHTML(message || 'No replacement guide was published. You can try again when the issue is resolved.')}</p>${canGenerate ? `${generationAttestation(data)}<button class="btn-primary" type="button" data-guide-generate>Try again</button>` : ''}</section>${data?.artifact ? renderGuide(data.artifact) + guideManagementActions(data) : ''}`;
+    return `<section class="guide-state" data-state="error"><h3>Could not create the guide</h3><p>${escapeHTML(message || 'No replacement guide was published. You can try again when the issue is resolved.')}</p>${canGenerate ? `${generationAttestation(data)}<button class="btn-primary" type="button" data-guide-generate>Try again</button>` : ''}</section>${data?.artifact ? readyGuideHTML(data) + guideManagementActions(data) : ''}`;
   }
   if (status === 'stale' && data?.artifact) {
-    return `<section class="guide-stale" aria-live="polite"><strong>Guide may be out of date.</strong><span>${escapeHTML(message || 'The book changed after this guide was generated.')}</span>${canGenerate ? `${generationAttestation(data)}<button class="btn-ghost btn-sm" type="button" data-guide-generate>Refresh guide</button>` : ''}</section>${renderGuide(data.artifact)}${guideManagementActions(data)}`;
+    return `<section class="guide-stale" aria-live="polite"><strong>Guide may be out of date.</strong><span>${escapeHTML(message || 'The book changed after this guide was generated.')}</span>${canGenerate ? `${generationAttestation(data)}<button class="btn-ghost btn-sm" type="button" data-guide-generate>Refresh guide</button>` : ''}</section>${readyGuideHTML(data)}${guideManagementActions(data)}`;
   }
-  if (data?.artifact) return `${renderGuide(data.artifact)}${guideManagementActions(data)}`;
+  if (data?.artifact) return `${readyGuideHTML(data)}${guideManagementActions(data)}`;
   if (!canGenerate) {
     return `<section class="guide-state" data-state="unavailable"><h3>No study guide yet</h3><p>${escapeHTML(message || 'An administrator can create a guide for this book.')}</p></section>`;
   }
@@ -280,6 +309,75 @@ function restoreLastSection() {
   requestAnimationFrame(() => document.getElementById(sectionId)?.scrollIntoView({ block: 'start' }));
 }
 
+function updateNarrationControls() {
+  const sections = normalizeList(guideData?.narration?.sections);
+  const player = guideBody?.querySelector('.guide-narration-player');
+  if (!player) return;
+  player.hidden = false;
+  player.querySelector('[data-guide-audio-previous]')?.toggleAttribute('disabled', narrationIndex <= 0);
+  player.querySelector('[data-guide-audio-next]')?.toggleAttribute('disabled', narrationIndex < 0 || narrationIndex >= sections.length - 1);
+  player.querySelectorAll('[data-guide-audio-section]').forEach(button => {
+    const active = Number(button.dataset.guideAudioSection) === narrationIndex;
+    button.classList.toggle('active', active);
+    button.toggleAttribute('aria-current', active);
+  });
+}
+
+async function playNarrationSection(index) {
+  const sections = normalizeList(guideData?.narration?.sections);
+  const section = sections[index];
+  if (!section || !activeBookId) return;
+  const player = guideBody?.querySelector('.guide-narration-player');
+  const audio = player?.querySelector('.guide-narration-audio');
+  if (!audio) return;
+  deps.pauseBookPlayback?.();
+  narrationIndex = index;
+  guideAudio = audio;
+  player.hidden = false;
+  const now = player.querySelector('.guide-narration-now');
+  if (now) now.textContent = `Preparing ${text(section.title) || `section ${index + 1}`}…`;
+  const version = text(guideData?.narration?.version);
+  audio.src = `${API_BASE}${guidePath(activeBookId)}/narration/${encodeURIComponent(section.id)}/audio${version ? `?v=${encodeURIComponent(version)}` : ''}`;
+  audio.load();
+  updateNarrationControls();
+  try {
+    await audio.play();
+  } catch (error) {
+    if (now) now.textContent = 'Audio is ready. Press play to begin.';
+  }
+}
+
+function attachNarrationInteractions() {
+  const player = guideBody?.querySelector('.guide-narration-player');
+  const sections = normalizeList(guideData?.narration?.sections);
+  if (!player || !sections.length) return;
+  guideAudio = player.querySelector('.guide-narration-audio');
+  narrationIndex = -1;
+  guideBody.querySelector('[data-guide-listen]')?.addEventListener('click', () => playNarrationSection(0));
+  player.querySelectorAll('[data-guide-audio-section]').forEach(button => {
+    button.addEventListener('click', () => playNarrationSection(Number(button.dataset.guideAudioSection)));
+  });
+  player.querySelector('[data-guide-audio-previous]')?.addEventListener('click', () => playNarrationSection(narrationIndex - 1));
+  player.querySelector('[data-guide-audio-next]')?.addEventListener('click', () => playNarrationSection(narrationIndex + 1));
+  player.querySelector('[data-guide-audio-speed]')?.addEventListener('change', event => {
+    if (guideAudio) guideAudio.playbackRate = Number(event.target.value) || 1;
+  });
+  guideAudio?.addEventListener('playing', () => {
+    const current = sections[narrationIndex];
+    const now = player.querySelector('.guide-narration-now');
+    if (now && current) now.textContent = `Now playing: ${text(current.title)}`;
+  });
+  guideAudio?.addEventListener('ended', () => {
+    if (narrationIndex < sections.length - 1) void playNarrationSection(narrationIndex + 1);
+  });
+  guideAudio?.addEventListener('error', () => {
+    const now = player.querySelector('.guide-narration-now');
+    if (now) now.textContent = navigator.onLine === false
+      ? 'Study-guide audio needs a connection.'
+      : 'Could not prepare this audio section.';
+  });
+}
+
 function attachInteractions() {
   guideBody?.querySelector('[data-guide-generate]')?.addEventListener('click', generateGuide);
   guideBody?.querySelector('[data-guide-cancel]')?.addEventListener('click', cancelGuide);
@@ -290,9 +388,13 @@ function attachInteractions() {
   guideBody?.querySelectorAll('[data-guide-section]').forEach(section => {
     section.addEventListener('focusin', () => setLastSection(section.id));
   });
+  attachNarrationInteractions();
 }
 
 function render(data) {
+  guideAudio?.pause();
+  guideAudio = null;
+  narrationIndex = -1;
   guideData = data || {};
   const showEntry = Boolean(guideData.featureEnabled || guideData.artifact);
   document.getElementById('guide-btn')?.toggleAttribute('hidden', !showEntry);
@@ -352,6 +454,9 @@ export async function openBookGuide(bookId = currentBook()?.id) {
 export function closeBookGuide() {
   stopPolling();
   requestToken += 1;
+  guideAudio?.pause();
+  guideAudio = null;
+  narrationIndex = -1;
 }
 
 async function generateGuide() {
