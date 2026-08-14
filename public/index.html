@@ -11,7 +11,7 @@
   <title>Xandrio - Audiobook Library</title>
   <link rel="preload" href="/fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin>
   <!-- ?v= values must match ASSET_VERSIONS in sw.js (single source of truth) -->
-  <link rel="stylesheet" href="style-v3.css?v=95">
+  <link rel="stylesheet" href="style-v3.css?v=99">
   <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=2">
 </head>
 <body>
@@ -511,6 +511,65 @@
           </div>
         </details>
 
+        <!-- Experimental book-guide generation (admin and trusted-LAN operators only) -->
+        <details class="settings-section" id="book-guides-settings-section" style="display:none">
+          <summary class="settings-section-header">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="width:18px;height:18px"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5s3.332.477 4.5 1.253v13C19.832 18.477 18.246 18 16.5 18s-3.332.477-4.5 1.253"/></svg>
+            Experimental study guides
+          </summary>
+          <div class="settings-section-body">
+            <div class="settings-row">
+              <div class="settings-label">
+                <span class="settings-label-text">English nonfiction guides</span>
+                <span id="book-guides-provider-hint" class="settings-label-hint">Book text and evidence leave this server for generation and verification.</span>
+              </div>
+              <span id="book-guides-settings-status" class="settings-status">Checking…</span>
+            </div>
+            <div class="settings-form book-guide-settings-form">
+              <label class="admin-role-check"><input id="book-guides-enabled" type="checkbox" /> Enable experimental guides</label>
+              <div id="book-guides-device-connection" class="guide-connection-ledger" hidden>
+                <div class="guide-connection-copy">
+                  <span id="book-guides-connection-label" class="guide-connection-name">Codex subscription</span>
+                  <span id="book-guides-connection-detail" class="settings-label-hint" aria-live="polite">Checking connection…</span>
+                </div>
+                <div class="guide-connection-actions">
+                  <button id="book-guides-connect" class="btn-primary btn-sm" type="button">Connect Codex</button>
+                  <button id="book-guides-disconnect" class="btn-ghost btn-ghost-danger btn-sm" type="button" hidden>Disconnect</button>
+                </div>
+              </div>
+              <div id="book-guides-api-key-group">
+                <label for="book-guides-api-key">PPQ.ai API key</label>
+                <input id="book-guides-api-key" name="book-guides-api-key" type="password" placeholder="Enter a dedicated API key…" autocomplete="new-password" spellcheck="false" />
+              </div>
+              <div class="guide-model-field">
+                <label for="book-guides-generator-model">Generator model</label>
+                <select id="book-guides-generator-model">
+                  <option value="gemini-3.7-flash">Gemini 3.7 Flash · recommended</option>
+                  <option value="deepseek/deepseek-v4-flash-0731">DeepSeek V4 Flash 0731 · 1M context</option>
+                  <option value="deepseek/deepseek-v4-pro-0813">DeepSeek V4 Pro 0813 · 1M context</option>
+                  <option value="glm-5.2">GLM 5.2 · 1M context</option>
+                </select>
+              </div>
+              <div class="guide-model-field">
+                <label for="book-guides-verifier-model">Verifier model</label>
+                <select id="book-guides-verifier-model">
+                  <option value="glm-5.2">GLM 5.2 · 1M context · independent verifier</option>
+                  <option value="gemini-3.7-flash">Gemini 3.7 Flash · 1M context</option>
+                  <option value="deepseek/deepseek-v4-flash-0731">DeepSeek V4 Flash 0731 · 1M context</option>
+                  <option value="deepseek/deepseek-v4-pro-0813">DeepSeek V4 Pro 0813 · 1M context</option>
+                </select>
+              </div>
+              <div class="settings-form-buttons">
+                <button id="book-guides-save" class="btn-primary btn-sm">Save configuration</button>
+                <button id="book-guides-test" class="btn-ghost btn-sm">Test connection</button>
+                <button id="book-guides-clear" class="btn-ghost btn-ghost-danger btn-sm">Clear configuration</button>
+              </div>
+            </div>
+            <p id="book-guides-settings-error" class="settings-error" aria-live="polite" style="display:none"></p>
+            <p id="book-guides-key-note" class="settings-hint">The API key is write-only. Use a dedicated PPQ.ai key with a strict spending limit. The connection test sends a small paid request.</p>
+          </div>
+        </details>
+
         <!-- Operator diagnostics (admin and trusted-LAN operators only) -->
         <details class="settings-section" id="operator-diagnostics-section" style="display:none">
           <summary class="settings-section-header">
@@ -676,6 +735,21 @@
       <div id="stats-body" class="stats-body"></div>
     </div>
 
+    <!-- Book Guide View -->
+    <div id="guide-view" class="view" aria-labelledby="guide-title">
+      <header class="guide-header">
+        <button id="guide-back-btn" class="btn-back" type="button" aria-label="Return to player">← Player</button>
+        <div class="guide-header-copy">
+          <span class="guide-eyebrow">Study guide</span>
+          <h2 id="guide-title">Book guide</h2>
+          <p id="guide-book-meta" class="guide-book-meta"></p>
+        </div>
+      </header>
+      <main id="guide-body" class="guide-body" tabindex="-1" aria-busy="false">
+        <p class="settings-hint">Loading study guide…</p>
+      </main>
+    </div>
+
     <!-- Player View — Libby-inspired -->
     <div id="player-view" class="view">
       <div class="player-ambient" aria-hidden="true"><img id="player-ambient-img" alt="" /></div>
@@ -702,6 +776,11 @@
           <button id="bookmark-btn" class="topbar-btn" aria-label="Bookmark this spot" title="Bookmark this spot">
             <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
               <path stroke-linecap="round" stroke-linejoin="round" d="M17.593 3.322c1.1.128 1.907 1.077 1.907 2.185V21L12 17.25 4.5 21V5.507c0-1.108.806-2.057 1.907-2.185a48.507 48.507 0 0111.186 0z" />
+            </svg>
+          </button>
+          <button id="guide-btn" class="topbar-btn" type="button" aria-label="Open study guide" title="Study guide" hidden>
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M12 6.042A8.967 8.967 0 006 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 016 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 016-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0018 18a8.967 8.967 0 00-6 2.292m0-14.25v14.25" />
             </svg>
           </button>
           <button id="timer-btn-inline" class="topbar-btn" aria-label="Sleep timer" title="Sleep timer">
@@ -878,6 +957,14 @@
               </span>
               <span>Bookmark</span>
             </button>
+            <button id="utility-guide-btn" class="player-utility-btn" type="button" hidden>
+              <span class="player-utility-icon" aria-hidden="true">
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M12 6.042A8.967 8.967 0 006 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 016 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 016-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0018 18a8.967 8.967 0 00-6 2.292m0-14.25v14.25" />
+                </svg>
+              </span>
+              <span>Guide</span>
+            </button>
             <button id="utility-speed-btn" class="player-utility-btn" type="button" aria-haspopup="dialog">
               <span id="utility-speed-value" class="player-utility-speed" aria-hidden="true">1x</span>
               <span>Speed</span>
@@ -912,6 +999,25 @@
     </div>
 
     <!-- Speed sheet -->
+    <div id="book-guides-login-sheet" class="voice-sheet guide-login-sheet" aria-hidden="true">
+      <div id="book-guides-login-backdrop" class="voice-sheet-backdrop"></div>
+      <section class="voice-sheet-panel guide-login-panel" role="dialog" aria-modal="true" aria-labelledby="book-guides-login-title">
+        <div class="voice-sheet-handle" aria-hidden="true"></div>
+        <div class="voice-sheet-header">
+          <div>
+            <h3 id="book-guides-login-title">Connect Codex</h3>
+            <p>Authorize this private server with your ChatGPT account.</p>
+          </div>
+          <button id="book-guides-login-close" class="btn-icon" type="button" aria-label="Close Codex connection">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
+          </button>
+        </div>
+        <div id="book-guides-login-body" class="guide-login-body" aria-live="polite" aria-busy="false">
+          <p>Preparing secure sign-in…</p>
+        </div>
+      </section>
+    </div>
+
     <div id="speed-sheet" class="modal" role="dialog" aria-labelledby="speed-sheet-title">
       <div class="modal-content">
         <h3 id="speed-sheet-title">Playback Speed</h3>
@@ -1116,6 +1222,6 @@
 
   <script src="/js/lifecycle.js?v=1"></script>
   <script src="/js/chunk-player.js?v=23"></script>
-  <script type="module" src="app.js?v=116"></script>
+  <script type="module" src="app.js?v=121"></script>
 </body>
 </html>

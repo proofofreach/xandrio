@@ -16,6 +16,7 @@ An operator who wants an iPhone-first PWA audiobook library from files they may 
 - Edge narration, local Kokoro, local Chatterbox, saved voices, and operator-authorized voice references.
 - Chunked audio generation and caching, resumable playback, seeking, speed, sleep timer, bookmarks, offline use, and sync state.
 - Library management, source credential controls, provider health state, deletion, and cache management.
+- Experimental Book Guides: admin-started, evidence-linked study guides for explicitly tagged English nonfiction, with an on-demand TTS playlist in the active voice. Disabled by default; the admin acknowledges external processing once when configuring the write-only PPQ.ai key.
 
 ## Non-goals
 
@@ -23,6 +24,7 @@ An operator who wants an iPhone-first PWA audiobook library from files they may 
 - A claim that a source, work, or use is lawful worldwide.
 - Social sharing, public catalog hosting, recommendation feeds, or audiobook publishing.
 - Silent removal of providers, engines, import paths, or other existing features.
+- Fiction study guides in V1. Fiction needs its own product and evaluation decision.
 
 ## Product boundaries
 

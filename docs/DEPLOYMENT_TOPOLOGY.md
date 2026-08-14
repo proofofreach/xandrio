@@ -30,6 +30,11 @@ Disabled (must stay off in production `.env`):
   voice references, premium background prep.
 - Runs in trusted-LAN mode (no token, no accounts) unless accounts are created
   here too; accounts are per-instance (`data/` is not shared between instances).
+- Install or repair the tracked launchd service with
+  `npm run local-service:install`. Its supervisor reloads `server.js`, `lib/`,
+  package metadata, and `.env` after a stable content change. It ignores
+  `data/`, `cache/`, and live static assets, so normal use cannot create a
+  restart loop. `/health` reports the loaded `runtimeRevision` and `startedAt`.
 
 ## Promotion — when a feature is "proven"
 

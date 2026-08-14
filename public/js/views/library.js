@@ -184,6 +184,8 @@ function bookMenuHTML(book, onShelf) {
   const id = String(book.id || '');
   const title = book.title || 'Untitled';
   const author = book.author || 'Unknown Author';
+  const nonfiction = book.studyGuideCategory === 'nonfiction';
+  const admin = !getCurrentUser() || getCurrentUser()?.role === 'admin';
   return `
     <div class="book-overflow">
       <button class="book-overflow-trigger" type="button" data-book-menu-toggle aria-expanded="false"
@@ -196,6 +198,9 @@ function bookMenuHTML(book, onShelf) {
           <span data-saved-label>${onShelf ? 'Remove from My Shelf' : 'Save to My Shelf'}</span>
         </button>
         <button type="button" role="menuitem" data-queue-add="${safeAttr(id)}">Add to Up Next</button>
+        ${nonfiction ? `<button type="button" role="menuitem" data-book-guide="${safeAttr(id)}">Study guide</button>` : ''}
+        ${admin && !nonfiction ? `<button type="button" role="menuitem" data-book-guide-tag="${safeAttr(id)}">Mark as nonfiction</button>` : ''}
+        ${admin && nonfiction ? `<button type="button" role="menuitem" data-book-guide-untag="${safeAttr(id)}">Remove nonfiction tag</button>` : ''}
         <button type="button" role="menuitem" data-book-share="${safeAttr(id)}"
                 data-book-title="${safeAttr(title)}" data-book-author="${safeAttr(author)}">Share</button>
         <button type="button" role="menuitem" class="book-menu-danger"
@@ -496,6 +501,17 @@ async function toggleShelfMembership(bookId, button) {
     showToast('Could not update My Shelf', 'error');
   } finally {
     button.disabled = false;
+  }
+}
+
+async function setStudyGuideCategory(bookId, category) {
+  try {
+    await apiSend('PUT', `/api/book/${encodeURIComponent(bookId)}/guide/category`, { category });
+    showToast(category === 'nonfiction' ? 'Marked as nonfiction' : 'Nonfiction tag removed');
+    await loadLibrary();
+  } catch (error) {
+    console.error('Study-guide category update failed:', error);
+    showToast(error.message || 'Could not update the study-guide tag', 'error');
   }
 }
 
@@ -862,6 +878,27 @@ export function initLibrary(options = {}) {
         title: shareBtn.dataset.bookTitle,
         author: shareBtn.dataset.bookAuthor
       });
+      return;
+    }
+    const guideBtn = e.target.closest('[data-book-guide]');
+    if (guideBtn) {
+      e.stopPropagation();
+      closeBookMenus();
+      deps.openBookGuide?.(guideBtn.dataset.bookGuide);
+      return;
+    }
+    const guideTagBtn = e.target.closest('[data-book-guide-tag]');
+    if (guideTagBtn) {
+      e.stopPropagation();
+      closeBookMenus();
+      void setStudyGuideCategory(guideTagBtn.dataset.bookGuideTag, 'nonfiction');
+      return;
+    }
+    const guideUntagBtn = e.target.closest('[data-book-guide-untag]');
+    if (guideUntagBtn) {
+      e.stopPropagation();
+      closeBookMenus();
+      void setStudyGuideCategory(guideUntagBtn.dataset.bookGuideUntag, 'unknown');
       return;
     }
     const removeOfflineBtn = e.target.closest('[data-remove-offline-book]');

@@ -460,7 +460,8 @@ async function installBrowserFixtures(page) {
       acknowledgedAt: null,
       unverifiedSourcesEnabled: false
     },
-    operatorPolicyRequests: []
+    operatorPolicyRequests: [],
+    guideAudioRequests: []
   };
   const book = {
     id: 'smoke',
@@ -470,7 +471,9 @@ async function installBrowserFixtures(page) {
     language: 'en',
     chapterCount: 2,
     chapterDurations: [60, 45],
-    totalDuration: 105
+    totalDuration: 105,
+    studyGuideCategory: 'nonfiction',
+    studyGuideCategorySetAt: '2026-08-14T12:00:00.000Z'
   };
   const chapters = [
     {
@@ -640,6 +643,34 @@ async function installBrowserFixtures(page) {
       return route.fulfill({ status: 200, contentType: 'image/png', body: smokeCoverImage });
     }
     if (pathname === '/api/book/smoke') return json(route, { book, chapters });
+    if (pathname === '/api/book/smoke/guide') return json(route, {
+      featureEnabled: true,
+      status: 'ready',
+      canGenerate: false,
+      canManage: false,
+      artifact: {
+        createdAt: '2026-08-14T12:00:00.000Z',
+        anchors: {},
+        guide: {
+          orientation: { thesis: 'Fast feedback improves decisions.', bottomLine: 'Measure outcomes and adapt.' },
+          coreIdeas: [{ title: 'Feedback loops', claim: 'Short loops expose errors sooner.' }],
+          chapterMap: [{ chapterIndex: 0, title: 'Signals', purpose: 'Defines useful feedback.' }],
+          review: { questions: [{ question: 'Why shorten a loop?', answer: 'To expose errors sooner.' }] }
+        }
+      },
+      narration: {
+        available: true,
+        version: '0123456789ab-_ttsfixture',
+        sections: [
+          { id: 'overview', title: 'Book in brief', guideSectionId: 'guide-overview' },
+          { id: 'concept-1', title: 'Feedback loops', guideSectionId: 'guide-concepts' }
+        ]
+      }
+    });
+    if (/^\/api\/book\/smoke\/guide\/narration\/[^/]+\/audio$/.test(pathname)) {
+      fixtureState.guideAudioRequests.push(pathname);
+      return route.fulfill({ status: 200, contentType: 'audio/mpeg', body: Buffer.from([0]) });
+    }
     if (pathname === '/api/position/smoke') return json(route, { position: null });
     if (pathname === '/api/position') return json(route, { success: true });
     if (pathname === '/api/bookmarks/smoke') return json(route, { bookmarks: [] });
@@ -744,9 +775,11 @@ async function verifyPlayback(page, fixtureState) {
   }
   await page.click('[data-progress-scope="chapter"]');
 
-  await page.waitForFunction(() => window.__smokeAudios.length === 1);
+  await page.waitForFunction(() => window.__smokeAudios.includes(document.getElementById('audio-player')));
+  const playbackAudioCount = await page.locator('#audio-player').count();
+  if (playbackAudioCount !== 1) throw new Error(`Expected one persistent playback element, found ${playbackAudioCount}`);
   await page.click('#play-pause-btn');
-  await page.waitForFunction(() => window.__smokeAudios.some(audio => !audio.paused));
+  await page.waitForFunction(() => !document.getElementById('audio-player')?.paused);
   await page.click('#skip-forward-btn');
   // The continuous response is intentionally non-seekable. A forward skip
   // reconnects at a server-side chapter offset, so the new media resource
@@ -755,9 +788,9 @@ async function verifyPlayback(page, fixtureState) {
     Number(window.xandrioPlaybackReport?.().position?.currentTime) >= 14
   ));
   await page.click('#play-pause-btn');
-  await page.waitForFunction(() => window.__smokeAudios.every(audio => audio.paused));
+  await page.waitForFunction(() => document.getElementById('audio-player')?.paused);
 
-  const playbackSource = await page.evaluate(() => window.__smokeAudios[0]?.src || '');
+  const playbackSource = await page.evaluate(() => document.getElementById('audio-player')?.src || '');
   if (!playbackSource.includes('/api/audio-continuous/smoke/0?tier=instant')) {
     throw new Error(`Playback tier was not pinned on the continuous stream: ${playbackSource}`);
   }
@@ -768,6 +801,31 @@ async function verifyPlayback(page, fixtureState) {
   await page.waitForFunction(() => document.getElementById('audio-loading')?.dataset.status === 'offline');
   const offlineMessage = await page.textContent('#loading-text');
   if (!offlineMessage.includes("You're offline")) throw new Error('Offline chapter state was not surfaced');
+}
+
+async function verifyStudyGuideAudio(page, fixtureState) {
+  await page.goto(`${origin}/#/guide/smoke`, { waitUntil: 'networkidle' });
+  await page.waitForSelector('#guide-view.active');
+  await page.waitForSelector('[data-guide-listen]');
+  await page.click('[data-guide-listen]');
+  await page.waitForFunction(() => document.querySelector('.guide-narration-audio')?.src.includes('/guide/narration/overview/audio'));
+  const overviewAudioUrl = await page.$eval('.guide-narration-audio', audio => audio.src);
+  if (new URL(overviewAudioUrl).searchParams.get('v') !== '0123456789ab-_ttsfixture') {
+    throw new Error(`Study-guide audio URL did not include guide and voice identity: ${overviewAudioUrl}`);
+  }
+  const overviewAudioReachable = await page.evaluate(url => fetch(url).then(response => response.ok), overviewAudioUrl);
+  if (!overviewAudioReachable) throw new Error('Study-guide overview audio endpoint was not reachable');
+  await page.waitForFunction(() => document.querySelector('[data-guide-audio-section="0"]')?.classList.contains('active'));
+  await page.selectOption('[data-guide-audio-speed]', '1.5');
+  const speed = await page.$eval('.guide-narration-audio', audio => audio.playbackRate);
+  if (speed !== 1.5) throw new Error(`Study-guide playback speed did not apply: ${speed}`);
+  await page.click('[data-guide-audio-next]');
+  await page.waitForFunction(() => document.querySelector('.guide-narration-audio')?.src.includes('/guide/narration/concept-1/audio'));
+  if (!fixtureState.guideAudioRequests.some(pathname => pathname.endsWith('/overview/audio'))) {
+    throw new Error('Study-guide overview audio was not requested');
+  }
+  await page.goto(`${origin}/#/player/smoke`, { waitUntil: 'networkidle' });
+  await page.waitForSelector('#player-view.active');
 }
 
 async function verifyLibraryLoadStates(page, fixtureState) {
@@ -1756,6 +1814,8 @@ async function main() {
     traceSmoke('library load states verified');
     await verifyPlayback(page, fixtureState);
     traceSmoke('playback verified');
+    await verifyStudyGuideAudio(page, fixtureState);
+    traceSmoke('study-guide audio verified');
     await verifyPronunciations(page, fixtureState);
     traceSmoke('pronunciations verified');
     await verifyLibraryActions(page);
@@ -1765,7 +1825,7 @@ async function main() {
     if (pageErrors.length) throw new Error(`Browser page errors:\n${pageErrors.join('\n')}`);
     await verifyRealServiceWorkerOffline(browser);
     traceSmoke('service worker verified');
-    console.log('Browser smoke passed: library loading/error/offline states, playback/tier/pronunciation, library actions, search workspace, warning-bearing import auto-open, atomic shell upgrade failure, PWA icons, and real offline Range 206/416.');
+    console.log('Browser smoke passed: library loading/error/offline states, playback/tier/pronunciation, study-guide TTS, library actions, search workspace, warning-bearing import auto-open, atomic shell upgrade failure, PWA icons, and real offline Range 206/416.');
   } catch (err) {
     if (serverOutput) process.stderr.write(`\nServer output:\n${serverOutput}\n`);
     throw err;

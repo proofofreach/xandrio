@@ -16,6 +16,7 @@ import { initLibrary, loadLibrary, cacheBookMeta } from './js/views/library.js';
 import { initSearch } from './js/views/search.js';
 import { initSettings } from './js/views/settings.js';
 import { initStats } from './js/views/stats.js';
+import { initBookGuide, openBookGuide, refreshGuideState } from './js/views/book-guide.js';
 import { initSleepTimer, restoreSleepTimer, isSleepTimerChapterTarget, expireSleepTimer, closeSleepTimerModal } from './js/views/sleep-timer.js';
 import { loadVoices, refreshVoicePrepPanel, closeVoiceSheetDirect } from './js/views/voices.js';
 import { initPlaybackSpeed, getCurrentPlaybackSpeed, closeSpeedSheet, loadPlaybackSpeed, applyPlaybackSpeed, applySkipIntervalLabels, stepPlaybackSpeed } from './js/views/playback-speed.js';
@@ -898,6 +899,21 @@ document.addEventListener('DOMContentLoaded', async () => {
     renderBookmarksSection,
     haptic
   });
+  initBookGuide({
+    getCurrentBook: () => currentBook,
+    onCategoryChanged: async (bookId, category) => {
+      if (String(currentBook?.id || '') === String(bookId)) {
+        currentBook = { ...currentBook, studyGuideCategory: category };
+      }
+      await loadLibrary();
+    },
+    selectChapter: (index, options) => selectChapter(index, options),
+    pauseBookPlayback: () => {
+      try { chunkPlayer?.pause?.(); } catch {}
+      updatePlaybackUI(false);
+    },
+    navigateTo
+  });
   syncTimeDisplayModeFromClientSettings();
   
   // The DOM media element is retained for the entire app lifetime. Online
@@ -913,7 +929,13 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
   applySkipIntervalLabels();
   
-  initLibrary({ openBook, navigateTo, addToListeningQueue, onBookDeleted: clearDeletedBookFromPlayer });
+  initLibrary({
+    openBook,
+    navigateTo,
+    openBookGuide: bookId => navigateTo('guide', bookId),
+    addToListeningQueue,
+    onBookDeleted: clearDeletedBookFromPlayer
+  });
   initListeningQueue({ openBook });
   initSearch({ openBook, navigateTo });
   initSleepTimer({
@@ -969,6 +991,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   initRouter({
     showView,
     openBook,
+    openGuide: openBookGuide,
     isBookOpen: (bookId) => currentBook?.id === bookId,
   });
 
@@ -1447,6 +1470,9 @@ function showView(viewName) {
     case 'stats':
       document.getElementById('stats-view')?.classList.add('active');
       break;
+    case 'guide':
+      document.getElementById('guide-view')?.classList.add('active');
+      break;
   }
 
   // Mini player: show on non-player views when a book is loaded
@@ -1568,6 +1594,7 @@ async function openBook(bookId) {
 
     currentBook = nextBook;
     chapters = nextChapters;
+    void refreshGuideState(bookId);
     currentBookOfflineFallback = usedOfflineFallback;
     if (usedOfflineFallback && !navigator.onLine) {
       const fallbackBookId = String(currentBook.id);

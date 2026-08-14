@@ -89,6 +89,13 @@ const { createOperatorDiagnostics } = require('./lib/operator-diagnostics');
 const { registerBookmarksRoutes, removeBookBookmarks } = require('./lib/routes/bookmarks-routes');
 const { registerListeningQueueRoutes } = require('./lib/routes/listening-queue-routes');
 const { registerOperatorPolicyRoutes } = require('./lib/routes/operator-policy-routes');
+const { registerBookGuideRoutes } = require('./lib/routes/book-guide-routes');
+const { createBookGuideJournal } = require('./lib/book-guide-journal');
+const { createPpqBookGuideProvider } = require('./lib/book-guide-provider');
+const { createCodexBookGuideProvider } = require('./lib/book-guide-codex-provider');
+const { createBookGuideService } = require('./lib/book-guide-service');
+const { createBookGuideStore } = require('./lib/book-guide-store');
+const { buildBookGuideNarration, narrationArtifactId, narrationBookPrefix } = require('./lib/book-guide-narration');
 const jsonStore = require('./lib/json-store');
 const {
   canonicalStorageDirectory,
@@ -179,6 +186,7 @@ const { inspectCoverVisualQuality } = require('./lib/cover-visual-quality');
 const app = express();
 const PORT = process.env.PORT || 8181;
 const HOST = process.env.HOST || '127.0.0.1';
+const SERVER_STARTED_AT = new Date().toISOString();
 const PREGENERATE_ON_IMPORT = process.env.XANDRIO_PREGENERATE_ON_IMPORT !== 'false';
 process.title = `xandrio-server:${PORT}`;
 const DATA_DIR = canonicalStorageDirectory(process.env.DATA_DIR || path.join(__dirname, 'data'));
@@ -372,6 +380,11 @@ const LISTENING_QUEUE_FILE = path.join(DATA_DIR, 'listening-queues.json');
 const BOOK_DELETIONS_FILE = path.join(DATA_DIR, 'book-deletions.json');
 const CUSTOM_VOICES_FILE = path.join(DATA_DIR, 'custom-voices.json');
 const PRONUNCIATIONS_FILE = path.join(DATA_DIR, 'pronunciations.json');
+const BOOK_GUIDE_JOBS_FILE = path.join(DATA_DIR, 'book-guide-jobs.json');
+const BOOK_GUIDE_CONFIG_FILE = path.join(DATA_DIR, 'book-guide-config.json');
+const BOOK_GUIDE_CERTIFICATION_FILE = path.join(DATA_DIR, 'book-guide-certification.json');
+const BOOK_GUIDE_CREDENTIALS_FILE = path.join(DATA_DIR, 'book-guide-provider.json');
+const BOOK_GUIDE_ARTIFACT_DIR = path.join(CACHE_DIR, 'book-guides');
 const searchCoverService = createSearchCoverService({
   cacheDir: path.join(CACHE_DIR, 'search-covers'),
   getDimensions: getJpegDimensions,
@@ -1492,6 +1505,18 @@ const instantChunkedTTS = new ChunkedTTS(CACHE_DIR, ttsQueue, {
   validateRecoveryEntry: validateRecordedNarrationVariant
 });
 
+// Study guides are structured artifacts, but their audio representation uses
+// the same active voice, provider capacity, mastering, and cache format as book
+// narration. A separate worker prevents virtual guide sections from entering
+// the durable chapter-recovery journal or mutating book duration metadata.
+const bookGuideNarrationTTS = new ChunkedTTS(CACHE_DIR, ttsQueue, {
+  variantKeyProvider: getTTSVariantKey,
+  voiceProvider: getActiveVoice,
+  outputFormatProvider: () => getTtsOutputFormatForVoice(getActiveVoice()),
+  chunkSizeProvider: getActiveChunkSize,
+  splitPolicyProvider: () => getSplitPolicyForVoice(getActiveVoice())
+});
+
 function pronunciationChunkVariants() {
   const variants = [chunkedTTS, instantChunkedTTS].map(tts => ({
     variantSegment: tts.currentVariantSegment(),
@@ -2080,6 +2105,125 @@ async function getChaptersCached(bookPath) {
 
 function invalidateChapterCache(bookPath) {
   bookDocument.invalidateChapterCache(bookPath);
+}
+
+const bookGuideNarrationPrepareJobs = new Map();
+
+async function pruneBookGuideNarrationAudio(bookId, currentArtifact = null) {
+  const prefix = narrationBookPrefix(bookId);
+  const keepId = currentArtifact ? narrationArtifactId(bookId, currentArtifact) : null;
+  const entries = await fs.readdir(CACHE_DIR).catch(() => []);
+  const staleEntries = entries.filter(name => name.startsWith(prefix) && (!keepId || !name.startsWith(keepId)));
+  const staleIds = [...new Set(staleEntries.map(name =>
+    name.match(/^(guide_[a-f0-9]{12}_[a-f0-9]{12})/)?.[1]
+  ).filter(Boolean))];
+  for (const key of bookGuideNarrationPrepareJobs.keys()) {
+    const narrationId = key.match(/^(guide_[a-f0-9]{12}_[a-f0-9]{12}):/)?.[1];
+    if (narrationId?.startsWith(prefix) && narrationId !== keepId && !staleIds.includes(narrationId)) {
+      staleIds.push(narrationId);
+    }
+  }
+  staleIds.forEach(id => bookGuideNarrationTTS.cancelBook(id));
+  const inFlight = [...bookGuideNarrationPrepareJobs.entries()]
+    .filter(([key]) => staleIds.some(id => key.startsWith(`${id}:`)))
+    .map(([, promise]) => promise);
+  await Promise.allSettled(inFlight);
+  const finalEntries = await fs.readdir(CACHE_DIR).catch(() => []);
+  await Promise.all(finalEntries
+    .filter(name => name.startsWith(prefix) && (!keepId || !name.startsWith(keepId)))
+    .map(name => fs.unlink(path.join(CACHE_DIR, name)).catch(() => {})));
+}
+
+const bookGuideStore = createBookGuideStore({
+  artifactDir: BOOK_GUIDE_ARTIFACT_DIR,
+  configFile: BOOK_GUIDE_CONFIG_FILE,
+  certificationFile: BOOK_GUIDE_CERTIFICATION_FILE,
+  credentialsFile: BOOK_GUIDE_CREDENTIALS_FILE,
+  jsonStore
+});
+const bookGuideJournal = createBookGuideJournal({
+  filePath: BOOK_GUIDE_JOBS_FILE,
+  jsonStore
+});
+const usePrivateCodexGuides = process.env.XANDRIO_PRIVATE_CODEX_GUIDES === '1';
+const bookGuideProvider = usePrivateCodexGuides ? createCodexBookGuideProvider({
+  codexHome: process.env.XANDRIO_CODEX_HOME || path.join(DATA_DIR, 'codex'),
+  binary: process.env.XANDRIO_CODEX_BIN || 'codex',
+  timeoutMs: positiveInteger(process.env.XANDRIO_BOOK_GUIDE_MODEL_TIMEOUT_MS, 180_000)
+}) : createPpqBookGuideProvider({
+  timeoutMs: positiveInteger(process.env.XANDRIO_BOOK_GUIDE_MODEL_TIMEOUT_MS, 180_000),
+  getApiKey: async () => {
+    const stored = await bookGuideStore.loadCredentials();
+    return stored.apiKey || process.env.PPQ_API_KEY || '';
+  }
+});
+const bookGuideService = createBookGuideService({
+  loadBook: async bookId => (await loadJSON(BOOKS_FILE, {}))[bookId] || null,
+  getChapters: bookPath => getChaptersCached(bookPath),
+  store: bookGuideStore,
+  journal: bookGuideJournal,
+  provider: bookGuideProvider,
+  scheduler: generationScheduler,
+  withBookStateLock: bookMutationLocks.withBookStateLock,
+  onArtifactPublished: pruneBookGuideNarrationAudio,
+  onArtifactRemoved: bookId => pruneBookGuideNarrationAudio(bookId),
+  maxConcurrent: 1
+});
+
+async function prepareBookGuideNarrationAudio(bookId, sectionId) {
+  const artifact = await bookGuideStore.read(bookId);
+  if (!artifact) {
+    const error = new Error('Book guide not found');
+    error.code = 'BOOK_GUIDE_NOT_FOUND';
+    error.statusCode = 404;
+    throw error;
+  }
+  const sections = buildBookGuideNarration(artifact);
+  const sectionIndex = sections.findIndex(section => section.id === sectionId);
+  if (sectionIndex < 0) {
+    const error = new Error('Study-guide narration section not found');
+    error.code = 'BOOK_GUIDE_NARRATION_SECTION_NOT_FOUND';
+    error.statusCode = 404;
+    throw error;
+  }
+  const section = sections[sectionIndex];
+  const narrationId = narrationArtifactId(bookId, artifact);
+  const variantKey = String(bookGuideNarrationTTS.variantKeyProvider() || 'default');
+  const jobKey = `${narrationId}:${sectionIndex}:${variantKey}`;
+  if (!bookGuideNarrationPrepareJobs.has(jobKey)) {
+    const job = (async () => {
+      const outputPath = bookGuideNarrationTTS.chapterPath(narrationId, sectionIndex);
+      try {
+        await fs.access(outputPath);
+        return outputPath;
+      } catch {}
+      const voice = getActiveVoice();
+      const manifest = await bookGuideNarrationTTS.generateChapter(
+        narrationId,
+        sectionIndex,
+        section.text,
+        'en',
+        'immediate',
+        {
+          voice,
+          origin: GENERATION_ORIGIN.PLAYBACK_CURRENT,
+          priorityForChunk: index => index === 0 ? 'immediate' : 'next'
+        }
+      );
+      await bookGuideNarrationTTS.waitForChapter(narrationId, sectionIndex);
+      const current = bookGuideNarrationTTS.getChapterManifest(narrationId, sectionIndex) || manifest;
+      if (!current.chunks.every(chunk => chunk.status === 'ready')) {
+        throw new Error('Study-guide narration did not finish');
+      }
+      return bookGuideNarrationTTS.concatenateChunks(narrationId, sectionIndex);
+    })().finally(() => bookGuideNarrationPrepareJobs.delete(jobKey));
+    bookGuideNarrationPrepareJobs.set(jobKey, job);
+  }
+  return {
+    path: await bookGuideNarrationPrepareJobs.get(jobKey),
+    sectionId: section.id,
+    title: section.title
+  };
 }
 
 // Multer configuration for file uploads
@@ -2769,7 +2913,12 @@ async function persistCanonicalCoverPath(bookId, coverPath, coverSource = null) 
 // Liveness endpoint for uptime monitors (UptimeRobot etc.). Deliberately
 // cheap: no disk reads, no engine probes. GETs are auth-exempt.
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', uptime: Math.round(process.uptime()) });
+  res.json({
+    status: 'ok',
+    uptime: Math.round(process.uptime()),
+    startedAt: SERVER_STARTED_AT,
+    runtimeRevision: process.env.XANDRIO_RUNTIME_REVISION || null
+  });
 });
 
 const readinessProbe = createReadinessProbe({
@@ -2868,7 +3017,8 @@ const bookDeletionService = createBookDeletionService({
     const cancelledJobs = chunkedTTS.cancelBook(bookId) + instantChunkedTTS.cancelBook(bookId);
     await Promise.all([
       playbackPrefetch.removeBook(bookId),
-      offlinePreparationCoordinator.cancel(bookId, { remove: true })
+      offlinePreparationCoordinator.cancel(bookId, { remove: true }),
+      bookGuideService.removeBook(bookId)
     ]);
     return cancelledJobs;
   },
@@ -4263,6 +4413,45 @@ registerOperatorPolicyRoutes(app, {
   updateSettingsCache
 });
 
+registerBookGuideRoutes(app, {
+  service: bookGuideService,
+  requireAdmin,
+  prepareNarrationAudio: prepareBookGuideNarrationAudio,
+  narrationVariant: () => bookGuideNarrationTTS.currentVariantSegment() || 'default',
+  serveAudioFile,
+  setBookCategory: async (bookId, category) => {
+    if (!['nonfiction', 'unknown'].includes(category)) {
+      const error = new Error('Invalid study-guide category');
+      error.code = 'BOOK_GUIDE_CATEGORY_INVALID';
+      error.statusCode = 400;
+      throw error;
+    }
+    let result = null;
+    await bookMutationLocks.withBookStateLock(bookId, () => updateJSON(BOOKS_FILE, books => {
+      const book = books[bookId];
+      if (!book) {
+        const error = new Error('Book not found');
+        error.code = 'BOOK_GUIDE_BOOK_NOT_FOUND';
+        error.statusCode = 404;
+        throw error;
+      }
+      if (category === 'nonfiction') {
+        book.studyGuideCategory = 'nonfiction';
+        book.studyGuideCategorySetAt = new Date().toISOString();
+      } else {
+        delete book.studyGuideCategory;
+        delete book.studyGuideCategorySetAt;
+      }
+      result = {
+        bookId,
+        category: book.studyGuideCategory || 'unknown',
+        setAt: book.studyGuideCategorySetAt || null
+      };
+    }));
+    return result;
+  }
+});
+
 registerPronunciationRoutes(app, { pronunciationService });
 
 function createConfiguredServer() {
@@ -4308,6 +4497,10 @@ if (require.main === module) {
     const recoveredRebuilds = await chapterRebuildService.recoverAll();
     if (recoveredRebuilds.length) {
       console.log(`Recovered ${recoveredRebuilds.length} interrupted chapter rebuild(s)`);
+    }
+    const recoveredGuides = await bookGuideService.restore();
+    if (recoveredGuides.resumed) {
+      console.log(`Recovered ${recoveredGuides.resumed} interrupted book guide job(s)`);
     }
     narrationEngines.start('kokoro:af_heart');
     narrationEngines.start('chatterbox:brick-scott');
@@ -4380,7 +4573,7 @@ const shutdownController = createGracefulShutdown({
   isIdle: () => {
     const queue = ttsQueue.getQueueStatus();
     return requestConcurrencyLimiter.isIdle() && downloadImportGate.active === 0 &&
-      queue.active === 0 && queue.queued === 0;
+      queue.active === 0 && queue.queued === 0 && bookGuideService.isIdle();
   },
   cleanup: async ({ drained }) => {
     if (!drained) console.warn('Shutdown drain deadline reached; durable generation state will recover on restart.');
@@ -4394,6 +4587,7 @@ const shutdownController = createGracefulShutdown({
     // durable generation state resumes on restart either way.
     chunkedTTS.stopReconcileLoop?.();
     instantChunkedTTS.stopReconcileLoop?.();
+    bookGuideNarrationTTS.stopReconcileLoop?.();
     await hlsAudioStreamer.dispose();
     // Give the scraper's Chromium a moment to close, but never block exit.
     try {
