@@ -36,7 +36,7 @@ async function run() {
       return childResult(connected ? { stdout: 'Logged in using ChatGPT\n' } : { stderr: 'Not logged in\n', code: 1 });
     }
     if (args[0] === 'login' && args[1] === '--device-auth') {
-      return childResult({ stdout: 'Use the command-line flow. Open https://auth.openai.com/codex/device and enter ABCD-EFGH\n', stayOpen: true });
+      return childResult({ stdout: 'Use the command-line flow. Open https://auth.openai.com/codex/device and enter ABCD-EFGHI\n', stayOpen: true });
     }
     if (args[0] === 'logout') {
       connected = false;
@@ -78,7 +78,7 @@ async function run() {
     const state = await provider.pollLogin();
     assert.strictEqual(state.state, 'waiting');
     assert.strictEqual(state.verificationUrl, 'https://auth.openai.com/codex/device');
-    assert.strictEqual(state.userCode, 'ABCD-EFGH');
+    assert.strictEqual(state.userCode, 'ABCD-EFGHI');
     assert(!JSON.stringify(state).includes('/private/codex-home'));
   });
 
