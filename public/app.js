@@ -919,7 +919,13 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
   applySkipIntervalLabels();
   
-  initLibrary({ openBook, navigateTo, addToListeningQueue, onBookDeleted: clearDeletedBookFromPlayer });
+  initLibrary({
+    openBook,
+    navigateTo,
+    openBookGuide: bookId => navigateTo('guide', bookId),
+    addToListeningQueue,
+    onBookDeleted: clearDeletedBookFromPlayer
+  });
   initListeningQueue({ openBook });
   initSearch({ openBook, navigateTo });
   initSleepTimer({

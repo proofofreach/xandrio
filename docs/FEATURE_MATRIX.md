@@ -23,7 +23,7 @@ This matrix records the v1.1.0 release surface. Release preparation preserves ev
 | Playback | Speed, sleep timer, bookmarks, pronunciation repair | Retained | Client, bookmark, pronunciation, and browser tests |
 | Offline | PWA shell, verified full-title downloads, cold-launch local library/player fallback, and per-title local-state badges | Retained and expanded | Offline manifest, service-worker, app-shell, and browser smoke tests |
 | State | Positions, batch sync, profiles, devices, pairing, client settings | Retained | User-library-state, route, and browser tests |
-| Study | Book Guides for admin-attested English nonfiction | Experimental; disabled by default; PPQ.ai ZDR-capable DeepSeek/GLM routes; explicit external-processing consent; fiction is future scope | 12-work corpus, frozen 200-claim verifier calibration, guide lifecycle/API/UI/browser tests |
+| Study | Book Guides for explicitly tagged English nonfiction | Experimental; disabled by default; PPQ.ai ZDR-capable DeepSeek/GLM routes; configuration-time external-processing acknowledgement; fiction is future scope | 12-work corpus, frozen 200-claim verifier calibration, guide lifecycle/API/UI/browser tests |
 | Deletion | Books, extracted sources, generated audio, positions, bookmarks, offline copies, and voice references | Retained | Server, state-cleanup, offline, and release persistence tests |
 | Security | Optional full-API token auth, signed cookie, bearer clients, CORS, CSP, rate limits | Implemented | Auth, HTTP security, rate-limit, Range, and browser tests |
 | Packaging | Native Node.js 24 | Supported | CI test and audio-verification jobs |

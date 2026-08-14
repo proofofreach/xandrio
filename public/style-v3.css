@@ -4649,8 +4649,6 @@ body.has-mini-player #guide-view { padding-bottom: calc(80px + env(safe-area-ins
 .guide-state p { margin: 0 auto 16px; color: var(--text-secondary); font-size: 14px; line-height: 1.5; }
 .guide-generation-disclosure { max-width: 520px; font-size: 12px !important; }
 .guide-state .btn-primary, .guide-state .btn-ghost { min-height: var(--touch-min); }
-.guide-attestation { display: flex; align-items: flex-start; gap: 9px; margin: 16px 0; color: var(--text); font-size: 13px; line-height: 1.45; text-align: left; }
-.guide-attestation input { width: 18px; height: 18px; margin: 0; accent-color: var(--accent); }
 .guide-stale { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 0 0 20px; padding: 12px 14px; background: oklch(76% 0.14 82 / 0.08); }
 .guide-stale strong { color: var(--text); font-size: 13px; }
 .guide-stale span { flex: 1 1 240px; color: var(--text-secondary); font-size: 13px; }

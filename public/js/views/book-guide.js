@@ -174,7 +174,7 @@ function recallHTMLSection(artifact) {
 }
 
 function generationAttestation(data) {
-  return `${generationDisclosure(data)}<label class="guide-attestation"><input id="guide-nonfiction-confirmed" type="checkbox"> <span>I confirm this is English nonfiction, I am authorized to process it, and I consent to sending its text and evidence to PPQ.ai.</span></label><p id="guide-action-error" class="settings-error" hidden></p>`;
+  return `${generationDisclosure(data)}<p id="guide-action-error" class="settings-error" hidden></p>`;
 }
 
 function passagesHTML(artifact) {
@@ -356,18 +356,9 @@ export function closeBookGuide() {
 
 async function generateGuide() {
   if (!activeBookId || !isAdmin()) return;
-  const confirmation = guideBody?.querySelector('#guide-nonfiction-confirmed');
-  if (confirmation && !confirmation.checked) {
-    errorText('Confirm that this is an English nonfiction book before creating a guide.');
-    confirmation.focus();
-    return;
-  }
   errorText('');
   try {
-    await apiSend('POST', guidePath(activeBookId), {
-      nonfictionConfirmed: true,
-      externalProcessingConfirmed: true
-    });
+    await apiSend('POST', guidePath(activeBookId));
     await refreshGuideState();
   } catch (error) {
     errorText(error.message || 'Could not start guide generation.');

@@ -787,6 +787,9 @@ export function initSettings(options = {}) {
   }
 
   function renderBookGuideSettings(config = {}) {
+    if (bookGuidesSettingsSection) {
+      bookGuidesSettingsSection.dataset.externalProcessingAcknowledged = config.externalProcessingAcknowledgedAt ? '1' : '0';
+    }
     if (bookGuidesEnabled) bookGuidesEnabled.checked = config.enabled === true;
     if (bookGuidesAllowUncertified) bookGuidesAllowUncertified.checked = config.allowUncertified === true;
     if (bookGuidesApiKey) {
@@ -835,11 +838,24 @@ export function initSettings(options = {}) {
     setBookGuideSettingsError('');
     bookGuidesSave.disabled = true;
     try {
+      const apiKey = bookGuidesApiKey?.value.trim() || '';
+      const needsAcknowledgement = Boolean(apiKey) ||
+        bookGuidesSettingsSection?.dataset.externalProcessingAcknowledged !== '1';
+      let externalProcessingAcknowledged = false;
+      if (bookGuidesEnabled?.checked && needsAcknowledgement) {
+        externalProcessingAcknowledged = await confirmSheet({
+          title: 'Enable external study-guide processing?',
+          message: 'Study-guide generation sends book text and evidence to PPQ.ai. Use only books you are authorized to process. This acknowledgement applies to the provider configuration, not each title.',
+          confirmLabel: 'I understand'
+        });
+        if (!externalProcessingAcknowledged) return;
+      }
       const config = await apiSend('PUT', '/api/book-guides/config', {
         enabled: bookGuidesEnabled?.checked === true,
         allowUncertified: bookGuidesAllowUncertified?.checked === true,
+        externalProcessingAcknowledged,
         baseUrl: 'https://api.ppq.ai',
-        ...(bookGuidesApiKey?.value.trim() ? { apiKey: bookGuidesApiKey.value.trim() } : {}),
+        ...(apiKey ? { apiKey } : {}),
         generatorModel: bookGuidesGeneratorModel?.value.trim() || '',
         verifierModel: bookGuidesVerifierModel?.value.trim() || ''
       });

@@ -43,9 +43,11 @@ async function run() {
     testConnection: async () => (calls.push(['test']), { ok: true }),
     clearConfig: async () => ({ enabled: false })
   };
+  const setBookCategory = async (bookId, category) => (calls.push(['category', bookId, category]), { bookId, category });
   registerBookGuideRoutes(app, {
     service,
     requireAdmin,
+    setBookCategory,
     isSafeBookId: value => /^book_/.test(value),
     log: { error() {} }
   });
@@ -55,6 +57,7 @@ async function run() {
       'GET /api/book/:bookId/guide/anchors/:anchorId/context',
       'GET /api/book/:bookId/guide',
       'POST /api/book/:bookId/guide',
+      'PUT /api/book/:bookId/guide/category',
       'POST /api/book/:bookId/guide/cancel',
       'DELETE /api/book/:bookId/guide',
       'GET /api/book-guides/config',
@@ -76,16 +79,21 @@ async function run() {
     assert(protectedRoutes.every(route => route.handlers[0] === requireAdmin));
   });
 
-  await test('passes only an explicit boolean nonfiction confirmation', async () => {
+  await test('starts generation from the persisted title tag rather than request assertions', async () => {
     const route = app.find(item => item.method === 'post' && item.path === '/api/book/:bookId/guide');
-    const req = { params: { bookId: 'book_1' }, body: { nonfictionConfirmed: 'true' } };
+    const req = { params: { bookId: 'book_1' }, body: {} };
     const res = response();
     await route.handlers[1](req, res);
     assert.strictEqual(res.statusCode, 202);
-    assert.deepStrictEqual(calls.at(-1), ['start', 'book_1', {
-      nonfictionConfirmed: false,
-      externalProcessingConfirmed: false
-    }]);
+    assert.deepStrictEqual(calls.at(-1), ['start', 'book_1', undefined]);
+  });
+
+  await test('persists title classification only through an admin mutation', async () => {
+    const route = app.find(item => item.method === 'put' && item.path === '/api/book/:bookId/guide/category');
+    const res = response();
+    await route.handlers[1]({ params: { bookId: 'book_1' }, body: { category: 'nonfiction' } }, res);
+    assert.deepStrictEqual(res.body, { bookId: 'book_1', category: 'nonfiction' });
+    assert.deepStrictEqual(calls.at(-1), ['category', 'book_1', 'nonfiction']);
   });
 
   await test('derives management and generation capability from the authenticated role', async () => {

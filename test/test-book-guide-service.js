@@ -129,11 +129,19 @@ async function harness() {
   });
   const journal = createBookGuideJournal({ filePath: path.join(temp, 'jobs.json'), jsonStore });
   let language = 'en';
+  let category = 'unknown';
   let sourceText = EVIDENCE.join(' ');
   let chapterStructureKey = 'structure-1';
   const service = createBookGuideService({
     loadBook: async bookId => bookId === 'book_1'
-      ? { id: bookId, path: '/book.epub', language, chapterStructureKey }
+      ? {
+          id: bookId,
+          path: '/book.epub',
+          language,
+          chapterStructureKey,
+          studyGuideCategory: category,
+          studyGuideCategorySetAt: category === 'nonfiction' ? '2026-08-13T11:00:00.000Z' : null
+        }
       : null,
     getChapters: async () => [{ title: 'Chapter One', type: 'chapter', text: sourceText, estimatedDuration: 300 }],
     store,
@@ -161,6 +169,7 @@ async function harness() {
   return {
     temp, provider, service, store, journal, certificationFile, certificationReport,
     setLanguage(value) { language = value; },
+    setCategory(value) { category = value; },
     setChapterStructureKey(value) { chapterStructureKey = value; },
     setSourceText(value) { sourceText = value; }
   };
@@ -190,18 +199,25 @@ async function run() {
       assert.strictEqual(result.status, 'unavailable');
     });
 
-    await test('requires an explicit nonfiction confirmation', async () => {
+    await test('requires an explicit nonfiction tag stored on the title', async () => {
+      await assert.rejects(h.service.configure({
+        enabled: true,
+        baseUrl: 'http://127.0.0.1:11434',
+        generatorModel: 'guide:1',
+        verifierModel: 'verify:1'
+      }), error => error.code === 'BOOK_GUIDE_EXTERNAL_PROCESSING_ACKNOWLEDGEMENT_REQUIRED');
       const configured = await h.service.configure({
-        enabled: true, baseUrl: 'http://127.0.0.1:11434', generatorModel: 'guide:1', verifierModel: 'verify:1'
+        enabled: true,
+        externalProcessingAcknowledged: true,
+        baseUrl: 'http://127.0.0.1:11434',
+        generatorModel: 'guide:1',
+        verifierModel: 'verify:1'
       });
       assert.strictEqual(configured.configured, true);
       assert.strictEqual(configured.certified, true);
       assert.strictEqual(configured.ready, true);
-      await assert.rejects(h.service.start('book_1'), error => error.code === 'BOOK_GUIDE_NONFICTION_CONFIRMATION_REQUIRED');
-      await assert.rejects(
-        h.service.start('book_1', { nonfictionConfirmed: true }),
-        error => error.code === 'BOOK_GUIDE_EXTERNAL_PROCESSING_CONFIRMATION_REQUIRED'
-      );
+      await assert.rejects(h.service.start('book_1'), error => error.code === 'BOOK_GUIDE_NONFICTION_TAG_REQUIRED');
+      h.setCategory('nonfiction');
     });
 
     await test('stores provider credentials separately and runs a bounded connection test', async () => {
@@ -214,6 +230,7 @@ async function run() {
       });
       assert.strictEqual((await h.store.loadCredentials()).apiKey, 'test-secret');
       assert.strictEqual((await h.service.getConfig()).apiKey, undefined);
+      assert.strictEqual((await h.service.getConfig()).externalProcessingAcknowledgedAt, '2026-08-13T12:00:00.000Z');
       assert.deepStrictEqual(await h.service.testConnection(), {
         ok: true,
         provider: 'ppq-ai',
@@ -231,7 +248,7 @@ async function run() {
       assert.strictEqual(config.ready, false);
       assert.strictEqual(config.certificationReason, 'BOOK_GUIDE_CERTIFICATION_PROVENANCE_MISMATCH');
       await assert.rejects(
-        h.service.start('book_1', { nonfictionConfirmed: true, externalProcessingConfirmed: true }),
+        h.service.start('book_1'),
         error => error.code === 'BOOK_GUIDE_CERTIFICATION_PROVENANCE_MISMATCH'
       );
       const evaluationConfig = await h.service.configure({
@@ -254,7 +271,7 @@ async function run() {
     });
 
     await test('generates, verifies, and atomically publishes a shared guide', async () => {
-      await h.service.start('book_1', { nonfictionConfirmed: true, externalProcessingConfirmed: true });
+      await h.service.start('book_1');
       await waitIdle(h.service);
       const result = await h.service.get('book_1');
       assert.strictEqual(result.status, 'ready');
@@ -282,7 +299,7 @@ async function run() {
 
     await test('retries failed semantic verification twice before publishing', async () => {
       h.provider.verificationFailures = 2;
-      await h.service.start('book_1', { nonfictionConfirmed: true, externalProcessingConfirmed: true });
+      await h.service.start('book_1');
       await waitIdle(h.service);
       const result = await h.service.get('book_1');
       assert.strictEqual(result.artifact.verification.attempts, 3);
@@ -305,7 +322,7 @@ async function run() {
     await test('fails closed and preserves the prior verified artifact', async () => {
       const prior = await h.store.read('book_1');
       h.provider.verificationFailures = 3;
-      await h.service.start('book_1', { nonfictionConfirmed: true, externalProcessingConfirmed: true });
+      await h.service.start('book_1');
       await waitIdle(h.service);
       const result = await h.service.get('book_1');
       assert.strictEqual(result.job.status, 'failed');
@@ -331,7 +348,7 @@ async function run() {
     await test('blocks non-English generation at preflight', async () => {
       h.setLanguage('fr');
       await assert.rejects(
-        h.service.start('book_1', { nonfictionConfirmed: true, externalProcessingConfirmed: true }),
+        h.service.start('book_1'),
         error => error.code === 'BOOK_GUIDE_LANGUAGE_UNSUPPORTED'
       );
     });

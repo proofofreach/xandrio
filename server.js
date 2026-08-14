@@ -4305,7 +4305,38 @@ registerOperatorPolicyRoutes(app, {
 
 registerBookGuideRoutes(app, {
   service: bookGuideService,
-  requireAdmin
+  requireAdmin,
+  setBookCategory: async (bookId, category) => {
+    if (!['nonfiction', 'unknown'].includes(category)) {
+      const error = new Error('Invalid study-guide category');
+      error.code = 'BOOK_GUIDE_CATEGORY_INVALID';
+      error.statusCode = 400;
+      throw error;
+    }
+    let result = null;
+    await bookMutationLocks.withBookStateLock(bookId, () => updateJSON(BOOKS_FILE, books => {
+      const book = books[bookId];
+      if (!book) {
+        const error = new Error('Book not found');
+        error.code = 'BOOK_GUIDE_BOOK_NOT_FOUND';
+        error.statusCode = 404;
+        throw error;
+      }
+      if (category === 'nonfiction') {
+        book.studyGuideCategory = 'nonfiction';
+        book.studyGuideCategorySetAt = new Date().toISOString();
+      } else {
+        delete book.studyGuideCategory;
+        delete book.studyGuideCategorySetAt;
+      }
+      result = {
+        bookId,
+        category: book.studyGuideCategory || 'unknown',
+        setAt: book.studyGuideCategorySetAt || null
+      };
+    }));
+    return result;
+  }
 });
 
 registerPronunciationRoutes(app, { pronunciationService });

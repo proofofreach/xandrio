@@ -4,7 +4,7 @@ Book Guides are an experimental, instance-wide study-guide artifact for an impor
 
 ## V1 scope
 
-V1 is English nonfiction only. Before generation, an admin must attest that the selected book is nonfiction, confirm authority to process it, and consent to external processing. The application does not classify fiction automatically. Fiction guides are future scope; they need a separate product, evaluation, rights, and UX decision. A guide is shared with readers who can access its book. V1 does not add personal learning history, saved quiz state, bookmarks, or spaced-repetition state.
+V1 is English nonfiction only. An admin explicitly tags eligible titles as nonfiction. The application does not classify fiction automatically. Fiction guides are future scope; they need a separate product and evaluation decision. A guide is shared with readers who can access its book. V1 does not add personal learning history, saved quiz state, bookmarks, or spaced-repetition state.
 
 A ready guide contains a brief orientation, concept cards, a chapter map, active-recall prompts, and a small supporting-passage layer. It is concept-first and chapter-linked. Every material claim and answer has an evidence anchor into the imported edition. Quotes support an idea; they are not the primary product.
 
@@ -12,7 +12,7 @@ A ready guide contains a brief orientation, concept cards, a chapter map, active
 
 The first supported generator path is PPQ.ai's OpenAI-compatible API at `https://api.ppq.ai`. Xandrio sends imported book segments, extracted claims, and verification evidence to the selected model. Requests require PPQ.ai's zero-data-retention routing. If no compatible endpoint is available, the request fails instead of relaxing that requirement. This remains external processing; operators must review PPQ.ai and upstream-provider terms.
 
-The API key is write-only in the admin UI and stored separately from public guide configuration. Use a dedicated PPQ.ai key with a strict spending limit. An admin starts, cancels, retries, configures, and regenerates a guide. Normal readers can read a ready or stale guide but cannot cause source processing or see provider configuration. The generation screen states the external destination, model route identifiers, estimated cost and duration, and required confirmations before a job begins.
+The API key is write-only in the admin UI and stored separately from public guide configuration. Use a dedicated PPQ.ai key with a strict spending limit. When the provider is configured, the admin acknowledges once that book text leaves the server and confirms responsibility for processing rights. This warning is not repeated for every title. An admin starts, cancels, retries, configures, and regenerates a guide. Normal readers can read a ready or stale guide but cannot cause source processing or see provider configuration. Only nonfiction-tagged titles expose the library study-guide action.
 
 The initial generator route is the exact `deepseek/deepseek-v4-flash-0731` checkpoint. PPQ.ai advertises a 1,048,576-token context window, structured output, and ZDR for this route. That is sufficient for normal nonfiction books, but Xandrio still uses chapter-bounded extraction and reduction. This keeps evidence anchors precise, bounds retries and cost, and avoids relying on long-context recall. Use ZDR-capable `glm-5.2` as the initial independent verifier. `deepseek/deepseek-v4-pro-0813` is available for an A/B quality comparison. Qwen 3.7 Plus is not offered because PPQ.ai currently marks that route anonymous rather than ZDR.
 

@@ -46,12 +46,14 @@ async function run() {
       const config = await store.saveConfig({
         enabled: true,
         allowUncertified: true,
+        externalProcessingAcknowledgedAt: '2026-08-14T00:00:00.000Z',
         baseUrl: 'http://127.0.0.1:11434',
         generator: { name: 'g:1', digest: 'digest-g' },
         verifier: { name: 'v:1', digest: 'digest-v' }
       });
       assert.strictEqual(config.enabled, true);
       assert.strictEqual(config.allowUncertified, true);
+      assert.strictEqual(config.externalProcessingAcknowledgedAt, '2026-08-14T00:00:00.000Z');
       assert.strictEqual((await store.loadConfig()).generator.name, 'g:1');
       assert.strictEqual(JSON.stringify(await store.loadConfig()).includes('apiKey'), false);
     });
