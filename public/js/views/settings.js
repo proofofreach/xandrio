@@ -8,6 +8,7 @@ import { escapeHTML, relativeTime } from '../util/format.js';
 import { confirmSheet } from '../ui/confirm.js';
 import { showToast } from '../ui/toast.js';
 import { renderSegmentedControl } from '../ui/segmented.js';
+import { registerSheet } from '../ui/sheets.js';
 
 let deps = {};
 // --- Settings View ---
@@ -100,6 +101,20 @@ export function initSettings(options = {}) {
   const bookGuidesTest = document.getElementById('book-guides-test');
   const bookGuidesClear = document.getElementById('book-guides-clear');
   const bookGuidesSettingsError = document.getElementById('book-guides-settings-error');
+  const bookGuidesProviderHint = document.getElementById('book-guides-provider-hint');
+  const bookGuidesApiKeyGroup = document.getElementById('book-guides-api-key-group');
+  const bookGuidesDeviceConnection = document.getElementById('book-guides-device-connection');
+  const bookGuidesConnectionLabel = document.getElementById('book-guides-connection-label');
+  const bookGuidesConnectionDetail = document.getElementById('book-guides-connection-detail');
+  const bookGuidesConnect = document.getElementById('book-guides-connect');
+  const bookGuidesDisconnect = document.getElementById('book-guides-disconnect');
+  const bookGuidesKeyNote = document.getElementById('book-guides-key-note');
+  const bookGuidesLoginSheet = document.getElementById('book-guides-login-sheet');
+  const bookGuidesLoginBody = document.getElementById('book-guides-login-body');
+  const bookGuidesLoginController = registerSheet(bookGuidesLoginSheet, {
+    backdrop: document.getElementById('book-guides-login-backdrop'),
+    closeBtn: document.getElementById('book-guides-login-close')
+  });
 
   // Playback settings
   const skipIntervalControl = document.getElementById('skip-interval-control');
@@ -779,6 +794,9 @@ export function initSettings(options = {}) {
 
   // ---- Admin: experimental study guides ----
 
+  let bookGuideConfig = {};
+  let bookGuideLoginPoll = null;
+
   function setBookGuideSettingsError(message = '') {
     if (!bookGuidesSettingsError) return;
     bookGuidesSettingsError.textContent = message;
@@ -786,6 +804,8 @@ export function initSettings(options = {}) {
   }
 
   function renderBookGuideSettings(config = {}) {
+    bookGuideConfig = config;
+    const deviceAuth = config.authMode === 'device';
     if (bookGuidesSettingsSection) {
       bookGuidesSettingsSection.dataset.externalProcessingAcknowledged = config.externalProcessingAcknowledgedAt ? '1' : '0';
     }
@@ -796,11 +816,47 @@ export function initSettings(options = {}) {
         ? 'PPQ.ai API key saved (leave blank to keep it)'
         : 'PPQ.ai API key required';
     }
+    if (bookGuidesApiKeyGroup) bookGuidesApiKeyGroup.hidden = deviceAuth;
+    if (bookGuidesDeviceConnection) bookGuidesDeviceConnection.hidden = !deviceAuth;
+    if (bookGuidesProviderHint) {
+      bookGuidesProviderHint.textContent = deviceAuth
+        ? 'Uses your private Codex subscription. Book text and evidence are processed by OpenAI.'
+        : 'Uses PPQ.ai. Book text and evidence leave this server for generation and verification.';
+    }
+    if (bookGuidesConnectionLabel) bookGuidesConnectionLabel.textContent = config.providerLabel || 'Model provider';
+    if (bookGuidesConnectionDetail) {
+      bookGuidesConnectionDetail.textContent = config.connection?.connected
+        ? 'Connected on this server'
+        : (config.connection?.available === false ? 'Codex CLI is unavailable on this server' : 'Not connected');
+    }
+    if (bookGuidesConnect) bookGuidesConnect.hidden = !deviceAuth || config.connection?.connected === true;
+    if (bookGuidesDisconnect) bookGuidesDisconnect.hidden = !deviceAuth || config.connection?.connected !== true;
+    const needsDeviceConnection = deviceAuth && config.connection?.connected !== true;
+    if (bookGuidesEnabled) bookGuidesEnabled.disabled = needsDeviceConnection;
+    if (bookGuidesSave) bookGuidesSave.disabled = needsDeviceConnection;
+    if (bookGuidesTest) bookGuidesTest.disabled = needsDeviceConnection;
+    if (bookGuidesKeyNote) {
+      bookGuidesKeyNote.textContent = deviceAuth
+        ? 'Xandrio never receives your password or OAuth token. Codex stores and refreshes the connection on this private server.'
+        : 'The API key is write-only. Use a dedicated PPQ.ai key with a strict spending limit. The connection test sends a small paid request.';
+    }
+    const models = Array.isArray(config.availableModels) ? config.availableModels : [];
+    if (models.length) {
+      for (const select of [bookGuidesGeneratorModel, bookGuidesVerifierModel]) {
+        if (!select) continue;
+        select.replaceChildren(...models.map(model => {
+          const option = document.createElement('option');
+          option.value = model.id;
+          option.textContent = `${model.label}${model.detail ? ` · ${model.detail}` : ''}`;
+          return option;
+        }));
+      }
+    }
     if (bookGuidesGeneratorModel) {
-      bookGuidesGeneratorModel.value = config.generator?.name || 'gemini-3.7-flash';
+      bookGuidesGeneratorModel.value = (config.providerMatches ? config.generator?.name : '') || (deviceAuth ? 'gpt-5.6-luna' : 'gemini-3.7-flash');
     }
     if (bookGuidesVerifierModel) {
-      bookGuidesVerifierModel.value = config.verifier?.name || 'glm-5.2';
+      bookGuidesVerifierModel.value = (config.providerMatches ? config.verifier?.name : '') || (deviceAuth ? 'gpt-5.6-terra' : 'glm-5.2');
     }
     if (bookGuidesSettingsStatus) {
       bookGuidesSettingsStatus.textContent = config.ready
@@ -809,6 +865,75 @@ export function initSettings(options = {}) {
       bookGuidesSettingsStatus.className = `settings-status ${config.ready ? 'settings-status-ok' : (config.enabled ? 'settings-status-warning' : '')}`.trim();
     }
   }
+
+  function renderBookGuideLogin(state = {}) {
+    if (!bookGuidesLoginBody) return;
+    bookGuidesLoginBody.setAttribute('aria-busy', ['starting', 'waiting'].includes(state.state) ? 'true' : 'false');
+    if (state.state === 'connected') {
+      bookGuidesLoginBody.innerHTML = '<div class="guide-login-success"><strong>Codex connected</strong><p>You can close this sheet and save the Study Guide configuration.</p></div>';
+      clearTimeout(bookGuideLoginPoll);
+      void loadBookGuideSettings();
+      return;
+    }
+    if (state.state === 'failed') {
+      bookGuidesLoginBody.innerHTML = `<div class="guide-login-error"><strong>Connection failed</strong><p>${escapeHTML(state.message || 'Try connecting again.')}</p><button class="btn-primary btn-sm" type="button" data-codex-login-retry>Try Again</button></div>`;
+      bookGuidesLoginBody.querySelector('[data-codex-login-retry]')?.addEventListener('click', startBookGuideLogin);
+      clearTimeout(bookGuideLoginPoll);
+      return;
+    }
+    const link = /^https:\/\//.test(state.verificationUrl || '') ? state.verificationUrl : '';
+    const code = String(state.userCode || 'Waiting for code…');
+    bookGuidesLoginBody.innerHTML = `<p>${escapeHTML(state.message || 'Preparing device authorization…')}</p>
+      <div class="guide-device-code" aria-label="Device authorization code">${escapeHTML(code)}</div>
+      ${link ? `<a class="btn-primary guide-login-link" href="${escapeHTML(link)}" target="_blank" rel="noopener noreferrer">Open OpenAI Sign-In</a>` : ''}
+      <p class="settings-hint">The code expires shortly. This screen never sees your password.</p>`;
+  }
+
+  async function pollBookGuideLogin() {
+    try {
+      const state = await apiGet('/api/book-guides/provider/connection');
+      renderBookGuideLogin(state);
+      if (['starting', 'waiting'].includes(state.state)) {
+        bookGuideLoginPoll = setTimeout(pollBookGuideLogin, 2000);
+      }
+    } catch (err) {
+      renderBookGuideLogin({ state: 'failed', message: err.message || 'Could not check Codex sign-in.' });
+    }
+  }
+
+  async function startBookGuideLogin() {
+    clearTimeout(bookGuideLoginPoll);
+    setBookGuideSettingsError('');
+    bookGuidesLoginController.open();
+    renderBookGuideLogin({ state: 'starting', message: 'Preparing device authorization…' });
+    try {
+      renderBookGuideLogin(await apiSend('POST', '/api/book-guides/provider/login'));
+      bookGuideLoginPoll = setTimeout(pollBookGuideLogin, 1000);
+    } catch (err) {
+      renderBookGuideLogin({ state: 'failed', message: err.message || 'Could not start Codex sign-in.' });
+    }
+  }
+
+  bookGuidesConnect?.addEventListener('click', startBookGuideLogin);
+
+  bookGuidesDisconnect?.addEventListener('click', async () => {
+    const confirmed = await confirmSheet({
+      title: 'Disconnect Codex?',
+      message: 'This signs Codex out on this server and disables new study-guide generation. Existing guides remain available.',
+      confirmLabel: 'Disconnect'
+    });
+    if (!confirmed) return;
+    bookGuidesDisconnect.disabled = true;
+    try {
+      const result = await apiSend('DELETE', '/api/book-guides/provider/connection');
+      renderBookGuideSettings(result.config || {});
+      showToast('Codex disconnected');
+    } catch (err) {
+      setBookGuideSettingsError(err.message || 'Could not disconnect Codex.');
+    } finally {
+      bookGuidesDisconnect.disabled = false;
+    }
+  });
 
   async function loadBookGuideSettings() {
     if (!bookGuidesSettingsSection) return;
@@ -843,7 +968,7 @@ export function initSettings(options = {}) {
       if (bookGuidesEnabled?.checked && needsAcknowledgement) {
         externalProcessingAcknowledged = await confirmSheet({
           title: 'Enable external study-guide processing?',
-          message: 'Study-guide generation sends book text and evidence to PPQ.ai. Use only books you are authorized to process. This acknowledgement applies to the provider configuration, not each title.',
+          message: `Study-guide generation sends book text and evidence to ${bookGuideConfig.providerLabel || 'the configured provider'}. Use only books you are authorized to process. This acknowledgement applies to the provider configuration, not each title.`,
           confirmLabel: 'I understand'
         });
         if (!externalProcessingAcknowledged) return;
@@ -852,7 +977,7 @@ export function initSettings(options = {}) {
         enabled: bookGuidesEnabled?.checked === true,
         allowUncertified: true,
         externalProcessingAcknowledged,
-        baseUrl: 'https://api.ppq.ai',
+        baseUrl: bookGuideConfig.authMode === 'device' ? 'codex://subscription' : 'https://api.ppq.ai',
         ...(apiKey ? { apiKey } : {}),
         generatorModel: bookGuidesGeneratorModel?.value.trim() || '',
         verifierModel: bookGuidesVerifierModel?.value.trim() || ''
@@ -867,19 +992,21 @@ export function initSettings(options = {}) {
   });
 
   bookGuidesTest?.addEventListener('click', async () => {
-    const confirmed = await confirmSheet({
-      title: 'Run a paid connection test?',
-      message: 'This sends a short prompt to PPQ.ai and uses a small amount of API credit.',
-      confirmLabel: 'Run test'
-    });
-    if (!confirmed) return;
+    if (bookGuideConfig.authMode !== 'device') {
+      const confirmed = await confirmSheet({
+        title: 'Run a paid connection test?',
+        message: 'This sends a short prompt to PPQ.ai and uses a small amount of API credit.',
+        confirmLabel: 'Run Test'
+      });
+      if (!confirmed) return;
+    }
     setBookGuideSettingsError('');
     bookGuidesTest.disabled = true;
     try {
       const result = await apiSend('POST', '/api/book-guides/config/test');
-      showToast(`PPQ.ai connection works: ${result.model}`);
+      showToast(`${bookGuideConfig.providerLabel || 'Provider'} connection works: ${result.model}`);
     } catch (err) {
-      setBookGuideSettingsError(err.message || 'Could not connect to PPQ.ai.');
+      setBookGuideSettingsError(err.message || `Could not connect to ${bookGuideConfig.providerLabel || 'the provider'}.`);
     } finally {
       bookGuidesTest.disabled = false;
     }

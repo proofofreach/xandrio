@@ -13,6 +13,7 @@ const tests = [
   'test-book-guide-source.js',
   'test-book-guide-validation.js',
   'test-book-guide-provider.js',
+  'test-book-guide-codex-provider.js',
   'test-book-guide-store.js',
   'test-book-guide-service.js',
   'test-book-guide-routes.js',

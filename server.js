@@ -92,6 +92,7 @@ const { registerOperatorPolicyRoutes } = require('./lib/routes/operator-policy-r
 const { registerBookGuideRoutes } = require('./lib/routes/book-guide-routes');
 const { createBookGuideJournal } = require('./lib/book-guide-journal');
 const { createPpqBookGuideProvider } = require('./lib/book-guide-provider');
+const { createCodexBookGuideProvider } = require('./lib/book-guide-codex-provider');
 const { createBookGuideService } = require('./lib/book-guide-service');
 const { createBookGuideStore } = require('./lib/book-guide-store');
 const { buildBookGuideNarration, narrationArtifactId, narrationBookPrefix } = require('./lib/book-guide-narration');
@@ -2144,7 +2145,12 @@ const bookGuideJournal = createBookGuideJournal({
   filePath: BOOK_GUIDE_JOBS_FILE,
   jsonStore
 });
-const bookGuideProvider = createPpqBookGuideProvider({
+const usePrivateCodexGuides = process.env.XANDRIO_PRIVATE_CODEX_GUIDES === '1';
+const bookGuideProvider = usePrivateCodexGuides ? createCodexBookGuideProvider({
+  codexHome: process.env.XANDRIO_CODEX_HOME || path.join(DATA_DIR, 'codex'),
+  binary: process.env.XANDRIO_CODEX_BIN || 'codex',
+  timeoutMs: positiveInteger(process.env.XANDRIO_BOOK_GUIDE_MODEL_TIMEOUT_MS, 180_000)
+}) : createPpqBookGuideProvider({
   timeoutMs: positiveInteger(process.env.XANDRIO_BOOK_GUIDE_MODEL_TIMEOUT_MS, 180_000),
   getApiKey: async () => {
     const stored = await bookGuideStore.loadCredentials();

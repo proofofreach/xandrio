@@ -1477,6 +1477,77 @@ summary:focus-visible,
   color: var(--danger);
 }
 
+.guide-connection-ledger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 64px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-inset);
+}
+.guide-connection-ledger[hidden] { display: none; }
+.guide-connection-copy { min-width: 0; }
+.guide-connection-name { display: block; color: var(--text); font-size: 14px; font-weight: 600; }
+.guide-connection-actions { display: flex; flex: 0 0 auto; gap: 8px; }
+.settings-form.book-guide-settings-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+  gap: 12px;
+}
+.book-guide-settings-form > .admin-role-check,
+.book-guide-settings-form > .guide-connection-ledger,
+.book-guide-settings-form > #book-guides-api-key-group,
+.book-guide-settings-form > .settings-form-buttons { grid-column: 1 / -1; }
+.guide-model-field { display: grid; min-width: 0; gap: 6px; }
+.guide-model-field label { color: var(--text-secondary); font-size: 12px; font-weight: 600; }
+.guide-model-field select {
+  width: 100%;
+  min-height: var(--touch-min);
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-inset);
+  color: var(--text);
+  font-size: 13px;
+}
+
+.guide-login-panel { max-width: 480px; }
+.guide-login-body { padding: 6px 20px max(24px, env(safe-area-inset-bottom)); }
+.guide-login-body > p { color: var(--text-secondary); line-height: 1.5; }
+.guide-device-code {
+  margin: 18px 0 14px;
+  padding: 14px;
+  border-radius: 8px;
+  background: var(--surface-inset);
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: clamp(22px, 7vw, 32px);
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.08em;
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+.guide-login-link { display: flex; width: 100%; min-height: var(--touch-min); align-items: center; justify-content: center; }
+.guide-login-success,
+.guide-login-error { padding: 16px 0; }
+.guide-login-success strong { color: oklch(78% 0.17 148); }
+.guide-login-error strong { color: var(--danger); }
+.guide-login-success p,
+.guide-login-error p { margin: 6px 0 16px; color: var(--text-secondary); line-height: 1.5; }
+
+@media (max-width: 520px) {
+  .settings-form.book-guide-settings-form { grid-template-columns: minmax(0, 1fr); }
+  .guide-connection-ledger { align-items: stretch; flex-direction: column; }
+  .guide-connection-actions > button { flex: 1; }
+  .book-guide-settings-form > .settings-form-buttons { display: grid; grid-template-columns: 1fr 1fr; }
+  .book-guide-settings-form > .settings-form-buttons > :last-child { grid-column: 1 / -1; }
+}
+
 .operator-diagnostics-summary {
   margin-top: 8px;
   border: 1px solid var(--border);

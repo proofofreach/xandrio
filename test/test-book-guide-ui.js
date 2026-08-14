@@ -10,6 +10,7 @@ const guide = fs.readFileSync(path.join(root, 'public', 'js', 'views', 'book-gui
 const settings = fs.readFileSync(path.join(root, 'public', 'js', 'views', 'settings.js'), 'utf8');
 const library = fs.readFileSync(path.join(root, 'public', 'js', 'views', 'library.js'), 'utf8');
 const style = fs.readFileSync(path.join(root, 'public', 'style-v3.css'), 'utf8');
+const server = fs.readFileSync(path.join(root, 'server.js'), 'utf8');
 
 assert(index.includes('id="guide-view"'), 'guide has a full-screen view');
 assert(index.includes('id="guide-body"') && index.includes('aria-busy="false"'), 'guide body exposes loading state');
@@ -53,6 +54,10 @@ assert(style.includes('#guide-view') && style.includes('.guide-source-link'), 'g
 assert(style.includes('.guide-narration') && style.includes('.guide-narration-sections'), 'guide narration has responsive player styles');
 
 assert(index.includes('id="book-guides-settings-section"') && index.includes('id="book-guides-key-note"'), 'settings disclose provider cost and write-only key handling');
+assert(index.includes('id="book-guides-device-connection"') && index.includes('id="book-guides-login-sheet"'), 'settings include a deployment-gated device authorization flow');
+assert(settings.includes("'/api/book-guides/provider/login'") && settings.includes("'/api/book-guides/provider/connection'"), 'settings connect and poll without receiving an OAuth token');
+assert(settings.includes("config.authMode === 'device'") && settings.includes('bookGuidesApiKeyGroup.hidden = deviceAuth'), 'device authorization replaces rather than duplicates the API-key field');
+assert(server.includes("process.env.XANDRIO_PRIVATE_CODEX_GUIDES === '1'") && server.includes('createCodexBookGuideProvider'), 'Codex subscription access is disabled unless the private deployment flag is explicit');
 assert(!index.toLowerCase().includes('certif') && !settings.includes('Needs certification') && !guide.includes('Uncertified evaluation run'), 'operator UI does not expose internal certification terminology');
 assert(settings.includes("apiGet('/api/book-guides/config')") && settings.includes("apiSend('PUT', '/api/book-guides/config'") && settings.includes("apiSend('DELETE', '/api/book-guides/config')"), 'admin settings load, save, and clear guide configuration');
 assert(settings.includes("user.role !== 'admin'") && settings.includes("err.status === 403"), 'guide settings remain hidden from non-admin users');

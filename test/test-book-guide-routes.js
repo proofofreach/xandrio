@@ -43,7 +43,10 @@ async function run() {
     getConfig: async () => ({ enabled: false }),
     configure: async body => (calls.push(['configure', body]), { enabled: body.enabled }),
     testConnection: async () => (calls.push(['test']), { ok: true }),
-    clearConfig: async () => ({ enabled: false })
+    clearConfig: async () => ({ enabled: false }),
+    providerLoginStatus: async () => (calls.push(['provider-status']), { state: 'disconnected' }),
+    beginProviderLogin: async () => (calls.push(['provider-login']), { state: 'waiting' }),
+    disconnectProvider: async () => (calls.push(['provider-disconnect']), { connection: { state: 'disconnected' } })
   };
   const setBookCategory = async (bookId, category) => (calls.push(['category', bookId, category]), { bookId, category });
   const prepareNarrationAudio = async (bookId, sectionId) => (
@@ -76,7 +79,10 @@ async function run() {
       'GET /api/book-guides/config',
       'PUT /api/book-guides/config',
       'POST /api/book-guides/config/test',
-      'DELETE /api/book-guides/config'
+      'DELETE /api/book-guides/config',
+      'GET /api/book-guides/provider/connection',
+      'POST /api/book-guides/provider/login',
+      'DELETE /api/book-guides/provider/connection'
     ]);
   });
 
@@ -154,6 +160,19 @@ async function run() {
     await route.handlers[0]({ params: { bookId: '../bad' } }, res);
     assert.strictEqual(res.statusCode, 400);
     assert.strictEqual(calls.length, before);
+  });
+
+  await test('keeps provider device authorization admin-only and non-cacheable', async () => {
+    const login = app.find(item => item.method === 'post' && item.path === '/api/book-guides/provider/login');
+    const status = app.find(item => item.method === 'get' && item.path === '/api/book-guides/provider/connection');
+    const loginResponse = response();
+    await login.handlers[1]({}, loginResponse);
+    assert.strictEqual(loginResponse.statusCode, 202);
+    assert.strictEqual(loginResponse.headers['Cache-Control'], 'private, no-store');
+    const statusResponse = response();
+    await status.handlers[1]({}, statusResponse);
+    assert.strictEqual(statusResponse.headers['Cache-Control'], 'private, no-store');
+    assert.deepStrictEqual(calls.slice(-2), [['provider-login'], ['provider-status']]);
   });
 
   console.log(`\n${passed} passed, ${failed} failed`);
