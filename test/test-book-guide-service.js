@@ -367,6 +367,12 @@ async function run() {
       const result = await h.service.get('book_1');
       assert.strictEqual(result.job.errorCode, 'BOOK_GUIDE_PROVIDER_RESPONSE_INVALID');
       assert.strictEqual(result.message, 'PPQ.ai repeatedly returned malformed model output. Try again or choose a different generator model.');
+      h.provider.generationErrorCode = 'unexpected';
+      await h.service.start('book_1');
+      await waitIdle(h.service);
+      const unexpected = await h.service.get('book_1');
+      assert.strictEqual(unexpected.job.errorCode, 'BOOK_GUIDE_GENERATION_FAILED');
+      assert.strictEqual(unexpected.message, 'Guide creation stopped before it could finish. Try again with the current model.');
       h.provider.generationErrorCode = null;
     });
 
