@@ -24,6 +24,13 @@ assert(router.includes("config.openGuide?.(target.bookId)"), 'guide deep links o
 
 assert(guide.includes("/api/book/${encodeURIComponent(bookId)}/guide"), 'guide uses the book-guide API route');
 assert(guide.includes("nonfictionConfirmed: true"), 'guide generation sends the nonfiction attestation');
+assert(guide.includes("externalProcessingConfirmed: true"), 'guide generation sends explicit external-processing consent');
+assert(guide.includes('consent to sending its text and evidence to PPQ.ai'), 'guide names the external destination before generation');
+assert(index.includes('book-guides-api-key'), 'settings expose a write-only PPQ.ai API key field');
+assert(index.includes('book-guides-allow-uncertified'), 'settings expose an explicit uncertified evaluation mode');
+assert(index.includes('deepseek/deepseek-v4-flash-0731'), 'settings default to the exact DeepSeek V4 Flash 0731 route');
+assert(index.includes('glm-5.2'), 'settings offer a ZDR-capable independent verifier');
+assert(settings.includes("'/api/book-guides/config/test'"), 'settings can run a bounded paid provider test');
 assert(guide.includes('getCurrentUser') && guide.includes("user.role === 'admin'"), 'guide limits generation controls to administrators');
 assert(guide.includes("/cancel") && guide.includes("apiSend('DELETE', guidePath(activeBookId))") && guide.includes("/anchors/${encodeURIComponent(anchorId)}/context"), 'guide supports cancellation, deletion, and source context');
 assert(guide.includes('anchor.audioSeconds') && !guide.includes('seekToSeconds = Number(anchor.timestamp)'), 'guide only seeks when an explicit audio offset exists');

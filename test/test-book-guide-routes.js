@@ -40,6 +40,7 @@ async function run() {
     getAnchorContext: async (bookId, anchorId) => (calls.push(['context', bookId, anchorId]), { text: 'context' }),
     getConfig: async () => ({ enabled: false }),
     configure: async body => (calls.push(['configure', body]), { enabled: body.enabled }),
+    testConnection: async () => (calls.push(['test']), { ok: true }),
     clearConfig: async () => ({ enabled: false })
   };
   registerBookGuideRoutes(app, {
@@ -58,6 +59,7 @@ async function run() {
       'DELETE /api/book/:bookId/guide',
       'GET /api/book-guides/config',
       'PUT /api/book-guides/config',
+      'POST /api/book-guides/config/test',
       'DELETE /api/book-guides/config'
     ]);
   });
@@ -80,7 +82,10 @@ async function run() {
     const res = response();
     await route.handlers[1](req, res);
     assert.strictEqual(res.statusCode, 202);
-    assert.deepStrictEqual(calls.at(-1), ['start', 'book_1', { nonfictionConfirmed: false }]);
+    assert.deepStrictEqual(calls.at(-1), ['start', 'book_1', {
+      nonfictionConfirmed: false,
+      externalProcessingConfirmed: false
+    }]);
   });
 
   await test('derives management and generation capability from the authenticated role', async () => {

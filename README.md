@@ -63,7 +63,7 @@ See [docs/PRIVACY.md](docs/PRIVACY.md) for the outbound-data matrix, retention, 
 
 ## Experimental book guides
 
-Book Guides are disabled by default. V1 is for English nonfiction only and begins with a local Ollama-compatible generator/verifier path; it sends no book text to an external model provider. An admin must attest that a book is nonfiction before generation. Guides are evidence-linked, versioned artifacts that are deleted with their book. See [docs/BOOK_GUIDES.md](docs/BOOK_GUIDES.md) for the local hardware, certification, privacy, and evaluation requirements. Fiction support is future scope, not a fallback mode.
+Book Guides are disabled by default. V1 is for English nonfiction only and uses operator-configured PPQ.ai generator and verifier routes. It sends book segments, claims, and evidence to PPQ.ai with zero-data-retention routing required. An admin must confirm the book scope, processing authority, and external processing before generation. The PPQ.ai key is write-only in Settings. Guides are evidence-linked, versioned artifacts that are deleted with their book. See [docs/BOOK_GUIDES.md](docs/BOOK_GUIDES.md) for certification, privacy, cost, and evaluation requirements. Fiction support is future scope, not a fallback mode.
 
 ## Configuration
 

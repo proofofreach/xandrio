@@ -39,13 +39,16 @@ function claimIds(prompt) {
 
 function fakeProvider() {
   return {
+    id: 'ppq-ai',
     verificationFailures: 0,
     failCurrentAttempt: false,
     calls: [],
+    async hasCredentials() { return true; },
     normalizeBaseUrl: value => String(value),
     async inspect({ model }) { return { name: model, digest: DIGEST }; },
     async generate({ purpose, prompt, modelSnapshot, signal }) {
       this.calls.push({ purpose, model: modelSnapshot.name, prompt });
+      if (String(prompt).startsWith('Return exactly one JSON object')) return { ok: true };
       if (signal?.aborted) {
         const error = new Error('cancelled');
         error.name = 'AbortError';
@@ -195,6 +198,27 @@ async function run() {
       assert.strictEqual(configured.certified, true);
       assert.strictEqual(configured.ready, true);
       await assert.rejects(h.service.start('book_1'), error => error.code === 'BOOK_GUIDE_NONFICTION_CONFIRMATION_REQUIRED');
+      await assert.rejects(
+        h.service.start('book_1', { nonfictionConfirmed: true }),
+        error => error.code === 'BOOK_GUIDE_EXTERNAL_PROCESSING_CONFIRMATION_REQUIRED'
+      );
+    });
+
+    await test('stores provider credentials separately and runs a bounded connection test', async () => {
+      await h.service.configure({
+        enabled: true,
+        apiKey: 'test-secret',
+        baseUrl: 'https://api.ppq.ai',
+        generatorModel: 'guide:1',
+        verifierModel: 'verify:1'
+      });
+      assert.strictEqual((await h.store.loadCredentials()).apiKey, 'test-secret');
+      assert.strictEqual((await h.service.getConfig()).apiKey, undefined);
+      assert.deepStrictEqual(await h.service.testConnection(), {
+        ok: true,
+        provider: 'ppq-ai',
+        model: 'guide:1'
+      });
     });
 
     await test('fails closed when the local certificate provenance does not match', async () => {
@@ -207,18 +231,36 @@ async function run() {
       assert.strictEqual(config.ready, false);
       assert.strictEqual(config.certificationReason, 'BOOK_GUIDE_CERTIFICATION_PROVENANCE_MISMATCH');
       await assert.rejects(
-        h.service.start('book_1', { nonfictionConfirmed: true }),
+        h.service.start('book_1', { nonfictionConfirmed: true, externalProcessingConfirmed: true }),
         error => error.code === 'BOOK_GUIDE_CERTIFICATION_PROVENANCE_MISMATCH'
       );
+      const evaluationConfig = await h.service.configure({
+        enabled: true,
+        allowUncertified: true,
+        baseUrl: 'https://api.ppq.ai',
+        generatorModel: 'guide:1',
+        verifierModel: 'verify:1'
+      });
+      assert.strictEqual(evaluationConfig.ready, true);
+      assert.strictEqual(evaluationConfig.certified, false);
       await jsonStore.save(h.certificationFile, h.certificationReport);
+      await h.service.configure({
+        enabled: true,
+        allowUncertified: false,
+        baseUrl: 'https://api.ppq.ai',
+        generatorModel: 'guide:1',
+        verifierModel: 'verify:1'
+      });
     });
 
     await test('generates, verifies, and atomically publishes a shared guide', async () => {
-      await h.service.start('book_1', { nonfictionConfirmed: true });
+      await h.service.start('book_1', { nonfictionConfirmed: true, externalProcessingConfirmed: true });
       await waitIdle(h.service);
       const result = await h.service.get('book_1');
       assert.strictEqual(result.status, 'ready');
       assert.strictEqual(result.artifact.scope.nonfictionConfirmed, true);
+      assert.strictEqual(result.artifact.scope.externalProcessingConfirmed, true);
+      assert.strictEqual(result.artifact.scope.certifiedAtGeneration, true);
       assert.strictEqual(result.artifact.verification.allClaimsChecked, true);
       assert(result.artifact.verification.materialItemCount > result.artifact.verification.extractedClaimCount);
       assert.strictEqual(
@@ -240,7 +282,7 @@ async function run() {
 
     await test('retries failed semantic verification twice before publishing', async () => {
       h.provider.verificationFailures = 2;
-      await h.service.start('book_1', { nonfictionConfirmed: true });
+      await h.service.start('book_1', { nonfictionConfirmed: true, externalProcessingConfirmed: true });
       await waitIdle(h.service);
       const result = await h.service.get('book_1');
       assert.strictEqual(result.artifact.verification.attempts, 3);
@@ -253,7 +295,9 @@ async function run() {
       assert.strictEqual(result.canGenerate, true);
       assert.strictEqual(result.canManage, true);
       assert.strictEqual(result.status, 'ready');
-      assert.strictEqual(result.generation.destination, 'http://127.0.0.1:11434');
+      assert.strictEqual(result.generation.destination, 'https://api.ppq.ai');
+      assert.strictEqual(result.feature.localOnly, false);
+      assert.strictEqual(result.feature.externalProcessing, true);
       assert.strictEqual(result.generation.generatorModel, `guide:1@${DIGEST}`);
       assert.strictEqual(result.generation.verifierModel, `verify:1@${DIGEST}`);
     });
@@ -261,7 +305,7 @@ async function run() {
     await test('fails closed and preserves the prior verified artifact', async () => {
       const prior = await h.store.read('book_1');
       h.provider.verificationFailures = 3;
-      await h.service.start('book_1', { nonfictionConfirmed: true });
+      await h.service.start('book_1', { nonfictionConfirmed: true, externalProcessingConfirmed: true });
       await waitIdle(h.service);
       const result = await h.service.get('book_1');
       assert.strictEqual(result.job.status, 'failed');
@@ -287,7 +331,7 @@ async function run() {
     await test('blocks non-English generation at preflight', async () => {
       h.setLanguage('fr');
       await assert.rejects(
-        h.service.start('book_1', { nonfictionConfirmed: true }),
+        h.service.start('book_1', { nonfictionConfirmed: true, externalProcessingConfirmed: true }),
         error => error.code === 'BOOK_GUIDE_LANGUAGE_UNSUPPORTED'
       );
     });

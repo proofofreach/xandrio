@@ -34,8 +34,8 @@ function fixture(root) {
   const results = {
     schemaVersion: 1,
     provenance: {
-      generatorModel: 'ollama:local-generator',
-      verifierModel: 'ollama:local-verifier',
+      generatorModel: 'ppq:deepseek-v4-flash-0731',
+      verifierModel: 'ppq:glm-5.2',
       recipeHash: hash('recipe'),
       extractionVersion: '1',
       normalizationVersion: '1'

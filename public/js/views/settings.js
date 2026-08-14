@@ -93,10 +93,12 @@ export function initSettings(options = {}) {
   const bookGuidesSettingsSection = document.getElementById('book-guides-settings-section');
   const bookGuidesSettingsStatus = document.getElementById('book-guides-settings-status');
   const bookGuidesEnabled = document.getElementById('book-guides-enabled');
-  const bookGuidesBaseUrl = document.getElementById('book-guides-base-url');
+  const bookGuidesAllowUncertified = document.getElementById('book-guides-allow-uncertified');
+  const bookGuidesApiKey = document.getElementById('book-guides-api-key');
   const bookGuidesGeneratorModel = document.getElementById('book-guides-generator-model');
   const bookGuidesVerifierModel = document.getElementById('book-guides-verifier-model');
   const bookGuidesSave = document.getElementById('book-guides-save');
+  const bookGuidesTest = document.getElementById('book-guides-test');
   const bookGuidesClear = document.getElementById('book-guides-clear');
   const bookGuidesSettingsError = document.getElementById('book-guides-settings-error');
 
@@ -786,11 +788,23 @@ export function initSettings(options = {}) {
 
   function renderBookGuideSettings(config = {}) {
     if (bookGuidesEnabled) bookGuidesEnabled.checked = config.enabled === true;
-    if (bookGuidesBaseUrl) bookGuidesBaseUrl.value = config.baseUrl || 'http://127.0.0.1:11434';
-    if (bookGuidesGeneratorModel) bookGuidesGeneratorModel.value = config.generator?.name || '';
-    if (bookGuidesVerifierModel) bookGuidesVerifierModel.value = config.verifier?.name || '';
+    if (bookGuidesAllowUncertified) bookGuidesAllowUncertified.checked = config.allowUncertified === true;
+    if (bookGuidesApiKey) {
+      bookGuidesApiKey.value = '';
+      bookGuidesApiKey.placeholder = config.credentialsConfigured
+        ? 'PPQ.ai API key saved (leave blank to keep it)'
+        : 'PPQ.ai API key required';
+    }
+    if (bookGuidesGeneratorModel) {
+      bookGuidesGeneratorModel.value = config.generator?.name || 'deepseek/deepseek-v4-flash-0731';
+    }
+    if (bookGuidesVerifierModel) {
+      bookGuidesVerifierModel.value = config.verifier?.name || 'glm-5.2';
+    }
     if (bookGuidesSettingsStatus) {
-      bookGuidesSettingsStatus.textContent = config.ready ? 'Ready' : (config.enabled ? 'Needs certification' : 'Disabled');
+      bookGuidesSettingsStatus.textContent = config.ready
+        ? (config.certified ? 'Ready' : 'Evaluation mode')
+        : (config.enabled ? 'Needs certification' : 'Disabled');
       bookGuidesSettingsStatus.className = `settings-status ${config.ready ? 'settings-status-ok' : (config.enabled ? 'settings-status-warning' : '')}`.trim();
     }
   }
@@ -823,7 +837,9 @@ export function initSettings(options = {}) {
     try {
       const config = await apiSend('PUT', '/api/book-guides/config', {
         enabled: bookGuidesEnabled?.checked === true,
-        baseUrl: bookGuidesBaseUrl?.value.trim() || '',
+        allowUncertified: bookGuidesAllowUncertified?.checked === true,
+        baseUrl: 'https://api.ppq.ai',
+        ...(bookGuidesApiKey?.value.trim() ? { apiKey: bookGuidesApiKey.value.trim() } : {}),
         generatorModel: bookGuidesGeneratorModel?.value.trim() || '',
         verifierModel: bookGuidesVerifierModel?.value.trim() || ''
       });
@@ -836,10 +852,29 @@ export function initSettings(options = {}) {
     }
   });
 
+  bookGuidesTest?.addEventListener('click', async () => {
+    const confirmed = await confirmSheet({
+      title: 'Run a paid connection test?',
+      message: 'This sends a short prompt to PPQ.ai and uses a small amount of API credit.',
+      confirmLabel: 'Run test'
+    });
+    if (!confirmed) return;
+    setBookGuideSettingsError('');
+    bookGuidesTest.disabled = true;
+    try {
+      const result = await apiSend('POST', '/api/book-guides/config/test');
+      showToast(`PPQ.ai connection works: ${result.model}`);
+    } catch (err) {
+      setBookGuideSettingsError(err.message || 'Could not connect to PPQ.ai.');
+    } finally {
+      bookGuidesTest.disabled = false;
+    }
+  });
+
   bookGuidesClear?.addEventListener('click', async () => {
     const confirmed = await confirmSheet({
       title: 'Clear study-guide configuration?',
-      message: 'This disables new guide generation. Existing guide artifacts remain available until deleted.',
+      message: 'This removes the saved PPQ.ai key and disables new guide generation. Existing guide artifacts remain available until deleted.',
       confirmLabel: 'Clear configuration'
     });
     if (!confirmed) return;

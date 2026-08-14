@@ -91,7 +91,7 @@ const { registerListeningQueueRoutes } = require('./lib/routes/listening-queue-r
 const { registerOperatorPolicyRoutes } = require('./lib/routes/operator-policy-routes');
 const { registerBookGuideRoutes } = require('./lib/routes/book-guide-routes');
 const { createBookGuideJournal } = require('./lib/book-guide-journal');
-const { createOllamaBookGuideProvider } = require('./lib/book-guide-provider');
+const { createPpqBookGuideProvider } = require('./lib/book-guide-provider');
 const { createBookGuideService } = require('./lib/book-guide-service');
 const { createBookGuideStore } = require('./lib/book-guide-store');
 const jsonStore = require('./lib/json-store');
@@ -380,6 +380,7 @@ const PRONUNCIATIONS_FILE = path.join(DATA_DIR, 'pronunciations.json');
 const BOOK_GUIDE_JOBS_FILE = path.join(DATA_DIR, 'book-guide-jobs.json');
 const BOOK_GUIDE_CONFIG_FILE = path.join(DATA_DIR, 'book-guide-config.json');
 const BOOK_GUIDE_CERTIFICATION_FILE = path.join(DATA_DIR, 'book-guide-certification.json');
+const BOOK_GUIDE_CREDENTIALS_FILE = path.join(DATA_DIR, 'book-guide-provider.json');
 const BOOK_GUIDE_ARTIFACT_DIR = path.join(CACHE_DIR, 'book-guides');
 const searchCoverService = createSearchCoverService({
   cacheDir: path.join(CACHE_DIR, 'search-covers'),
@@ -2095,14 +2096,19 @@ const bookGuideStore = createBookGuideStore({
   artifactDir: BOOK_GUIDE_ARTIFACT_DIR,
   configFile: BOOK_GUIDE_CONFIG_FILE,
   certificationFile: BOOK_GUIDE_CERTIFICATION_FILE,
+  credentialsFile: BOOK_GUIDE_CREDENTIALS_FILE,
   jsonStore
 });
 const bookGuideJournal = createBookGuideJournal({
   filePath: BOOK_GUIDE_JOBS_FILE,
   jsonStore
 });
-const bookGuideProvider = createOllamaBookGuideProvider({
-  timeoutMs: positiveInteger(process.env.XANDRIO_BOOK_GUIDE_MODEL_TIMEOUT_MS, 180_000)
+const bookGuideProvider = createPpqBookGuideProvider({
+  timeoutMs: positiveInteger(process.env.XANDRIO_BOOK_GUIDE_MODEL_TIMEOUT_MS, 180_000),
+  getApiKey: async () => {
+    const stored = await bookGuideStore.loadCredentials();
+    return stored.apiKey || process.env.PPQ_API_KEY || '';
+  }
 });
 const bookGuideService = createBookGuideService({
   loadBook: async bookId => (await loadJSON(BOOKS_FILE, {}))[bookId] || null,

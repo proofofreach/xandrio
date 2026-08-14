@@ -24,6 +24,7 @@ async function run() {
       artifactDir: path.join(temp, 'guides'),
       configFile: path.join(temp, 'guide-config.json'),
       certificationFile,
+      credentialsFile: path.join(temp, 'guide-provider.json'),
       jsonStore,
       validateArtifact: artifact => {
         if (artifact.valid !== true) throw new Error('invalid artifact');
@@ -41,15 +42,25 @@ async function run() {
       assert.strictEqual((await store.read('book_1')).revision, 1);
     });
 
-    await test('stores redacted local-only model configuration', async () => {
+    await test('stores provider configuration without the write-only API key', async () => {
       const config = await store.saveConfig({
         enabled: true,
+        allowUncertified: true,
         baseUrl: 'http://127.0.0.1:11434',
         generator: { name: 'g:1', digest: 'digest-g' },
         verifier: { name: 'v:1', digest: 'digest-v' }
       });
       assert.strictEqual(config.enabled, true);
+      assert.strictEqual(config.allowUncertified, true);
       assert.strictEqual((await store.loadConfig()).generator.name, 'g:1');
+      assert.strictEqual(JSON.stringify(await store.loadConfig()).includes('apiKey'), false);
+    });
+
+    await test('stores and clears the provider API key separately', async () => {
+      await store.saveCredentials({ apiKey: 'test-secret', updatedAt: '2026-08-14T00:00:00.000Z' });
+      assert.strictEqual((await store.loadCredentials()).apiKey, 'test-secret');
+      assert.strictEqual(await store.clearCredentials(), true);
+      assert.strictEqual((await store.loadCredentials()).apiKey, '');
     });
 
     await test('loads the local aggregate benchmark certificate from its dedicated file', async () => {

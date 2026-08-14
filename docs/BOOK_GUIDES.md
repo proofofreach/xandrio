@@ -1,18 +1,20 @@
 # Book Guides
 
-Book Guides are an experimental, instance-wide study-guide artifact for an imported book. The feature is disabled by default. It must stay disabled until the instance has a certified local generator/verifier configuration and the release gates in this document pass.
+Book Guides are an experimental, instance-wide study-guide artifact for an imported book. The feature is disabled by default. It must stay disabled until the instance has a certified generator/verifier configuration and the release gates in this document pass.
 
 ## V1 scope
 
-V1 is English nonfiction only. Before generation, an admin must attest that the selected book is nonfiction. The application does not classify fiction automatically. Fiction guides are future scope; they need a separate product, evaluation, rights, and UX decision. A guide is shared with readers who can access its book. V1 does not add personal learning history, saved quiz state, bookmarks, or spaced-repetition state.
+V1 is English nonfiction only. Before generation, an admin must attest that the selected book is nonfiction, confirm authority to process it, and consent to external processing. The application does not classify fiction automatically. Fiction guides are future scope; they need a separate product, evaluation, rights, and UX decision. A guide is shared with readers who can access its book. V1 does not add personal learning history, saved quiz state, bookmarks, or spaced-repetition state.
 
 A ready guide contains a brief orientation, concept cards, a chapter map, active-recall prompts, and a small supporting-passage layer. It is concept-first and chapter-linked. Every material claim and answer has an evidence anchor into the imported edition. Quotes support an idea; they are not the primary product.
 
-## Local-only initial path
+## PPQ.ai initial path
 
-The first supported generator path is a loopback-only Ollama-compatible service on the same machine as Xandrio. Book text, extracted claims, and verification evidence stay on that machine. Xandrio must not send book text to an external model provider in V1. There is no implicit fallback from local generation to a remote provider.
+The first supported generator path is PPQ.ai's OpenAI-compatible API at `https://api.ppq.ai`. Xandrio sends imported book segments, extracted claims, and verification evidence to the selected model. Requests require PPQ.ai's zero-data-retention routing. If no compatible endpoint is available, the request fails instead of relaxing that requirement. This remains external processing; operators must review PPQ.ai and upstream-provider terms.
 
-An admin starts, cancels, retries, configures, and regenerates a guide. Normal readers can read a ready or stale guide but cannot cause source processing. The generation screen must state the local destination, the model identifiers, the estimated cost and duration, and the nonfiction attestation before a job begins.
+The API key is write-only in the admin UI and stored separately from public guide configuration. Use a dedicated PPQ.ai key with a strict spending limit. An admin starts, cancels, retries, configures, and regenerates a guide. Normal readers can read a ready or stale guide but cannot cause source processing or see provider configuration. The generation screen states the external destination, model route identifiers, estimated cost and duration, and required confirmations before a job begins.
+
+The initial generator route is the exact `deepseek/deepseek-v4-flash-0731` checkpoint. PPQ.ai advertises a 1,048,576-token context window, structured output, and ZDR for this route. That is sufficient for normal nonfiction books, but Xandrio still uses chapter-bounded extraction and reduction. This keeps evidence anchors precise, bounds retries and cost, and avoids relying on long-context recall. Use ZDR-capable `glm-5.2` as the initial independent verifier. `deepseek/deepseek-v4-pro-0813` is available for an A/B quality comparison. Qwen 3.7 Plus is not offered because PPQ.ai currently marks that route anonymous rather than ZDR.
 
 ## Evidence and lifecycle
 
@@ -34,13 +36,13 @@ These are product controls, not a legal conclusion about any work or use. Operat
 
 ## Certification and release gate
 
-Generation stays unavailable until the selected model pair and prompt recipe are certified. Certification requires a legally usable local corpus of at least 12 English nonfiction works across at least three of these shapes: prescriptive, argumentative, historical, biographical, narrative, and technical.
+Generation stays unavailable until the selected model pair and prompt recipe are certified, unless an admin explicitly enables uncertified evaluation runs. Evaluation mode exists only to test a candidate model pair. Its artifacts record that they were generated without certification and must not be treated as production-quality guides. Certification requires a legally usable evaluation corpus of at least 12 English nonfiction works across at least three of these shapes: prescriptive, argumentative, historical, biographical, narrative, and technical.
 
 The verifier needs a frozen calibration set of exactly 200 human-labelled claims: 100 supported and 100 unsupported, from at least six corpus works. Unsupported-claim recall and precision must both be at least 90%.
 
 For each corpus work, reviewers sample at least 20 material guide claims and at least eight active-recall questions where available. The gate requires no material fabrication, at least 95% fully supported claims, at least 95% correct and answerable recall answers, at least 80% recall prompts rated non-trivial and useful by both reviewers, and mean central-idea coverage and usefulness of at least 4/5. Every sampled evidence anchor must resolve exactly. Audio-capable formats also require at least 90% of 100 stratified seek checks to land within 30 seconds; formats without reliable seek support are visibly chapter-only.
 
-Run the offline evaluator with local files only:
+Run the evaluator against aggregate review results and local manifests:
 
 ```bash
 npm run benchmark:book-guides -- \
@@ -52,12 +54,12 @@ npm run benchmark:book-guides -- \
 
 Run the benchmark from the Xandrio project directory. The server reads that exact output path. Report provenance must use model identities in `<model-tag>@<sha256:digest>` form and match the recipe, extraction, and normalization versions returned by the admin configuration endpoint.
 
-The manifest contains local paths and rights attestations but the report is aggregate-only. It rejects titles, authors, source paths, book text, quotes, credentials, prompts, and raw model responses in calibration/results data. The harness makes no provider or model call. `--allow-live-provider` requires `--provider-config` as an explicit acknowledgement, but the current harness has no network adapter and still performs no live call.
+The manifest contains local paths and rights attestations but the report is aggregate-only. It rejects titles, authors, source paths, book text, quotes, credentials, prompts, and raw model responses in calibration/results data. The harness makes no provider or model call. Use the admin connection test for a small paid provider probe. Never put an API key in benchmark files or command history.
 
 Any change to generator model, verifier model, extraction/normalization version, or recipe hash invalidates certification for new guides. Re-run calibration and representative-corpus evaluation before re-enabling generation.
 
-## Hardware and operations
+## Cost and operations
 
-The provisional recommended local profile is 32 GB system or unified memory, plus either 12 GB supported GPU VRAM or 32 GB Apple unified memory, eight modern CPU cores, and sufficient model storage. V1 admits one background guide job at a time through the shared generation scheduler. Operators must use Ollama's local resource controls; Xandrio makes no paid or external model calls.
+V1 admits one background guide job at a time through a dedicated network scheduler. PPQ.ai calls are paid and can retry up to three durable attempts. The UI connection test is also a small paid call. Operators must use a dedicated key, set a provider-side spending limit, monitor account activity, and keep the feature disabled until the selected model pair passes the evaluation gate.
 
 The feature must be kept behind an instance-level experimental flag. Start with public-domain or licensed works and an opt-in beta. The rollback is to disable guide generation and hide entry points for books without an existing guide. Existing verified guides remain locally readable and deletable; cleanup of guide artifacts is an explicit destructive action.

@@ -174,7 +174,7 @@ function recallHTMLSection(artifact) {
 }
 
 function generationAttestation(data) {
-  return `${generationDisclosure(data)}<label class="guide-attestation"><input id="guide-nonfiction-confirmed" type="checkbox"> <span>I confirm this is an English nonfiction book and I am authorized to process it.</span></label><p id="guide-action-error" class="settings-error" hidden></p>`;
+  return `${generationDisclosure(data)}<label class="guide-attestation"><input id="guide-nonfiction-confirmed" type="checkbox"> <span>I confirm this is English nonfiction, I am authorized to process it, and I consent to sending its text and evidence to PPQ.ai.</span></label><p id="guide-action-error" class="settings-error" hidden></p>`;
 }
 
 function passagesHTML(artifact) {
@@ -212,8 +212,10 @@ function generationDisclosure(data) {
   const verifier = text(data?.verifierModel || data?.generation?.verifierModel);
   const duration = text(data?.estimatedDuration || data?.generation?.estimatedDuration);
   const cost = text(data?.estimatedCost || data?.generation?.estimatedCost);
+  const uncertified = data?.generation && data.generation.certified === false;
   const details = [
-    destination && `Local destination: ${destination}`,
+    uncertified && 'Uncertified evaluation run',
+    destination && `External destination: ${destination}`,
     generator && `Generator: ${generator}`,
     verifier && `Verifier: ${verifier}`,
     duration && `Estimated time: ${duration}`,
@@ -362,7 +364,10 @@ async function generateGuide() {
   }
   errorText('');
   try {
-    await apiSend('POST', guidePath(activeBookId), { nonfictionConfirmed: true });
+    await apiSend('POST', guidePath(activeBookId), {
+      nonfictionConfirmed: true,
+      externalProcessingConfirmed: true
+    });
     await refreshGuideState();
   } catch (error) {
     errorText(error.message || 'Could not start guide generation.');

@@ -521,22 +521,34 @@
             <div class="settings-row">
               <div class="settings-label">
                 <span class="settings-label-text">English nonfiction guides</span>
-                <span class="settings-label-hint">Uses two exact local Ollama models. Book text stays on this machine.</span>
+                <span class="settings-label-hint">Uses PPQ.ai. Book text and evidence leave this server for generation and verification.</span>
               </div>
               <span id="book-guides-settings-status" class="settings-status">Checking…</span>
             </div>
             <div class="settings-form">
               <label class="admin-role-check"><input id="book-guides-enabled" type="checkbox" /> Enable experimental guides</label>
-              <input id="book-guides-base-url" type="url" value="http://127.0.0.1:11434" placeholder="Local Ollama URL" autocomplete="off" spellcheck="false" />
-              <input id="book-guides-generator-model" type="text" placeholder="Generator model tag" autocomplete="off" spellcheck="false" />
-              <input id="book-guides-verifier-model" type="text" placeholder="Verifier model tag" autocomplete="off" spellcheck="false" />
+              <label class="admin-role-check"><input id="book-guides-allow-uncertified" type="checkbox" /> Allow evaluation runs before certification</label>
+              <input id="book-guides-api-key" type="password" placeholder="PPQ.ai API key (leave blank to keep the saved key)" autocomplete="new-password" spellcheck="false" />
+              <label for="book-guides-generator-model">Generator model</label>
+              <select id="book-guides-generator-model">
+                <option value="deepseek/deepseek-v4-flash-0731">DeepSeek V4 Flash 0731 · 1M context</option>
+                <option value="deepseek/deepseek-v4-pro-0813">DeepSeek V4 Pro 0813 · 1M context</option>
+                <option value="glm-5.2">GLM 5.2 · 1M context</option>
+              </select>
+              <label for="book-guides-verifier-model">Verifier model</label>
+              <select id="book-guides-verifier-model">
+                <option value="glm-5.2">GLM 5.2 · 1M context · independent verifier</option>
+                <option value="deepseek/deepseek-v4-flash-0731">DeepSeek V4 Flash 0731 · 1M context</option>
+                <option value="deepseek/deepseek-v4-pro-0813">DeepSeek V4 Pro 0813 · 1M context</option>
+              </select>
               <div class="settings-form-buttons">
-                <button id="book-guides-save" class="btn-primary btn-sm">Save and verify models</button>
+                <button id="book-guides-save" class="btn-primary btn-sm">Save configuration</button>
+                <button id="book-guides-test" class="btn-ghost btn-sm">Test connection</button>
                 <button id="book-guides-clear" class="btn-ghost btn-ghost-danger btn-sm">Clear configuration</button>
               </div>
             </div>
             <p id="book-guides-settings-error" class="settings-error" aria-live="polite" style="display:none"></p>
-            <p id="book-guides-certification-note" class="settings-hint">Generation remains unavailable until a passing benchmark report matches both model digests and the guide recipe. See <code>docs/BOOK_GUIDES.md</code>.</p>
+            <p id="book-guides-certification-note" class="settings-hint">The API key is write-only. Use a dedicated PPQ.ai key with a strict spending limit. A connection test sends a small paid request. Uncertified evaluation runs are opt-in and must not be treated as production-quality guides.</p>
           </div>
         </details>
 

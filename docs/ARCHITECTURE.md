@@ -11,7 +11,7 @@ Xandrio is a single self-hosted Node.js application. It serves a vanilla JavaScr
 | `lib/book-importer.js` | Format validation, metadata extraction, persistence, and source artifact handling |
 | `lib/chunked-tts.js`, `lib/tts-queue.js` | Chunk scheduling, narration generation, cache variants, and playback manifests |
 | `lib/narration-*` and adapters | Edge, Kokoro, and Chatterbox engine selection and runtime health |
-| Book Guide services (experimental) | Local Ollama-compatible guide generation, deterministic evidence validation, semantic verification, versioned guide artifacts, and durable jobs; disabled by default |
+| Book Guide services (experimental) | PPQ.ai guide generation, deterministic evidence validation, semantic verification, versioned guide artifacts, and durable jobs; disabled by default |
 | `public/` | PWA shell, library, search, settings, player, offline cache, and client settings |
 | `data/` | Persistent library and instance state |
 | `cache/` | Imported files/artifacts, covers, narration cache, search covers, and voice samples |
@@ -170,7 +170,7 @@ Edge sends narration text to Microsoft through an unofficial consumer-endpoint i
 
 ## Experimental Book Guide flow
 
-Book Guides are an instance-level experimental feature and default to off. V1 accepts an admin attestation for an English nonfiction book, then processes that book only through an operator-controlled Ollama-compatible local service. It has no external-model-provider adapter and no remote fallback. A durable guide job snapshots the source fingerprint and chapter structure, extracts candidate claims, composes a concept-first guide, validates evidence anchors and quote controls, semantically verifies every material claim and recall answer, and publishes atomically. The guide stores version/model/recipe provenance and evidence ranges, not a replacement source copy. Source or chapter-structure changes mark it stale and revalidate its anchors. Deletion cancels guide jobs and removes their artifacts alongside the book. [BOOK_GUIDES.md](BOOK_GUIDES.md) defines certification, hardware, and evaluation gates; fiction is outside V1.
+Book Guides are an instance-level experimental feature and default to off. V1 accepts an admin attestation for an English nonfiction book plus authority and external-processing consent. It sends bounded source segments and verification evidence through PPQ.ai with zero-data-retention routing required. A durable guide job snapshots the source fingerprint and chapter structure, extracts candidate claims, composes a concept-first guide, validates evidence anchors and quote controls, semantically verifies every material claim and recall answer, and publishes atomically. Provider credentials are write-only and stored separately from guide configuration. The guide stores version/model-route/recipe provenance and evidence ranges, not a replacement source copy. Source or chapter-structure changes mark it stale and revalidate its anchors. Deletion cancels guide jobs and removes their artifacts alongside the book. [BOOK_GUIDES.md](BOOK_GUIDES.md) defines certification, privacy, cost, and evaluation gates; fiction is outside V1.
 
 ## Accounts and authentication
 
