@@ -18,6 +18,12 @@ The default generator route is `gemini-3.7-flash`. In a 12,000-character synthet
 
 PPQ.ai advertises a 1,048,576-token context window and structured output for Gemini 3.7 Flash. Xandrio still uses chapter-bounded extraction and reduction. This keeps evidence anchors precise, bounds retries and cost, and avoids relying on long-context recall. Use `glm-5.2` as the independent verifier. Every provider request requires PPQ.ai's ZDR routing; a model without an eligible ZDR endpoint fails closed.
 
+## Private Codex path
+
+A private, single-operator instance can set `XANDRIO_PRIVATE_CODEX_GUIDES=1` to replace PPQ.ai with a dedicated Codex CLI connection. The Codex CLI must be installed on the server and available to the service user. Set `XANDRIO_CODEX_BIN` when it is outside the service `PATH`; `XANDRIO_CODEX_HOME` defaults to `DATA_DIR/codex`.
+
+The admin connects through the Study Guide settings device-code flow. Xandrio returns only the temporary OpenAI sign-in URL and user code to the browser. Codex stores and refreshes authentication under the dedicated server-side home. Xandrio does not accept or return the OAuth token. This mode offers `gpt-5.6-luna` for generation and `gpt-5.6-terra` for independent verification. It is disabled unless the private flag is explicitly set.
+
 ## Evidence and lifecycle
 
 A guide records its book id, source fingerprint, chapter-structure key, normalization/extraction versions, generator and verifier model IDs, and prompt-recipe hash. An anchor records a chapter and normalized source range. The stored artifact does not need to persist raw book text to show a short local context snippet later.
