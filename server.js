@@ -185,6 +185,7 @@ const { inspectCoverVisualQuality } = require('./lib/cover-visual-quality');
 const app = express();
 const PORT = process.env.PORT || 8181;
 const HOST = process.env.HOST || '127.0.0.1';
+const SERVER_STARTED_AT = new Date().toISOString();
 const PREGENERATE_ON_IMPORT = process.env.XANDRIO_PREGENERATE_ON_IMPORT !== 'false';
 process.title = `xandrio-server:${PORT}`;
 const DATA_DIR = canonicalStorageDirectory(process.env.DATA_DIR || path.join(__dirname, 'data'));
@@ -2906,7 +2907,12 @@ async function persistCanonicalCoverPath(bookId, coverPath, coverSource = null) 
 // Liveness endpoint for uptime monitors (UptimeRobot etc.). Deliberately
 // cheap: no disk reads, no engine probes. GETs are auth-exempt.
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', uptime: Math.round(process.uptime()) });
+  res.json({
+    status: 'ok',
+    uptime: Math.round(process.uptime()),
+    startedAt: SERVER_STARTED_AT,
+    runtimeRevision: process.env.XANDRIO_RUNTIME_REVISION || null
+  });
 });
 
 const readinessProbe = createReadinessProbe({

@@ -243,7 +243,7 @@ function generationDisclosure(data) {
   const cost = text(data?.estimatedCost || data?.generation?.estimatedCost);
   const uncertified = data?.generation && data.generation.certified === false;
   const details = [
-    uncertified && 'Uncertified evaluation run',
+    uncertified && 'Test guide · quality not yet certified',
     destination && `External destination: ${destination}`,
     generator && `Generator: ${generator}`,
     verifier && `Verifier: ${verifier}`,

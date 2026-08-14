@@ -806,7 +806,7 @@ export function initSettings(options = {}) {
     }
     if (bookGuidesSettingsStatus) {
       bookGuidesSettingsStatus.textContent = config.ready
-        ? (config.certified ? 'Ready' : 'Evaluation mode')
+        ? (config.certified ? 'Ready' : 'Testing mode')
         : (config.enabled ? 'Needs certification' : 'Disabled');
       bookGuidesSettingsStatus.className = `settings-status ${config.ready ? 'settings-status-ok' : (config.enabled ? 'settings-status-warning' : '')}`.trim();
     }
