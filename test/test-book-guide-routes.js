@@ -33,6 +33,8 @@ function response() {
 async function run() {
   const app = fakeApp();
   const requireAdmin = (_req, _res, next) => next();
+  const providerStatusRateLimit = (_req, _res, next) => next();
+  const providerLoginRateLimit = (_req, _res, next) => next();
   const calls = [];
   const service = {
     get: async bookId => (calls.push(['get', bookId]), { status: 'ready' }),
@@ -63,6 +65,8 @@ async function run() {
     prepareNarrationAudio,
     narrationVariant: () => '_ttsvoice123',
     serveAudioFile,
+    providerStatusRateLimit,
+    providerLoginRateLimit,
     isSafeBookId: value => /^book_/.test(value),
     log: { error() {} }
   });
@@ -166,11 +170,13 @@ async function run() {
     const login = app.find(item => item.method === 'post' && item.path === '/api/book-guides/provider/login');
     const status = app.find(item => item.method === 'get' && item.path === '/api/book-guides/provider/connection');
     const loginResponse = response();
-    await login.handlers[1]({}, loginResponse);
+    assert.strictEqual(login.handlers[1], providerLoginRateLimit);
+    await login.handlers[2]({}, loginResponse);
     assert.strictEqual(loginResponse.statusCode, 202);
     assert.strictEqual(loginResponse.headers['Cache-Control'], 'private, no-store');
     const statusResponse = response();
-    await status.handlers[1]({}, statusResponse);
+    assert.strictEqual(status.handlers[1], providerStatusRateLimit);
+    await status.handlers[2]({}, statusResponse);
     assert.strictEqual(statusResponse.headers['Cache-Control'], 'private, no-store');
     assert.deepStrictEqual(calls.slice(-2), [['provider-login'], ['provider-status']]);
   });
