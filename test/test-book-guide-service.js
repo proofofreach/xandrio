@@ -40,6 +40,8 @@ function claimIds(prompt) {
 function fakeProvider() {
   return {
     id: 'ppq-ai',
+    generationErrorCode: null,
+    includeUnresolvedEvidence: false,
     verificationFailures: 0,
     failCurrentAttempt: false,
     calls: [],
@@ -49,6 +51,11 @@ function fakeProvider() {
     async generate({ purpose, prompt, modelSnapshot, signal }) {
       this.calls.push({ purpose, model: modelSnapshot.name, prompt });
       if (String(prompt).startsWith('Return exactly one JSON object')) return { ok: true };
+      if (this.generationErrorCode) {
+        const error = new Error('provider returned malformed output');
+        error.code = this.generationErrorCode;
+        throw error;
+      }
       if (signal?.aborted) {
         const error = new Error('cancelled');
         error.name = 'AbortError';
@@ -58,7 +65,11 @@ function fakeProvider() {
         return {
           claims: EVIDENCE.map((evidence, index) => ({
             statement: `Paraphrased grounded idea ${index + 1}.`, evidence, kind: index === 4 ? 'qualification' : 'claim'
-          }))
+          })).concat(this.includeUnresolvedEvidence ? [{
+            statement: 'This candidate must be rejected.',
+            evidence: 'Words that do not occur in the source passage.',
+            kind: 'claim'
+          }] : [])
         };
       }
       if (purpose === 'verification') {
@@ -315,6 +326,16 @@ async function run() {
       assert.strictEqual(result.job.status, 'ready');
     });
 
+    await test('rejects an ungrounded candidate without discarding grounded claims from the segment', async () => {
+      h.provider.includeUnresolvedEvidence = true;
+      await h.service.start('book_1');
+      await waitIdle(h.service);
+      const result = await h.service.get('book_1');
+      assert.strictEqual(result.status, 'ready');
+      assert.strictEqual(result.artifact.verification.extractedClaimCount, EVIDENCE.length);
+      h.provider.includeUnresolvedEvidence = false;
+    });
+
     await test('normalizes job state and exposes the UI read contract', async () => {
       const result = await h.service.get('book_1');
       assert.strictEqual(result.featureEnabled, true);
@@ -337,6 +358,16 @@ async function run() {
       assert.strictEqual(result.job.status, 'failed');
       assert.strictEqual(result.job.errorCode, 'BOOK_GUIDE_GROUNDING_FAILED');
       assert.deepStrictEqual(result.artifact, prior);
+    });
+
+    await test('preserves a specific provider failure and explains it to the UI', async () => {
+      h.provider.generationErrorCode = 'BOOK_GUIDE_PROVIDER_RESPONSE_INVALID';
+      await h.service.start('book_1');
+      await waitIdle(h.service);
+      const result = await h.service.get('book_1');
+      assert.strictEqual(result.job.errorCode, 'BOOK_GUIDE_PROVIDER_RESPONSE_INVALID');
+      assert.strictEqual(result.message, 'PPQ.ai repeatedly returned malformed model output. Try again or choose a different generator model.');
+      h.provider.generationErrorCode = null;
     });
 
     await test('marks an existing artifact stale when chapter structure changes', async () => {

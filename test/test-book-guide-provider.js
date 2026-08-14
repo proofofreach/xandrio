@@ -4,10 +4,12 @@ const assert = require('node:assert');
 const {
   DEEPSEEK_FLASH_MODEL,
   DEEPSEEK_PRO_MODEL,
+  GEMINI_FLASH_MODEL,
   GLM_VERIFIER_MODEL,
   PPQ_BASE_URL,
   createPpqBookGuideProvider,
   normalizePpqBaseUrl,
+  responseModelMatches,
   routingDigest
 } = require('../lib/book-guide-provider');
 
@@ -48,6 +50,7 @@ async function run() {
       digest: routingDigest(DEEPSEEK_FLASH_MODEL)
     });
     assert.strictEqual((await provider.inspect({ model: DEEPSEEK_PRO_MODEL })).name, DEEPSEEK_PRO_MODEL);
+    assert.strictEqual((await provider.inspect({ model: GEMINI_FLASH_MODEL })).name, GEMINI_FLASH_MODEL);
     assert.strictEqual((await provider.inspect({ model: GLM_VERIFIER_MODEL })).name, GLM_VERIFIER_MODEL);
     await assert.rejects(provider.inspect({ model: 'unknown/model' }), error => error.code === 'BOOK_GUIDE_MODEL_REQUIRED');
   });
@@ -76,6 +79,8 @@ async function run() {
     assert.deepStrictEqual(request.body.response_format, { type: 'json_object' });
     assert.deepStrictEqual(request.body.provider, { zdr: true });
     assert.strictEqual(request.body.temperature, 0);
+    assert.strictEqual(request.body.max_tokens, 1500);
+    assert.deepStrictEqual(request.body.reasoning, { effort: 'low' });
   });
 
   await test('accepts fenced structured JSON', async () => {
@@ -89,6 +94,13 @@ async function run() {
     }), { ok: true });
   });
 
+  await test('accepts one JSON object wrapped in model commentary', () => {
+    const { parseStructuredContent } = require('../lib/book-guide-provider');
+    assert.deepStrictEqual(parseStructuredContent('I will return the requested object.\n{"claims":[{"statement":"Grounded"}]}\nDone.'), {
+      claims: [{ statement: 'Grounded' }]
+    });
+  });
+
   await test('fails closed on response model substitution', async () => {
     const provider = createPpqBookGuideProvider({
       apiKey: 'test-secret',
@@ -100,8 +112,13 @@ async function run() {
     }), error => error.code === 'BOOK_GUIDE_MODEL_SUBSTITUTED');
   });
 
+  await test('accepts only the documented Gemini canonical response alias', () => {
+    assert.strictEqual(responseModelMatches('gemini-3.7-flash', 'google/gemini-3.7-flash'), true);
+    assert.strictEqual(responseModelMatches('gemini-3.7-flash', 'google/gemini-3.7-pro'), false);
+  });
+
   await test('maps rejected credentials and insufficient credit safely', async () => {
-    for (const [status, code] of [[401, 'BOOK_GUIDE_PROVIDER_CREDENTIALS_INVALID'], [402, 'BOOK_GUIDE_PROVIDER_FUNDS_REQUIRED']]) {
+    for (const [status, code] of [[401, 'BOOK_GUIDE_PROVIDER_CREDENTIALS_INVALID'], [402, 'BOOK_GUIDE_PROVIDER_FUNDS_REQUIRED'], [404, 'BOOK_GUIDE_MODEL_UNAVAILABLE']]) {
       const provider = createPpqBookGuideProvider({ apiKey: 'test-secret', fetchImpl: async () => response({}, status) });
       await assert.rejects(provider.generate({
         modelSnapshot: { name: DEEPSEEK_FLASH_MODEL, digest: routingDigest(DEEPSEEK_FLASH_MODEL) },

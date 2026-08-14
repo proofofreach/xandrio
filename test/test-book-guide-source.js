@@ -8,6 +8,7 @@ const {
   detectGuideLanguage,
   isEnglishLanguage,
   normalizeGuideText,
+  locateEvidence,
   resolveBookGuideAnchor
 } = require('../lib/book-guide-source');
 
@@ -63,6 +64,33 @@ async function run() {
       bookId: 'book_1', book: { language: 'en' }, chapters: [{ text: 'Alpha zeta gamma.' }]
     });
     assert.strictEqual(resolveBookGuideAnchor(changed, anchor), null);
+  });
+
+  await test('resolves a unique contiguous citation despite harmless punctuation changes', () => {
+    const snapshot = createBookGuideSourceSnapshot({
+      bookId: 'book_1',
+      book: { language: 'en' },
+      chapters: [{ text: 'The nervous system—rather than willpower—drives this response. A different point follows.' }]
+    });
+    const anchor = locateEvidence(snapshot, 0, 'the nervous system rather than willpower drives this response', {
+      from: 0,
+      to: snapshot.chapters[0].length
+    });
+    assert(anchor, 'unique lexical citation should resolve');
+    assert.strictEqual(resolveBookGuideAnchor(snapshot, anchor).passage,
+      'The nervous system—rather than willpower—drives this response');
+  });
+
+  await test('rejects ambiguous punctuation-insensitive citations', () => {
+    const snapshot = createBookGuideSourceSnapshot({
+      bookId: 'book_1',
+      book: { language: 'en' },
+      chapters: [{ text: 'A stable system—adapts slowly. A stable system, adapts slowly.' }]
+    });
+    assert.strictEqual(locateEvidence(snapshot, 0, 'a stable system adapts slowly', {
+      from: 0,
+      to: snapshot.chapters[0].length
+    }), null);
   });
 
   await test('renders no more than eighteen context words', () => {

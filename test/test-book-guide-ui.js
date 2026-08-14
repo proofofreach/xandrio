@@ -28,7 +28,8 @@ assert(guide.includes("apiSend('POST', guidePath(activeBookId))"), 'guide genera
 assert(!guide.includes('guide-nonfiction-confirmed'), 'guide creation does not repeat provider rights acknowledgement');
 assert(index.includes('book-guides-api-key'), 'settings expose a write-only PPQ.ai API key field');
 assert(!index.includes('book-guides-allow-uncertified') && settings.includes('allowUncertified: true'), 'experimental guides permit test runs without exposing certification policy as an operator setting');
-assert(index.includes('deepseek/deepseek-v4-flash-0731'), 'settings default to the exact DeepSeek V4 Flash 0731 route');
+assert(index.indexOf('gemini-3.7-flash') < index.indexOf('deepseek/deepseek-v4-flash-0731'), 'settings recommend Gemini 3.7 Flash ahead of the slower DeepSeek routes');
+assert(!index.includes('qwen/qwen3.7-flash'), 'settings do not offer Qwen while PPQ lacks an eligible ZDR route');
 assert(index.includes('glm-5.2'), 'settings offer a ZDR-capable independent verifier');
 assert(settings.includes("'/api/book-guides/config/test'"), 'settings can run a bounded paid provider test');
 assert(settings.includes('This acknowledgement applies to the provider configuration, not each title.'), 'provider acknowledgement occurs at configuration time');
@@ -58,5 +59,6 @@ assert(settings.includes("user.role !== 'admin'") && settings.includes("err.stat
 assert(guide.includes('await refreshGuideState();'), 'generation refreshes the canonical server state');
 assert(index.includes('id="guide-btn"') && index.includes('id="utility-guide-btn"') && guide.includes("toggleAttribute('hidden', !showEntry)"), 'player guide entry points follow feature or artifact availability');
 assert(guide.includes('existing guide remains available'), 'disabling generation preserves existing guide access');
+assert(guide.includes('Could not create the guide'), 'guide renders actionable server failure details');
 
-console.log('33 passed, 0 failed');
+console.log('34 passed, 0 failed');

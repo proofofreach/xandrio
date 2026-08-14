@@ -797,7 +797,7 @@ export function initSettings(options = {}) {
         : 'PPQ.ai API key required';
     }
     if (bookGuidesGeneratorModel) {
-      bookGuidesGeneratorModel.value = config.generator?.name || 'deepseek/deepseek-v4-flash-0731';
+      bookGuidesGeneratorModel.value = config.generator?.name || 'gemini-3.7-flash';
     }
     if (bookGuidesVerifierModel) {
       bookGuidesVerifierModel.value = config.verifier?.name || 'glm-5.2';
