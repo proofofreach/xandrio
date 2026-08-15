@@ -10,6 +10,7 @@ const {
   certificationProvenance,
   CERTIFICATION_GATE_REQUIREMENTS,
   createBookGuideService,
+  MAX_ATTEMPTS,
   REQUIRED_CERTIFICATION_GATES,
   publicJobStatus,
   publicProgress
@@ -231,7 +232,7 @@ async function run() {
         detail: 'Checking every material guide statement against cited source evidence.',
         reused: 0,
         attempt: 1,
-        attemptsTotal: 3,
+        attemptsTotal: MAX_ATTEMPTS,
         elapsedSeconds: null,
         etaSeconds: null
       });
@@ -360,6 +361,22 @@ async function run() {
       assert.strictEqual(extractionCallsAfter - extractionCallsBefore, 1, 'grounded extraction must be reused');
     });
 
+    await test('reuses verified claims when a new composition needs another quality pass', async () => {
+      const callsBefore = h.provider.calls.length;
+      h.provider.verificationFailures = 1;
+      await h.service.start('book_1');
+      await waitIdle(h.service);
+      const calls = h.provider.calls.slice(callsBefore);
+      const secondComposition = calls.findIndex((call, index) => call.purpose === 'composition' &&
+        calls.slice(0, index).some(prior => prior.purpose === 'composition'));
+      assert(secondComposition >= 0, 'expected a second composition pass');
+      const retriedVerification = calls.slice(secondComposition + 1)
+        .filter(call => call.purpose === 'verification');
+      assert(retriedVerification.length > 0);
+      assert(retriedVerification.every(call => !call.prompt.includes('"claimId":"c_')),
+        'verified extracted claims should not be sent to the verifier again');
+    });
+
     await test('runs independent model calls concurrently without changing final verification', async () => {
       const parallel = await harness({
         initialSourceText: Array.from({ length: 18 }, () => EVIDENCE.join(' ')).join(' '),
@@ -440,7 +457,7 @@ async function run() {
 
     await test('fails closed and preserves the prior verified artifact', async () => {
       const prior = await h.store.read('book_1');
-      h.provider.verificationFailures = 3;
+      h.provider.verificationFailures = MAX_ATTEMPTS;
       await h.service.start('book_1');
       await waitIdle(h.service);
       const result = await h.service.get('book_1');
