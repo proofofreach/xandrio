@@ -374,6 +374,8 @@ async function run() {
       const retriedVerification = calls.slice(secondComposition + 1)
         .filter(call => call.purpose === 'verification');
       assert(retriedVerification.length > 0);
+      assert(calls[secondComposition].prompt.includes('orientation.thesis'),
+        'the composer should receive the rejected guide field paths');
       assert(retriedVerification.every(call => !call.prompt.includes('"claimId":"c_')),
         'verified extracted claims should not be sent to the verifier again');
     });
