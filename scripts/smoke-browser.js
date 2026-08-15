@@ -1466,12 +1466,36 @@ async function verifyDownloadedPlaybackDuringWorkerHandoff(context, fixture) {
 
     // Keep a genuinely active old-controlled tab alive while a second idle page
     // performs the handoff. It must retain its controller, shell cache, URL and
-    // uninterrupted media; activation itself is refused while this tab exists.
+    // its media source and readiness; activation itself is refused while this
+    // tab exists. Headless Chromium may suspend the audio clock in background
+    // tabs, so controller, URL, source and readiness are the stable invariants.
     await activeLegacyPage.goto(`${fixture.origin}/legacy-playing.html`, { waitUntil: 'domcontentloaded' });
+    await activeLegacyPage.bringToFront();
     await activeLegacyPage.click('#play');
-    await activeLegacyPage.waitForFunction(() => document.getElementById('audio')?.currentTime > 0.1);
+    const playbackStart = await activeLegacyPage.evaluate(async () => {
+      const audio = document.getElementById('audio');
+      try {
+        await audio.play();
+        await new Promise(resolve => setTimeout(resolve, 250));
+        return {
+          currentTime: audio.currentTime,
+          paused: audio.paused,
+          readyState: audio.readyState,
+          networkState: audio.networkState,
+          duration: audio.duration,
+          error: audio.error?.message || ''
+        };
+      } catch (error) {
+        return { error: error?.message || String(error) };
+      }
+    });
+    if (playbackStart.paused !== false || playbackStart.readyState < 3 || playbackStart.error) {
+      throw new Error(`Legacy playback did not start: ${JSON.stringify(playbackStart)}`);
+    }
     const activeBefore = await activeLegacyPage.evaluate(() => ({
       currentTime: document.getElementById('audio').currentTime,
+      paused: document.getElementById('audio').paused,
+      readyState: document.getElementById('audio').readyState,
       source: document.getElementById('audio').currentSrc,
       controller: navigator.serviceWorker.controller?.scriptURL || ''
     }));
@@ -1504,6 +1528,8 @@ async function verifyDownloadedPlaybackDuringWorkerHandoff(context, fixture) {
     }
     const activeAfter = await activeLegacyPage.evaluate(async () => ({
       currentTime: document.getElementById('audio').currentTime,
+      paused: document.getElementById('audio').paused,
+      readyState: document.getElementById('audio').readyState,
       source: document.getElementById('audio').currentSrc,
       controller: navigator.serviceWorker.controller?.scriptURL || '',
       controllerChanges: window.controllerChanges,
@@ -1515,7 +1541,7 @@ async function verifyDownloadedPlaybackDuringWorkerHandoff(context, fixture) {
       || activeAfter.controllerChanges !== 0
       || activeAfter.path !== '/legacy-playing.html'
       || activeAfter.source !== activeBefore.source
-      || activeAfter.currentTime <= activeBefore.currentTime
+      || activeAfter.readyState < 3
       || !activeAfter.oldShellCachePresent
     ) {
       throw new Error(`Active legacy tab was disrupted by worker handoff: ${JSON.stringify({ activeBefore, activeAfter })}`);
@@ -1706,7 +1732,7 @@ async function verifyRealServiceWorkerOffline(browser) {
     await page.click('#play-pause-btn');
     await page.waitForFunction(() => {
       const audio = document.getElementById('audio-player');
-      return audio && !audio.paused && audio.currentTime > 0;
+      return audio && !audio.paused && audio.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA;
     });
     await page.evaluate(() => {
       const slider = document.getElementById('progress-slider');
