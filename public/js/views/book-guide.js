@@ -324,7 +324,11 @@ function statusHTML(data) {
       <span class="guide-spinner" aria-hidden="true"></span><h3>${escapeHTML(statusLabel(status))}</h3><p>${escapeHTML(detail)}</p>
       ${Number.isFinite(progress) ? `<div class="guide-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.max(0, Math.min(100, progress))}"><span style="width:${Math.max(0, Math.min(100, progress))}%"></span></div>` : ''}
       ${meta ? `<p class="guide-progress-meta">${escapeHTML(meta)}</p>` : ''}
-      ${canGenerate ? '<button class="btn-ghost btn-sm" type="button" data-guide-cancel>Cancel generation</button>' : ''}
+      <p class="guide-background-note"><strong>You can leave this page.</strong> Guide creation continues on the server. Return to this book’s Study Guide at any time.</p>
+      <div class="guide-generation-actions">
+        <a class="btn-secondary" href="#/library">Browse library</a>
+        ${canGenerate ? '<button class="btn-ghost btn-sm" type="button" data-guide-cancel>Cancel generation</button>' : ''}
+      </div>
     </section>`;
   }
   if (status === 'error') {

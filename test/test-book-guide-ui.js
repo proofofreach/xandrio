@@ -72,5 +72,6 @@ assert(index.includes('id="guide-btn"') && index.includes('id="utility-guide-btn
 assert(guide.includes('existing guide remains available'), 'disabling generation preserves existing guide access');
 assert(guide.includes('Could not create the guide'), 'guide renders actionable server failure details');
 assert(guide.includes('progressMeta') && guide.includes('Pass ${Number(progress.attempt)') && guide.includes('etaSeconds'), 'guide reports pass, resumed work, and a live ETA');
+assert(guide.includes('You can leave this page.') && guide.includes('Guide creation continues on the server.') && guide.includes('href="#/library">Browse library</a>'), 'guide generation explains background processing and provides a library exit');
 
-console.log('55 passed, 0 failed');
+console.log('56 passed, 0 failed');
