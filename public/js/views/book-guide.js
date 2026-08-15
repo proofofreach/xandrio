@@ -52,6 +52,24 @@ function isGenerating(data) {
   return GENERATING_STATUSES.has(String(data?.status || '').toLowerCase());
 }
 
+function shortDuration(seconds) {
+  const value = Math.max(0, Number(seconds) || 0);
+  if (value < 60) return `${Math.max(1, Math.round(value))} sec`;
+  return `${Math.max(1, Math.ceil(value / 60))} min`;
+}
+
+function progressMeta(progress = {}) {
+  const details = [];
+  const current = Number(progress.current);
+  const total = Number(progress.total);
+  if (Number.isFinite(current) && Number.isFinite(total) && total > 0) details.push(`${current} of ${total}`);
+  if (Number(progress.reused) > 0) details.push(`${progress.reused} resumed`);
+  if (Number(progress.attemptsTotal) > 1) details.push(`Pass ${Number(progress.attempt) || 1} of ${progress.attemptsTotal}`);
+  if (Number(progress.etaSeconds) > 0) details.push(`About ${shortDuration(progress.etaSeconds)} left`);
+  else if (Number(progress.elapsedSeconds) > 0) details.push(`${shortDuration(progress.elapsedSeconds)} elapsed`);
+  return details.join(' · ');
+}
+
 function normalizeList(value) {
   if (Array.isArray(value)) return value.filter(Boolean);
   return value ? [value] : [];
@@ -278,9 +296,11 @@ function statusHTML(data) {
   if (isGenerating(data)) {
     const progress = Number(data?.progress?.percent ?? data?.progressPercent);
     const detail = text(data?.progress?.detail || data?.progress?.stage || message || 'Extracting ideas and checking them against the book.');
+    const meta = progressMeta(data?.progress);
     return `<section class="guide-state" data-state="generating" aria-live="polite">
       <span class="guide-spinner" aria-hidden="true"></span><h3>${escapeHTML(statusLabel(status))}</h3><p>${escapeHTML(detail)}</p>
       ${Number.isFinite(progress) ? `<div class="guide-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.max(0, Math.min(100, progress))}"><span style="width:${Math.max(0, Math.min(100, progress))}%"></span></div>` : ''}
+      ${meta ? `<p class="guide-progress-meta">${escapeHTML(meta)}</p>` : ''}
       ${canGenerate ? '<button class="btn-ghost btn-sm" type="button" data-guide-cancel>Cancel generation</button>' : ''}
     </section>`;
   }

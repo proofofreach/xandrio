@@ -1449,7 +1449,10 @@ async function recordMeasuredChapterDuration({ bookId, chapterIndex, outputPath 
 }
 
 // Initialize TTS queue and chunked TTS system
-const generationScheduler = new GenerationScheduler({ capacities: { gpu: 1 } });
+const bookGuideModelConcurrency = positiveInteger(process.env.XANDRIO_BOOK_GUIDE_MODEL_CONCURRENCY, 4);
+const generationScheduler = new GenerationScheduler({
+  capacities: { gpu: 1, 'book-guide-network': bookGuideModelConcurrency }
+});
 const generationJournal = new GenerationJournal(path.join(DATA_DIR, 'generation-state.json'));
 const premiumVariantTtsWorkers = new Map();
 let pronunciationService = null;
@@ -2167,7 +2170,8 @@ const bookGuideService = createBookGuideService({
   withBookStateLock: bookMutationLocks.withBookStateLock,
   onArtifactPublished: pruneBookGuideNarrationAudio,
   onArtifactRemoved: bookId => pruneBookGuideNarrationAudio(bookId),
-  maxConcurrent: 1
+  maxConcurrent: 1,
+  modelConcurrency: bookGuideModelConcurrency
 });
 
 async function prepareBookGuideNarrationAudio(bookId, sectionId) {

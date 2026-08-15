@@ -59,12 +59,14 @@ async function run() {
   });
 
   await test('runs generation ephemerally in a read-only sandbox and parses final JSON', async () => {
+    const callsBefore = calls.length;
     const result = await provider.generate({
       modelSnapshot: { name: 'gpt-5.6-luna', digest: codexDigest('gpt-5.6-luna') },
       prompt: 'Return claims.',
       purpose: 'generation'
     });
     assert.deepStrictEqual(result, { claims: [] });
+    assert.strictEqual(calls.length - callsBefore, 1, 'generation must not spawn a redundant login-status probe');
     const exec = calls.find(call => call.args[0] === 'exec');
     assert(exec.args.includes('--ephemeral'));
     assert.deepStrictEqual(exec.args.slice(exec.args.indexOf('--sandbox'), exec.args.indexOf('--sandbox') + 2), ['--sandbox', 'read-only']);

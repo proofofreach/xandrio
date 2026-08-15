@@ -41,19 +41,32 @@ function fakeProvider() {
   return {
     id: 'ppq-ai',
     generationErrorCode: null,
+    compositionErrorCode: null,
     includeUnresolvedEvidence: false,
     verificationFailures: 0,
     failCurrentAttempt: false,
+    delayMs: 0,
+    activeCalls: 0,
+    maxActiveCalls: 0,
     calls: [],
     async hasCredentials() { return true; },
     normalizeBaseUrl: value => String(value),
     async inspect({ model }) { return { name: model, digest: DIGEST }; },
     async generate({ purpose, prompt, modelSnapshot, signal }) {
+      this.activeCalls++;
+      this.maxActiveCalls = Math.max(this.maxActiveCalls, this.activeCalls);
+      try {
+      if (this.delayMs) await new Promise(resolve => setTimeout(resolve, this.delayMs));
       this.calls.push({ purpose, model: modelSnapshot.name, prompt });
       if (String(prompt).startsWith('Return exactly one JSON object')) return { ok: true };
       if (this.generationErrorCode) {
         const error = new Error('provider returned malformed output');
         error.code = this.generationErrorCode;
+        throw error;
+      }
+      if (purpose === 'composition' && this.compositionErrorCode) {
+        const error = new Error('composition failed');
+        error.code = this.compositionErrorCode;
         throw error;
       }
       if (signal?.aborted) {
@@ -74,8 +87,10 @@ function fakeProvider() {
       }
       if (purpose === 'verification') {
         const ids = [...new Set([...String(prompt).matchAll(/"claimId":"([cg]_[^"]+)"/g)].map(match => match[1]))];
-        const supported = !this.failCurrentAttempt;
-        return { verdicts: ids.map(claimId => ({ claimId, supported })) };
+        return { verdicts: ids.map(claimId => ({
+          claimId,
+          supported: !this.failCurrentAttempt || claimId.startsWith('c_')
+        })) };
       }
       this.failCurrentAttempt = this.verificationFailures > 0;
       if (this.failCurrentAttempt) this.verificationFailures--;
@@ -116,6 +131,9 @@ function fakeProvider() {
         },
         keyPassages: ids.slice(0, 3).map(claimId => ({ claimId }))
       };
+      } finally {
+        this.activeCalls--;
+      }
     }
   };
 }
@@ -128,7 +146,7 @@ async function waitIdle(service) {
   assert.strictEqual(service.isIdle(), true, 'service did not become idle');
 }
 
-async function harness() {
+async function harness({ initialSourceText = EVIDENCE.join(' '), segmentChars, modelConcurrency } = {}) {
   const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'book-guide-service-'));
   const certificationFile = path.join(temp, 'certification.json');
   const provider = fakeProvider();
@@ -141,7 +159,7 @@ async function harness() {
   const journal = createBookGuideJournal({ filePath: path.join(temp, 'jobs.json'), jsonStore });
   let language = 'en';
   let category = 'unknown';
-  let sourceText = EVIDENCE.join(' ');
+  let sourceText = initialSourceText;
   let chapterStructureKey = 'structure-1';
   const narrationLifecycle = [];
   const service = createBookGuideService({
@@ -159,6 +177,8 @@ async function harness() {
     store,
     journal,
     provider,
+    segmentChars,
+    modelConcurrency,
     now: () => new Date('2026-08-13T12:00:00.000Z'),
     createId: (() => { let id = 0; return () => String(++id); })(),
     onArtifactPublished: async (bookId, artifact) => narrationLifecycle.push(['published', bookId, artifact.createdAt]),
@@ -203,7 +223,12 @@ async function run() {
         total: 4,
         percent: 25,
         stage: 'verifying',
-        detail: 'Checking every material guide statement against cited source evidence.'
+        detail: 'Checking every material guide statement against cited source evidence.',
+        reused: 0,
+        attempt: 1,
+        attemptsTotal: 3,
+        elapsedSeconds: null,
+        etaSeconds: null
       });
     });
 
@@ -312,18 +337,51 @@ async function run() {
       assert(verificationPrompts.includes('It tests grounded idea 1.'));
       assert.strictEqual(result.artifact.models.generator.digest, DIGEST);
       assert.strictEqual(result.artifact.guide.review.questions.length, 8);
+      assert.strictEqual(await h.store.readWork('book_1'), null, 'published work checkpoint must be removed');
       const anchorId = result.artifact.guide.coreIdeas[0].anchorIds[0];
       const context = await h.service.getAnchorContext('book_1', anchorId);
       assert(context.text.split(' ').length <= 18);
     });
 
     await test('retries failed semantic verification twice before publishing', async () => {
+      const extractionCallsBefore = h.provider.calls.filter(call => call.purpose === 'extraction').length;
       h.provider.verificationFailures = 2;
       await h.service.start('book_1');
       await waitIdle(h.service);
       const result = await h.service.get('book_1');
       assert.strictEqual(result.artifact.verification.attempts, 3);
       assert.strictEqual(result.job.status, 'ready');
+      const extractionCallsAfter = h.provider.calls.filter(call => call.purpose === 'extraction').length;
+      assert.strictEqual(extractionCallsAfter - extractionCallsBefore, 1, 'grounded extraction must be reused');
+    });
+
+    await test('runs independent model calls concurrently without changing final verification', async () => {
+      const parallel = await harness({
+        initialSourceText: Array.from({ length: 18 }, () => EVIDENCE.join(' ')).join(' '),
+        segmentChars: 1000,
+        modelConcurrency: 3
+      });
+      try {
+        parallel.setCategory('nonfiction');
+        await parallel.service.configure({
+          enabled: true,
+          externalProcessingAcknowledged: true,
+          baseUrl: 'https://api.ppq.ai',
+          generatorModel: 'guide:1',
+          verifierModel: 'verify:1'
+        });
+        parallel.provider.delayMs = 20;
+        parallel.provider.maxActiveCalls = 0;
+        await parallel.service.start('book_1');
+        await waitIdle(parallel.service);
+        const result = await parallel.service.get('book_1');
+        assert.strictEqual(result.status, 'ready');
+        assert.strictEqual(result.artifact.verification.allClaimsChecked, true);
+        assert(parallel.provider.maxActiveCalls >= 3, 'expected bounded parallel model calls');
+        assert(parallel.provider.maxActiveCalls <= 3, 'model concurrency exceeded its bound');
+      } finally {
+        await fs.rm(parallel.temp, { recursive: true, force: true });
+      }
     });
 
     await test('rejects an ungrounded candidate without discarding grounded claims from the segment', async () => {
@@ -374,6 +432,28 @@ async function run() {
       assert.strictEqual(unexpected.job.errorCode, 'BOOK_GUIDE_GENERATION_FAILED');
       assert.strictEqual(unexpected.message, 'Guide creation stopped before it could finish. Try again with the current model.');
       h.provider.generationErrorCode = null;
+    });
+
+    await test('resumes grounded extraction after a later phase fails', async () => {
+      await h.store.removeWork('book_1');
+      h.provider.compositionErrorCode = 'BOOK_GUIDE_PROVIDER_RESPONSE_INVALID';
+      const beforeFirst = h.provider.calls.filter(call => call.purpose === 'extraction').length;
+      await h.service.start('book_1');
+      await waitIdle(h.service);
+      const failed = await h.service.get('book_1');
+      assert.strictEqual(failed.job.status, 'failed');
+      assert(await h.store.readWork('book_1'), 'failed later phase should retain resumable grounded work');
+      const afterFirst = h.provider.calls.filter(call => call.purpose === 'extraction').length;
+      assert.strictEqual(afterFirst - beforeFirst, 1);
+
+      h.provider.compositionErrorCode = null;
+      await h.service.start('book_1');
+      await waitIdle(h.service);
+      const resumed = await h.service.get('book_1');
+      const afterResume = h.provider.calls.filter(call => call.purpose === 'extraction').length;
+      assert.strictEqual(resumed.job.status, 'ready');
+      assert.strictEqual(afterResume, afterFirst, 'retry must not repeat persisted extraction');
+      assert.strictEqual(resumed.artifact.verification.allClaimsChecked, true);
     });
 
     await test('marks an existing artifact stale when chapter structure changes', async () => {
