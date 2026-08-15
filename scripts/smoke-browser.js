@@ -650,10 +650,17 @@ async function installBrowserFixtures(page) {
       canManage: false,
       artifact: {
         createdAt: '2026-08-14T12:00:00.000Z',
-        anchors: {},
+        anchors: {
+          'feedback-loop-1': { id: 'feedback-loop-1', chapterIndex: 0 },
+          'feedback-loop-2': { id: 'feedback-loop-2', chapterIndex: 0 }
+        },
         guide: {
           orientation: { thesis: 'Fast feedback improves decisions.', bottomLine: 'Measure outcomes and adapt.' },
-          coreIdeas: [{ title: 'Feedback loops', claim: 'Short loops expose errors sooner.' }],
+          coreIdeas: [{
+            title: 'Feedback loops',
+            claim: 'Short loops expose errors sooner.',
+            anchorIds: ['feedback-loop-1', 'feedback-loop-2']
+          }],
           chapterMap: [{ chapterIndex: 0, title: 'Signals', purpose: 'Defines useful feedback.' }],
           review: { questions: [{ question: 'Why shorten a loop?', answer: 'To expose errors sooner.' }] }
         }
@@ -667,6 +674,14 @@ async function installBrowserFixtures(page) {
         ]
       }
     });
+    if (/^\/api\/book\/smoke\/guide\/anchors\/feedback-loop-[12]\/context$/.test(pathname)) {
+      const anchorId = pathname.split('/').at(-2);
+      return json(route, {
+        anchor: { id: anchorId, chapterIndex: 0 },
+        chapterTitle: 'Chapter One',
+        text: 'Doctor Quinn crossed the quiet room and greeted everyone.'
+      });
+    }
     if (/^\/api\/book\/smoke\/guide\/narration\/[^/]+\/audio$/.test(pathname)) {
       fixtureState.guideAudioRequests.push(pathname);
       return route.fulfill({ status: 200, contentType: 'audio/mpeg', body: Buffer.from([0]) });
@@ -806,6 +821,27 @@ async function verifyPlayback(page, fixtureState) {
 async function verifyStudyGuideAudio(page, fixtureState) {
   await page.goto(`${origin}/#/guide/smoke`, { waitUntil: 'networkidle' });
   await page.waitForSelector('#guide-view.active');
+  await page.waitForSelector('details.guide-sources');
+  const sourceDisclosure = page.locator('details.guide-sources').first();
+  if (await sourceDisclosure.getAttribute('open') !== null) {
+    throw new Error('Study-guide sources were expanded by default');
+  }
+  if (await sourceDisclosure.locator('.guide-source-link').first().isVisible()) {
+    throw new Error('Study-guide source links were visible before disclosure');
+  }
+  await page.setViewportSize({ width: 390, height: 844 });
+  const sourceSummaryHeight = await sourceDisclosure.locator('summary').evaluate(node => node.getBoundingClientRect().height);
+  if (sourceSummaryHeight < 44) {
+    throw new Error(`Study-guide source disclosure was smaller than 44px: ${sourceSummaryHeight}`);
+  }
+  const guideOverflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
+  if (guideOverflow) throw new Error('Study-guide source disclosure caused mobile horizontal overflow');
+  await sourceDisclosure.locator('summary').click();
+  await sourceDisclosure.locator('.guide-source-link').first().waitFor({ state: 'visible' });
+  const sourceLabels = await sourceDisclosure.locator('.guide-source-link').allTextContents();
+  if (!sourceLabels.some(label => label.includes('Passage 1 of 2'))) {
+    throw new Error(`Repeated same-chapter sources were not distinguished: ${sourceLabels.join(', ')}`);
+  }
   await page.waitForSelector('[data-guide-listen]');
   await page.click('[data-guide-listen]');
   await page.waitForFunction(() => document.querySelector('.guide-narration-audio')?.src.includes('/guide/narration/overview/audio'));
@@ -824,8 +860,10 @@ async function verifyStudyGuideAudio(page, fixtureState) {
   if (!fixtureState.guideAudioRequests.some(pathname => pathname.endsWith('/overview/audio'))) {
     throw new Error('Study-guide overview audio was not requested');
   }
-  await page.goto(`${origin}/#/player/smoke`, { waitUntil: 'networkidle' });
+  await sourceDisclosure.locator('.guide-source-link').first().click();
   await page.waitForSelector('#player-view.active');
+  if (!page.url().includes('#/player/smoke')) throw new Error('Study-guide source did not return to the book player');
+  await page.setViewportSize({ width: 1280, height: 800 });
 }
 
 async function verifyLibraryLoadStates(page, fixtureState) {
@@ -1841,7 +1879,7 @@ async function main() {
     await verifyPlayback(page, fixtureState);
     traceSmoke('playback verified');
     await verifyStudyGuideAudio(page, fixtureState);
-    traceSmoke('study-guide audio verified');
+    traceSmoke('study-guide sources and audio verified');
     await verifyPronunciations(page, fixtureState);
     traceSmoke('pronunciations verified');
     await verifyLibraryActions(page);
@@ -1851,7 +1889,7 @@ async function main() {
     if (pageErrors.length) throw new Error(`Browser page errors:\n${pageErrors.join('\n')}`);
     await verifyRealServiceWorkerOffline(browser);
     traceSmoke('service worker verified');
-    console.log('Browser smoke passed: library loading/error/offline states, playback/tier/pronunciation, study-guide TTS, library actions, search workspace, warning-bearing import auto-open, atomic shell upgrade failure, PWA icons, and real offline Range 206/416.');
+    console.log('Browser smoke passed: library loading/error/offline states, playback/tier/pronunciation, study-guide source disclosure/TTS, library actions, search workspace, warning-bearing import auto-open, atomic shell upgrade failure, PWA icons, and real offline Range 206/416.');
   } catch (err) {
     if (serverOutput) process.stderr.write(`\nServer output:\n${serverOutput}\n`);
     throw err;
