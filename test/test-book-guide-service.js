@@ -44,7 +44,9 @@ function fakeProvider() {
     compositionErrorCode: null,
     includeUnresolvedEvidence: false,
     verificationFailures: 0,
+    extractedVerificationFailures: 0,
     failCurrentAttempt: false,
+    failExtractedCurrentAttempt: false,
     delayMs: 0,
     activeCalls: 0,
     maxActiveCalls: 0,
@@ -89,11 +91,14 @@ function fakeProvider() {
         const ids = [...new Set([...String(prompt).matchAll(/"claimId":"([cg]_[^"]+)"/g)].map(match => match[1]))];
         return { verdicts: ids.map(claimId => ({
           claimId,
-          supported: !this.failCurrentAttempt || claimId.startsWith('c_')
+          supported: (!this.failCurrentAttempt || claimId.startsWith('c_')) &&
+            (!this.failExtractedCurrentAttempt || claimId !== 'c_0_0_0')
         })) };
       }
       this.failCurrentAttempt = this.verificationFailures > 0;
       if (this.failCurrentAttempt) this.verificationFailures--;
+      this.failExtractedCurrentAttempt = this.extractedVerificationFailures > 0;
+      if (this.failExtractedCurrentAttempt) this.extractedVerificationFailures--;
       const ids = claimIds(prompt);
       const cited = index => [ids[index % ids.length]];
       return {
@@ -381,6 +386,32 @@ async function run() {
         assert(parallel.provider.maxActiveCalls <= 3, 'model concurrency exceeded its bound');
       } finally {
         await fs.rm(parallel.temp, { recursive: true, force: true });
+      }
+    });
+
+    await test('drops an unsupported extracted claim without repeating a still-useful segment', async () => {
+      const source = Array.from({ length: 10 }, () => EVIDENCE.join(' ')).join(' ');
+      const selective = await harness({ initialSourceText: source, segmentChars: 1000 });
+      try {
+        selective.setCategory('nonfiction');
+        await selective.service.configure({
+          enabled: true,
+          externalProcessingAcknowledged: true,
+          baseUrl: 'https://api.ppq.ai',
+          generatorModel: 'guide:1',
+          verifierModel: 'verify:1'
+        });
+        selective.provider.extractedVerificationFailures = 1;
+        const expectedSegments = selective.service.__test.splitChapterText(source, 1000).length;
+        await selective.service.start('book_1');
+        await waitIdle(selective.service);
+        const result = await selective.service.get('book_1');
+        const extractionCalls = selective.provider.calls.filter(call => call.purpose === 'extraction').length;
+        assert.strictEqual(result.job.status, 'ready');
+        assert(result.artifact.verification.attempts >= 2 && result.artifact.verification.attempts <= 3);
+        assert.strictEqual(extractionCalls, expectedSegments, 'useful supported claims should remain checkpointed');
+      } finally {
+        await fs.rm(selective.temp, { recursive: true, force: true });
       }
     });
 
