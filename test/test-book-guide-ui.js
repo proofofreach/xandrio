@@ -40,6 +40,8 @@ assert(guide.includes('data-guide-tag-nonfiction') && guide.includes("apiSend('P
 assert(guide.includes('Mark this title as nonfiction') && guide.includes("status === 'needs-classification'"), 'untagged titles explain the exact eligibility action instead of reporting configuration unavailable');
 assert(guide.includes('getCurrentUser') && guide.includes("user.role === 'admin'"), 'guide limits generation controls to administrators');
 assert(guide.includes("/cancel") && guide.includes("apiSend('DELETE', guidePath(activeBookId))") && guide.includes("/anchors/${encodeURIComponent(anchorId)}/context"), 'guide supports cancellation, deletion, and source context');
+assert(guide.includes('function sourceDisclosure') && guide.includes('<details class="guide-sources">'), 'guide groups evidence anchors behind a source disclosure');
+assert(!guide.includes('function anchorButtons'), 'guide does not render every source link in the reading flow');
 assert(guide.includes('anchor.audioSeconds') && !guide.includes('seekToSeconds = Number(anchor.timestamp)'), 'guide only seeks when an explicit audio offset exists');
 assert(guide.includes('recallQuestions') && guide.includes('Reveal answer') && guide.includes('chapterMap'), 'guide renders recall and chapter-map layers');
 assert(guide.includes('Listen to guide') && guide.includes('guide-narration-audio'), 'ready guides expose an audio playlist');
@@ -51,6 +53,7 @@ assert(guide.includes('LAST_SECTION_PREFIX') && guide.includes('localStorage.set
 
 assert(style.includes('grid-template-columns: repeat(5, minmax(0, 1fr))'), 'mobile player utilities support guide access');
 assert(style.includes('#guide-view') && style.includes('.guide-source-link'), 'guide has view and source-link styles');
+assert(style.includes('.guide-sources > summary') && style.includes('min-height: var(--touch-min)'), 'source disclosures stay quiet while preserving touch targets');
 assert(style.includes('.guide-narration') && style.includes('.guide-narration-sections'), 'guide narration has responsive player styles');
 
 assert(index.includes('id="book-guides-settings-section"') && index.includes('id="book-guides-key-note"'), 'settings disclose provider cost and write-only key handling');
@@ -67,4 +70,4 @@ assert(guide.includes('existing guide remains available'), 'disabling generation
 assert(guide.includes('Could not create the guide'), 'guide renders actionable server failure details');
 assert(guide.includes('progressMeta') && guide.includes('Pass ${Number(progress.attempt)') && guide.includes('etaSeconds'), 'guide reports pass, resumed work, and a live ETA');
 
-console.log('34 passed, 0 failed');
+console.log('52 passed, 0 failed');

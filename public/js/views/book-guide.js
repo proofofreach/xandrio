@@ -94,17 +94,36 @@ function anchorList(value) {
   return normalizeList(value).flatMap(resolve).filter(anchor => anchor && typeof anchor === 'object');
 }
 
-function anchorButton(anchor, label = 'Go to source') {
+function anchorButton(anchor, occurrence = 1, chapterTotal = 1) {
   const id = anchor.id || anchor.anchorId || '';
   if (!id) return '';
   const chapter = Number.isInteger(anchor.chapterIndex) ? anchor.chapterIndex + 1 : null;
-  const suffix = chapter ? ` · Chapter ${chapter}` : '';
   const invalid = normalizeList(guideData?.invalidAnchorIds).map(String).includes(String(id));
-  return `<button class="guide-source-link" type="button" data-guide-anchor="${safeAttr(id)}" aria-label="${safeAttr(`${invalid ? 'Source unavailable' : label}${suffix}`)}"${invalid ? ' disabled' : ''}>${escapeHTML(invalid ? 'Source unavailable' : label)}${chapter ? `<span>Chapter ${chapter}</span>` : ''}</button>`;
+  const location = chapter ? `Chapter ${chapter}` : 'Source passage';
+  const passage = chapterTotal > 1 ? `Passage ${occurrence} of ${chapterTotal}` : '';
+  const label = invalid
+    ? `${location} unavailable`
+    : `Open ${location}${passage ? `, ${passage.toLowerCase()}` : ''}`;
+  return `<button class="guide-source-link" type="button" data-guide-anchor="${safeAttr(id)}" aria-label="${safeAttr(label)}"${invalid ? ' disabled' : ''}><span>${escapeHTML(invalid ? 'Unavailable' : location)}</span>${passage ? `<small>${escapeHTML(passage)}</small>` : ''}</button>`;
 }
 
-function anchorButtons(value) {
-  return anchorList(value).map(anchor => anchorButton(anchor)).join('');
+function sourceDisclosure(value) {
+  const anchors = anchorList(value);
+  if (!anchors.length) return '';
+  const chapterTotals = new Map();
+  for (const anchor of anchors) {
+    const chapter = Number.isInteger(anchor.chapterIndex) ? anchor.chapterIndex : 'unknown';
+    chapterTotals.set(chapter, (chapterTotals.get(chapter) || 0) + 1);
+  }
+  const chapterOccurrences = new Map();
+  const links = anchors.map(anchor => {
+    const chapter = Number.isInteger(anchor.chapterIndex) ? anchor.chapterIndex : 'unknown';
+    const occurrence = (chapterOccurrences.get(chapter) || 0) + 1;
+    chapterOccurrences.set(chapter, occurrence);
+    return anchorButton(anchor, occurrence, chapterTotals.get(chapter));
+  }).join('');
+  const noun = anchors.length === 1 ? 'source' : 'sources';
+  return `<details class="guide-sources"><summary>Sources <span aria-hidden="true">· ${anchors.length}</span><span class="sr-only">${anchors.length} ${noun}</span></summary><div class="guide-source-links">${links}</div></details>`;
 }
 
 function sectionHeading(id, title, body) {
@@ -119,13 +138,13 @@ function overviewHTML(artifact) {
   const thesis = text(overview.thesis || artifact.thesis);
   const problem = text(overview.problem || overview.question);
   const bottomLine = text(overview.bottomLine || overview.summary);
-  const takeaways = normalizeList(overview.takeaways || artifact.takeaways).map(item => `<li>${escapeHTML(text(item))}${anchorButtons(item?.anchorIds || item?.anchorId)}</li>`).join('');
+  const takeaways = normalizeList(overview.takeaways || artifact.takeaways).map(item => `<li>${escapeHTML(text(item))}${sourceDisclosure(item?.anchorIds || item?.anchorId)}</li>`).join('');
   if (!thesis && !problem && !bottomLine && !takeaways) return '';
   return sectionHeading('guide-overview', 'Quick orientation', `
-    ${thesis ? `<p class="guide-thesis">${escapeHTML(thesis)}</p>${anchorButtons(overview.thesis?.anchorIds)}` : ''}
-    ${problem ? `<p><strong>Question:</strong> ${escapeHTML(problem)}</p>${anchorButtons(overview.problem?.anchorIds)}` : ''}
+    ${thesis ? `<p class="guide-thesis">${escapeHTML(thesis)}</p>${sourceDisclosure(overview.thesis?.anchorIds)}` : ''}
+    ${problem ? `<p><strong>Question:</strong> ${escapeHTML(problem)}</p>${sourceDisclosure(overview.problem?.anchorIds)}` : ''}
     ${takeaways ? `<h4>Key takeaways</h4><ul class="guide-takeaways">${takeaways}</ul>` : ''}
-    ${bottomLine ? `<p class="guide-bottom-line"><strong>Bottom line:</strong> ${escapeHTML(bottomLine)}</p>${anchorButtons(overview.bottomLine?.anchorIds)}` : ''}
+    ${bottomLine ? `<p class="guide-bottom-line"><strong>Bottom line:</strong> ${escapeHTML(bottomLine)}</p>${sourceDisclosure(overview.bottomLine?.anchorIds)}` : ''}
   `);
 }
 
@@ -143,7 +162,7 @@ function conceptHTML(concept, index) {
     ${evidence ? `<p><strong>Evidence:</strong> ${escapeHTML(evidence)}</p>` : ''}
     ${qualification ? `<p><strong>Qualification:</strong> ${escapeHTML(qualification)}</p>` : ''}
     ${implication ? `<p><strong>Implication:</strong> ${escapeHTML(implication)}</p>` : ''}
-    <div class="guide-source-links">${anchorButtons(concept.anchorIds || concept.anchorId || concept.anchors || concept.sources)}</div>
+    ${sourceDisclosure(concept.anchorIds || concept.anchorId || concept.anchors || concept.sources)}
   </article>`;
 }
 
@@ -167,7 +186,7 @@ function chapterHTML(chapter, index) {
     ${!skipped && purpose ? `<p>${escapeHTML(purpose)}</p>` : ''}
     ${!skipped && contributions.length ? `<ul>${contributions.map(item => `<li>${escapeHTML(item)}</li>`).join('')}</ul>` : ''}
     ${!skipped && concepts.length ? `<ul>${concepts.map(item => `<li>${escapeHTML(item)}</li>`).join('')}</ul>` : ''}
-    <div class="guide-source-links">${anchorButtons(chapter.anchorIds || chapter.anchorId || chapter.anchors || chapter.sources)}</div>
+    ${sourceDisclosure(chapter.anchorIds || chapter.anchorId || chapter.anchors || chapter.sources)}
   </article>`;
 }
 
@@ -182,7 +201,7 @@ function recallHTML(question, index) {
   const answer = text(question.answer || question.response);
   return `<article class="guide-recall-card">
     <h4>${escapeHTML(prompt)}</h4>
-    ${answer ? `<details><summary>Reveal answer</summary><p>${escapeHTML(answer)}</p><div class="guide-source-links">${anchorButtons(question.anchorIds || question.anchorId || question.anchors || question.sources)}</div></details>` : ''}
+    ${answer ? `<details><summary>Reveal answer</summary><p>${escapeHTML(answer)}</p>${sourceDisclosure(question.anchorIds || question.anchorId || question.anchors || question.sources)}</details>` : ''}
   </article>`;
 }
 
@@ -207,7 +226,7 @@ function passagesHTML(artifact) {
     return `<article class="guide-passage-card">
       ${excerpt ? `<blockquote>${escapeHTML(excerpt)}</blockquote>` : `<h4>Passage ${index + 1}</h4>`}
       ${note ? `<p>${escapeHTML(note)}</p>` : ''}
-      <div class="guide-source-links">${anchorButtons(passage.anchorIds || passage.anchorId || passage.anchors || passage.sources)}</div>
+      ${sourceDisclosure(passage.anchorIds || passage.anchorId || passage.anchors || passage.sources)}
     </article>`;
   }).join('');
   return sectionHeading('guide-passages', 'Key passages', `<div class="guide-passages">${cards}</div>`);
