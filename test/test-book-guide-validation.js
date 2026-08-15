@@ -69,6 +69,12 @@ async function run() {
       error.code === 'BOOK_GUIDE_QUOTE_LIMIT' && error.guidePath === 'orientation.thesis.text');
   });
 
+  await test('allows an authored chapter title as bibliographic metadata', () => {
+    const { artifact, snapshot } = fixture();
+    artifact.guide.chapterMap[0].title = snapshot.text.split(' ').slice(0, 12).join(' ');
+    assert.strictEqual(validateBookGuideArtifact(artifact, { snapshot }), true);
+  });
+
   await test('rejects unknown guide anchors', () => {
     const { artifact, snapshot } = fixture();
     artifact.guide.coreIdeas[0].anchorIds = ['a_missing'];

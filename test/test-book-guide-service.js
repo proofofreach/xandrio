@@ -50,6 +50,7 @@ function fakeProvider() {
     failExtractedCurrentAttempt: 0,
     partialRepairResponses: 0,
     quotedCompositionFields: 0,
+    quotedSelfExplanationPrompts: 0,
     delayMs: 0,
     activeCalls: 0,
     maxActiveCalls: 0,
@@ -116,6 +117,8 @@ function fakeProvider() {
       const cited = index => [ids[index % ids.length]];
       const quoteThesis = this.quotedCompositionFields > 0;
       if (quoteThesis) this.quotedCompositionFields--;
+      const quoteSelfExplanation = this.quotedSelfExplanationPrompts > 0;
+      if (quoteSelfExplanation) this.quotedSelfExplanationPrompts--;
       return {
         orientation: {
           thesis: {
@@ -152,7 +155,9 @@ function fakeProvider() {
             answer: `It tests grounded idea ${(index % 5) + 1}.`,
             claimIds: cited(index)
           })),
-          selfExplanationPrompts: ['Explain how measurement changes a decision.', 'Explain why scope limits matter.']
+          selfExplanationPrompts: quoteSelfExplanation
+            ? [EVIDENCE.slice(0, 2).join(' '), 'Explain why scope limits matter.']
+            : ['Explain how measurement changes a decision.', 'Explain why scope limits matter.']
         },
         keyPassages: ids.slice(0, 3).map(claimId => ({ claimId }))
       };
@@ -427,6 +432,33 @@ async function run() {
           'deterministic quote repair must happen before verifier work');
       } finally {
         await fs.rm(quoteHarness.temp, { recursive: true, force: true });
+      }
+    });
+
+    await test('replaces only an over-literal unanchored review prompt', async () => {
+      const promptHarness = await harness();
+      try {
+        promptHarness.setCategory('nonfiction');
+        await promptHarness.service.configure({
+          enabled: true,
+          externalProcessingAcknowledged: true,
+          baseUrl: 'https://api.ppq.ai',
+          generatorModel: 'guide:1',
+          verifierModel: 'verify:1'
+        });
+        promptHarness.provider.quotedSelfExplanationPrompts = 1;
+        await promptHarness.service.start('book_1');
+        await waitIdle(promptHarness.service);
+        const result = await promptHarness.service.get('book_1');
+        assert.strictEqual(result.status, 'ready');
+        assert.strictEqual(result.artifact.guide.review.selfExplanationPrompts[0],
+          'Explain one central idea in your own words, including its limits.');
+        assert.strictEqual(result.artifact.guide.review.selfExplanationPrompts[1],
+          'Explain why scope limits matter.');
+        assert.strictEqual(promptHarness.provider.calls.filter(call =>
+          call.purpose === 'composition' && call.prompt.startsWith('Repair only the rejected fields')).length, 0);
+      } finally {
+        await fs.rm(promptHarness.temp, { recursive: true, force: true });
       }
     });
 
