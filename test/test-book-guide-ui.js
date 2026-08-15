@@ -46,6 +46,8 @@ assert(guide.includes('anchor.audioSeconds') && !guide.includes('seekToSeconds =
 assert(guide.includes('recallQuestions') && guide.includes('Reveal answer') && guide.includes('chapterMap'), 'guide renders recall and chapter-map layers');
 assert(guide.includes('Listen to guide') && guide.includes('guide-narration-audio'), 'ready guides expose an audio playlist');
 assert(guide.includes('/narration/${encodeURIComponent(section.id)}/audio'), 'guide audio streams section-level TTS from the server');
+assert(guide.includes('/narration/status') && guide.includes('readyParts') && guide.includes('totalParts'), 'guide polls real server-reported audio-part progress');
+assert(guide.includes('Audio preparation progress') && guide.includes('aria-valuetext'), 'audio preparation exposes accessible progress semantics');
 assert(guide.includes("addEventListener('ended'") && guide.includes('playNarrationSection(narrationIndex + 1)'), 'guide audio advances through the section playlist');
 assert(guide.includes('data-guide-audio-speed') && guide.includes('playbackRate'), 'guide audio supports independent playback speed');
 assert(app.includes('pauseBookPlayback') && guide.includes('deps.pauseBookPlayback?.()'), 'guide narration pauses book playback before starting');
@@ -55,6 +57,7 @@ assert(style.includes('grid-template-columns: repeat(5, minmax(0, 1fr))'), 'mobi
 assert(style.includes('#guide-view') && style.includes('.guide-source-link'), 'guide has view and source-link styles');
 assert(style.includes('.guide-sources > summary') && style.includes('min-height: var(--touch-min)'), 'source disclosures stay quiet while preserving touch targets');
 assert(style.includes('.guide-narration') && style.includes('.guide-narration-sections'), 'guide narration has responsive player styles');
+assert(style.includes('.guide-narration-progress') && style.includes('prefers-reduced-motion'), 'guide narration progress is visible and motion-safe');
 
 assert(index.includes('id="book-guides-settings-section"') && index.includes('id="book-guides-key-note"'), 'settings disclose provider cost and write-only key handling');
 assert(index.includes('id="book-guides-device-connection"') && index.includes('id="book-guides-login-sheet"'), 'settings include a deployment-gated device authorization flow');
@@ -70,4 +73,4 @@ assert(guide.includes('existing guide remains available'), 'disabling generation
 assert(guide.includes('Could not create the guide'), 'guide renders actionable server failure details');
 assert(guide.includes('progressMeta') && guide.includes('Pass ${Number(progress.attempt)') && guide.includes('etaSeconds'), 'guide reports pass, resumed work, and a live ETA');
 
-console.log('52 passed, 0 failed');
+console.log('55 passed, 0 failed');
