@@ -49,6 +49,7 @@ function fakeProvider() {
     failCurrentAttempt: false,
     failExtractedCurrentAttempt: 0,
     partialRepairResponses: 0,
+    quotedCompositionFields: 0,
     delayMs: 0,
     activeCalls: 0,
     maxActiveCalls: 0,
@@ -113,9 +114,16 @@ function fakeProvider() {
       if (this.failExtractedCurrentAttempt) this.extractedVerificationFailures--;
       const ids = claimIds(prompt);
       const cited = index => [ids[index % ids.length]];
+      const quoteThesis = this.quotedCompositionFields > 0;
+      if (quoteThesis) this.quotedCompositionFields--;
       return {
         orientation: {
-          thesis: { text: 'The book presents disciplined learning as a repeatable process.', claimIds: cited(0) },
+          thesis: {
+            text: quoteThesis
+              ? EVIDENCE.slice(0, 2).join(' ')
+              : 'The book presents disciplined learning as a repeatable process.',
+            claimIds: cited(0)
+          },
           problem: { text: 'Unclear observation and scope lead to weak decisions.', claimIds: cited(1) },
           takeaways: Array.from({ length: 5 }, (_, index) => ({
             text: `Practical takeaway ${index + 1} in paraphrased form.`, claimIds: cited(index)
@@ -391,6 +399,35 @@ async function run() {
         'the composer should patch rejected fields instead of regenerating the guide');
       assert(retriedVerification.every(call => !call.prompt.includes('"claimId":"c_')),
         'verified extracted claims should not be sent to the verifier again');
+    });
+
+    await test('repairs an over-literal guide field before semantic verification', async () => {
+      const quoteHarness = await harness();
+      try {
+        quoteHarness.setCategory('nonfiction');
+        await quoteHarness.service.configure({
+          enabled: true,
+          externalProcessingAcknowledged: true,
+          baseUrl: 'https://api.ppq.ai',
+          generatorModel: 'guide:1',
+          verifierModel: 'verify:1'
+        });
+        quoteHarness.provider.quotedCompositionFields = 1;
+        await quoteHarness.service.start('book_1');
+        await waitIdle(quoteHarness.service);
+        const result = await quoteHarness.service.get('book_1');
+        const calls = quoteHarness.provider.calls;
+        const repair = calls.find(call => call.purpose === 'composition' &&
+          call.prompt.startsWith('Repair only the rejected fields'));
+        assert.strictEqual(result.status, 'ready');
+        assert(repair, 'expected a targeted quote-control repair');
+        assert(repair.prompt.includes('orientation.thesis'));
+        assert.strictEqual(calls.filter(call => call.purpose === 'verification').length > 0, true);
+        assert(calls.findIndex(call => call === repair) < calls.findIndex(call => call.purpose === 'verification'),
+          'deterministic quote repair must happen before verifier work');
+      } finally {
+        await fs.rm(quoteHarness.temp, { recursive: true, force: true });
+      }
     });
 
     await test('runs independent model calls concurrently without changing final verification', async () => {

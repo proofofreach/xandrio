@@ -65,7 +65,8 @@ async function run() {
   await test('rejects twelve consecutive source words outside excerpt fields', () => {
     const { artifact, snapshot } = fixture();
     artifact.guide.orientation.thesis.text = snapshot.text.split(' ').slice(0, 12).join(' ');
-    assert.throws(() => validateBookGuideArtifact(artifact, { snapshot }), error => error.code === 'BOOK_GUIDE_QUOTE_LIMIT');
+    assert.throws(() => validateBookGuideArtifact(artifact, { snapshot }), error =>
+      error.code === 'BOOK_GUIDE_QUOTE_LIMIT' && error.guidePath === 'orientation.thesis.text');
   });
 
   await test('rejects unknown guide anchors', () => {
