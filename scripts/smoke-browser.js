@@ -461,6 +461,7 @@ async function installBrowserFixtures(page) {
       unverifiedSourcesEnabled: false
     },
     operatorPolicyRequests: [],
+    guideMode: 'ready',
     guideAudioRequests: [],
     guideNarrationOverviewReady: false,
     guideNarrationStatusRequests: 0
@@ -645,6 +646,13 @@ async function installBrowserFixtures(page) {
       return route.fulfill({ status: 200, contentType: 'image/png', body: smokeCoverImage });
     }
     if (pathname === '/api/book/smoke') return json(route, { book, chapters });
+    if (pathname === '/api/book/smoke/guide' && fixtureState.guideMode === 'generating') return json(route, {
+      featureEnabled: true,
+      status: 'generating',
+      canGenerate: true,
+      canManage: true,
+      progress: { percent: 34, detail: 'Mapping the book’s core ideas.', current: 1, total: 3 }
+    });
     if (pathname === '/api/book/smoke/guide') return json(route, {
       featureEnabled: true,
       status: 'ready',
@@ -841,6 +849,17 @@ async function verifyPlayback(page, fixtureState) {
 }
 
 async function verifyStudyGuideAudio(page, fixtureState) {
+  fixtureState.guideMode = 'generating';
+  await page.goto(`${origin}/#/guide/smoke`, { waitUntil: 'networkidle' });
+  await page.waitForSelector('#guide-view.active [data-state="generating"]');
+  const backgroundCopy = await page.locator('.guide-background-note').textContent();
+  if (!backgroundCopy.includes('continues on the server')) {
+    throw new Error(`Study-guide background processing was not explained: ${backgroundCopy}`);
+  }
+  await page.click('.guide-generation-actions a[href="#/library"]');
+  await page.waitForSelector('#library-view.active');
+  if (!page.url().includes('#/library')) throw new Error('Study-guide generating state did not provide a working library exit');
+  fixtureState.guideMode = 'ready';
   await page.goto(`${origin}/#/guide/smoke`, { waitUntil: 'networkidle' });
   await page.waitForSelector('#guide-view.active');
   await page.waitForSelector('details.guide-sources');
