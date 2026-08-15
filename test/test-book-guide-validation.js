@@ -6,7 +6,7 @@ const {
   createBookGuideSourceSnapshot,
   publicSourceIdentity
 } = require('../lib/book-guide-source');
-const { validateBookGuideArtifact } = require('../lib/book-guide-validation');
+const { boundedQuoteWords, validateBookGuideArtifact } = require('../lib/book-guide-validation');
 
 let passed = 0;
 let failed = 0;
@@ -60,6 +60,13 @@ async function run() {
     const { artifact, snapshot } = fixture();
     artifact.guide.keyPassages[0].text = snapshot.text;
     assert.throws(() => validateBookGuideArtifact(artifact, { snapshot }), error => error.code === 'BOOK_GUIDE_QUOTE_LIMIT');
+  });
+
+  await test('bounds excerpts with the same lexical counter used by validation', () => {
+    const source = Array.from({ length: 12 }, (_, index) => `term-${index}`).join(' ');
+    const bounded = boundedQuoteWords(source);
+    assert.strictEqual(bounded, Array.from({ length: 9 }, (_, index) => `term-${index}`).join(' '));
+    assert.strictEqual(bounded.match(/[\p{L}\p{N}]+/gu).length, 18);
   });
 
   await test('rejects twelve consecutive source words outside excerpt fields', () => {
