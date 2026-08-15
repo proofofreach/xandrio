@@ -461,7 +461,9 @@ async function installBrowserFixtures(page) {
       unverifiedSourcesEnabled: false
     },
     operatorPolicyRequests: [],
-    guideAudioRequests: []
+    guideAudioRequests: [],
+    guideNarrationOverviewReady: false,
+    guideNarrationStatusRequests: 0
   };
   const book = {
     id: 'smoke',
@@ -682,8 +684,28 @@ async function installBrowserFixtures(page) {
         text: 'Doctor Quinn crossed the quiet room and greeted everyone.'
       });
     }
+    if (pathname === '/api/book/smoke/guide/narration/status') {
+      fixtureState.guideNarrationStatusRequests++;
+      const overviewReady = fixtureState.guideNarrationOverviewReady;
+      return json(route, {
+        readySections: overviewReady ? 1 : 0,
+        totalSections: 2,
+        sections: [
+          {
+            id: 'overview',
+            title: 'Book in brief',
+            status: overviewReady ? 'ready' : 'preparing',
+            readyParts: overviewReady ? 3 : Math.min(2, fixtureState.guideNarrationStatusRequests),
+            totalParts: 3
+          },
+          { id: 'concept-1', title: 'Feedback loops', status: 'not-started', readyParts: 0, totalParts: 0 }
+        ]
+      });
+    }
     if (/^\/api\/book\/smoke\/guide\/narration\/[^/]+\/audio$/.test(pathname)) {
       fixtureState.guideAudioRequests.push(pathname);
+      await new Promise(resolve => setTimeout(resolve, 650));
+      if (pathname.endsWith('/overview/audio')) fixtureState.guideNarrationOverviewReady = true;
       return route.fulfill({ status: 200, contentType: 'audio/mpeg', body: Buffer.from([0]) });
     }
     if (pathname === '/api/position/smoke') return json(route, { position: null });
@@ -843,7 +865,25 @@ async function verifyStudyGuideAudio(page, fixtureState) {
     throw new Error(`Repeated same-chapter sources were not distinguished: ${sourceLabels.join(', ')}`);
   }
   await page.waitForSelector('[data-guide-listen]');
+  await page.evaluate(() => {
+    window.__smokeOriginalMediaPlay = HTMLMediaElement.prototype.play;
+    HTMLMediaElement.prototype.play = function smokeGuidePreparationPlay() {
+      if (this.classList.contains('guide-narration-audio')) return new Promise(() => {});
+      return window.__smokeOriginalMediaPlay.call(this);
+    };
+  });
   await page.click('[data-guide-listen]');
+  const preparationState = await page.evaluate(() => {
+    const meter = document.querySelector('[data-guide-audio-progress]');
+    return { visible: Boolean(meter && !meter.hidden), label: document.querySelector('.guide-narration-now')?.textContent || '' };
+  });
+  const preparationLabel = preparationState.label;
+  if (!preparationState.visible) {
+    throw new Error(`Study-guide audio preparation meter was not visible: ${JSON.stringify(preparationState)}`);
+  }
+  if (!/Starting|Preparing/.test(preparationLabel)) {
+    throw new Error(`Study-guide audio preparation progress was not visible: ${preparationLabel}`);
+  }
   await page.waitForFunction(() => document.querySelector('.guide-narration-audio')?.src.includes('/guide/narration/overview/audio'));
   const overviewAudioUrl = await page.$eval('.guide-narration-audio', audio => audio.src);
   if (new URL(overviewAudioUrl).searchParams.get('v') !== '0123456789ab-_ttsfixture') {
@@ -860,6 +900,13 @@ async function verifyStudyGuideAudio(page, fixtureState) {
   if (!fixtureState.guideAudioRequests.some(pathname => pathname.endsWith('/overview/audio'))) {
     throw new Error('Study-guide overview audio was not requested');
   }
+  if (fixtureState.guideNarrationStatusRequests < 1) {
+    throw new Error('Study-guide narration progress status was not requested');
+  }
+  await page.evaluate(() => {
+    if (window.__smokeOriginalMediaPlay) HTMLMediaElement.prototype.play = window.__smokeOriginalMediaPlay;
+    delete window.__smokeOriginalMediaPlay;
+  });
   await sourceDisclosure.locator('.guide-source-link').first().click();
   await page.waitForSelector('#player-view.active');
   if (!page.url().includes('#/player/smoke')) throw new Error('Study-guide source did not return to the book player');

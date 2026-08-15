@@ -2112,6 +2112,45 @@ function invalidateChapterCache(bookPath) {
 
 const bookGuideNarrationPrepareJobs = new Map();
 
+async function getBookGuideNarrationStatus(bookId) {
+  const artifact = await bookGuideStore.read(bookId);
+  if (!artifact) {
+    const error = new Error('Book guide not found');
+    error.code = 'BOOK_GUIDE_NOT_FOUND';
+    error.statusCode = 404;
+    throw error;
+  }
+  const sections = buildBookGuideNarration(artifact);
+  const narrationId = narrationArtifactId(bookId, artifact);
+  const variantKey = String(bookGuideNarrationTTS.variantKeyProvider() || 'default');
+  const progress = await Promise.all(sections.map(async (section, sectionIndex) => {
+    const outputPath = bookGuideNarrationTTS.chapterPath(narrationId, sectionIndex);
+    const outputReady = await fs.access(outputPath).then(() => true, () => false);
+    const manifest = bookGuideNarrationTTS.getChapterManifest(narrationId, sectionIndex);
+    const chunks = Array.isArray(manifest?.chunks) ? manifest.chunks : [];
+    const readyParts = chunks.filter(chunk => chunk.status === 'ready').length;
+    const failedParts = chunks.filter(chunk => chunk.status === 'error').length;
+    const active = bookGuideNarrationPrepareJobs.has(`${narrationId}:${sectionIndex}:${variantKey}`);
+    let status = 'not-started';
+    if (outputReady) status = 'ready';
+    else if (active && chunks.length > 0 && readyParts === chunks.length) status = 'finalizing';
+    else if (active) status = 'preparing';
+    else if (failedParts > 0) status = 'error';
+    return {
+      id: section.id,
+      title: section.title,
+      status,
+      readyParts,
+      totalParts: chunks.length
+    };
+  }));
+  return {
+    readySections: progress.filter(section => section.status === 'ready').length,
+    totalSections: progress.length,
+    sections: progress
+  };
+}
+
 async function pruneBookGuideNarrationAudio(bookId, currentArtifact = null) {
   const prefix = narrationBookPrefix(bookId);
   const keepId = currentArtifact ? narrationArtifactId(bookId, currentArtifact) : null;
@@ -4421,6 +4460,7 @@ registerBookGuideRoutes(app, {
   service: bookGuideService,
   requireAdmin,
   prepareNarrationAudio: prepareBookGuideNarrationAudio,
+  narrationStatus: getBookGuideNarrationStatus,
   narrationVariant: () => bookGuideNarrationTTS.currentVariantSegment() || 'default',
   serveAudioFile,
   setBookCategory: async (bookId, category) => {

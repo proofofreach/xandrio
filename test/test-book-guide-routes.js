@@ -54,6 +54,13 @@ async function run() {
   const prepareNarrationAudio = async (bookId, sectionId) => (
     calls.push(['narration', bookId, sectionId]), { path: '/cache/guide.mp3', sectionId }
   );
+  const narrationStatus = async bookId => (
+    calls.push(['narration-status', bookId]), {
+      readySections: 1,
+      totalSections: 2,
+      sections: [{ id: 'overview', status: 'preparing', readyParts: 1, totalParts: 3 }]
+    }
+  );
   const serveAudioFile = async (_req, res, filePath) => {
     calls.push(['serve-audio', filePath]);
     res.body = { filePath };
@@ -63,6 +70,7 @@ async function run() {
     requireAdmin,
     setBookCategory,
     prepareNarrationAudio,
+    narrationStatus,
     narrationVariant: () => '_ttsvoice123',
     serveAudioFile,
     providerStatusRateLimit,
@@ -74,6 +82,7 @@ async function run() {
   await test('registers the complete route contract', () => {
     assert.deepStrictEqual(app.map(route => `${route.method.toUpperCase()} ${route.path}`), [
       'GET /api/book/:bookId/guide/anchors/:anchorId/context',
+      'GET /api/book/:bookId/guide/narration/status',
       'GET /api/book/:bookId/guide/narration/:sectionId/audio',
       'GET /api/book/:bookId/guide',
       'POST /api/book/:bookId/guide',
@@ -128,6 +137,17 @@ async function run() {
       ['serve-audio', '/cache/guide.mp3']
     ]);
     assert.strictEqual(res.headers['X-Study-Guide-Section'], 'overview');
+  });
+
+  await test('reports real narration preparation progress without caching it', async () => {
+    const route = app.find(item => item.method === 'get' && item.path.endsWith('/narration/status'));
+    const res = response();
+    await route.handlers[0]({ params: { bookId: 'book_1' } }, res);
+    assert.deepStrictEqual(calls.at(-1), ['narration-status', 'book_1']);
+    assert.strictEqual(res.headers['Cache-Control'], 'private, no-store');
+    assert.deepStrictEqual(res.body.sections[0], {
+      id: 'overview', status: 'preparing', readyParts: 1, totalParts: 3
+    });
   });
 
   await test('derives management and generation capability from the authenticated role', async () => {

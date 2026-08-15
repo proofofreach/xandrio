@@ -14,6 +14,9 @@ let pollTimer = null;
 let lastSectionKey = null;
 let guideAudio = null;
 let narrationIndex = -1;
+let narrationProgressTimer = null;
+let narrationProgressController = null;
+let narrationProgressToken = 0;
 
 const LAST_SECTION_PREFIX = 'xandrio_book_guide_section:';
 const GENERATING_STATUSES = new Set(['queued', 'generating', 'processing', 'verifying']);
@@ -256,6 +259,7 @@ function narrationHTML(data) {
     </div>
     <div class="guide-narration-player" hidden>
       <p class="guide-narration-now" aria-live="polite">Choose a section to begin.</p>
+      <div class="guide-narration-progress" data-guide-audio-progress role="progressbar" aria-label="Audio preparation progress" hidden><span></span></div>
       <audio class="guide-narration-audio" controls preload="none"></audio>
       <div class="guide-narration-controls">
         <button class="btn-ghost btn-sm" type="button" data-guide-audio-previous disabled>Previous</button>
@@ -264,7 +268,7 @@ function narrationHTML(data) {
         </select></label>
         <button class="btn-ghost btn-sm" type="button" data-guide-audio-next>Next</button>
       </div>
-      <ol class="guide-narration-sections">${sections.map((item, index) => `<li><button type="button" data-guide-audio-section="${index}">${escapeHTML(text(item.title) || `Section ${index + 1}`)}</button></li>`).join('')}</ol>
+      <ol class="guide-narration-sections">${sections.map((item, index) => `<li><button type="button" data-guide-audio-section="${index}"><span>${escapeHTML(text(item.title) || `Section ${index + 1}`)}</span><small data-guide-audio-section-status></small></button></li>`).join('')}</ol>
     </div>
   </section>`;
 }
@@ -355,6 +359,116 @@ function restoreLastSection() {
   requestAnimationFrame(() => document.getElementById(sectionId)?.scrollIntoView({ block: 'start' }));
 }
 
+function stopNarrationProgress() {
+  narrationProgressToken += 1;
+  if (narrationProgressTimer) clearTimeout(narrationProgressTimer);
+  narrationProgressTimer = null;
+  narrationProgressController?.abort();
+  narrationProgressController = null;
+}
+
+function setNarrationProgress({ label, mode = 'indeterminate', value = 0, total = 0, hidden = false } = {}) {
+  const player = guideBody?.querySelector('.guide-narration-player');
+  const now = player?.querySelector('.guide-narration-now');
+  const meter = player?.querySelector('[data-guide-audio-progress]');
+  if (now && label) now.textContent = label;
+  if (!meter) return;
+  meter.hidden = hidden;
+  meter.dataset.mode = mode;
+  if (mode === 'determinate' && total > 0) {
+    const safeValue = Math.max(0, Math.min(total, Number(value) || 0));
+    meter.setAttribute('aria-valuemin', '0');
+    meter.setAttribute('aria-valuemax', String(total));
+    meter.setAttribute('aria-valuenow', String(safeValue));
+    meter.setAttribute('aria-valuetext', `${safeValue} of ${total} audio parts ready`);
+    meter.style.setProperty('--guide-audio-progress', String(safeValue / total));
+  } else {
+    meter.removeAttribute('aria-valuemin');
+    meter.removeAttribute('aria-valuemax');
+    meter.removeAttribute('aria-valuenow');
+    meter.setAttribute('aria-valuetext', label || 'Preparing audio');
+    meter.style.removeProperty('--guide-audio-progress');
+  }
+}
+
+function updateNarrationSectionStatuses(statuses = []) {
+  const sections = normalizeList(guideData?.narration?.sections);
+  const byId = new Map(normalizeList(statuses).map(item => [String(item.id), item]));
+  guideBody?.querySelectorAll('[data-guide-audio-section]').forEach(button => {
+    const section = sections[Number(button.dataset.guideAudioSection)];
+    const status = byId.get(String(section?.id || ''));
+    const meta = button.querySelector('[data-guide-audio-section-status]');
+    const state = String(status?.status || 'not-started');
+    button.dataset.audioStatus = state;
+    if (!meta) return;
+    if (state === 'ready') meta.textContent = 'Ready';
+    else if (state === 'finalizing') meta.textContent = 'Finalizing';
+    else if (state === 'preparing' && Number(status?.totalParts) > 0) meta.textContent = `${Number(status.readyParts) || 0}/${Number(status.totalParts)} parts`;
+    else if (state === 'preparing') meta.textContent = 'Preparing';
+    else if (state === 'error') meta.textContent = 'Try again';
+    else meta.textContent = '';
+  });
+}
+
+function renderNarrationProgress(status, section, index, totalSections) {
+  updateNarrationSectionStatuses(status?.sections);
+  const current = normalizeList(status?.sections).find(item => String(item.id) === String(section.id));
+  const title = text(section.title) || `Section ${index + 1}`;
+  const position = `Section ${index + 1} of ${totalSections}`;
+  if (!current || current.status === 'not-started') {
+    setNarrationProgress({ label: `Starting “${title}” · ${position}…` });
+    return false;
+  }
+  if (current.status === 'ready') {
+    setNarrationProgress({ label: `Audio ready · ${position}`, hidden: true });
+    return true;
+  }
+  if (current.status === 'error') {
+    setNarrationProgress({ label: `Could not prepare ${title}. Choose the section to try again.`, hidden: true });
+    return true;
+  }
+  if (current.status === 'finalizing') {
+    setNarrationProgress({ label: `Finalizing “${title}” · ${position}…` });
+    return false;
+  }
+  const readyParts = Number(current.readyParts) || 0;
+  const totalParts = Number(current.totalParts) || 0;
+  if (totalParts > 0) {
+    setNarrationProgress({
+      label: `Preparing “${title}” · ${readyParts} of ${totalParts} audio parts ready`,
+      mode: readyParts > 0 ? 'determinate' : 'indeterminate',
+      value: readyParts,
+      total: readyParts > 0 ? totalParts : 0
+    });
+  } else {
+    setNarrationProgress({ label: `Preparing “${title}” · ${position}…` });
+  }
+  return false;
+}
+
+async function pollNarrationProgress(section, index, totalSections, token) {
+  if (token !== narrationProgressToken || !activeBookId) return;
+  narrationProgressController?.abort();
+  narrationProgressController = new AbortController();
+  try {
+    const status = await apiGet(`${guidePath(activeBookId)}/narration/status`, { signal: narrationProgressController.signal });
+    if (token !== narrationProgressToken) return;
+    if (renderNarrationProgress(status, section, index, totalSections)) return;
+  } catch (error) {
+    if (error?.name === 'AbortError' || token !== narrationProgressToken) return;
+  }
+  narrationProgressTimer = window.setTimeout(() => {
+    void pollNarrationProgress(section, index, totalSections, token);
+  }, 800);
+}
+
+function startNarrationProgress(section, index, totalSections) {
+  stopNarrationProgress();
+  const token = narrationProgressToken;
+  setNarrationProgress({ label: `Starting “${text(section.title) || `Section ${index + 1}`}” · Section ${index + 1} of ${totalSections}…` });
+  void pollNarrationProgress(section, index, totalSections, token);
+}
+
 function updateNarrationControls() {
   const sections = normalizeList(guideData?.narration?.sections);
   const player = guideBody?.querySelector('.guide-narration-player');
@@ -380,17 +494,14 @@ async function playNarrationSection(index) {
   narrationIndex = index;
   guideAudio = audio;
   player.hidden = false;
-  const now = player.querySelector('.guide-narration-now');
-  if (now) now.textContent = `Preparing ${text(section.title) || `section ${index + 1}`}…`;
+  startNarrationProgress(section, index, sections.length);
   const version = text(guideData?.narration?.version);
   audio.src = `${API_BASE}${guidePath(activeBookId)}/narration/${encodeURIComponent(section.id)}/audio${version ? `?v=${encodeURIComponent(version)}` : ''}`;
   audio.load();
   updateNarrationControls();
   try {
     await audio.play();
-  } catch (error) {
-    if (now) now.textContent = 'Audio is ready. Press play to begin.';
-  }
+  } catch {}
 }
 
 function attachNarrationInteractions() {
@@ -411,16 +522,31 @@ function attachNarrationInteractions() {
   guideAudio?.addEventListener('playing', () => {
     const current = sections[narrationIndex];
     const now = player.querySelector('.guide-narration-now');
-    if (now && current) now.textContent = `Now playing: ${text(current.title)}`;
+    stopNarrationProgress();
+    setNarrationProgress({ hidden: true });
+    if (now && current) now.textContent = `Now playing ${narrationIndex + 1} of ${sections.length} · ${text(current.title)}`;
+    const button = player.querySelector(`[data-guide-audio-section="${narrationIndex}"]`);
+    if (button) {
+      button.dataset.audioStatus = 'ready';
+      const meta = button.querySelector('[data-guide-audio-section-status]');
+      if (meta) meta.textContent = 'Ready';
+    }
+  });
+  guideAudio?.addEventListener('canplay', () => {
+    if (!guideAudio?.paused) return;
+    stopNarrationProgress();
+    setNarrationProgress({ label: `Audio ready · Section ${narrationIndex + 1} of ${sections.length}`, hidden: true });
   });
   guideAudio?.addEventListener('ended', () => {
     if (narrationIndex < sections.length - 1) void playNarrationSection(narrationIndex + 1);
   });
   guideAudio?.addEventListener('error', () => {
     const now = player.querySelector('.guide-narration-now');
+    stopNarrationProgress();
+    setNarrationProgress({ hidden: true });
     if (now) now.textContent = navigator.onLine === false
       ? 'Study-guide audio needs a connection.'
-      : 'Could not prepare this audio section.';
+      : 'Could not prepare this audio section. Choose it to try again.';
   });
 }
 
@@ -439,6 +565,7 @@ function attachInteractions() {
 }
 
 function render(data) {
+  stopNarrationProgress();
   guideAudio?.pause();
   guideAudio = null;
   narrationIndex = -1;
@@ -500,6 +627,7 @@ export async function openBookGuide(bookId = currentBook()?.id) {
 
 export function closeBookGuide() {
   stopPolling();
+  stopNarrationProgress();
   requestToken += 1;
   guideAudio?.pause();
   guideAudio = null;
