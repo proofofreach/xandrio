@@ -47,7 +47,7 @@ function fakeProvider() {
     verificationFailures: 0,
     extractedVerificationFailures: 0,
     failCurrentAttempt: false,
-    failExtractedCurrentAttempt: false,
+    failExtractedCurrentAttempt: 0,
     delayMs: 0,
     activeCalls: 0,
     maxActiveCalls: 0,
@@ -93,12 +93,13 @@ function fakeProvider() {
         return { verdicts: ids.map(claimId => ({
           claimId,
           supported: (!this.failCurrentAttempt || claimId.startsWith('c_')) &&
-            (!this.failExtractedCurrentAttempt || claimId !== 'c_0_0_0')
+            (!this.failExtractedCurrentAttempt || !claimId.startsWith('c_') ||
+              Number(claimId.split('_').at(-1)) >= this.failExtractedCurrentAttempt)
         })) };
       }
       this.failCurrentAttempt = this.verificationFailures > 0;
       if (this.failCurrentAttempt) this.verificationFailures--;
-      this.failExtractedCurrentAttempt = this.extractedVerificationFailures > 0;
+      this.failExtractedCurrentAttempt = this.extractedVerificationFailures > 0 ? 3 : 0;
       if (this.failExtractedCurrentAttempt) this.extractedVerificationFailures--;
       const ids = claimIds(prompt);
       const cited = index => [ids[index % ids.length]];
@@ -406,7 +407,7 @@ async function run() {
       }
     });
 
-    await test('drops an unsupported extracted claim without repeating a still-useful segment', async () => {
+    await test('retains partially supported segments without repeating their extraction', async () => {
       const source = Array.from({ length: 10 }, () => EVIDENCE.join(' ')).join(' ');
       const selective = await harness({ initialSourceText: source, segmentChars: 1000 });
       try {
