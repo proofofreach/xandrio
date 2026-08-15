@@ -42,6 +42,20 @@ async function run() {
       assert.strictEqual((await store.read('book_1')).revision, 1);
     });
 
+    await test('stores resumable generation work separately and removes it explicitly', async () => {
+      const checkpoint = {
+        version: 1,
+        bookId: 'book_1',
+        sourceFingerprint: 'sha256:source',
+        extraction: { segments: { '0:0': [{ statement: 'Grounded idea', evidence: 'Exact evidence' }] } }
+      };
+      await store.saveWork('book_1', checkpoint);
+      assert.deepStrictEqual(await store.readWork('book_1'), checkpoint);
+      assert.notStrictEqual(store.workPath('book_1'), store.artifactPath('book_1'));
+      assert.strictEqual(await store.removeWork('book_1'), true);
+      assert.strictEqual(await store.readWork('book_1'), null);
+    });
+
     await test('stores provider configuration without the write-only API key', async () => {
       const config = await store.saveConfig({
         enabled: true,

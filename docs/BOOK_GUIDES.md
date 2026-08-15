@@ -24,6 +24,8 @@ A private, single-operator instance can set `XANDRIO_PRIVATE_CODEX_GUIDES=1` to 
 
 The admin connects through the Study Guide settings device-code flow. Xandrio returns only the temporary OpenAI sign-in URL and user code to the browser. Codex stores and refreshes authentication under the dedicated server-side home. Xandrio does not accept or return the OAuth token. This mode offers `gpt-5.6-luna` for generation and `gpt-5.6-terra` for independent verification. It is disabled unless the private flag is explicitly set.
 
+Independent extraction and verification requests run with bounded concurrency. The default is four model calls; set `XANDRIO_BOOK_GUIDE_MODEL_CONCURRENCY` to a positive integer to match provider limits. Successful grounded segments and supported verification batches are checkpointed locally. A restart or later-phase failure resumes that work instead of processing the book again. Checkpoints are source-, recipe-, and model-specific and are removed after publication, cancellation, or deletion.
+
 ## Evidence and lifecycle
 
 A guide records its book id, source fingerprint, chapter-structure key, normalization/extraction versions, generator and verifier model IDs, and prompt-recipe hash. An anchor records a chapter and normalized source range. The stored artifact does not need to persist raw book text to show a short local context snippet later.
@@ -68,6 +70,6 @@ Any change to generator model, verifier model, extraction/normalization version,
 
 ## Cost and operations
 
-V1 admits one background guide job at a time through a dedicated network scheduler. PPQ.ai calls are paid and can retry up to three durable attempts. The UI connection test is also a small paid call. Operators must use a dedicated key, set a provider-side spending limit, monitor account activity, and keep uncertified output limited to deliberate testing until the selected model pair passes the evaluation gate.
+V1 admits one background guide job at a time. Within that job, the dedicated network scheduler admits up to `XANDRIO_BOOK_GUIDE_MODEL_CONCURRENCY` independent model calls. Provider failures retry only the failed call. Quality failures retain grounded extraction, regenerate the affected composition, and verify every final material statement again. PPQ.ai calls are paid. The UI connection test is also a small paid call. Operators must use a dedicated key, set a provider-side spending limit, monitor account activity, and keep uncertified output limited to deliberate testing until the selected model pair passes the evaluation gate.
 
 The feature must be kept behind an instance-level experimental flag. Start with public-domain or licensed works and an opt-in beta. The rollback is to disable guide generation and hide entry points for books without an existing guide. Existing verified guides remain locally readable and deletable; cleanup of guide artifacts is an explicit destructive action.

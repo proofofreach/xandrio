@@ -65,5 +65,6 @@ assert(guide.includes('await refreshGuideState();'), 'generation refreshes the c
 assert(index.includes('id="guide-btn"') && index.includes('id="utility-guide-btn"') && guide.includes("toggleAttribute('hidden', !showEntry)"), 'player guide entry points follow feature or artifact availability');
 assert(guide.includes('existing guide remains available'), 'disabling generation preserves existing guide access');
 assert(guide.includes('Could not create the guide'), 'guide renders actionable server failure details');
+assert(guide.includes('progressMeta') && guide.includes('Pass ${Number(progress.attempt)') && guide.includes('etaSeconds'), 'guide reports pass, resumed work, and a live ETA');
 
 console.log('34 passed, 0 failed');
