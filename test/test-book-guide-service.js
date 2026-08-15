@@ -97,6 +97,13 @@ function fakeProvider() {
               Number(claimId.split('_').at(-1)) >= this.failExtractedCurrentAttempt)
         })) };
       }
+      if (purpose === 'composition' && String(prompt).startsWith('Repair only the rejected fields')) {
+        this.failCurrentAttempt = this.verificationFailures > 0;
+        if (this.failCurrentAttempt) this.verificationFailures--;
+        const paths = [...new Set([...String(prompt).matchAll(/"path":"([^"]+)"/g)]
+          .map(match => match[1]))];
+        return { repairs: paths.map(path => ({ path, text: `Repaired grounded text for ${path}.` })) };
+      }
       this.failCurrentAttempt = this.verificationFailures > 0;
       if (this.failCurrentAttempt) this.verificationFailures--;
       this.failExtractedCurrentAttempt = this.extractedVerificationFailures > 0 ? 3 : 0;
@@ -376,6 +383,8 @@ async function run() {
       assert(retriedVerification.length > 0);
       assert(calls[secondComposition].prompt.includes('orientation.thesis'),
         'the composer should receive the rejected guide field paths');
+      assert(calls[secondComposition].prompt.startsWith('Repair only the rejected fields'),
+        'the composer should patch rejected fields instead of regenerating the guide');
       assert(retriedVerification.every(call => !call.prompt.includes('"claimId":"c_')),
         'verified extracted claims should not be sent to the verifier again');
     });
