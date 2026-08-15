@@ -48,6 +48,7 @@ function fakeProvider() {
     extractedVerificationFailures: 0,
     failCurrentAttempt: false,
     failExtractedCurrentAttempt: 0,
+    partialRepairResponses: 0,
     delayMs: 0,
     activeCalls: 0,
     maxActiveCalls: 0,
@@ -102,7 +103,9 @@ function fakeProvider() {
         if (this.failCurrentAttempt) this.verificationFailures--;
         const paths = [...new Set([...String(prompt).matchAll(/"path":"([^"]+)"/g)]
           .map(match => match[1]))];
-        return { repairs: paths.map(path => ({ path, text: `Repaired grounded text for ${path}.` })) };
+        const returnedPaths = this.partialRepairResponses > 0 ? paths.slice(1) : paths;
+        if (this.partialRepairResponses > 0) this.partialRepairResponses--;
+        return { repairs: returnedPaths.map(path => ({ path, text: `Repaired grounded text for ${path}.` })) };
       }
       this.failCurrentAttempt = this.verificationFailures > 0;
       if (this.failCurrentAttempt) this.verificationFailures--;
@@ -372,6 +375,7 @@ async function run() {
     await test('reuses verified claims when a new composition needs another quality pass', async () => {
       const callsBefore = h.provider.calls.length;
       h.provider.verificationFailures = 1;
+      h.provider.partialRepairResponses = 1;
       await h.service.start('book_1');
       await waitIdle(h.service);
       const calls = h.provider.calls.slice(callsBefore);
