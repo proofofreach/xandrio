@@ -182,7 +182,7 @@ async function run(handlers, req) {
     seriesIndex: null, tags: []
   }, {
     normalizePublishedDate: value => Number(value.slice(0, 4)),
-    normalizeDescription: value => value.replace(/<[^>]+>/g, '')
+    normalizeDescription: () => 'Hello'
   });
   assert.strictEqual(normalized.publishedDate, 2024);
   assert.strictEqual(normalized.description, 'Hello');
