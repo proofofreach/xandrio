@@ -10,7 +10,7 @@ Xandrio is an operator-hosted instance API. It does not make rights determinatio
 
 ## Authentication
 
-When `XANDRIO_TOKEN` is set, every `/api` route requires authorization except `/api/auth/login`, `/api/auth/logout`, and `/api/auth/status`. A browser posts `{ "token": "…" }` to `/api/auth/login` and receives a signed `HttpOnly` session cookie. Non-browser clients send `Authorization: Bearer <token>`. Static assets and `/health` remain public. Without `XANDRIO_TOKEN`, Xandrio runs in trusted-LAN mode and anyone who can reach the server can access its API.
+When `XANDRIO_TOKEN` is set, every `/api` route requires authorization except `/api/auth/login`, `/api/auth/logout`, `/api/auth/status`, and the Calibre claim/status/inventory/import routes. Those Calibre routes enforce their own scoped pairing code or plugin token and do not accept that token on the rest of the API. A browser posts `{ "token": "…" }` to `/api/auth/login` and receives a signed `HttpOnly` session cookie. Non-browser clients send `Authorization: Bearer <token>`. Static assets and `/health` remain public. Without `XANDRIO_TOKEN`, Xandrio runs in trusted-LAN mode and anyone who can reach the server can access its main API; Calibre status, inventory, and import still require a valid plugin token.
 
 The examples below omit authorization headers for readability.
 
@@ -24,6 +24,8 @@ The examples below omit authorization headers for readability.
 | GET | `/api/search/sources` | List source availability, enablement, and rights-status labels |
 | POST | [/api/download](#post-apidownload) | Import a selected provider version |
 | POST | [/api/upload](#post-apiupload) | Upload a supported book file |
+| POST | `/api/integrations/calibre/pairing-code` | Create a one-use, ten-minute pairing code |
+| POST | `/api/integrations/calibre/import` | Import a book through a scoped Calibre connection |
 | GET | [/api/library](#get-apilibrary) | List all books in library |
 | DELETE | [/api/book/:bookId](#delete-apibookbookid) | Delete a book and its files |
 | GET | [/api/offline/deletions](#get-apiofflinedeletions) | Reconcile device-local downloads with server deletions |
@@ -73,6 +75,13 @@ Regenerated from `server.js` and `lib/routes/*.js` on 2026-07-28.
 | GET | `/api/download/:jobId/status` |
 | GET | `/api/download/:jobId/events` |
 | POST | `/api/upload` |
+| POST | `/api/integrations/calibre/pairing-code` |
+| POST | `/api/integrations/calibre/claim` |
+| GET | `/api/integrations/calibre/status` |
+| GET | `/api/integrations/calibre/connections` |
+| DELETE | `/api/integrations/calibre/connections/:id` |
+| GET | `/api/integrations/calibre/inventory` |
+| POST | `/api/integrations/calibre/import` |
 | GET | `/api/library` |
 | DELETE | `/api/book/:bookId` |
 | GET | `/api/book/:bookId` |

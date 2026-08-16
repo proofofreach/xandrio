@@ -149,6 +149,76 @@ section('Successful direct import');
   assert(progress.some(([step]) => step === 3) && progress.some(([step]) => step === 7),
     'reports import progress across the shared pipeline');
 
+  const calibreImport = createFixture({
+    metadata: {
+      publishedYear: value => value ? 2024 : undefined
+    }
+  });
+  const calibreResult = await calibreImport.importer.import(command({
+    kind: 'calibre',
+    downloadSource: 'calibre',
+    catalogMetadata: {
+      title: 'Catalog Title',
+      author: 'Catalog Author',
+      publisher: 'Catalog Press',
+      publishedDate: '2024-03-01',
+      description: 'Catalog description',
+      tags: ['History', 'Research'],
+      language: 'fr',
+      isbn: '9780000000001',
+      series: 'Catalog Series',
+      seriesIndex: 3
+    },
+    calibre: {
+      libraryUuid: 'library-a',
+      bookUuid: 'book-a',
+      calibreId: '42',
+      lastModified: '2026-08-16T12:00:00Z'
+    },
+    sourceProvenance: { itemId: 'library-a:book-a' }
+  }));
+  assert(calibreResult.book.title === 'Catalog Title' &&
+    calibreResult.book.author === 'Catalog Author' &&
+    calibreResult.book.publisher === 'Catalog Press' &&
+    calibreResult.book.publishedDate === 2024 &&
+    calibreResult.book.description === 'Catalog description' &&
+    calibreResult.book.language === 'fr' &&
+    calibreResult.book.isbn === '9780000000001' &&
+    calibreResult.book.series === 'Catalog Series' &&
+    calibreResult.book.seriesIndex === 3 &&
+    calibreResult.book.subjects.join(',') === 'History,Research' &&
+    calibreResult.book.calibre.bookUuid === 'book-a',
+  'preserves authoritative Calibre metadata and stable external identity');
+  assert(calibreResult.book.sourceProvenance?.provider === 'calibre' &&
+    calibreResult.book.sourceProvenance?.itemId === 'library-a:book-a' &&
+    calibreResult.book.sourceProvenance?.rightsStatus === 'operator-supplied',
+  'records Calibre as an operator-supplied source');
+
+  const clearedCalibreImport = createFixture({
+    document: {
+      extractMetadata: async () => ({
+        title: 'Embedded title', author: 'Embedded author', publisher: 'Embedded Press',
+        description: 'Embedded description', isbn: 'embedded-isbn', language: 'en'
+      })
+    },
+    metadata: { enrich: async () => ({ subjects: ['Embedded subject'] }) }
+  });
+  const clearedCalibreResult = await clearedCalibreImport.importer.import(command({
+    kind: 'calibre',
+    downloadSource: 'calibre',
+    catalogMetadata: {
+      title: 'Catalog Title', author: 'Catalog Author', publisher: null,
+      description: null, tags: [], isbn: null, series: null, seriesIndex: null
+    }
+  }));
+  assert(clearedCalibreResult.book.publisher === undefined &&
+    clearedCalibreResult.book.description === '' &&
+    clearedCalibreResult.book.isbn === undefined &&
+    clearedCalibreResult.book.series === undefined &&
+    clearedCalibreResult.book.seriesIndex === undefined &&
+    clearedCalibreResult.book.subjects.length === 0,
+  'preserves authoritative empty Calibre metadata instead of restoring embedded values');
+
   section('Review-needed PDF retention');
   const reviewChapters = [readableChapter(), readableChapter()];
   reviewChapters[0].pdfExtraction = {

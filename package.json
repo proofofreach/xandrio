@@ -37,6 +37,7 @@
     "benchmark:tts": "node scripts/benchmark-tts.js",
     "benchmark:first-play": "node scripts/benchmark-mobile-playback-continuity.js",
     "benchmark:mobile-playback": "node scripts/benchmark-mobile-playback-continuity.js",
+    "build:calibre-plugin": "node scripts/build-calibre-plugin.mjs",
     "verify:audio": "node scripts/verify-audio-quality.js",
     "verify:audio:ci": "node scripts/verify-audio-quality.js --calibration-fixtures",
     "audit:production": "npm audit --omit=dev",

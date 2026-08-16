@@ -1641,6 +1641,26 @@ summary:focus-visible,
   gap: 8px;
   margin-top: 8px;
 }
+.calibre-pairing-panel {
+  display: grid;
+  gap: 6px;
+  justify-items: start;
+  margin-top: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-inset);
+}
+.calibre-pairing-panel[hidden] { display: none; }
+.calibre-pair-code {
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: clamp(24px, 7vw, 30px);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.1em;
+}
+.calibre-pairing-panel small { color: var(--text-muted); }
 .settings-form-buttons {
   display: flex;
   gap: 8px;

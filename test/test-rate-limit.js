@@ -58,7 +58,8 @@ test('default groups cover authentication, import, metadata, TTS, and voice uplo
   const groups = defaultGroups(60);
   const covered = path => groups.some(group => group.match(path));
   for (const path of [
-    '/api/auth/login', '/api/search', '/api/upload', '/api/download',
+    '/api/auth/login', '/api/integrations/calibre/claim', '/api/search', '/api/upload',
+    '/api/integrations/calibre/import', '/api/download',
     '/api/refresh-metadata/book', '/api/audio/book/0', '/api/audio-continuous/book/0',
     '/api/chunks/book/0/prepare', '/api/chunks/book/0/1', '/api/offline/preparation/book',
     '/api/voices/clone'

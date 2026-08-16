@@ -58,6 +58,15 @@ export function initSettings(options = {}) {
   const syncError = document.getElementById('sync-error');
   const syncSection = document.getElementById('sync-section');
 
+  // Calibre desktop integration
+  const calibreIntegrationStatus = document.getElementById('calibre-integration-status');
+  const calibrePairBtn = document.getElementById('calibre-pair-btn');
+  const calibrePairingPanel = document.getElementById('calibre-pairing-panel');
+  const calibrePairCode = document.getElementById('calibre-pair-code');
+  const calibrePairExpiry = document.getElementById('calibre-pair-expiry');
+  const calibreConnectionList = document.getElementById('calibre-connection-list');
+  const calibreIntegrationError = document.getElementById('calibre-integration-error');
+
   // Account elements (signed-in username/password sessions)
   const accountSection = document.getElementById('account-section');
   const accountDisplayName = document.getElementById('account-display-name');
@@ -149,6 +158,7 @@ export function initSettings(options = {}) {
     checkZlibStatus();
     loadProviderStatus();
     loadAccountOrSync();
+    loadCalibreConnections();
     loadBookGuideSettings();
     loadOperatorDiagnostics();
     renderClientSettings();
@@ -791,6 +801,115 @@ export function initSettings(options = {}) {
     if (user) loadAccountSection();
     else loadSyncStatus();
   }
+
+  // ---- Calibre desktop integration ----
+
+  let calibrePairTimer = null;
+  let calibrePairPollTimer = null;
+  let calibreConnectionIds = new Set();
+
+  function setCalibreError(message = '') {
+    if (!calibreIntegrationError) return;
+    calibreIntegrationError.textContent = message;
+    calibreIntegrationError.hidden = !message;
+  }
+
+  function renderCalibreConnections(connections = []) {
+    calibreConnectionIds = new Set(connections.map(connection => connection.id));
+    if (calibreIntegrationStatus) {
+      calibreIntegrationStatus.textContent = connections.length ? `${connections.length} connected` : 'Not connected';
+      calibreIntegrationStatus.className = `settings-status${connections.length ? ' settings-status-ok' : ''}`;
+    }
+    if (!calibreConnectionList) return;
+    calibreConnectionList.innerHTML = connections.map(connection => `
+      <div class="sync-device-row">
+        <span>${escapeHTML(connection.clientName || 'Calibre')}</span>
+        <span class="admin-account-actions">
+          <small>${escapeHTML(connection.createdAt ? `paired ${relativeTime(connection.createdAt)}` : '')}</small>
+          <button class="btn-ghost btn-ghost-danger btn-sm" type="button" data-calibre-revoke="${escapeHTML(connection.id)}">Revoke</button>
+        </span>
+      </div>
+    `).join('');
+  }
+
+  async function loadCalibreConnections() {
+    if (!calibreConnectionList) return;
+    setCalibreError('');
+    try {
+      const data = await apiGet('/api/integrations/calibre/connections');
+      renderCalibreConnections(data.connections || []);
+      return data.connections || [];
+    } catch (err) {
+      if (calibreIntegrationStatus) calibreIntegrationStatus.textContent = 'Unavailable';
+      setCalibreError(err.message || 'Could not load Calibre connections.');
+    }
+  }
+
+  calibrePairBtn?.addEventListener('click', async () => {
+    setCalibreError('');
+    calibrePairBtn.disabled = true;
+    try {
+      const data = await apiSend('POST', '/api/integrations/calibre/pairing-code', {});
+      const connectionsBeforePairing = new Set(calibreConnectionIds);
+      if (calibrePairCode) calibrePairCode.textContent = `${data.code.slice(0, 3)} ${data.code.slice(3)}`;
+      if (calibrePairingPanel) calibrePairingPanel.hidden = false;
+      const deadline = Date.now() + Number(data.expiresInSeconds || 600) * 1000;
+      clearInterval(calibrePairTimer);
+      const updateExpiry = () => {
+        const seconds = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
+        if (calibrePairExpiry) calibrePairExpiry.textContent = seconds
+          ? `Expires in ${Math.ceil(seconds / 60)} minute${seconds > 60 ? 's' : ''}`
+          : 'Code expired';
+        if (!seconds) {
+          clearInterval(calibrePairTimer);
+          clearInterval(calibrePairPollTimer);
+        }
+      };
+      updateExpiry();
+      calibrePairTimer = setInterval(updateExpiry, 1000);
+      clearInterval(calibrePairPollTimer);
+      calibrePairPollTimer = setInterval(async () => {
+        try {
+          const connections = await loadCalibreConnections();
+          if (connections.some(connection => !connectionsBeforePairing.has(connection.id))) {
+            clearInterval(calibrePairTimer);
+            clearInterval(calibrePairPollTimer);
+            if (calibrePairingPanel) calibrePairingPanel.hidden = true;
+            showToast('Calibre connected');
+          }
+        } catch {}
+      }, 3000);
+      showToast('Pairing code created');
+    } catch (err) {
+      setCalibreError(err.message || 'Could not create a pairing code.');
+    } finally {
+      calibrePairBtn.disabled = false;
+    }
+  });
+
+  calibreConnectionList?.addEventListener('click', async event => {
+    const button = event.target.closest('[data-calibre-revoke]');
+    if (!button) return;
+    const confirmed = await confirmSheet({
+      title: 'Revoke Calibre connection',
+      message: 'This computer will no longer be able to send books to Xandrio.',
+      confirmLabel: 'Revoke'
+    });
+    if (!confirmed) return;
+    button.disabled = true;
+    setCalibreError('');
+    try {
+      await apiSend('DELETE', `/api/integrations/calibre/connections/${encodeURIComponent(button.dataset.calibreRevoke)}`);
+      clearInterval(calibrePairTimer);
+      clearInterval(calibrePairPollTimer);
+      if (calibrePairingPanel) calibrePairingPanel.hidden = true;
+      await loadCalibreConnections();
+      showToast('Calibre connection revoked');
+    } catch (err) {
+      setCalibreError(err.message || 'Could not revoke the Calibre connection.');
+      button.disabled = false;
+    }
+  });
 
   // ---- Admin: experimental study guides ----
 

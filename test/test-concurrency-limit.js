@@ -96,6 +96,7 @@ async function main() {
       ['/api/auth/login', 'POST'],
       ['/api/search', 'POST'],
       ['/api/upload', 'POST'],
+      ['/api/integrations/calibre/import', 'POST'],
       ['/api/refresh-metadata/book', 'POST'],
       ['/api/chunks/book/0/prepare', 'POST'],
       ['/api/offline/preparation/book', 'POST'],
