@@ -4,6 +4,8 @@ Xandrio is a self-hosted personal reading server. You run it on your hardware an
 
 It imports EPUB, MOBI, AZW, AZW3, PRC, and PDF files; searches supported sources; and provides mobile-friendly, offline-capable audiobook playback. Narration can use Microsoft Edge, local Kokoro, or local Chatterbox.
 
+Existing Calibre users can install the Xandrio desktop plugin from **Settings → Calibre**, pair it with a one-time code, then send selected books or their full library with metadata and cover art. See [docs/CALIBRE.md](docs/CALIBRE.md).
+
 > **Operator notice:** Before importing or narrating content, confirm that your use is permitted by applicable law and provider agreements. Provider metadata may be incomplete or wrong. Generated audio is for private playback unless you have broader rights. See [LEGAL-NOTICE.md](LEGAL-NOTICE.md) and the [connector policy](docs/CONNECTOR_POLICY.md).
 
 ## Start here
@@ -85,6 +87,7 @@ Multiple people can share one instance: create username/password accounts with `
 - [Architecture](docs/ARCHITECTURE.md)
 - [Feature and verification matrix](docs/FEATURE_MATRIX.md)
 - [Experimental Book Guides](docs/BOOK_GUIDES.md)
+- [Calibre integration](docs/CALIBRE.md)
 - [API reference](docs/API.md)
 - [Umbrel packaging](docs/UMBREL.md)
 - [Contributing](CONTRIBUTING.md)

@@ -106,6 +106,8 @@ const { computeListeningStats } = require('./lib/listening-stats');
 const { removeBookFromAllQueues } = require('./lib/listening-queue');
 const { createAuthMiddleware, createAuthRoutes, createSessionStore, requireAdmin, DEFAULT_SESSION_TTL_MS } = require('./lib/auth');
 const { createAccountsStore } = require('./lib/accounts');
+const { createCalibreAccessStore } = require('./lib/calibre-integration');
+const { registerCalibreRoutes } = require('./lib/routes/calibre-routes');
 const shelves = require('./lib/shelves');
 const { parseVoiceProviders, filterVoicesByProvider } = require('./lib/voice-catalog');
 const { registerAccountRoutes } = require('./lib/routes/accounts-routes');
@@ -288,6 +290,11 @@ const ACCOUNTS_FILE = path.join(DATA_DIR, 'accounts.json');
 const SESSIONS_FILE = path.join(DATA_DIR, 'sessions.json');
 const accountsStore = createAccountsStore({ filePath: ACCOUNTS_FILE, jsonStore });
 const accountSessionStore = createSessionStore({ filePath: SESSIONS_FILE, jsonStore, ttlMs: SESSION_TTL_MS });
+const calibreAccessStore = createCalibreAccessStore({
+  filePath: path.join(DATA_DIR, 'calibre-connections.json'),
+  jsonStore,
+  isUserActive: async userId => !(await accountsStore.findById(userId))?.disabled
+});
 const authRoutes = createAuthRoutes({
   token: XANDRIO_TOKEN,
   sessionTtlMs: SESSION_TTL_MS,
@@ -2297,6 +2304,20 @@ const upload = multer({
   }
 });
 
+const calibreUpload = multer({
+  storage,
+  fileFilter: (req, file, cb) => {
+    if (file.fieldname === 'book' && isSupportedBookUpload(file)) return cb(null, true);
+    if (file.fieldname === 'cover' && /^(image\/jpeg|image\/png)$/i.test(file.mimetype || '')) return cb(null, true);
+    cb(new Error(file.fieldname === 'book' ? 'Unsupported book format' : 'Unsupported cover format'), false);
+  },
+  limits: {
+    fileSize: MAX_BOOK_UPLOAD_SIZE,
+    files: 2,
+    fields: 2
+  }
+});
+
 function bookUploadErrorResponse(err) {
   if (err?.code === 'LIMIT_FILE_SIZE') {
     return {
@@ -2348,6 +2369,21 @@ function uploadSingleEpub(req, res, next) {
     const unsupported = err.message === 'Unsupported book format';
     if (!unsupported) console.error('Book upload middleware failed:', err);
     res.status(400).json(bookUploadErrorResponse(err));
+  });
+}
+
+function uploadSingleCalibreBook(req, res, next) {
+  calibreUpload.fields([{ name: 'book', maxCount: 1 }, { name: 'cover', maxCount: 1 }])(req, res, (err) => {
+    req.file = req.files?.book?.[0];
+    req.calibreCover = req.files?.cover?.[0];
+    if (!err) return next();
+    const unsupported = err.message === 'Unsupported book format';
+    if (!unsupported && err.code !== 'LIMIT_FILE_SIZE') {
+      console.error('Calibre upload middleware failed:', err);
+    }
+    Promise.all(Object.values(req.files || {}).flat().map(file => removeFileIfExists(file.path)))
+      .catch(() => undefined)
+      .then(() => res.status(400).json(bookUploadErrorResponse(err)));
   });
 }
 
@@ -2897,6 +2933,38 @@ async function handleUploadImport(req, res) {
 // API: Upload book file
 // API: Upload book file
 app.post('/api/upload', uploadSingleEpub, handleUploadImport);
+registerCalibreRoutes(app, {
+  access: calibreAccessStore,
+  uploadBook: uploadSingleCalibreBook,
+  userIdFromRequest: req => {
+    if (req.user?.id) return req.user.id;
+    const candidate = String(req.headers['x-xandrio-user-id'] || 'default').trim();
+    return /^[A-Za-z0-9_-]{1,64}$/.test(candidate) ? candidate : 'default';
+  },
+  loadBooks: () => loadJSON(BOOKS_FILE, {}),
+  updateBooks: mutator => updateJSON(BOOKS_FILE, mutator),
+  importBook: command => bookImporter.import(command),
+  withBookMutationLock: (bookId, task) => bookMutationLocks.withBookMutationLock(bookId, task),
+  normalizeDescription: cleanBookDescription,
+  normalizePublishedDate: value => publishedYearFromMetadata(value),
+  persistCover: async (bookId, uploadedPath) => {
+    if (!uploadedPath) return false;
+    const uploaded = await readValidatedLibraryCover(uploadedPath);
+    if (!uploaded || uploaded.buffer.length > 5 * 1024 * 1024) {
+      await removeFileIfExists(uploadedPath);
+      return false;
+    }
+    const coverPath = canonicalBookCoverPath(bookId);
+    await fs.writeFile(coverPath, uploaded.buffer);
+    await removeFileIfExists(uploadedPath);
+    await persistCanonicalCoverPath(bookId, coverPath, 'calibre');
+    return true;
+  },
+  addBookToShelf,
+  removeFile: removeFileIfExists,
+  publicBookRecord,
+  supportedFormats: [...SUPPORTED_BOOK_FORMATS]
+});
 // API: Get library (all downloaded books)
 // Strip server-internal fields (absolute paths, import forensics) from
 // book records before they leave the API.
@@ -2921,6 +2989,7 @@ function publicBookRecord(book) {
     importDiagnosticCodes: _importDiagnosticCodes,
     textIntegrity: _textIntegrity,
     sourceRecovery: _sourceRecovery,
+    calibre: _calibre,
     processingVersion: _processingVersion,
     metadataRefreshReconciliation,
     ...pub

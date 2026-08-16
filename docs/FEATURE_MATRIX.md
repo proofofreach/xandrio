@@ -6,6 +6,7 @@ This matrix records the v1.1.0 release surface. Release preparation preserves ev
 | --- | --- | --- | --- |
 | Import | Operator upload | Retained | Unit and browser smoke tests |
 | Import | EPUB, MOBI, PRC, AZW, AZW3, PDF | Retained | Parser, importer, Kindle, PDF, and server tests |
+| Calibre | Installable desktop plugin; selected/full-library send; metadata, cover, inventory skip, revocable pairing | Added | Pairing-store, route, package, importer, auth, and UI tests |
 | Source | Standard Ebooks public OPDS | Retained; enabled when reachable | Provider unit tests |
 | Source | Project Gutenberg | Retained; rights metadata available | Provider and server tests |
 | Source | Internet Archive | Retained; unverified-rights acknowledgement applies | Provider unit tests |

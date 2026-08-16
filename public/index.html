@@ -11,7 +11,7 @@
   <title>Xandrio - Audiobook Library</title>
   <link rel="preload" href="/fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin>
   <!-- ?v= values must match ASSET_VERSIONS in sw.js (single source of truth) -->
-  <link rel="stylesheet" href="style-v3.css?v=103">
+  <link rel="stylesheet" href="style-v3.css?v=104">
   <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=2">
 </head>
 <body>
@@ -508,6 +508,35 @@
               </div>
             </div>
             <p id="sync-error" class="settings-error" style="display:none"></p>
+          </div>
+        </details>
+
+        <!-- Calibre desktop integration -->
+        <details class="settings-section" id="calibre-integration-section">
+          <summary class="settings-section-header">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="width:18px;height:18px"><path stroke-linecap="round" stroke-linejoin="round" d="M4.5 5.25A2.25 2.25 0 016.75 3h10.5a2.25 2.25 0 012.25 2.25v13.5A2.25 2.25 0 0117.25 21H6.75a2.25 2.25 0 01-2.25-2.25V5.25zM8.25 7.5h7.5M8.25 11.25h7.5M8.25 15h4.5"/></svg>
+            Calibre
+          </summary>
+          <div class="settings-section-body">
+            <div class="settings-row">
+              <div class="settings-label">
+                <span class="settings-label-text">Send books from Calibre</span>
+                <span class="settings-label-hint">Install the desktop plugin, pair it once, then send selected books or your full catalog.</span>
+              </div>
+              <span id="calibre-integration-status" class="settings-status">Checking…</span>
+            </div>
+            <div class="settings-actions">
+              <a class="btn-ghost btn-sm" href="/downloads/Xandrio-Calibre.zip" download>Download plugin</a>
+              <button id="calibre-pair-btn" class="btn-primary btn-sm" type="button">Pair Calibre</button>
+            </div>
+            <div id="calibre-pairing-panel" class="calibre-pairing-panel" hidden>
+              <span class="settings-label-hint">In Calibre, choose Xandrio → Connect, then enter this code:</span>
+              <strong id="calibre-pair-code" class="calibre-pair-code" aria-live="polite"></strong>
+              <small id="calibre-pair-expiry">Expires in 10 minutes</small>
+            </div>
+            <div id="calibre-connection-list" class="sync-device-list"></div>
+            <p id="calibre-integration-error" class="settings-error" role="alert" hidden></p>
+            <p class="settings-hint">A paired plugin can only check and import Calibre books for this profile. Revoke a computer here at any time.</p>
           </div>
         </details>
 
