@@ -3067,9 +3067,13 @@ button, a, .book-item, .timer-option, select, input[type="range"] {
 
   .player-controls { padding: 10px 0 12px; }
 
+  /* Auto-flow columns so the row stays centred whether or not the optional
+     Guide button is present — a fixed 5-column track leaves a dead column
+     when it is hidden. */
   .player-utility-row {
     display: grid;
-    grid-template-columns: repeat(5, minmax(0, 1fr));
+    grid-auto-flow: column;
+    grid-auto-columns: minmax(0, 1fr);
     width: 100%;
     padding: 2px 12px 4px;
   }

@@ -53,7 +53,7 @@ assert(guide.includes('data-guide-audio-speed') && guide.includes('playbackRate'
 assert(app.includes('pauseBookPlayback') && guide.includes('deps.pauseBookPlayback?.()'), 'guide narration pauses book playback before starting');
 assert(guide.includes('LAST_SECTION_PREFIX') && guide.includes('localStorage.setItem'), 'guide keeps only browser-local section state');
 
-assert(style.includes('grid-template-columns: repeat(5, minmax(0, 1fr))'), 'mobile player utilities support guide access');
+assert(/\.player-utility-row\s*\{[^}]*grid-auto-flow:\s*column;[^}]*grid-auto-columns:\s*minmax\(0, 1fr\);/.test(style), 'mobile player utilities give the guide button its own column without stranding an empty one when it is hidden');
 assert(style.includes('#guide-view') && style.includes('.guide-source-link'), 'guide has view and source-link styles');
 assert(style.includes('.guide-sources > summary') && style.includes('min-height: var(--touch-min)'), 'source disclosures stay quiet while preserving touch targets');
 assert(style.includes('.guide-narration') && style.includes('.guide-narration-sections'), 'guide narration has responsive player styles');
