@@ -58,6 +58,10 @@ function runViewTransition(fromView, toView, apply) {
   else html.dataset.vt = 'fade';
 
   const transition = document.startViewTransition(() => apply());
+  // A route change that interrupts an in-flight transition rejects `ready`.
+  // Both promises need a handler: an unhandled rejection surfaces as a page
+  // error, and the navigation itself is still correct.
+  transition.ready.catch(() => {});
   transition.finished.catch(() => {}).finally(() => { delete html.dataset.vt; });
 }
 

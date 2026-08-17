@@ -48,6 +48,7 @@ const tests = [
   'test-operator-diagnostics.js',
   'test-voice-authority.js',
   'test-route-error-safety.js',
+  'test-router-transitions.js',
   'test-client-settings.js',
   'test-bookmarks-routes.js',
   'test-client-offline-identity.js',
