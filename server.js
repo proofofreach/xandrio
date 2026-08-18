@@ -16,6 +16,7 @@ const webPush = require('web-push');
 const { pipeline } = require('stream/promises');
 const { Readable } = require('stream');
 const { requestRemote, declaredLength, readBoundedBuffer, byteLimit } = require('./lib/remote-fetch');
+const { resolveRuntimeRevision } = require('./lib/runtime-revision');
 const TTSQueue = require('./lib/tts-queue');
 const ChunkedTTS = require('./lib/chunked-tts');
 const { searchAnnas: searchAnnasDirect, closeBrowser: closeAnnasBrowser } = require('./lib/annas-scraper');
@@ -189,6 +190,8 @@ const app = express();
 const PORT = process.env.PORT || 8181;
 const HOST = process.env.HOST || '127.0.0.1';
 const SERVER_STARTED_AT = new Date().toISOString();
+// Resolved once at startup so /health stays a cheap, disk-free endpoint.
+const RUNTIME_REVISION = resolveRuntimeRevision({ root: __dirname });
 const PREGENERATE_ON_IMPORT = process.env.XANDRIO_PREGENERATE_ON_IMPORT !== 'false';
 process.title = `xandrio-server:${PORT}`;
 const DATA_DIR = canonicalStorageDirectory(process.env.DATA_DIR || path.join(__dirname, 'data'));
@@ -3029,7 +3032,7 @@ app.get('/health', (req, res) => {
     status: 'ok',
     uptime: Math.round(process.uptime()),
     startedAt: SERVER_STARTED_AT,
-    runtimeRevision: process.env.XANDRIO_RUNTIME_REVISION || null
+    runtimeRevision: RUNTIME_REVISION
   });
 });
 
