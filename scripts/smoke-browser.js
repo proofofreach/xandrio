@@ -848,6 +848,48 @@ async function verifyPlayback(page, fixtureState) {
   if (!offlineMessage.includes("You're offline")) throw new Error('Offline chapter state was not surfaced');
 }
 
+// A route change that interrupts an in-flight view transition rejects the
+// transition's `ready` promise. Left unhandled that rejection reaches the page
+// as an error, which failed this suite about one run in three depending on how
+// the navigations happened to overlap. Interrupt one on purpose so the
+// regression is deterministic instead of a race.
+async function verifyInterruptedViewTransition(page) {
+  await page.goto(`${origin}/#/player/smoke`, { waitUntil: 'networkidle' });
+  await page.waitForSelector('#player-view.active');
+  if (!await page.evaluate(() => typeof document.startViewTransition === 'function')) {
+    throw new Error('View transitions are unavailable, so the interrupted-transition path is untested');
+  }
+  if (await page.evaluate(() => window.matchMedia('(prefers-reduced-motion: reduce)').matches)) {
+    throw new Error('Reduced motion is on, so the interrupted-transition path is untested');
+  }
+
+  const errors = [];
+  const record = error => errors.push(error.message);
+  page.on('pageerror', record);
+  try {
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      // Start the transition, then change route again inside the same frame so
+      // the first one is skipped mid-flight.
+      await page.evaluate(async () => {
+        location.hash = '#/library';
+        await new Promise(resolve => requestAnimationFrame(resolve));
+        location.hash = '#/player/smoke';
+      });
+      await page.waitForTimeout(80);
+    }
+    await page.waitForTimeout(250);
+  } finally {
+    page.off('pageerror', record);
+  }
+
+  if (errors.length) {
+    throw new Error(`Interrupting a view transition raised page errors:\n${errors.join('\n')}`);
+  }
+  if (await page.evaluate(() => document.documentElement.dataset.vt !== undefined)) {
+    throw new Error('Interrupted view transitions left the data-vt marker behind');
+  }
+}
+
 async function verifyStudyGuideAudio(page, fixtureState) {
   fixtureState.guideMode = 'generating';
   await page.goto(`${origin}/#/guide/smoke`, { waitUntil: 'networkidle' });
@@ -1944,6 +1986,8 @@ async function main() {
     traceSmoke('library load states verified');
     await verifyPlayback(page, fixtureState);
     traceSmoke('playback verified');
+    await verifyInterruptedViewTransition(page);
+    traceSmoke('interrupted view transition verified');
     await verifyStudyGuideAudio(page, fixtureState);
     traceSmoke('study-guide sources and audio verified');
     await verifyPronunciations(page, fixtureState);

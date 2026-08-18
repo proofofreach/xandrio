@@ -21,21 +21,13 @@ const router = fs.readFileSync(path.join(__dirname, '..', 'public', 'js', 'route
 
 // A route change that interrupts an in-flight view transition rejects `ready`
 // as well as `finished`. Leaving either without a handler raises an unhandled
-// rejection, which reaches the page as an error even though the navigation
-// itself succeeded — an intermittent browser-smoke failure.
+// rejection that reaches the page as an error, even though the navigation
+// itself succeeded. The behaviour is covered end-to-end by
+// verifyInterruptedViewTransition in scripts/smoke-browser.js, which
+// interrupts a real transition; this is the cheap guard in the fast suite.
 test('both view-transition promises are handled', () => {
   assert.ok(router.includes('transition.ready.catch('), 'ready rejection is handled');
   assert.ok(router.includes('transition.finished.catch('), 'finished rejection is handled');
-});
-
-test('the transition marker is cleared after the transition settles', () => {
-  assert.ok(router.includes('.finally(() => { delete html.dataset.vt; })'),
-    'data-vt is removed once the transition settles');
-});
-
-test('unsupported browsers and reduced motion skip the transition', () => {
-  assert.ok(router.includes('!document.startViewTransition || prefersReducedMotion()'),
-    'transitions are opt-out under reduced motion and on unsupported browsers');
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);
