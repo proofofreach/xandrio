@@ -108,5 +108,38 @@ check('drift verification ignores only the deliberate public exclusions', () => 
   assert.match(source, /if \(drifted\.length\) \{\s*fail\(/);
 });
 
+check('a pushed branch without a pull request is cleaned up', () => {
+  // Eight orphaned sync/* branches accumulated on the public repository this
+  // way: the push succeeded, the PR call failed, and nothing referenced the
+  // branch again, so delete-branch-on-merge never applied to it.
+  const source = readFileSync(syncScript, 'utf8');
+  assert.match(source, /if \(pushedBranch && !prOpened\) \{/);
+  assert.match(source, /git\('push', REMOTE, '--delete', pushedBranch\)/);
+});
+
+check('publication survives a transient GitHub outage', () => {
+  const source = readFileSync(syncScript, 'utf8');
+  assert.match(source, /withGitHubRetry/);
+  // The pull request is looked up before it is created, so a create whose
+  // response was lost is adopted instead of abandoned or duplicated.
+  const create = source.slice(source.indexOf('function createOrReusePullRequest'));
+  const lookupIndex = create.indexOf('openPullRequestUrl');
+  const createIndex = create.indexOf("'pr', 'create'");
+  assert(lookupIndex !== -1 && createIndex !== -1, 'creation path is missing');
+  assert(lookupIndex < createIndex, 'an existing pull request must be checked for first');
+});
+
+check('finished sync branches are pruned, open ones are never touched', () => {
+  // Seven sync/* branches had accumulated on the public repository because
+  // delete-branch-on-merge only fires on a merge, never on a closed PR.
+  const source = readFileSync(syncScript, 'utf8');
+  const prune = source.slice(source.indexOf('function pruneFinishedSyncBranches'));
+  const body = prune.slice(0, prune.indexOf('\n}\n'));
+  assert.match(body, /git\('push', REMOTE, '--delete', stale\)/);
+  // A branch with no pull request may belong to a run in flight, and an open
+  // one is live work; deleting either would destroy an unpublished release.
+  assert.match(body, /if \(!states\.length \|\| states\.includes\('OPEN'\)\) continue;/);
+});
+
 console.log(`${passed} passed, ${failed} failed`);
 process.exitCode = failed ? 1 : 0;

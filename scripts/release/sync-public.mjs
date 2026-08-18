@@ -20,6 +20,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
+import { openPullRequestUrl, withGitHubRetry } from './github-retry.mjs';
 
 const args = process.argv.slice(2);
 const has = flag => args.includes(flag);
@@ -37,8 +38,13 @@ const NO_MERGE = has('--no-merge');
 const NO_WAIT = has('--no-wait');
 const PUBLIC_EXCLUDED_PATHS = new Set(['AGENTS.md']);
 
+const PUBLIC_REPO = 'ProofOfReach/xandrio';
+const GH_ATTEMPTS = Number(process.env.XANDRIO_GH_ATTEMPTS || 6);
+
 const git = (...a) => execFileSync('git', a, { cwd: REPO_ROOT, encoding: 'utf8' }).trim();
-const gh = (...a) => execFileSync('gh', a, { cwd: REPO_ROOT, encoding: 'utf8' }).trim();
+const ghOnce = (...a) => execFileSync('gh', a, { cwd: REPO_ROOT, encoding: 'utf8' }).trim();
+const retryOptions = () => ({ attempts: GH_ATTEMPTS, sleep, log: message => console.log(message) });
+const gh = (...a) => withGitHubRetry(() => ghOnce(...a), retryOptions());
 
 function fail(message) {
   console.error(`sync-public error: ${message}`);
@@ -132,6 +138,57 @@ export function publishedSourceCommits(logMessages) {
   );
 }
 
+// Sync branches outlive their pull requests: delete-branch-on-merge only fires
+// on a merge, so every closed-unmerged sync left one behind for good. Prune
+// the finished ones, and never a branch that is still open or that no pull
+// request claims -- that one may belong to a run happening right now.
+function pruneFinishedSyncBranches() {
+  let branches = [];
+  try {
+    branches = git('ls-remote', '--heads', REMOTE, 'refs/heads/sync/*')
+      .split('\n').filter(Boolean)
+      .map(line => line.split('\t')[1]?.replace('refs/heads/', ''))
+      .filter(Boolean);
+  } catch {
+    return;
+  }
+  for (const stale of branches) {
+    let states;
+    try {
+      states = JSON.parse(gh('pr', 'list', '--repo', PUBLIC_REPO, '--head', stale,
+        '--state', 'all', '--json', 'state') || '[]')
+        .map(entry => String(entry.state || '').toUpperCase());
+    } catch {
+      continue;
+    }
+    if (!states.length || states.includes('OPEN')) continue;
+    try {
+      git('push', REMOTE, '--delete', stale);
+      console.log(`Pruned finished sync branch ${stale}.`);
+    } catch (error) {
+      console.warn(`Could not prune ${stale}: ${error.message}`);
+    }
+  }
+}
+
+// `gh pr create` can open the pull request and still report a transport
+// failure, so a blind retry hits "already exists" and abandons a verified
+// release. Every attempt asks whether the branch already has one first.
+function createOrReusePullRequest({ branch, title, body }) {
+  return withGitHubRetry(() => {
+    const existing = openPullRequestUrl(ghOnce(
+      'pr', 'list', '--repo', PUBLIC_REPO, '--head', branch,
+      '--state', 'open', '--json', 'url,state'
+    ));
+    if (existing) {
+      console.log(`Reusing the pull request already open for ${branch}.`);
+      return existing;
+    }
+    return ghOnce('pr', 'create', '--repo', PUBLIC_REPO,
+      '--base', TARGET, '--head', branch, '--title', title, '--body', body);
+  }, retryOptions());
+}
+
 function persistCheckpoint(sha) {
   git('tag', '-f', 'public-sync-base', sha);
   git('push', '--force', PRIVATE_REMOTE, 'refs/tags/public-sync-base');
@@ -149,6 +206,7 @@ if (source !== 'main' && !has('--allow-source')) {
 
 if (git('status', '--porcelain')) fail('working tree is not clean; commit or stash first');
 git('fetch', REMOTE, TARGET);
+if (!DRY_RUN) pruneFinishedSyncBranches();
 
 // The public history is periodically re-rooted (squashed), so patch-id
 // comparison alone would resurrect ancient commits. The public-sync-base tag
@@ -217,6 +275,11 @@ const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 12);
 const branch = `sync/${stamp}`;
 git('checkout', '-b', branch, `${REMOTE}/${TARGET}`);
 
+// A branch pushed without a PR is invisible: nothing references it and
+// delete-branch-on-merge never applies, so every failed run left one behind.
+let pushedBranch = null;
+let prOpened = false;
+
 try {
   for (const sha of pending) {
     try {
@@ -256,11 +319,12 @@ try {
     ...pending.map(sha => `- ${scrubMessage(git('log', '-1', '--format=%s', sha)).trim()}`)].join('\n');
 
   git('push', REMOTE, `${branch}:${branch}`);
-  const prUrl = gh('pr', 'create', '--repo', 'ProofOfReach/xandrio',
-    '--base', TARGET, '--head', branch, '--title', subject, '--body', body);
+  pushedBranch = branch;
+  const prUrl = createOrReusePullRequest({ branch, title: subject, body });
+  prOpened = true;
   console.log(`PR: ${prUrl}`);
   if (!NO_MERGE) {
-    gh('pr', 'merge', '--repo', 'ProofOfReach/xandrio', '--auto', '--merge', prUrl);
+    gh('pr', 'merge', '--repo', PUBLIC_REPO, '--auto', '--merge', prUrl);
     console.log('Auto-merge armed: the PR lands when required checks pass.');
   }
   if (!NO_MERGE && !NO_WAIT) {
@@ -276,4 +340,12 @@ try {
 } finally {
   git('checkout', startBranch);
   git('branch', '-D', branch);
+  if (pushedBranch && !prOpened) {
+    try {
+      git('push', REMOTE, '--delete', pushedBranch);
+      console.log(`Removed orphaned remote branch ${pushedBranch}.`);
+    } catch (error) {
+      console.warn(`Could not remove orphaned remote branch ${pushedBranch}: ${error.message}`);
+    }
+  }
 }
