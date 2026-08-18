@@ -105,3 +105,8 @@ build/
 
 # APK / binary artifacts
 *.apk
+
+# Unpacking the published Calibre plugin next to its zip is a normal thing to
+# do while debugging, but an untracked directory fails the release clean-tree
+# gate. The zip itself is tracked and is what ships.
+/public/downloads/Xandrio-Calibre/
