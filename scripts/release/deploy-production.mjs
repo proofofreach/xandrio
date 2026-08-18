@@ -75,6 +75,7 @@ export function assertDeploymentEvidence({
   deployedRevision,
   serviceState,
   healthStatus,
+  healthRevision,
   readinessStatus,
   receipt
 }) {
@@ -89,6 +90,12 @@ export function assertDeploymentEvidence({
   if (readinessStatus < 200 || readinessStatus >= 300) {
     fail(`external readiness check returned HTTP ${readinessStatus || 'unknown'}`);
   }
+  // The revision on disk is read over SSH; this is the only check that asks
+  // the running process what it is. Production reported null here for months
+  // because nothing compared it against anything.
+  if (healthRevision !== publicRevision) {
+    fail(`the running service reports revision ${healthRevision || '(none)'}, not ${publicRevision}`);
+  }
   if (receipt?.revision !== publicRevision || receipt?.status !== 'deployed' || receipt?.rolledBack) {
     fail('VPS deployment receipt does not prove a successful exact-revision deployment');
   }
@@ -98,6 +105,7 @@ export function assertDeploymentEvidence({
     service: 'xandrio-web',
     serviceState,
     healthStatus,
+    healthRevision,
     readinessStatus
   };
 }
@@ -207,11 +215,18 @@ async function main() {
   } catch {
     fail('VPS deployment receipt is not valid JSON');
   }
+  let healthRevision = null;
+  try {
+    healthRevision = (await healthResponse.clone().json())?.runtimeRevision || null;
+  } catch {
+    healthRevision = null;
+  }
   const receipt = assertDeploymentEvidence({
     publicRevision,
     deployedRevision,
     serviceState,
     healthStatus: healthResponse.status,
+    healthRevision,
     readinessStatus: readinessResponse.status,
     receipt: remoteReceipt
   });

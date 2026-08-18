@@ -60,6 +60,7 @@ const tests = [
   'test-deployment-origin.js',
   'test-readiness.js',
   'test-production-deployment.js',
+  'test-runtime-revision.js',
   'test-release-production.js',
   'test-app-shell-versions.js',
   'test-local-service-runtime.js',

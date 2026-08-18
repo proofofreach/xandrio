@@ -72,6 +72,7 @@ async function check(name, callback) {
       deployedRevision: revision,
       serviceState: 'active',
       healthStatus: 200,
+      healthRevision: revision,
       readinessStatus: 200,
       receipt: { status: 'deployed', revision, rolledBack: false }
     }), {
@@ -80,6 +81,7 @@ async function check(name, callback) {
       service: 'xandrio-web',
       serviceState: 'active',
       healthStatus: 200,
+      healthRevision: revision,
       readinessStatus: 200
     });
     assert.throws(() => deployment.assertDeploymentEvidence({
@@ -87,6 +89,7 @@ async function check(name, callback) {
       deployedRevision: 'b'.repeat(40),
       serviceState: 'active',
       healthStatus: 200,
+      healthRevision: revision,
       readinessStatus: 200,
       receipt: { status: 'deployed', revision, rolledBack: false }
     }), /does not match/);
@@ -95,6 +98,7 @@ async function check(name, callback) {
       deployedRevision: revision,
       serviceState: 'inactive',
       healthStatus: 200,
+      healthRevision: revision,
       readinessStatus: 200,
       receipt: { status: 'deployed', revision, rolledBack: false }
     }), /inactive/);
@@ -103,6 +107,7 @@ async function check(name, callback) {
       deployedRevision: revision,
       serviceState: 'active',
       healthStatus: 503,
+      healthRevision: revision,
       readinessStatus: 200,
       receipt: { status: 'deployed', revision, rolledBack: false }
     }), /HTTP 503/);
@@ -111,6 +116,7 @@ async function check(name, callback) {
       deployedRevision: revision,
       serviceState: 'active',
       healthStatus: 200,
+      healthRevision: revision,
       readinessStatus: 503,
       receipt: { status: 'deployed', revision, rolledBack: false }
     }), /readiness/);
@@ -119,11 +125,34 @@ async function check(name, callback) {
       deployedRevision: revision,
       serviceState: 'active',
       healthStatus: 200,
+      healthRevision: revision,
       readinessStatus: 200,
       receipt: { status: 'rolled-back', revision, rolledBack: true }
     }), /receipt/);
-  });
 
+    // The running process must name itself. Production answered null here for
+    // months: the revision was only ever read off disk over SSH, so nothing
+    // noticed that the service could not say what it was running.
+    assert.throws(() => deployment.assertDeploymentEvidence({
+      publicRevision: revision,
+      deployedRevision: revision,
+      serviceState: 'active',
+      healthStatus: 200,
+      healthRevision: null,
+      readinessStatus: 200,
+      receipt: { status: 'deployed', revision, rolledBack: false }
+    }), /reports revision \(none\)/);
+    // A stale process serving an older release passes every other check.
+    assert.throws(() => deployment.assertDeploymentEvidence({
+      publicRevision: revision,
+      deployedRevision: revision,
+      serviceState: 'active',
+      healthStatus: 200,
+      healthRevision: 'c'.repeat(40),
+      readinessStatus: 200,
+      receipt: { status: 'deployed', revision, rolledBack: false }
+    }), /reports revision c{40}/);
+  });
   await check('VPS deploy stages an exact revision under the checkout owner', () => {
     const scriptPath = resolve(__dirname, '..', 'scripts', 'deploy-prod.sh');
     const source = readFileSync(scriptPath, 'utf8');

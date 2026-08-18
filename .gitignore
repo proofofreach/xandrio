@@ -110,3 +110,7 @@ build/
 # do while debugging, but an untracked directory fails the release clean-tree
 # gate. The zip itself is tracked and is what ships.
 /public/downloads/Xandrio-Calibre/
+
+# Stamped into each immutable release directory by scripts/deploy-prod.sh so
+# the running process can report its own revision. Never part of a checkout.
+/.xandrio-revision
