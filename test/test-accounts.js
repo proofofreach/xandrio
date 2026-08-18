@@ -145,6 +145,42 @@ test('verifyLogin accepts correct credentials and rejects wrong/disabled', async
   assert.strictEqual(await accounts.verifyLogin('reader', 'password123'), null);
 });
 
+test('verifyLogin performs exactly one derivation whether or not the username exists', async () => {
+  // Counting calls through the injectable crypto seam rather than timing the
+  // wall clock -- a timing assertion would be flaky. The dummy record built
+  // once at store construction must not add a second derivation to any
+  // individual verifyLogin call, and concurrent unknown-username logins must
+  // share it rather than each deriving their own.
+  const nodeCrypto = require('crypto');
+  let scryptCalls = 0;
+  const countingCrypto = {
+    randomBytes: nodeCrypto.randomBytes,
+    timingSafeEqual: nodeCrypto.timingSafeEqual,
+    scrypt(...args) { scryptCalls++; return nodeCrypto.scrypt(...args); }
+  };
+  const jsonStore = memoryJsonStore();
+  const accounts = createAccountsStore({ filePath: 'accounts.json', jsonStore, crypto: countingCrypto });
+  // The constructor's own dummy-record derivation (from crypto.randomBytes,
+  // not a literal string) happens here, before any login, so it never counts
+  // against a login's own cost.
+  await accounts.createAccount({ username: 'reader', password: 'password123' });
+
+  scryptCalls = 0;
+  await accounts.verifyLogin('reader', 'wrong-password');
+  assert.strictEqual(scryptCalls, 1, 'a known username performs exactly one derivation');
+
+  scryptCalls = 0;
+  await accounts.verifyLogin('nobody', 'wrong-password');
+  assert.strictEqual(scryptCalls, 1, 'an unknown username performs exactly one derivation, matching a known one');
+
+  scryptCalls = 0;
+  await Promise.all([
+    accounts.verifyLogin('nobody-a', 'wrong-password'),
+    accounts.verifyLogin('nobody-b', 'wrong-password')
+  ]);
+  assert.strictEqual(scryptCalls, 2, 'two concurrent unknown-username logins share the cached dummy record: one derivation each, not one each plus a duplicated dummy build');
+});
+
 test('verifyLogin transparently rehashes a stale record to current scrypt cost', async () => {
   const { jsonStore, accounts } = makeAccounts();
   const staleRecord = await hashPassword('password123', { N: 16384, r: 8, p: 1 });
