@@ -334,6 +334,47 @@ async function writesSession(authFile) { await fs.writeFile(authFile, JSON.strin
     await fs.rm(directory, { recursive: true, force: true });
   });
 
+  await test('credential recovery stops after one alternative instead of spraying every trusted host', async () => {
+    // Three trusted hosts (configured + two operator-named fallbacks), all
+    // unreachable. The session credential must only ever be sent to the
+    // configured host plus exactly one alternative -- never all three.
+    const mock = queuedFetch(
+      json({ message: 'down' }, 503),
+      json({ message: 'down' }, 503),
+      json({ message: 'down' }, 503),
+      json({ message: 'down' }, 503)
+    );
+    const { client, authFile, directory } = await tempClient(mock.fetchImpl, {
+      fallbackBaseUrls: ['https://backup-a.test', 'https://backup-b.test'],
+      sleep: async () => {}
+    });
+    await writesSession(authFile);
+    const status = await client.getStatus();
+    assert.equal(status.state, 'unavailable');
+    const profileUrls = mock.calls.filter(call => call.url.endsWith('/eapi/user/profile')).map(call => call.url);
+    assert.deepEqual(profileUrls, [
+      'https://z-library.test/eapi/user/profile',
+      'https://z-library.test/eapi/user/profile',
+      'https://backup-a.test/eapi/user/profile',
+      'https://backup-a.test/eapi/user/profile'
+    ]);
+    assert.equal(profileUrls.some(url => url.startsWith('https://backup-b.test/')), false, 'must not reach the second alternative');
+    await fs.rm(directory, { recursive: true, force: true });
+  });
+
+  await test('zlibId is validated the same way hash is, before it reaches the request path', async () => {
+    const { client, authFile, directory } = await tempClient(async () => { throw new Error('must not fetch'); });
+    await writesSession(authFile);
+    for (const zlibId of ['..', '../../etc/passwd', '', null, undefined, 42, '__proto__']) {
+      await assert.rejects(
+        () => client.download({ zlibId, hash: 'validhash' }, path.join(directory, 'book.epub')),
+        error => error.code === 'ZLIB_PROTOCOL',
+        `zlibId ${JSON.stringify(zlibId)} must be rejected`
+      );
+    }
+    await fs.rm(directory, { recursive: true, force: true });
+  });
+
   await test('download checks live quota before requesting a file ticket', async () => {
     const mock = queuedFetch(json({ success: true, user: { downloads_today: 10, downloads_limit: 10 } }));
     const { client, authFile, directory } = await tempClient(mock.fetchImpl);
