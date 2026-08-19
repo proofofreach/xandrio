@@ -181,6 +181,37 @@ test('verifyLogin performs exactly one derivation whether or not the username ex
   assert.strictEqual(scryptCalls, 2, 'two concurrent unknown-username logins share the cached dummy record: one derivation each, not one each plus a duplicated dummy build');
 });
 
+test('a failed dummy derivation does not become a username oracle of its own', async () => {
+  // The precomputed dummy is built at construction. If that derivation fails
+  // and the rejection is left to propagate, every unknown-username login
+  // throws (500) while a known one still returns 401 -- restoring, in a louder
+  // form, exactly the oracle the dummy record exists to remove.
+  const nodeCrypto = require('crypto');
+  let rejections = 0;
+  const onRejection = () => { rejections += 1; };
+  process.on('unhandledRejection', onRejection);
+  try {
+    const failingCrypto = {
+      randomBytes: nodeCrypto.randomBytes,
+      timingSafeEqual: nodeCrypto.timingSafeEqual,
+      scrypt(_password, _salt, _keylen, _options, callback) {
+        callback(new Error('derivation unavailable'));
+      }
+    };
+    const accounts = createAccountsStore({
+      filePath: 'accounts.json',
+      jsonStore: memoryJsonStore(),
+      crypto: failingCrypto
+    });
+    assert.strictEqual(await accounts.verifyLogin('nobody', 'password123'), null,
+      'an unknown username still fails closed rather than throwing');
+    await new Promise(resolve => setTimeout(resolve, 50));
+    assert.strictEqual(rejections, 0, 'the failed dummy derivation is handled, not left unhandled');
+  } finally {
+    process.off('unhandledRejection', onRejection);
+  }
+});
+
 test('verifyLogin transparently rehashes a stale record to current scrypt cost', async () => {
   const { jsonStore, accounts } = makeAccounts();
   const staleRecord = await hashPassword('password123', { N: 16384, r: 8, p: 1 });

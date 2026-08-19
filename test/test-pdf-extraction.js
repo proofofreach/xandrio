@@ -239,6 +239,80 @@ section('PDF Candidate Scoring');
   'marks page-group fallback as explicit low-confidence review work');
 }
 
+section('pdfinfo metadata injection');
+
+{
+  // Captured from poppler 26.04 running against a PDF whose /Title contained
+  // newlines faking poppler's own fields. The forged lines land BEFORE the
+  // genuine computed ones, which is what makes them distinguishable.
+  const hostile = [
+    'Title:          Innocent',
+    'Pages:          9999',
+    'Encrypted:      yes',
+    'Author:          Ada',
+    'Tagged:          no',
+    'Pages:           1',
+    'Encrypted:       no',
+    'Page size:       200 x 200 pts',
+    'PDF version:     1.4'
+  ].join('\n');
+  const info = __test.parsePdfInfo(hostile);
+  assert(info.pageCount === 1, 'a forged Pages line does not displace the real page count');
+  assert(info.encrypted === false, 'a forged Encrypted line does not displace the real value');
+  assert(info.title === 'Innocent', 'the document title is still read');
+  assert(info.author === 'Ada', 'the document author is still read');
+}
+
+{
+  // A later duplicate must not displace a genuine document field either.
+  const info = __test.parsePdfInfo(['Title:  Real Title', 'Title:  Injected Title'].join('\n'));
+  assert(info.title === 'Real Title', 'a duplicate document field keeps the first occurrence');
+}
+
+{
+  const info = __test.parsePdfInfo('Language:  <script>alert(1)</script>');
+  assert(info.language === '', 'a language that is not a BCP-47 tag is discarded');
+  assert(__test.parsePdfInfo('Language:  en-GB').language === 'en-GB', 'a real language tag is kept');
+}
+
+section('table-of-contents resolution cost');
+
+// A crafted table of contents made direct matching entries x pages, and every
+// unmatched entry scanned every page before giving up. Measured before the
+// fix: 2000 entries against 2000 pages spent ~71 seconds blocking the single
+// event loop this server has.
+{
+  const pages = Array.from({ length: 1500 }, (_, index) => ({
+    pageNumber: index + 2,
+    text: 'Lorem ipsum dolor sit amet consectetur '.repeat(50)
+  }));
+  const entries = Array.from({ length: 4000 }, (_, index) => ({
+    kind: 'content',
+    title: `Nonexistent Chapter ${index}`,
+    prefix: `zzz${index}`,
+    printedPage: index + 1,
+    printedPageStyle: 'arabic'
+  }));
+  const started = process.hrtime.bigint();
+  __test.resolveTocPlan({ entries, tocEndPage: 1 }, pages);
+  const elapsedMs = Number(process.hrtime.bigint() - started) / 1e6;
+  assert(elapsedMs < 5000, `hostile table-of-contents resolution stays bounded (${elapsedMs.toFixed(0)}ms)`);
+}
+
+// A real book stays well under the work budget and keeps full direct matching.
+{
+  const pages = Array.from({ length: 40 }, (_, index) => ({
+    pageNumber: index + 2,
+    text: index === 10 ? 'Chapter 1 The Beginning' : 'ordinary body text'
+  }));
+  const entries = [{
+    kind: 'content', title: 'The Beginning', prefix: 'chapter 1',
+    chapterNumber: 1, printedPage: 11, printedPageStyle: 'arabic'
+  }];
+  const resolved = __test.resolveTocPlan({ entries, tocEndPage: 1 }, pages);
+  assert(resolved.matchedEntries === 1, 'a real table of contents still matches directly');
+}
+
 async function runFixtureTests() {
   section('Generated PDF Extraction');
 

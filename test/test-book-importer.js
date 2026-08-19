@@ -779,6 +779,74 @@ section('Successful direct import');
   assert(noQuality.warnings.includes(spineWarning),
     'spine warnings survive when no extraction quality is available');
 
+  section('Cover cleanup');
+  const coverOnDuplicateFailure = createFixture({
+    ensureBookCover: async record => `/library/${record.id}_cover.jpg`,
+    persistBook: async () => ({ existingBook: { id: 'existing', title: 'Existing book', author: 'Author' } })
+  });
+  let coverDuplicateError;
+  try {
+    await coverOnDuplicateFailure.importer.import(command());
+  } catch (error) {
+    coverDuplicateError = error;
+  }
+  assert(coverDuplicateError instanceof BookImportError,
+    'still reports the duplicate error when a cover was fetched before the rejection');
+  assert(coverOnDuplicateFailure.calls.includes('remove:/library/book-1_cover.jpg'),
+    'cleans up an orphaned cover when persistence rejects a duplicate import');
+
+  const coverOnSuccess = createFixture({
+    ensureBookCover: async record => `/library/${record.id}_cover.jpg`
+  });
+  const coverSuccessResult = await coverOnSuccess.importer.import(command());
+  assert(coverSuccessResult.book.id === 'book-1' &&
+    !coverOnSuccess.calls.includes('remove:/library/book-1_cover.jpg'),
+  'keeps the fetched cover file after a successful import');
+
+  const coverUnfetched = createFixture();
+  const coverUnfetchedResult = await coverUnfetched.importer.import(command());
+  assert(coverUnfetchedResult.book.id === 'book-1' &&
+    !coverUnfetched.calls.some(call => call.startsWith('remove:') && call.includes('cover')),
+  'does not attempt to remove a cover that was never written (ensureBookCover returned nothing)');
+
+  section('Alternative id availability');
+  const availabilityChecks = [];
+  const blockedAlternative = createFixture({
+    checkChapterQuality: async source => source.includes('primary')
+      ? { isGoodStructure: false, reasons: ['poor structure'], contentChapters: 0, maxChapterSize: 200_000 }
+      : { isGoodStructure: true, reasons: [], contentChapters: 3, maxChapterSize: 20_000 },
+    isImportTargetAvailable: async (id, addedBy) => {
+      availabilityChecks.push([id, addedBy]);
+      return id !== 'taken';
+    }
+  });
+  const blockedResult = await blockedAlternative.importer.import(command({
+    id: 'primary',
+    sourcePath: '/uploads/primary.epub',
+    addedBy: 'member-1',
+    alternatives: [{ id: 'taken', originalName: 'taken.epub', sourcePath: '/uploads/taken.epub' }]
+  }));
+  assert(blockedResult.book.id === 'primary',
+    'keeps the weak primary rather than probing an alternative whose id collides with an existing book');
+  assert(!blockedAlternative.calls.some(call => call.includes('/uploads/taken.epub')),
+    'never normalizes (and so never writes into) a blocked alternative\'s canonical cache path');
+  assert(availabilityChecks.some(([id, addedBy]) => id === 'taken' && addedBy === 'member-1'),
+    'checks alternative ids against the library, passing through the importer\'s addedBy');
+
+  const allowedAlternative = createFixture({
+    checkChapterQuality: async source => source.includes('primary')
+      ? { isGoodStructure: false, reasons: ['poor structure'], contentChapters: 0, maxChapterSize: 200_000 }
+      : { isGoodStructure: true, reasons: [], contentChapters: 3, maxChapterSize: 20_000 },
+    isImportTargetAvailable: async () => true
+  });
+  const allowedResult = await allowedAlternative.importer.import(command({
+    id: 'primary',
+    sourcePath: '/uploads/primary.epub',
+    alternatives: [{ id: 'free', originalName: 'free.epub', sourcePath: '/uploads/free.epub' }]
+  }));
+  assert(allowedResult.usedAlternative && allowedResult.book.id === 'free',
+    'still probes an alternative whose id is confirmed available');
+
   console.log(`\nBook Importer tests: ${passed} passed, ${failed} failed`);
   if (failed) process.exit(1);
 })().catch(error => {

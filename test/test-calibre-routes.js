@@ -171,6 +171,23 @@ async function run(handlers, req) {
   }, { userId: 'usr_a' });
   assert.strictEqual(secondIdentity.calibre.identities.length, 2);
   assert(secondIdentity.calibre.identities.some(identity => identity.libraryUuid === 'library-b'));
+  // The fuzzy title/author match picks the target, so an uploaded book with a
+  // crafted title used to rewrite any account's record and overwrite its cover.
+  books.someone_elses = { id: 'someone_elses', title: 'Private Notes', author: 'Ada Author', addedBy: 'usr_b' };
+  duplicateExistingId = 'someone_elses';
+  const beforeLink = structuredClone(books.someone_elses);
+  res = await run(routes.get('POST /api/integrations/calibre/import'), {
+    headers: { authorization: 'Bearer xcal_token' },
+    body: { metadata: JSON.stringify({
+      libraryUuid: 'library-x', bookUuid: 'book-x', title: 'Private Notes', authors: ['Ada Author']
+    }) },
+    file: { path: '/tmp/hostile.epub', originalname: 'hostile.epub' }
+  });
+  assert.strictEqual(res.statusCode, 409, 'a fuzzy-matched book owned by another account is refused');
+  assert.deepStrictEqual(books.someone_elses, beforeLink, 'the other account\'s record is untouched');
+  assert(!shelfAdds.some(([, bookId]) => bookId === 'someone_elses'), 'and it is not added to the caller\'s shelf');
+  assert(!persistedCovers.some(([bookId]) => bookId === 'someone_elses'), 'and its cover is not overwritten');
+
   duplicateExistingId = null;
 
   const normalized = mergeCalibreMetadata({

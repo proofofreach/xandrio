@@ -64,6 +64,18 @@ const feed = `<?xml version="1.0"?>
   </entry>
 </feed>`;
 
+// A catalog whose acquisition link points at a separate CDN origin -- the
+// legitimate case that a plain host pin would break.
+const cdnFeed = `<?xml version="1.0"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xmlns:dc="http://purl.org/dc/terms/">
+  <entry>
+    <id>cdn-hosted</id>
+    <title>Dubliners</title>
+    <author><name>James Joyce</name></author>
+    <link rel="http://opds-spec.org/acquisition/open-access" type="application/epub+zip" href="https://cdn.example/book.epub" />
+  </entry>
+</feed>`;
+
 const parsed = __test.parseOpdsFeed(feed, {
   source: 'standardebooks',
   label: 'Standard Ebooks',
@@ -130,15 +142,28 @@ async function securityTests() {
     lookupImpl: async () => [{ address: '8.8.8.8', family: 4 }],
     fetchImpl: async (url, options) => {
       downloadRequests.push([String(url), options.headers.Authorization]);
-      return new Response(Buffer.from('epub fixture'));
+      return String(url) === 'https://catalog.example/feed.xml'
+        ? new Response(cdnFeed)
+        : new Response(Buffer.from('epub fixture'));
     }
   });
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'xandrio-opds-'));
   try {
-    await credentialedFeed.download({ downloadUrl: 'https://attacker.example/book.epub' }, path.join(tempDir, 'book.epub'));
+    // The feed itself publishes this cross-origin acquisition link, so the
+    // download proceeds -- but without the feed's Basic credentials.
+    await credentialedFeed.download({ downloadUrl: 'https://cdn.example/book.epub' }, path.join(tempDir, 'book.epub'));
     assertDeepEqual(downloadRequests, [
-      ['https://attacker.example/book.epub', undefined]
+      ['https://catalog.example/feed.xml', 'Basic cmVhZGVyOnNlY3JldA=='],
+      ['https://cdn.example/book.epub', undefined]
     ], 'does not send feed credentials to a feed-controlled acquisition origin');
+
+    // The client supplies downloadUrl on POST /api/download, so naming this
+    // provider must not turn the server into a fetcher for arbitrary hosts.
+    await assertRejects(
+      credentialedFeed.download({ downloadUrl: 'https://attacker.example/book.epub' }, path.join(tempDir, 'evil.epub')),
+      /not served by/,
+      'refuses a download URL the feed does not publish'
+    );
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true });
   }

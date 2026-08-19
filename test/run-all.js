@@ -47,6 +47,8 @@ const tests = [
   'test-engine-status.js',
   'test-operator-diagnostics.js',
   'test-voice-authority.js',
+  'test-csrf.js',
+  'test-epub-zip-limits.js',
   'test-route-error-safety.js',
   'test-router-transitions.js',
   'test-client-settings.js',

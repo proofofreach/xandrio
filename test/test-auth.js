@@ -8,6 +8,7 @@ const {
   createSession,
   parseCookies,
   requestToken,
+  sessionCookieOptions,
   verifySession
 } = require('../lib/auth');
 
@@ -164,6 +165,38 @@ test('parseCookies handles empty and malformed headers', () => {
   assert.deepStrictEqual(parseCookies(''), {});
   assert.deepStrictEqual(parseCookies(undefined), {});
   assert.deepStrictEqual(parseCookies('noequals; =bare; a=1'), { a: '1' });
+});
+
+test('a shadowing duplicate cookie cannot displace the real session', () => {
+  // An attacker who can set a cookie on a sibling host sends a second value
+  // for the same name; last-wins parsing would hand the shadow to the session
+  // verifier instead of the genuine cookie.
+  assert.deepStrictEqual(parseCookies('xandrio_session=real; xandrio_session=injected'), {
+    xandrio_session: 'real'
+  });
+  assert.deepStrictEqual(parseCookies('a=1; b=2; a=3'), { a: '1', b: '2' });
+});
+
+test('session cookies are Secure behind a TLS-terminating proxy', () => {
+  // The default `npm start` puts the server behind tailscale serve, which
+  // terminates TLS and forwards over loopback HTTP. Without honouring
+  // X-Forwarded-Proto the out-of-the-box HTTPS deployment shipped session
+  // cookies with no Secure attribute.
+  const cookie = headers => sessionCookieOptions({ headers, secure: false });
+  assert.strictEqual(cookie({}).secure, false);
+  assert.strictEqual(cookie({ 'x-forwarded-proto': 'https' }).secure, true);
+  assert.strictEqual(cookie({ 'x-forwarded-proto': 'https, http' }).secure, true);
+  assert.strictEqual(cookie({ 'x-forwarded-proto': 'http' }).secure, false);
+  assert.strictEqual(sessionCookieOptions({ headers: {}, secure: true }).secure, true);
+  assert.strictEqual(cookie({}).httpOnly, true);
+  assert.strictEqual(cookie({}).sameSite, 'lax');
+});
+
+test('the Secure cookie policy can be pinned by the operator', () => {
+  const plain = { headers: {}, secure: false };
+  assert.strictEqual(sessionCookieOptions(plain, { securePolicy: 'always' }).secure, true);
+  assert.strictEqual(sessionCookieOptions({ headers: {}, secure: true }, { securePolicy: 'never' }).secure, false);
+  assert.strictEqual(sessionCookieOptions(plain, { securePolicy: 'nonsense' }).secure, false);
 });
 
 console.log(`\n${'═'.repeat(50)}`);

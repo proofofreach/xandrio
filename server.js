@@ -4,6 +4,7 @@ const cors = require('cors');
 const path = require('path');
 const http = require('http');
 const https = require('https');
+const net = require('net');
 const os = require('os');
 const fs = require('fs').promises;
 const fsSync = require('fs');
@@ -113,6 +114,7 @@ const shelves = require('./lib/shelves');
 const { parseVoiceProviders, filterVoicesByProvider } = require('./lib/voice-catalog');
 const { registerAccountRoutes } = require('./lib/routes/accounts-routes');
 const { createRateLimitMiddleware, positiveInteger } = require('./lib/rate-limit');
+const { createCsrfMiddleware } = require('./lib/csrf');
 const { createGracefulShutdown } = require('./lib/graceful-shutdown');
 const {
   normalizeCanonicalOrigin,
@@ -220,9 +222,28 @@ function configuredTrustProxy(value) {
   const raw = String(value || '').trim().toLowerCase();
   if (!raw || raw === 'false' || raw === '0') return false;
   if (/^[1-9]\d*$/.test(raw)) return Number(raw);
+  if (raw === 'true') return true;
   if (['loopback', 'linklocal', 'uniquelocal'].includes(raw)) return raw;
-  console.warn('Ignoring invalid XANDRIO_TRUST_PROXY; use a positive hop count or loopback/linklocal/uniquelocal.');
+  // Express delegates to proxy-addr, which accepts IP addresses, CIDR
+  // subnets, and comma-separated lists of any of the above. Rejecting those
+  // sent operators who had configured a perfectly valid value down the
+  // silent-downgrade path instead. Shape-check here and let proxy-addr do the
+  // real validation.
+  if (raw.split(',').every(entry => isTrustProxyAddress(entry.trim()))) {
+    return raw.split(',').map(entry => entry.trim());
+  }
+  console.warn('Ignoring invalid XANDRIO_TRUST_PROXY; use a positive hop count, true, an IP/CIDR list, or loopback/linklocal/uniquelocal.');
   return false;
+}
+
+// Accepts an IPv4/IPv6 literal with an optional CIDR suffix. Deliberately a
+// shape check only -- proxy-addr rejects anything genuinely malformed, and
+// duplicating its parser here would just be a second thing to keep correct.
+function isTrustProxyAddress(entry) {
+  if (!entry) return false;
+  const [address, prefix] = entry.split('/');
+  if (prefix !== undefined && !/^\d{1,3}$/.test(prefix)) return false;
+  return net.isIP(address) !== 0;
 }
 
 function securityHeaders(req, res, next) {
@@ -250,6 +271,12 @@ function securityHeaders(req, res, next) {
 
 const trustProxy = configuredTrustProxy(process.env.XANDRIO_TRUST_PROXY);
 if (trustProxy) app.set('trust proxy', trustProxy);
+// Express matches routes case-insensitively by default, while the auth gate
+// and the rate limiter test the request path against lowercase literals.
+// Without this, GET /API/library was classified public, skipped both, and
+// still matched the handler registered for /api/library. This pairs with the
+// canonical path in lib/auth.js: the router now agrees with the gates.
+app.set('case sensitive routing', true);
 const allowedCorsOrigins = configuredCorsOrigins(process.env.CORS_ORIGIN);
 const corsOptions = {
   credentials: true,
@@ -296,7 +323,16 @@ const accountSessionStore = createSessionStore({ filePath: SESSIONS_FILE, jsonSt
 const calibreAccessStore = createCalibreAccessStore({
   filePath: path.join(DATA_DIR, 'calibre-connections.json'),
   jsonStore,
-  isUserActive: async userId => !(await accountsStore.findById(userId))?.disabled
+  // Fail closed once accounts exist. The bare `!(...)?.disabled` form returns
+  // true for an unknown userId, so a Calibre connection whose account was
+  // deleted stayed valid forever -- invisible in the UI and impossible to
+  // revoke. In trusted-LAN and shared-token modes there are no accounts and
+  // every connection is legitimately active.
+  isUserActive: async userId => {
+    if ((await accountsStore.count()) === 0) return true;
+    const account = await accountsStore.findById(userId);
+    return Boolean(account) && !account.disabled;
+  }
 });
 const authRoutes = createAuthRoutes({
   token: XANDRIO_TOKEN,
@@ -304,6 +340,9 @@ const authRoutes = createAuthRoutes({
   accounts: accountsStore,
   sessionStore: accountSessionStore
 });
+// Runs ahead of the rate limiter and the auth gate so a forged cross-site
+// request is refused before it can consume a rate-limit slot or a session.
+app.use(createCsrfMiddleware());
 app.use(createRateLimitMiddleware({ windowMs: RATE_LIMIT_WINDOW, max: RATE_LIMIT_MAX }));
 const requestConcurrencyLimiter = createConcurrencyLimitMiddleware({
   groups: defaultConcurrencyGroups(CONCURRENCY_LIMITS)
@@ -429,7 +468,23 @@ const bookArtifactCleaner = createBookArtifactCleaner({
   cacheDir: CACHE_DIR,
   fs,
   invalidateChapterCache,
-  isBookDeleted: bookId => deletedBookIds.has(bookId)
+  isBookDeleted: bookId => deletedBookIds.has(bookId),
+  // The in-memory tombstone is capped and is cleared by only some import
+  // paths, so a deferred sweep can fire against a book that has since been
+  // re-imported and delete its fresh artifacts. These two re-check the
+  // authoritative catalog under the same per-book lock the importer uses.
+  bookStillExists: async bookId => {
+    try {
+      const books = await loadJSON(BOOKS_FILE, {});
+      return Boolean(books?.[bookId]);
+    } catch (err) {
+      // On a read failure, treat the book as present: skipping a sweep leaves
+      // recoverable orphans, while sweeping wrongly destroys a live book.
+      console.warn(`book sweep existence check failed for ${bookId}:`, err.message);
+      return true;
+    }
+  },
+  withSweepLock: (bookId, task) => bookMutationLocks.withBookMutationLock(bookId, task)
 });
 
 // Unified 500 response: log the full error server-side, return a generic public
@@ -453,40 +508,65 @@ function sendServerError(res, err, publicMessage = 'Something went wrong') {
 }
 
 // Anna's Archive config — read from file, fallback to hardcoded defaults
-function getAnnasConfig() {
+// An unusable baseUrl must not cost the operator their configured key. The
+// origin was previously normalized inside the same object literal that read
+// secretKey, so normalizeAnnasOrigin() rejecting a non-allowlisted mirror threw
+// past the whole literal and fell back to an env-only config — silently
+// dropping a key stored in settings and reporting the provider unconfigured.
+// The two are resolved independently now.
+function safeAnnasOrigin(candidate) {
   try {
-    const data = fsSync.readFileSync(ANNAS_AUTH_FILE, 'utf8');
-    const cfg = JSON.parse(data);
-    const fileHasKey = typeof cfg.secretKey === 'string' && cfg.secretKey.length > 0;
-    return {
-      secretKey: cfg.secretKey || process.env.ANNAS_SECRET_KEY || '',
-      baseUrl: normalizeAnnasOrigin(cfg.baseUrl || process.env.ANNAS_BASE_URL || DEFAULT_ANNAS_ORIGIN),
-      keySource: fileHasKey ? 'settings' : (process.env.ANNAS_SECRET_KEY ? 'environment' : null),
-      updatedAt: fileHasKey ? (cfg.updatedAt || null) : null
-    };
-  } catch {
-    try {
-      return {
-        secretKey: process.env.ANNAS_SECRET_KEY || '',
-        baseUrl: normalizeAnnasOrigin(process.env.ANNAS_BASE_URL || DEFAULT_ANNAS_ORIGIN),
-        keySource: process.env.ANNAS_SECRET_KEY ? 'environment' : null,
-        updatedAt: null
-      };
-    } catch {
-      return { secretKey: '', baseUrl: DEFAULT_ANNAS_ORIGIN, keySource: null, updatedAt: null };
-    }
+    return normalizeAnnasOrigin(candidate || DEFAULT_ANNAS_ORIGIN);
+  } catch (err) {
+    console.warn(`Ignoring unusable Anna's Archive origin (${err.message}); using the default mirror`);
+    return DEFAULT_ANNAS_ORIGIN;
   }
 }
 
-function buildAnnasCliEnv(cfg = getAnnasConfig(), baseEnv = process.env) {
-  const cliEnv = {
-    ...baseEnv,
-    ANNAS_SECRET_KEY: cfg.secretKey,
-    ANNAS_DOWNLOAD_PATH: CACHE_DIR
+function getAnnasConfig() {
+  let cfg = {};
+  try {
+    cfg = JSON.parse(fsSync.readFileSync(ANNAS_AUTH_FILE, 'utf8')) || {};
+  } catch {
+    // No settings file yet, or it is unreadable: fall back to the environment.
+    cfg = {};
+  }
+  const fileHasKey = typeof cfg.secretKey === 'string' && cfg.secretKey.length > 0;
+  return {
+    secretKey: (fileHasKey ? cfg.secretKey : process.env.ANNAS_SECRET_KEY) || '',
+    baseUrl: safeAnnasOrigin(cfg.baseUrl || process.env.ANNAS_BASE_URL),
+    keySource: fileHasKey ? 'settings' : (process.env.ANNAS_SECRET_KEY ? 'environment' : null),
+    updatedAt: fileHasKey ? (cfg.updatedAt || null) : null
   };
+}
+
+// Only what an external process legitimately needs to run and reach the
+// network. Everything else is withheld by construction.
+const ANNAS_CLI_ENV_ALLOWLIST = [
+  'PATH', 'HOME', 'LANG', 'LC_ALL', 'TMPDIR', 'TEMP', 'TMP',
+  'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY',
+  'http_proxy', 'https_proxy', 'no_proxy'
+];
+
+function buildAnnasCliEnv(cfg = getAnnasConfig(), baseEnv = process.env) {
+  // Previously this spread all of process.env into the child, handing a
+  // third-party binary every secret the server holds — XANDRIO_TOKEN, the
+  // VAPID private key, PPQ_API_KEY and the provider credentials among them.
+  // The CLI needs exactly one secret, so it receives exactly one.
+  const cliEnv = {};
+  for (const [name, value] of Object.entries(baseEnv)) {
+    if (value === undefined) continue;
+    // The CLI's own namespace is its configuration surface, so it keeps that —
+    // minus ANNAS_BASE_URL (see below). Everything else must be explicitly
+    // listed; unrelated variables, and every unrelated secret, stay behind.
+    const ownNamespace = name.startsWith('ANNAS_') && name !== 'ANNAS_BASE_URL';
+    if (ownNamespace || ANNAS_CLI_ENV_ALLOWLIST.includes(name)) cliEnv[name] = value;
+  }
+  cliEnv.ANNAS_SECRET_KEY = cfg.secretKey;
+  cliEnv.ANNAS_DOWNLOAD_PATH = CACHE_DIR;
   // annas-mcp performs its own current-mirror discovery. A stale app mirror
   // suppresses that discovery and turns a healthy search into an empty result.
-  delete cliEnv.ANNAS_BASE_URL;
+  // ANNAS_BASE_URL is simply never copied in.
   return cliEnv;
 }
 
@@ -516,7 +596,7 @@ async function downloadFromAnnasDirect(hash, outputPath) {
       // upstream response body that could reflect it in local logs.
       throw new Error(`Anna's API failed (${apiResp.status})`);
     }
-    data = JSON.parse((await readBoundedBuffer(apiResp, Number(process.env.ANNAS_API_MAX_JSON_BYTES || 2 * 1024 * 1024))).toString('utf8'));
+    data = JSON.parse((await readBoundedBuffer(apiResp, byteLimitFromEnv('ANNAS_API_MAX_JSON_BYTES', 2 * 1024 * 1024))).toString('utf8'));
   } finally {
     apiRemote.close();
   }
@@ -535,7 +615,7 @@ async function downloadFromAnnasDirect(hash, outputPath) {
       throw new Error(`Anna's file download failed (${downloadResp.status})`);
     }
     if (!downloadResp.body) throw new Error('Anna\'s file download returned an empty response');
-    const maxDownloadBytes = Number(process.env.ANNAS_MAX_DOWNLOAD_BYTES || 1024 * 1024 * 1024);
+    const maxDownloadBytes = byteLimitFromEnv('ANNAS_MAX_DOWNLOAD_BYTES', 1024 * 1024 * 1024);
     const length = declaredLength(downloadResp);
     if (length !== null && length > maxDownloadBytes) {
       throw new Error('Anna\'s file download exceeds the allowed size');
@@ -565,7 +645,10 @@ function annasSearchTimeoutMs(env = process.env) {
 }
 
 function annasMcpSearchArgs(query) {
-  return ['book-search', query];
+  // The query is user-supplied and lands in argv position. Without the POSIX
+  // end-of-options terminator, a query beginning with `-` is parsed as a flag
+  // by the CLI rather than as the search text.
+  return ['book-search', '--', query];
 }
 
 function annasMcpExecutable(env = process.env, {
@@ -792,8 +875,20 @@ const DEFAULT_VOICE = process.env.XANDRIO_DEFAULT_VOICE || DEFAULT_EDGE_VOICE;
 const DEFAULT_CHUNK_SIZE = 4000;
 const SAMPLE_TEXT = 'The morning sun cast golden light through the library windows, illuminating rows of leather-bound books that lined the walls from floor to ceiling.';
 const VOICE_SAMPLES_DIR = path.join(CACHE_DIR, 'voice-samples');
-const MAX_BOOK_UPLOAD_SIZE = Number(process.env.MAX_BOOK_UPLOAD_SIZE_BYTES || 250 * 1024 * 1024);
-const LARGE_BOOK_WARNING_SIZE = Number(process.env.LARGE_BOOK_WARNING_SIZE_BYTES || 50 * 1024 * 1024);
+// Number('250MB') is NaN, and every `size > NaN` test is false — so a typo in
+// a byte-limit env var silently removed the limit instead of failing loudly.
+// Any value that is not a positive finite number falls back to the default.
+function byteLimitFromEnv(name, fallback) {
+  const raw = process.env[name];
+  if (raw === undefined || raw === '') return fallback;
+  const parsed = Number(raw);
+  if (Number.isFinite(parsed) && parsed > 0) return Math.floor(parsed);
+  console.warn(`Ignoring invalid ${name}="${raw}"; using default ${fallback} bytes`);
+  return fallback;
+}
+
+const MAX_BOOK_UPLOAD_SIZE = byteLimitFromEnv('MAX_BOOK_UPLOAD_SIZE_BYTES', 250 * 1024 * 1024);
+const LARGE_BOOK_WARNING_SIZE = byteLimitFromEnv('LARGE_BOOK_WARNING_SIZE_BYTES', 50 * 1024 * 1024);
 const XBOOK_DELETE_SOURCE_AFTER_EXTRACT = process.env.XBOOK_DELETE_SOURCE_AFTER_EXTRACT !== 'false';
 const XBOOK_VERSION = 2;
 const SUPPORTED_BOOK_FORMATS = new Set([
@@ -828,7 +923,7 @@ const searchProviders = createSearchProviderRegistry({
   opds,
   standardEbooks,
   searchFormats: SEARCH_FORMATS,
-  sourceTimeoutMs: Number(process.env.SEARCH_SOURCE_TIMEOUT_MS || 12000),
+  sourceTimeoutMs: positiveInteger(process.env.SEARCH_SOURCE_TIMEOUT_MS, 12000),
   sourceTimeoutMsByProvider: { annas: annasSearchTimeoutMs() },
   withTimeout
 });
@@ -1370,6 +1465,13 @@ function shouldRefreshCachedCover(book, force = false, cachedCover = null) {
 
 const bookImporter = createBookImporter({
   normalizeBook: ({ sourcePath, originalName, id }) => normalizeBookFile(sourcePath, originalName, id),
+  // An alternative download candidate is probed by writing it to its own
+  // canonical cache path. Without this check, probing an alternative whose id
+  // happens to belong to an already-imported book destroyed that book's source
+  // file. assertImportTargetAvailable throws on a collision; the importer wants
+  // a predicate.
+  isImportTargetAvailable: (id, addedBy) =>
+    assertImportTargetAvailable(id, addedBy).then(() => true).catch(() => false),
   document: {
     validateBook,
     validateExtractedChapters: bookDocument.validateExtractedChapters,
@@ -2437,13 +2539,20 @@ function sanitizeFileStem(value, fallback = 'book') {
   return stem || fallback;
 }
 
-function sanitizeDownloadFilename(filename, fallbackStem = 'book') {
+// `bookId` namespaces the result. path.basename() blocks traversal but not
+// collision: a client naming its download after another book's stored file
+// simply overwrote it, since CACHE_DIR is one flat directory. Prefixing with
+// the validated book id makes the destination unique per book and matches the
+// `<bookId>_` artifact convention lib/book-artifact-paths.js already expects.
+function sanitizeDownloadFilename(filename, fallbackStem = 'book', bookId = '') {
   const base = path.basename(String(filename || ''));
   const ext = getBookFormatFromName(base);
   if (!ext) {
     throw new Error(`Unsupported book format: ${path.extname(base) || 'unknown'}`);
   }
-  return `${sanitizeFileStem(base, sanitizeFileStem(fallbackStem))}.${ext}`;
+  const stem = sanitizeFileStem(base, sanitizeFileStem(fallbackStem));
+  const prefix = isSafeBookId(bookId) ? `${bookId}_` : '';
+  return `${prefix}${stem}.${ext}`;
 }
 
 
@@ -2659,7 +2768,7 @@ function downloadImportCommand(body, { download = searchProviders.download.bind(
   if (!isSafeBookId(hash)) {
     throw new BookImportError('Invalid book identifier', { response: { error: 'Invalid book identifier' } });
   }
-  const safeFilename = sanitizeDownloadFilename(filename, title || hash);
+  const safeFilename = sanitizeDownloadFilename(filename, title || hash, hash);
   const selected = { title, author, language };
   const expected = {
     title,
@@ -2694,7 +2803,8 @@ function downloadImportCommand(body, { download = searchProviders.download.bind(
       : 'epub';
     const alternativeFilename = sanitizeDownloadFilename(
       `${sanitizeFileStem(alternative.title || title || 'book')}_alt${index}.${format}`,
-      alternative.hash || 'book'
+      alternative.hash || 'book',
+      hash
     );
     return {
       id: alternative.hash,
@@ -2743,12 +2853,35 @@ function downloadImportCommand(body, { download = searchProviders.download.bind(
   };
 }
 
+// The book id for a download is the client-supplied `hash`, validated only for
+// character shape. findDuplicateBook cannot catch a collision because it skips
+// records whose id equals the incoming id, so naming an existing book's id
+// walked straight into that book's record and cache artifacts. Ownership is
+// checked here, before anything is written.
+async function assertImportTargetAvailable(bookId, addedBy) {
+  const books = await loadJSON(BOOKS_FILE, {});
+  const existing = books?.[bookId];
+  if (!existing) return;
+  // Re-importing your own book stays a legitimate refresh.
+  if (addedBy && existing.addedBy && existing.addedBy === addedBy) return;
+  throw new BookImportError('A different book already uses this identifier', {
+    statusCode: 409,
+    response: { error: 'A different book already uses this identifier' },
+    existingBookId: bookId
+  });
+}
+
 async function importDownloadedBook(body, progress, { addedBy = null } = {}) {
   const command = downloadImportCommand(body);
   if (addedBy) command.addedBy = addedBy;
   return bookMutationLocks.withBookMutationLock(command.id, async () => {
+    await assertImportTargetAvailable(command.id, addedBy);
     deletedBookIds.delete(command.id);
     const result = await bookImporter.import(command, progress);
+    // A fallback candidate can persist under an id other than command.id, so
+    // clearing only command.id left the real book tombstoned and exposed to a
+    // later artifact sweep.
+    if (result?.bookId) deletedBookIds.delete(result.bookId);
     if (addedBy && result?.bookId) await addBookToShelf(addedBy, result.bookId);
     return result;
   });
@@ -2995,10 +3128,31 @@ function publicBookRecord(book) {
     calibre: _calibre,
     processingVersion: _processingVersion,
     metadataRefreshReconciliation,
+    // Server-side bookkeeping that no client view reads (verified against
+    // public/js). `addedBy` names the owning account to every other member,
+    // and the filename fields disclose the operator's original upload paths
+    // and on-disk layout. This list is a denylist, which is private-by-accident
+    // rather than private-by-default -- a new internal field is published
+    // until someone remembers to add it here.
+    addedBy: _addedBy,
+    filename: _filename,
+    uploadedFile: _uploadedFile,
+    originalFilename: _originalFilename,
+    sourceFilePath: _sourceFilePath,
     ...pub
   } = book;
   pub.canRebuildChapters = Boolean(book.canRebuildChapters) || undefined;
   pub.hasCover = Boolean(coverPath);
+  // The `calibre` block is stripped above, but sourceProvenance.itemId carries
+  // the same identity as "<libraryUuid>:<bookUuid>". A Calibre book id is
+  // sha256("calibre\0<libraryUuid>\0<bookUuid>"), so publishing itemId let any
+  // reader of /api/library recompute another user's book id and target it
+  // through the Calibre import route. The provider and rights fields the UI
+  // renders are kept.
+  if (pub.sourceProvenance && typeof pub.sourceProvenance === 'object') {
+    const { itemId: _itemId, ...provenance } = pub.sourceProvenance;
+    pub.sourceProvenance = provenance;
+  }
   return pub;
 }
 
@@ -3243,12 +3397,29 @@ app.delete('/api/book/:bookId', async (req, res) => {
 });
 
 // API: Refresh metadata for a book
+// DELETE /api/book/:bookId enforces "a member may only touch a book they added"
+// (lib/book-deletion.js:118), but the other destructive routes did not: any
+// member could rewrite another account's metadata or discard and rebuild their
+// chapters. Same predicate, so the three routes agree. Returns an error string
+// when refused, null when allowed.
+async function refuseIfNotBookOwner(req, bookId) {
+  const actor = req.user;
+  if (actor?.role !== 'member') return null;
+  const books = await loadJSON(BOOKS_FILE, {});
+  const book = books?.[bookId];
+  if (!book) return null; // absent book: let the handler report 404 as before
+  if (book.addedBy === actor.id) return null;
+  return 'Only the book owner or an admin can modify this book';
+}
+
 app.post('/api/refresh-metadata/:bookId', async (req, res) => {
   try {
     const { bookId } = req.params;
     if (!isSafeBookId(bookId)) {
       return res.status(400).json({ error: 'Invalid book identifier' });
     }
+    const refusal = await refuseIfNotBookOwner(req, bookId);
+    if (refusal) return res.status(403).json({ error: refusal });
     const refresh = await bookMutationLocks.withBookMutationLock(bookId, () =>
       bookMetadataRefreshService.refreshBook(bookId)
     );
@@ -3334,6 +3505,8 @@ async function handleRebuildChapters(req, res) {
     if (!isSafeBookId(bookId)) {
       return res.status(400).json({ error: 'Invalid book identifier' });
     }
+    const refusal = await refuseIfNotBookOwner(req, bookId);
+    if (refusal) return res.status(403).json({ error: refusal });
     const result = await chapterRebuildService.rebuild(bookId);
     if (result.reason === 'book-not-found') return res.status(404).json({ error: 'Book not found' });
     if (result.reason === 'unsafe-rebuild') {
@@ -3646,10 +3819,17 @@ registerPlaybackRoutes(app, {
   },
   offlineReadinessNotifications,
   prioritizeForegroundBook,
+  // The session id must match the one the position-save route builds, or the
+  // look-ahead session this creates can never be retired: that route keys on
+  // positionUserId(req) (which falls back to 'default'), so the 'legacy'
+  // fallback here produced "legacy:<device>" against its "default:<device>"
+  // and removeSession never matched. Deliberately NOT changed in
+  // offlinePreparationOwner below -- that key is persisted in push
+  // subscriptions, and rewriting it would orphan existing registrations.
   onCurrentChapterPrepared: ({ req, bookId, chapterIndex, prepared }) => observePlaybackHorizon({
     bookId,
     chapterIndex,
-    sessionId: `${req.user?.id || 'legacy'}:${syncDeviceId(req)}`,
+    sessionId: `${positionUserId(req)}:${syncDeviceId(req)}`,
     tier: prepared?.servedTier === 'instant' ? 'instant' : 'active'
   }),
   offlinePreparationOwner: req =>
@@ -4875,6 +5055,7 @@ module.exports.__test = {
   annasBrowserSearchPermitted,
   annasSearchTimeoutMs,
   annasMcpSearchArgs,
+  configuredTrustProxy,
   annasMcpExecutable,
   buildAnnasCliEnv,
   acquireDownloadSource
