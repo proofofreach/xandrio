@@ -109,6 +109,51 @@ async function withServer(middleware, run) {
     });
   });
 
+  await test('a TLS-terminating proxy does not turn every write into a 403', async () => {
+    // The default deployment terminates TLS at a proxy and forwards over
+    // loopback HTTP with XANDRIO_TRUST_PROXY unset, so req.protocol is "http"
+    // while the browser's Origin says "https". Comparing against req.protocol
+    // alone refused every state-changing request in production while every
+    // unit test here still passed, because none of them ran behind a proxy.
+    //
+    // `fetch` overwrites the Host header with the real connection host, so
+    // this uses http.request, which does not.
+    const post = (port, headers) => new Promise(resolve => {
+      const request = http.request(
+        { port, host: '127.0.0.1', method: 'POST', path: '/api/thing', headers },
+        response => { response.resume(); resolve(response.statusCode); }
+      );
+      request.end();
+    });
+
+    await withServer(createCsrfMiddleware(), async (_base, port) => {
+      assert.strictEqual(await post(port, {
+        Host: 'xandrio.xyz',
+        Origin: 'https://xandrio.xyz',
+        'X-Forwarded-Proto': 'https',
+        'Sec-Fetch-Site': 'same-origin'
+      }), 200, 'a same-origin write behind a TLS proxy is allowed');
+
+      // Trusting the forwarded scheme must not weaken the check: the host is
+      // what identifies the origin, and an attacker's host still differs.
+      assert.strictEqual(await post(port, {
+        Host: 'xandrio.xyz',
+        Origin: 'https://evil.test',
+        'X-Forwarded-Proto': 'https'
+      }), 403, 'a cross-site write behind the same proxy is still refused');
+
+      assert.strictEqual(await post(port, {
+        Host: 'xandrio.local:3000',
+        Origin: 'http://xandrio.local:3000'
+      }), 200, 'a direct plain-HTTP LAN instance still works');
+
+      assert.strictEqual(await post(port, {
+        Host: 'xandrio.local:3000',
+        Origin: 'https://xandrio.local:3000'
+      }), 403, 'a scheme the request did not arrive on is still a mismatch');
+    });
+  });
+
   await test('origins are compared by parsed origin, not by string prefix', () => {
     assert.strictEqual(normalizeOrigin('https://example.test:443/path?q=1'), 'https://example.test');
     assert.strictEqual(normalizeOrigin('https://example.test:8443'), 'https://example.test:8443');
