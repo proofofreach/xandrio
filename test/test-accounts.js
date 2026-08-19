@@ -81,20 +81,33 @@ test('normalizeUsername lowercases and rejects invalid names', () => {
   assert.strictEqual(normalizeUsername('x'.repeat(33)), '');
 });
 
-test('hashPassword round-trips and rejects wrong passwords', () => {
-  const record = hashPassword('correct horse');
+test('hashPassword round-trips and rejects wrong passwords', async () => {
+  const record = await hashPassword('correct horse');
   assert.strictEqual(record.algo, 'scrypt');
-  assert(verifyPassword('correct horse', record));
-  assert(!verifyPassword('wrong horse', record));
-  assert(!verifyPassword('correct horse', null));
-  assert(!verifyPassword('correct horse', { ...record, hash: record.salt }));
+  assert(await verifyPassword('correct horse', record));
+  assert(!await verifyPassword('wrong horse', record));
+  assert(!await verifyPassword('correct horse', null));
+  assert(!await verifyPassword('correct horse', { ...record, hash: record.salt }));
 });
 
-test('hashPassword salts every record', () => {
-  const a = hashPassword('same');
-  const b = hashPassword('same');
+test('hashPassword salts every record', async () => {
+  const a = await hashPassword('same');
+  const b = await hashPassword('same');
   assert.notStrictEqual(a.salt, b.salt);
   assert.notStrictEqual(a.hash, b.hash);
+});
+
+test('password derivation never blocks the event loop', async () => {
+  // The login route is unauthenticated, so a synchronous derivation here is a
+  // remote stall primitive: this asserts the loop keeps turning during one.
+  let ticks = 0;
+  const ticker = setInterval(() => { ticks += 1; }, 1);
+  try {
+    await hashPassword('a password worth deriving');
+  } finally {
+    clearInterval(ticker);
+  }
+  assert(ticks > 0, 'the event loop advanced while scrypt ran');
 });
 
 // ─── Accounts store ────────────────────────────────────────────────────────
@@ -132,6 +145,101 @@ test('verifyLogin accepts correct credentials and rejects wrong/disabled', async
   assert.strictEqual(await accounts.verifyLogin('reader', 'password123'), null);
 });
 
+test('verifyLogin performs exactly one derivation whether or not the username exists', async () => {
+  // Counting calls through the injectable crypto seam rather than timing the
+  // wall clock -- a timing assertion would be flaky. The dummy record built
+  // once at store construction must not add a second derivation to any
+  // individual verifyLogin call, and concurrent unknown-username logins must
+  // share it rather than each deriving their own.
+  const nodeCrypto = require('crypto');
+  let scryptCalls = 0;
+  const countingCrypto = {
+    randomBytes: nodeCrypto.randomBytes,
+    timingSafeEqual: nodeCrypto.timingSafeEqual,
+    scrypt(...args) { scryptCalls++; return nodeCrypto.scrypt(...args); }
+  };
+  const jsonStore = memoryJsonStore();
+  const accounts = createAccountsStore({ filePath: 'accounts.json', jsonStore, crypto: countingCrypto });
+  // The constructor's own dummy-record derivation (from crypto.randomBytes,
+  // not a literal string) happens here, before any login, so it never counts
+  // against a login's own cost.
+  await accounts.createAccount({ username: 'reader', password: 'password123' });
+
+  scryptCalls = 0;
+  await accounts.verifyLogin('reader', 'wrong-password');
+  assert.strictEqual(scryptCalls, 1, 'a known username performs exactly one derivation');
+
+  scryptCalls = 0;
+  await accounts.verifyLogin('nobody', 'wrong-password');
+  assert.strictEqual(scryptCalls, 1, 'an unknown username performs exactly one derivation, matching a known one');
+
+  scryptCalls = 0;
+  await Promise.all([
+    accounts.verifyLogin('nobody-a', 'wrong-password'),
+    accounts.verifyLogin('nobody-b', 'wrong-password')
+  ]);
+  assert.strictEqual(scryptCalls, 2, 'two concurrent unknown-username logins share the cached dummy record: one derivation each, not one each plus a duplicated dummy build');
+});
+
+test('a failed dummy derivation does not become a username oracle of its own', async () => {
+  // The precomputed dummy is built at construction. If that derivation fails
+  // and the rejection is left to propagate, every unknown-username login
+  // throws (500) while a known one still returns 401 -- restoring, in a louder
+  // form, exactly the oracle the dummy record exists to remove.
+  const nodeCrypto = require('crypto');
+  let rejections = 0;
+  const onRejection = () => { rejections += 1; };
+  process.on('unhandledRejection', onRejection);
+  try {
+    const failingCrypto = {
+      randomBytes: nodeCrypto.randomBytes,
+      timingSafeEqual: nodeCrypto.timingSafeEqual,
+      scrypt(_password, _salt, _keylen, _options, callback) {
+        callback(new Error('derivation unavailable'));
+      }
+    };
+    const accounts = createAccountsStore({
+      filePath: 'accounts.json',
+      jsonStore: memoryJsonStore(),
+      crypto: failingCrypto
+    });
+    assert.strictEqual(await accounts.verifyLogin('nobody', 'password123'), null,
+      'an unknown username still fails closed rather than throwing');
+    await new Promise(resolve => setTimeout(resolve, 50));
+    assert.strictEqual(rejections, 0, 'the failed dummy derivation is handled, not left unhandled');
+  } finally {
+    process.off('unhandledRejection', onRejection);
+  }
+});
+
+test('verifyLogin transparently rehashes a stale record to current scrypt cost', async () => {
+  const { jsonStore, accounts } = makeAccounts();
+  const staleRecord = await hashPassword('password123', { N: 16384, r: 8, p: 1 });
+  await jsonStore.update('accounts.json', (data) => {
+    data.accounts = { usr_stale: { id: 'usr_stale', username: 'reader', displayName: 'Reader', role: 'member', password: staleRecord, disabled: false, createdAt: '2026-01-01T00:00:00.000Z', passwordChangedAt: '2026-01-01T00:00:00.000Z' } };
+  }, {});
+
+  const before = (await accounts.verifyLogin('reader', 'password123'));
+  assert.strictEqual(before?.id, 'usr_stale');
+  const storedAfter = (await jsonStore.load('accounts.json', {})).accounts.usr_stale;
+  assert.strictEqual(storedAfter.password.N, 131072, 'record must be rehashed to the current N');
+  assert.notStrictEqual(storedAfter.password.hash, staleRecord.hash);
+  assert.strictEqual(storedAfter.passwordChangedAt, '2026-01-01T00:00:00.000Z', 'a maintenance rehash is not a user-initiated password change');
+
+  // The rehashed record must still verify correctly and not be re-rehashed again.
+  assert((await accounts.verifyLogin('reader', 'password123')));
+  const storedTwice = (await jsonStore.load('accounts.json', {})).accounts.usr_stale;
+  assert.strictEqual(storedTwice.password.hash, storedAfter.password.hash, 'an already-current record is left alone');
+
+  // A wrong password against a stale record must still fail and must not rehash.
+  await jsonStore.update('accounts.json', (data) => {
+    data.accounts.usr_stale.password = staleRecord;
+  }, {});
+  assert.strictEqual(await accounts.verifyLogin('reader', 'wrong-password'), null);
+  const storedAfterWrong = (await jsonStore.load('accounts.json', {})).accounts.usr_stale;
+  assert.strictEqual(storedAfterWrong.password.N, 16384, 'a failed login must not rehash');
+});
+
 test('changePassword rotates the hash', async () => {
   const { accounts } = makeAccounts();
   const created = await accounts.createAccount({ username: 'reader', password: 'password123' });
@@ -139,6 +247,48 @@ test('changePassword rotates the hash', async () => {
   assert.strictEqual(await accounts.verifyLogin('reader', 'password123'), null);
   assert.strictEqual((await accounts.verifyLogin('reader', 'new-password-9')).id, created.id);
   assert.strictEqual(await accounts.changePassword('usr_missing', 'irrelevant-1'), false);
+});
+
+test('__proto__/constructor ids never resolve to a prototype-chain object', async () => {
+  const { accounts } = makeAccounts();
+  await accounts.createAccount({ username: 'reader', password: 'password123' });
+
+  // (a) lookups must fail closed instead of returning Object.prototype /
+  // the Object constructor for an id that was never created.
+  assert.strictEqual(await accounts.findById('__proto__'), null);
+  assert.strictEqual(await accounts.findById('constructor'), null);
+
+  // (b) a write through the __proto__ alias must not land on Object.prototype.
+  assert.strictEqual(await accounts.changePassword('__proto__', 'irrelevant-pw'), false);
+  assert.strictEqual(Object.prototype.hasOwnProperty.call(Object.prototype, 'password'), false);
+  assert.strictEqual(await accounts.setDisabled('__proto__', true), false);
+  assert.strictEqual(Object.prototype.hasOwnProperty.call(Object.prototype, 'disabled'), false);
+
+  // (c) creating an account with id '__proto__' must not re-parent the map
+  // via the accessor (store.accounts has no prototype, so there is no
+  // accessor to trigger) -- it must genuinely create and persist that
+  // account like any other id, not silently report success without storing.
+  const created = await accounts.createAccount({ username: 'proto-user', password: 'password123', id: '__proto__' });
+  assert.strictEqual(created.id, '__proto__');
+  const stored = await accounts.findById('__proto__');
+  assert.strictEqual(stored?.username, 'proto-user');
+  assert.strictEqual(Object.prototype.hasOwnProperty.call(Object.prototype, 'username'), false, 'Object.prototype must stay clean');
+});
+
+test('a legitimate account literally named "__proto__" still behaves normally', async () => {
+  // JSON.parse would have created this as an *own* data property that
+  // shadows the accessor; Object.assign onto a null-prototype target must
+  // preserve that same own-property behaviour.
+  const { jsonStore, accounts } = makeAccounts();
+  await jsonStore.update('accounts.json', async (data) => {
+    // JSON.parse always creates an *own* data property, never triggers the
+    // __proto__ accessor -- reproduce that with a computed key rather than
+    // an object-literal `{ __proto__: ... }`, which would re-parent the
+    // object instead of adding a key.
+    data.accounts = JSON.parse(JSON.stringify({ ['__proto__']: { id: '__proto__', username: 'legacyname', role: 'member', password: await hashPassword('password123'), disabled: false, createdAt: '2026-01-01T00:00:00.000Z' } }));
+  }, {});
+  const found = await accounts.findById('__proto__');
+  assert.strictEqual(found?.username, 'legacyname');
 });
 
 test('production accounts store refuses corrupt or invalid state without replacing it', async () => {
@@ -175,7 +325,7 @@ test('account validation rejects malformed records without overwriting them', as
     username: 'reader',
     displayName: 'Reader',
     role: 'member',
-    password: hashPassword('password123'),
+    password: await hashPassword('password123'),
     disabled: false,
     createdAt: '2026-01-01T00:00:00.000Z'
   };

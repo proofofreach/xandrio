@@ -19,21 +19,49 @@ async function test(name, fn) {
   }
 }
 
+// These acquisition sinks are now guarded twice: the provider host binding in
+// lib/download-hosts.js runs first and refuses any URL the named provider does
+// not serve, and lib/remote-fetch.js still refuses any target that resolves to
+// a non-public address. A raw-IP URL trips the first gate, so it is asserted
+// here by code; the SSRF gate itself is covered directly by test-remote-fetch.
+// What this suite uniquely proves is that a refusal at either gate leaves no
+// destination file and no `.part` file behind.
 (async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'xandrio-fetch-safety-'));
   try {
     await test('Gutenberg rejects a private download URL before creating a file', async () => {
       const destination = path.join(directory, 'gutenberg.epub');
-      await assert.rejects(gutenberg.downloadBook('1', 'https://127.0.0.1/book.epub', destination), /safe public HTTPS URL/);
+      await assert.rejects(
+        gutenberg.downloadBook('1', 'https://127.0.0.1/book.epub', destination),
+        error => error.code === 'DOWNLOAD_HOST_NOT_ALLOWED'
+      );
       await assert.rejects(fs.stat(destination), { code: 'ENOENT' });
       await assert.rejects(fs.stat(`${destination}.part`), { code: 'ENOENT' });
     });
 
     await test('Internet Archive rejects a link-local download URL before creating a file', async () => {
       const destination = path.join(directory, 'archive.epub');
-      await assert.rejects(internetArchive.download({ downloadUrl: 'https://169.254.169.254/book.epub' }, destination), /safe public HTTPS URL/);
+      await assert.rejects(
+        internetArchive.download({ downloadUrl: 'https://169.254.169.254/book.epub' }, destination),
+        error => error.code === 'DOWNLOAD_HOST_NOT_ALLOWED'
+      );
       await assert.rejects(fs.stat(destination), { code: 'ENOENT' });
       await assert.rejects(fs.stat(`${destination}.part`), { code: 'ENOENT' });
+    });
+    await test('an off-provider host is refused even when it is perfectly public', async () => {
+      // The whole point of the host binding: naming a curated provider must not
+      // let the client choose where the server actually fetches from.
+      const destination = path.join(directory, 'offsite.epub');
+      await assert.rejects(
+        gutenberg.downloadBook('1', 'https://anything.example/book.epub', destination),
+        error => error.code === 'DOWNLOAD_HOST_NOT_ALLOWED'
+      );
+      await assert.rejects(fs.stat(destination), { code: 'ENOENT' });
+      await assert.rejects(
+        internetArchive.download({ downloadUrl: 'https://archive.org.attacker.test/book.epub' }, destination),
+        error => error.code === 'DOWNLOAD_HOST_NOT_ALLOWED'
+      );
+      await assert.rejects(fs.stat(destination), { code: 'ENOENT' });
     });
   } finally {
     await fs.rm(directory, { recursive: true, force: true });

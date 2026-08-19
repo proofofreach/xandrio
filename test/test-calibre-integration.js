@@ -112,11 +112,47 @@ function memoryJsonStore() {
   const disabledConnection = await disabledAccess.claimPairingCode(disabledPairing.code);
   assert.strictEqual(await disabledAccess.resolveToken(disabledConnection.token), null);
 
+  // Brute-force budget: a 6-digit code is only defensible with a strict
+  // attempt limit, so wrong guesses must spend the live pairings.
+  const guessStore = createCalibreAccessStore({
+    filePath: 'calibre-access.json',
+    jsonStore: memoryJsonStore(),
+    now: () => now
+  });
+  const target = await guessStore.issuePairingCode({ userId: 'usr_guess' });
+  const wrong = String((Number(target.code) + 1) % 1_000_000).padStart(6, '0');
+  for (let attempt = 0; attempt < 9; attempt++) {
+    assert.strictEqual(await guessStore.claimPairingCode(wrong), null);
+  }
+  // Nine misses have not burned the code the operator is looking at.
+  const survivor = await guessStore.claimPairingCode(target.code);
+  assert.ok(survivor && survivor.token, 'a live code survives a sub-budget guess run');
+
+  const burned = await guessStore.issuePairingCode({ userId: 'usr_guess' });
+  const burnedWrong = String((Number(burned.code) + 1) % 1_000_000).padStart(6, '0');
+  for (let attempt = 0; attempt < 10; attempt++) {
+    assert.strictEqual(await guessStore.claimPairingCode(burnedWrong), null);
+  }
+  assert.strictEqual(await guessStore.claimPairingCode(burned.code), null,
+    'exhausting the attempt budget burns every outstanding pairing');
+  // Issuing a new code is the operator-driven reset.
+  const reissued = await guessStore.issuePairingCode({ userId: 'usr_guess' });
+  const afterReset = await guessStore.claimPairingCode(reissued.code);
+  assert.ok(afterReset && afterReset.token, 'a freshly issued code resets the budget');
+
+  // Only one code per user stays claimable, so extra live codes cannot
+  // multiply a guesser's hit probability.
+  const first = await guessStore.issuePairingCode({ userId: 'usr_single' });
+  const second = await guessStore.issuePairingCode({ userId: 'usr_single' });
+  assert.strictEqual(await guessStore.claimPairingCode(first.code), null,
+    'issuing a new code retires the previous one');
+  assert.ok((await guessStore.claimPairingCode(second.code))?.token);
+
   assert.strictEqual(validateCalibreAccessStore({ pairings: {}, connections: {} }), true);
   assert.match(validateCalibreAccessStore({ pairings: [], connections: {} }), /pairings/);
   assert.match(validateCalibreAccessStore({ pairings: {}, connections: { bad: { id: 'other' } } }), /connection/);
 
-  console.log('27 passed, 0 failed');
+  console.log('31 passed, 0 failed');
 })().catch(error => {
   console.error(error);
   process.exit(1);

@@ -5,7 +5,7 @@
  * Run: node test/test-catalog-search.js
  */
 
-const { buildCatalogSearchResponse } = require('../lib/catalog-search');
+const { buildCatalogSearchResponse, __test } = require('../lib/catalog-search');
 const { resolveOpenLibraryIdentity } = require('../lib/metadata-service');
 const hemingwayCrossSourceResults = require('./fixtures/hemingway-cross-source-results.json');
 
@@ -375,6 +375,22 @@ await (async () => {
 console.log(`\n${'═'.repeat(50)}`);
 console.log(`Catalog search tests: ${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);
+// Title normalization is quadratic on adversarial input: the `\\s*\\(`,
+// `\\s*\\[` and `\\s*:` patterns each rescan from every position when the
+// following character never matches. Measured before bounding the input,
+// 200k tab characters blocked the event loop for ~100 seconds -- reachable
+// both from the raw search query and from provider-supplied titles.
+for (const [label, fill] of [['tabs', '\t'], ['open parens', '('], ['brackets', '[']]) {
+  const started = process.hrtime.bigint();
+  __test.normalizeTitle(fill.repeat(200_000));
+  const elapsedMs = Number(process.hrtime.bigint() - started) / 1e6;
+  assert(elapsedMs < 1000, `normalizeTitle stays bounded on 200k ${label} (${elapsedMs.toFixed(1)}ms)`);
+}
+assert(__test.normalizeTitle('Dubliners (Modern Classics) [Annotated]: A Study') === 'dubliners',
+  'normalizeTitle still strips parentheticals, brackets and subtitles from a real title');
+assert(__test.normalizeTitle('x'.repeat(400)).length <= __test.MAX_NORMALIZED_TITLE_CHARS,
+  'normalizeTitle bounds its input length');
+
 console.log('All catalog search tests passed! ✅');
 }
 
