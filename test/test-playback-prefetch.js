@@ -246,6 +246,40 @@ function deferred() {
     assert(cancelled.some(indexes => indexes.includes(1)));
   });
 
+  await test('a bounded session count evicts the least-recently-observed session', async () => {
+    // playback-runway-prefetch-session-key-random-per-request.md: even with a
+    // stable per-caller key, sessions/expiryTimers must not grow without
+    // bound, since the map is keyed on a string a caller can still vary.
+    const cancelled = [];
+    const coordinator = createPlaybackPrefetchCoordinator({
+      maxSessions: 2,
+      getChapters: async () => Array.from({ length: 5 }, (_, index) => ({
+        text: `Substantive narration for chapter ${index + 1}`
+      })),
+      prepareChapter: async () => {},
+      cancelChapters: request => { cancelled.push(request.chapterIndexes); }
+    });
+
+    await coordinator.observe({ bookId: 'capped-book', chapterIndex: 0, sessionId: 'session-1', variantKey: 'voice-a' });
+    await coordinator.observe({ bookId: 'capped-book', chapterIndex: 0, sessionId: 'session-2', variantKey: 'voice-a' });
+    assert.strictEqual(coordinator.sessionCount(), 2);
+
+    await coordinator.observe({ bookId: 'capped-book', chapterIndex: 0, sessionId: 'session-3', variantKey: 'voice-a' });
+    assert.strictEqual(coordinator.sessionCount(), 2, 'Never exceeds the configured session cap');
+
+    // session-1 was the least-recently-observed session, so it should have
+    // been evicted, releasing its look-ahead window since no other session
+    // shares it.
+    await coordinator.observe({ bookId: 'capped-book', chapterIndex: 0, sessionId: 'session-2', variantKey: 'voice-a' });
+    const scheduled = await coordinator.observe({ bookId: 'capped-book', chapterIndex: 0, sessionId: 'session-3', variantKey: 'voice-a' });
+    assert.deepStrictEqual(scheduled.window, [1, 2, 3]);
+    assert.deepStrictEqual(cancelled, [], 'Sessions still sharing the target window are unaffected');
+
+    // Re-observing an existing session must not itself trigger an eviction.
+    await coordinator.observe({ bookId: 'capped-book', chapterIndex: 1, sessionId: 'session-2', variantKey: 'voice-a' });
+    assert.strictEqual(coordinator.sessionCount(), 2, 'Re-observing an existing session does not evict anything');
+  });
+
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);
 })();

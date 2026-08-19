@@ -439,15 +439,48 @@ assertEqual(serverTestHooks.annasSearchTimeoutMs({ ANNAS_BROWSER_SEARCH_MODE: 'p
   'permitted browser fallback receives an end-to-end provider budget');
 assertEqual(serverTestHooks.annasSearchTimeoutMs({ ANNAS_SEARCH_TIMEOUT_MS: '90000' }), 90000,
   'Anna search timeout accepts a bounded operator override');
-assertDeep(serverTestHooks.annasMcpSearchArgs('Moby Dick'), ['book-search', 'Moby Dick'],
+// A valid XANDRIO_TRUST_PROXY used to be silently downgraded to false, which
+// took the Secure session cookie and the real client IP down with it.
+assertEqual(serverTestHooks.configuredTrustProxy('1'), 1, 'a hop count is honoured');
+assertEqual(serverTestHooks.configuredTrustProxy('true'), true, 'true is honoured');
+assertEqual(serverTestHooks.configuredTrustProxy('loopback'), 'loopback', 'named presets are honoured');
+assertDeep(serverTestHooks.configuredTrustProxy('10.0.0.1'), ['10.0.0.1'], 'a bare IP is honoured');
+assertDeep(serverTestHooks.configuredTrustProxy('10.0.0.0/8, 192.168.0.1'), ['10.0.0.0/8', '192.168.0.1'],
+  'a CIDR and IP list is honoured');
+assertEqual(serverTestHooks.configuredTrustProxy(''), false, 'an unset value stays disabled');
+assertEqual(serverTestHooks.configuredTrustProxy('false'), false, 'an explicit false stays disabled');
+assertEqual(serverTestHooks.configuredTrustProxy('not-an-address'), false, 'garbage still falls back to disabled');
+assertEqual(serverTestHooks.configuredTrustProxy('10.0.0.1, garbage'), false,
+  'one bad entry rejects the whole list rather than trusting part of it');
+
+assertDeep(serverTestHooks.annasMcpSearchArgs('Moby Dick'), ['book-search', '--', 'Moby Dick'],
   'Anna search uses the current annas-mcp book-search command');
+assertDeep(serverTestHooks.annasMcpSearchArgs('--version'), ['book-search', '--', '--version'],
+  'a query that looks like a flag stays a positional argument');
 const annasCliEnv = serverTestHooks.buildAnnasCliEnv(
   { secretKey: 'synthetic-test-key' },
-  { ANNAS_BASE_URL: 'https://stale.example', SAFE_VALUE: 'retained' }
+  {
+    ANNAS_BASE_URL: 'https://stale.example',
+    ANNAS_CUSTOM_OPTION: 'kept',
+    PATH: '/usr/bin',
+    XANDRIO_TOKEN: 'server-admin-secret',
+    WEB_PUSH_VAPID_PRIVATE_KEY: 'vapid-secret',
+    PPQ_API_KEY: 'provider-secret',
+    SAFE_VALUE: 'unrelated'
+  }
 );
 assert(!Object.hasOwn(annasCliEnv, 'ANNAS_BASE_URL'),
   'Anna CLI search leaves mirror selection to its automatic discovery');
-assertEqual(annasCliEnv.SAFE_VALUE, 'retained', 'Anna CLI search preserves unrelated environment values');
+assertEqual(annasCliEnv.ANNAS_CUSTOM_OPTION, 'kept',
+  "Anna CLI search keeps the CLI's own ANNAS_* configuration");
+assertEqual(annasCliEnv.PATH, '/usr/bin', 'Anna CLI search keeps the variables needed to execute');
+// The CLI is a third-party binary. It previously received a copy of the entire
+// server environment, so every secret the server holds was handed to it on
+// every search. It gets its own namespace and nothing else.
+for (const leaked of ['XANDRIO_TOKEN', 'WEB_PUSH_VAPID_PRIVATE_KEY', 'PPQ_API_KEY', 'SAFE_VALUE']) {
+  assert(!Object.hasOwn(annasCliEnv, leaked),
+    `Anna CLI search withholds ${leaked} from the external binary`);
+}
 assertEqual(serverTestHooks.annasMcpExecutable({}, {
   homeDir: '/Users/reader',
   existsSync: candidate => candidate === '/Users/reader/.local/bin/annas-mcp'
@@ -2367,6 +2400,25 @@ section('21. Error responses and bounded caches');
     });
     assertEqual(record.hasCover, true, 'library reports a cached cover even when coverPath metadata is stale');
     assert(!Object.hasOwn(record, 'path'), 'library cover projection still strips private book paths');
+  })());
+
+  pendingAsyncTests.push((async () => {
+    // GET /api/library serves this record to every account, so ownership and
+    // on-disk layout must not ride along with it.
+    const record = await serverTestHooks.publicBookRecordWithCoverArtifact({
+      id: 'book-internal-fields',
+      title: 'Published Title',
+      addedBy: 'usr_someone_else',
+      filename: '/home/operator/Downloads/private-name.epub',
+      uploadedFile: 'private-upload.epub',
+      originalFilename: 'Original Private Name.epub',
+      sourceFilePath: '/srv/xandrio/cache/book.epub',
+      path: '/srv/xandrio/cache/book.epub'
+    }, async () => {});
+    assertEqual(record.title, 'Published Title', 'the published record keeps its public fields');
+    for (const field of ['addedBy', 'filename', 'uploadedFile', 'originalFilename', 'sourceFilePath', 'path']) {
+      assert(!Object.hasOwn(record, field), `library projection strips ${field}`);
+    }
   })());
 
   pendingAsyncTests.push((async () => {

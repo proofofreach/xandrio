@@ -104,6 +104,8 @@ async function main() {
       ['/api/audio-continuous/book/0', 'GET'],
       ['/api/audio-hls/book/0/index.m3u8', 'GET'],
       ['/api/book/book/guide/narration/overview/audio', 'GET'],
+      // Regression coverage for voice-sample-route-unmetered-noncancellable-work-amplifier.md
+      ['/api/voice-sample/chatterbox:brick-scott', 'GET'],
       ['/api/voices/clone', 'POST']
     ]) assert(covered(path, method), `${method} ${path} should be concurrency limited`);
   });

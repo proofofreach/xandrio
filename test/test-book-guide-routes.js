@@ -35,6 +35,8 @@ async function run() {
   const requireAdmin = (_req, _res, next) => next();
   const providerStatusRateLimit = (_req, _res, next) => next();
   const providerLoginRateLimit = (_req, _res, next) => next();
+  const guideGenerateRateLimit = (_req, _res, next) => next();
+  const guideReadRateLimit = (_req, _res, next) => next();
   const calls = [];
   const service = {
     get: async bookId => (calls.push(['get', bookId]), { status: 'ready' }),
@@ -75,6 +77,8 @@ async function run() {
     serveAudioFile,
     providerStatusRateLimit,
     providerLoginRateLimit,
+    guideGenerateRateLimit,
+    guideReadRateLimit,
     isSafeBookId: value => /^book_/.test(value),
     log: { error() {} }
   });
@@ -115,7 +119,7 @@ async function run() {
     const route = app.find(item => item.method === 'post' && item.path === '/api/book/:bookId/guide');
     const req = { params: { bookId: 'book_1' }, body: {} };
     const res = response();
-    await route.handlers[1](req, res);
+    await route.handlers.at(-1)(req, res);
     assert.strictEqual(res.statusCode, 202);
     assert.deepStrictEqual(calls.at(-1), ['start', 'book_1', undefined]);
   });
@@ -123,7 +127,7 @@ async function run() {
   await test('persists title classification only through an admin mutation', async () => {
     const route = app.find(item => item.method === 'put' && item.path === '/api/book/:bookId/guide/category');
     const res = response();
-    await route.handlers[1]({ params: { bookId: 'book_1' }, body: { category: 'nonfiction' } }, res);
+    await route.handlers.at(-1)({ params: { bookId: 'book_1' }, body: { category: 'nonfiction' } }, res);
     assert.deepStrictEqual(res.body, { bookId: 'book_1', category: 'nonfiction' });
     assert.deepStrictEqual(calls.at(-1), ['category', 'book_1', 'nonfiction']);
   });
@@ -131,7 +135,7 @@ async function run() {
   await test('prepares and streams a shared guide narration section', async () => {
     const route = app.find(item => item.method === 'get' && item.path.endsWith('/narration/:sectionId/audio'));
     const res = response();
-    await route.handlers[0]({ params: { bookId: 'book_1', sectionId: 'overview' }, headers: {} }, res);
+    await route.handlers.at(-1)({ params: { bookId: 'book_1', sectionId: 'overview' }, headers: {} }, res);
     assert.deepStrictEqual(calls.slice(-2), [
       ['narration', 'book_1', 'overview'],
       ['serve-audio', '/cache/guide.mp3']
@@ -142,7 +146,7 @@ async function run() {
   await test('reports real narration preparation progress without caching it', async () => {
     const route = app.find(item => item.method === 'get' && item.path.endsWith('/narration/status'));
     const res = response();
-    await route.handlers[0]({ params: { bookId: 'book_1' } }, res);
+    await route.handlers.at(-1)({ params: { bookId: 'book_1' } }, res);
     assert.deepStrictEqual(calls.at(-1), ['narration-status', 'book_1']);
     assert.strictEqual(res.headers['Cache-Control'], 'private, no-store');
     assert.deepStrictEqual(res.body.sections[0], {
@@ -154,12 +158,12 @@ async function run() {
     const route = app.find(item => item.method === 'get' && item.path === '/api/book/:bookId/guide');
     service.get = async () => ({ status: 'not-generated', canGenerate: true, canManage: true, generation: { destination: 'https://api.ppq.ai' } });
     const memberResponse = response();
-    await route.handlers[0]({ params: { bookId: 'book_1' }, user: { role: 'member' } }, memberResponse);
+    await route.handlers.at(-1)({ params: { bookId: 'book_1' }, user: { role: 'member' } }, memberResponse);
     assert.strictEqual(memberResponse.body.canManage, false);
     assert.strictEqual(memberResponse.body.canGenerate, false);
     assert.strictEqual(memberResponse.body.generation, undefined);
     const adminResponse = response();
-    await route.handlers[0]({ params: { bookId: 'book_1' }, user: { role: 'admin' } }, adminResponse);
+    await route.handlers.at(-1)({ params: { bookId: 'book_1' }, user: { role: 'admin' } }, adminResponse);
     assert.strictEqual(adminResponse.body.canManage, true);
     assert.strictEqual(adminResponse.body.canGenerate, true);
     assert.deepStrictEqual(adminResponse.body.generation, { destination: 'https://api.ppq.ai' });
@@ -172,7 +176,7 @@ async function run() {
       artifact: { createdAt: '2026-08-14T12:00:00.000Z', guide: { orientation: { thesis: 'A grounded thesis.' } } }
     });
     const res = response();
-    await route.handlers[0]({ params: { bookId: 'book_1' }, user: { role: 'member' } }, res);
+    await route.handlers.at(-1)({ params: { bookId: 'book_1' }, user: { role: 'member' } }, res);
     assert.strictEqual(res.body.narration.available, true);
     assert.match(res.body.narration.version, /^[a-f0-9]{12}-_ttsvoice123$/);
   });
@@ -181,7 +185,7 @@ async function run() {
     const route = app.find(item => item.method === 'get' && item.path === '/api/book/:bookId/guide');
     const before = calls.length;
     const res = response();
-    await route.handlers[0]({ params: { bookId: '../bad' } }, res);
+    await route.handlers.at(-1)({ params: { bookId: '../bad' } }, res);
     assert.strictEqual(res.statusCode, 400);
     assert.strictEqual(calls.length, before);
   });
@@ -191,12 +195,12 @@ async function run() {
     const status = app.find(item => item.method === 'get' && item.path === '/api/book-guides/provider/connection');
     const loginResponse = response();
     assert.strictEqual(login.handlers[1], providerLoginRateLimit);
-    await login.handlers[2]({}, loginResponse);
+    await login.handlers.at(-1)({}, loginResponse);
     assert.strictEqual(loginResponse.statusCode, 202);
     assert.strictEqual(loginResponse.headers['Cache-Control'], 'private, no-store');
     const statusResponse = response();
     assert.strictEqual(status.handlers[1], providerStatusRateLimit);
-    await status.handlers[2]({}, statusResponse);
+    await status.handlers.at(-1)({}, statusResponse);
     assert.strictEqual(statusResponse.headers['Cache-Control'], 'private, no-store');
     assert.deepStrictEqual(calls.slice(-2), [['provider-login'], ['provider-status']]);
   });

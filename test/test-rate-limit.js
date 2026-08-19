@@ -1,5 +1,6 @@
 const assert = require('assert');
 const { createRateLimitMiddleware, defaultGroups } = require('../lib/rate-limit');
+const { defaultConcurrencyGroups } = require('../lib/concurrency-limit');
 
 let passed = 0;
 let failed = 0;
@@ -54,16 +55,48 @@ test('does not rate limit unrelated API reads', () => {
   assert.strictEqual(result.res.statusCode, null);
 });
 
-test('default groups cover authentication, import, metadata, TTS, and voice upload', () => {
+test('default groups cover authentication, import, metadata, TTS, voice upload, and sync identity', () => {
   const groups = defaultGroups(60);
   const covered = path => groups.some(group => group.match(path));
   for (const path of [
-    '/api/auth/login', '/api/integrations/calibre/claim', '/api/search', '/api/upload',
+    // '/api/integrations/calibre/pairing-code' is regression coverage for
+    // json-store-critical-write-amplification-dos.md.
+    '/api/auth/login', '/api/integrations/calibre/claim', '/api/integrations/calibre/pairing-code',
+    '/api/search', '/api/upload',
     '/api/integrations/calibre/import', '/api/download',
     '/api/refresh-metadata/book', '/api/audio/book/0', '/api/audio-continuous/book/0',
     '/api/chunks/book/0/prepare', '/api/chunks/book/0/1', '/api/offline/preparation/book',
-    '/api/voices/clone'
+    '/api/voices/clone',
+    // Regression coverage for guide-narration-audio-omitted-from-tts-rate-limit-group.md
+    // and voice-sample-route-unmetered-noncancellable-work-amplifier.md: both
+    // routes trigger TTS synthesis the same way the already-covered routes do.
+    '/api/book/abc/guide/narration/overview/audio', '/api/voice-sample/chatterbox:brick-scott',
+    // Regression coverage for upsertdevice-unbounded-device-records-grow-users-json-forever.md
+    '/api/sync/device', '/api/sync/profile'
   ]) assert(covered(path), `${path} should be rate limited`);
+});
+
+test('the rate-limit and concurrency-limit tts groups classify the same paths identically', () => {
+  // Both middlewares meter TTS-triggering routes independently. They used to
+  // carry two hand-maintained regexes that drifted apart (see
+  // guide-narration-audio-omitted-from-tts-rate-limit-group.md); now both
+  // attach their own limits to lib/tts-route-patterns.js. This asserts that
+  // stays true instead of relying on the same mistake not happening again.
+  const rateLimitTts = defaultGroups(60).find(group => group.name === 'tts');
+  const concurrencyTts = defaultConcurrencyGroups().find(group => group.name === 'tts');
+  for (const path of [
+    '/api/audio/book/0', '/api/audio-ios/book/0', '/api/audio-chunked/book/0',
+    '/api/audio-continuous/book/0', '/api/chunks/book/0/prepare', '/api/chunks/book/0/retry',
+    '/api/chunks/book/0/prepare-chapter-audio', '/api/chunks/book/0/1',
+    '/api/offline/preparation/book', '/api/premium-prep/book/start',
+    '/api/book/abc/guide/narration/overview/audio', '/api/voice-sample/chatterbox:brick-scott',
+    '/api/library', '/api/voices/clone'
+  ]) {
+    assert.strictEqual(
+      rateLimitTts.match(path), concurrencyTts.match(path, { method: 'GET' }),
+      `rate-limit and concurrency tts groups disagree on ${path}`
+    );
+  }
 });
 
 console.log(`\nrate-limit tests: ${passed} passed, ${failed} failed`);

@@ -451,7 +451,7 @@ function metadataHarness(options = {}) {
     const cleaner = createBookArtifactCleaner({
       cacheDir: '/cache',
       fs: {
-        readdir: async () => ['book_1_audio.mp3', 'other_audio.mp3'],
+        readdir: async () => ['book_1_ch0_chunk0.mp3', 'other_ch0_chunk0.mp3'],
         rm: async target => {
           removed.push(target);
           if (target.endsWith('_cover.jpg')) throw new Error('permission denied');
@@ -468,13 +468,45 @@ function metadataHarness(options = {}) {
       coverPath: '/cache/book_1_cover.jpg'
     });
     assert(removed.includes('/cache/book_1.epub'));
-    assert(removed.includes('/cache/book_1_audio.mp3'));
+    assert(removed.includes('/cache/book_1_ch0_chunk0.mp3'));
+    assert(!removed.includes('/cache/other_ch0_chunk0.mp3'));
     assert(!removed.includes('/outside/source.epub'));
     assert.deepStrictEqual(result.failed, [{
       path: '/cache/book_1_cover.jpg',
       error: 'permission denied'
     }]);
     assert(!invalidated.includes('/cache/book_1_cover.jpg'));
+  });
+
+  await test('artifact cleanup for a book id does not sweep a sibling id it is a prefix of', async () => {
+    // "abc" is a proper prefix of "abc_2". A bare startsWith(bookId + '_')
+    // test would incorrectly claim "abc_2"'s narration and cover as "abc"'s.
+    const removed = [];
+    const cleaner = createBookArtifactCleaner({
+      cacheDir: '/cache',
+      fs: {
+        readdir: async () => [
+          'abc.epub',
+          'abc_ch0.mp3',
+          'abc_2.epub',
+          'abc_2_ch0.mp3',
+          'abc_2_cover.jpg'
+        ],
+        rm: async target => removed.push(target)
+      },
+      invalidateChapterCache: () => {},
+      isBookDeleted: () => true,
+      setTimer: () => {},
+      log: console
+    });
+    const result = await cleaner.cleanup('abc', {});
+    assert.deepStrictEqual(new Set(result.deleted), new Set([
+      '/cache/abc.epub',
+      '/cache/abc_ch0.mp3'
+    ]));
+    assert(!removed.includes('/cache/abc_2.epub'));
+    assert(!removed.includes('/cache/abc_2_ch0.mp3'));
+    assert(!removed.includes('/cache/abc_2_cover.jpg'));
   });
 
   await test('metadata refresh preserves precedence and clears stale structure positions', async () => {
