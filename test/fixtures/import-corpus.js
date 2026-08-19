@@ -206,6 +206,68 @@ module.exports = Object.freeze([
     }
   }),
   corpusCase({
+    id: 'kindle-divider-collection',
+    sourceFormat: 'mobi',
+    normalizeSequence: true,
+    chapters: [
+      {
+        index: 0,
+        originalIndex: 0,
+        title: 'FROM',
+        type: 'divider',
+        tocTitleSource: 'href',
+        text: 'FROM\n\nThe First Volume\n(1961)',
+        estimatedDuration: 2
+      },
+      {
+        index: 1,
+        originalIndex: 1,
+        title: 'Chapter 2',
+        type: 'chapter',
+        tocTitleSource: 'href',
+        text: prose('Collected excerpt one', 55),
+        estimatedDuration: 220
+      },
+      {
+        index: 2,
+        originalIndex: 2,
+        title: 'FROM',
+        type: 'divider',
+        tocTitleSource: 'href',
+        text: 'FROM\n\nThe Second Volume:\n\nAn Honest Sequel\n(1972)',
+        estimatedDuration: 3
+      },
+      {
+        index: 3,
+        originalIndex: 3,
+        title: 'Chapter 3',
+        type: 'chapter',
+        tocTitleSource: 'href',
+        text: prose('Collected excerpt two', 55),
+        estimatedDuration: 220
+      },
+      {
+        index: 4,
+        originalIndex: 4,
+        title: 'A Named Essay',
+        type: 'content',
+        tocTitleSource: 'href',
+        text: prose('Collected essay', 55),
+        estimatedDuration: 220
+      }
+    ],
+    expected: {
+      importable: true,
+      diagnosticCodes: [],
+      importDiagnosticCodes: [DIAGNOSTIC_CODES.SHORT_CONTENT],
+      mutationCodes: [],
+      chapterCount: 3,
+      sourceHash: '2d80d4a60649c01369130adce53b6da59e1543b07da6b96b2177d18a993788f4',
+      normalizedHash: 'ff33626bd901f153486df2de704252538154da8982ad913dfe4ef452216087de',
+      structureKey: 'v1-874c0a1a812ac08447b8'
+    }
+  }),
+  corpusCase({
     id: 'kindle-drm-protected',
     sourceFormat: 'azw3',
     chapters: [],

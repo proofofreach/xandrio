@@ -2,7 +2,11 @@ const assert = require('assert');
 const crypto = require('crypto');
 const corpus = require('./fixtures/import-corpus');
 const { chapterStructureKey } = require('../lib/chapter-structure');
-const { splitOversizedChapters, OVERSIZED_CHAPTER_THRESHOLD } = require('../lib/chapter-utils');
+const {
+  normalizeChapterSequence,
+  splitOversizedChapters,
+  OVERSIZED_CHAPTER_THRESHOLD
+} = require('../lib/chapter-utils');
 const {
   ALLOWED_TEXT_MUTATIONS,
   createExtractionResult,
@@ -21,11 +25,24 @@ function clone(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
+// Sequence normalization may re-cut chapter boundaries. It may never change,
+// drop, or reorder a single character of narration.
+function normalizedNarration(chapters) {
+  return (chapters || [])
+    .map(chapter => String(chapter?.text || ''))
+    .join('\n\n')
+    .normalize('NFKC')
+    .replace(/\s+/gu, ' ')
+    .trim();
+}
+
 for (const fixture of corpus) {
   const sourceHash = sha256(fixture.sourcePayload);
-  const chapters = fixture.splitOversized
+  let chapters = fixture.splitOversized
     ? splitOversizedChapters(clone(fixture.chapters))
     : clone(fixture.chapters);
+  const preNormalizationNarration = normalizedNarration(chapters);
+  if (fixture.normalizeSequence) chapters = normalizeChapterSequence(chapters);
   const result = fixture.diagnostics
     ? createExtractionResult({
       chapters,
@@ -50,13 +67,15 @@ for (const fixture of corpus) {
     `${fixture.id}: mutation contract changed`);
   assert.strictEqual(chapters.length, fixture.expected.chapterCount,
     `${fixture.id}: chapter count changed`);
+  assert.strictEqual(normalizedNarration(chapters), preNormalizationNarration,
+    `${fixture.id}: sequence normalization must conserve narration exactly`);
   assert(result.mutations.every(value => allowedMutationCodes.has(value.code)),
     `${fixture.id}: only registered mutation classes can activate`);
   assert(!result.narration.valid || result.narration.maxChunkChars <= result.narration.limit,
     `${fixture.id}: narration chunks stay within the engine limit`);
   assert(chapters.every(chapter => String(chapter.text || '').length <= OVERSIZED_CHAPTER_THRESHOLD),
     `${fixture.id}: no unusable oversized generated chapter remains`);
-  passed += 10;
+  passed += 11;
 }
 
 console.log(`${passed} passed, 0 failed`);
