@@ -70,10 +70,28 @@ transformation and extractor boundaries.
 | Authored navigation | EPUB TOC/spine, PDF outline/TOC, or Kindle TOC | Authored order wins when resolvable | `test-epub-parser.js`, format extractor tests |
 | Heading recovery | Generic chapter/part/volume headings and layout evidence | Falls back to page groups or content, never rejection | `test-pdf-extraction.js`, `test-epub-parser.js` |
 | Auxiliary spine filtering | Verified non-linear EPUB spine items and semantic auxiliary documents | Does not delete linear narrative content | `test-epub-parser.js` |
-| Degenerate section merge | A section at or below 500 characters whose body is nothing but heading lines, or which has no authored navigation entry behind it, adjacent to a substantive section. Declines entirely unless such sections are a clear minority, and never pushes a host past the oversized bound. | Joins its text to the neighbouring section with the same `\n\n` separator the narration hash uses; discards nothing. Runs in `normalizeChapterSequence`, so every format and every re-read of a stored artifact is treated identically. | `test-chapter-utils.js`, `test-import-corpus.js`, `test-epub-parser.js` |
+| Degenerate section merge | A section at or below 500 characters whose body is nothing but heading lines, or which has no authored navigation entry and no title beyond an ordinal placeholder, adjacent to a substantive section. Declines entirely unless such sections are a clear minority, and never pushes a host past the oversized bound. | Joins its text to the neighbouring section with the same `\n\n` separator the narration hash uses; discards nothing. Runs in `normalizeChapterSequence`, so every format and every re-read of a stored artifact is treated identically. | `test-chapter-utils.js`, `test-import-corpus.js`, `test-epub-parser.js` |
 | Oversized section split | More than 100,000 characters without an authored boundary, or more than 150,000 with one | Splits at punctuation/word boundaries and conserves normalized narration | `test-import-corpus.js`, `test-chapter-utils.js` |
 | Sequence/title repair | A complete generic numeric or Roman-numeral series with local structural evidence, or a merged divider heading adjacent to a host still labelled with a generic ordinal | Changes display metadata, not narration text; `rawTitle` retains the original, so the chapter structure key is unaffected | `test-chapter-utils.js`, `test-epub-parser.js` |
 | Chapter rebuild | Retained source plus exact continuous normalized narration match | Commits only text-conserving boundary changes | `test-chapter-rebuild.js`, `test-chapter-transition-state.js` |
+
+## Staged segmentation rollout
+
+A segmentation change re-cuts books that are already imported. That resets
+saved reading positions to approximate and clears generated audio for every
+affected book, so which libraries get re-cut is a scope decision separate from
+whether the rule is correct.
+
+`DEGENERATE_MERGE_SOURCE_FORMATS` in `lib/chapter-utils.js` names the source
+formats a segmentation rule is currently rolled out to; `lib/book-document.js`
+passes the artifact's source format into `normalizeChapterSequence`. The rule
+itself never inspects a container: `mergeDegenerateSections` is
+format-independent and characterized as such. Only the rollout is staged.
+
+The degenerate section merge is rolled out to Kindle containers
+(`mobi`, `azw`, `azw3`, `prc`, `kfx`), where the defect is worst. EPUB and PDF
+libraries keep their current segmentation until the set is widened, which is a
+scope decision recorded here and declared in the release benchmark.
 
 ## Previous-versus-current release benchmark
 
@@ -86,11 +104,24 @@ The release gate requires:
 - all expected import and rejection decisions to match;
 - all required typed diagnostics and candidate selections to match;
 - at least one previously rejected listenable class to improve;
-- no import, narration, chapter-structure, or content-defect regression;
+- no import, narration, or content-defect regression;
+- every chapter-structure change to be declared, and every declaration to still
+  describe a real change;
 - exact normalized narration conservation for comparable cases;
 - zero unexpected defects in synthetic and format output after accounting for
   defects deliberately present in a characterization source; and
 - zero manual actions after either a clean or warning-bearing successful import.
+
+A re-segmentation is sometimes the point of a change, so the structure gate is
+not "nothing changed" — that would freeze chapter structure permanently. It is
+"nothing changed that the change did not declare". Declare each re-cut case in
+`test/fixtures/import-structure-changes.json` as
+`{"schemaVersion":1,"changes":[{"id","fromChapterCount","toChapterCount"}]}`.
+An entry that names the wrong result does not pre-approve a different one, and
+an entry that no longer matches any real change fails the release in its own
+right, so a declaration cannot silently pre-approve a future re-cut. The file
+holds opaque case ids and chapter counts only, matching the report's privacy
+contract.
 
 Private results are opaque. The report contains no book metadata, paths, text,
 or content hashes. Existing defects in an unrebuildable legacy artifact remain

@@ -6,6 +6,27 @@ const os = require('node:os');
 const path = require('node:path');
 const { execFileSync, spawnSync } = require('node:child_process');
 const { compareImportBenchmark } = require('../lib/import-benchmark');
+
+const DECLARED_STRUCTURE_CHANGES = 'test/fixtures/import-structure-changes.json';
+
+// The declaration lives in the repository, so a re-segmentation is reviewed in
+// the same diff that causes it. It records opaque case ids and chapter counts
+// only, matching the report's own privacy contract.
+async function declaredStructureChanges() {
+  const declarationPath = path.join(REPO_ROOT, DECLARED_STRUCTURE_CHANGES);
+  let raw;
+  try {
+    raw = await fs.readFile(declarationPath, 'utf8');
+  } catch (error) {
+    if (error.code === 'ENOENT') return [];
+    throw error;
+  }
+  const parsed = JSON.parse(raw);
+  if (parsed?.schemaVersion !== 1 || !Array.isArray(parsed.changes)) {
+    throw new Error(`${DECLARED_STRUCTURE_CHANGES} must be {"schemaVersion":1,"changes":[...]}`);
+  }
+  return parsed.changes;
+}
 const { evaluateImportVersion } = require('./lib/import-benchmark-evaluator');
 const { createSyntheticImportEpub } = require('./lib/import-benchmark-fixtures');
 const policyCases = require('../test/fixtures/import-corpus');
@@ -223,7 +244,11 @@ async function runBenchmark(args) {
     };
     const baseline = await evaluateImportVersion({ versionRoot: baselineRoot, ...inputs });
     const candidate = await evaluateImportVersion({ versionRoot: candidateRoot, ...inputs });
-    const comparison = compareImportBenchmark({ baseline, candidate });
+    const comparison = compareImportBenchmark({
+      baseline,
+      candidate,
+      acceptedStructureChanges: await declaredStructureChanges()
+    });
     return privacySafeReport({
       baselineRef: baselineCommit,
       candidateRef: candidateCommit,

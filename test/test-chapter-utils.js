@@ -353,8 +353,8 @@ test('the merge runs inside sequence normalization and is idempotent', () => {
     { index: 2, title: 'A Named Essay', type: 'content', tocTitleSource: 'href', text: narration('Essay') },
     { index: 3, title: 'Another Essay', type: 'content', tocTitleSource: 'href', text: narration('Another') }
   ];
-  const once = normalizeChapterSequence(source);
-  const twice = normalizeChapterSequence(once);
+  const once = normalizeChapterSequence(source, { sourceFormat: 'mobi' });
+  const twice = normalizeChapterSequence(once, { sourceFormat: 'mobi' });
   assert.strictEqual(once.length, 3);
   assert.strictEqual(normalizedNarration(once), normalizedNarration(source));
   assert.deepStrictEqual(twice.map(chapter => chapter.title), once.map(chapter => chapter.title));
@@ -362,6 +362,23 @@ test('the merge runs inside sequence normalization and is idempotent', () => {
   assert.deepStrictEqual(once.map(chapter => chapter.index), [0, 1, 2]);
 });
 
+
+test('the merge is scoped to the formats the rollout covers', () => {
+  const source = [
+    { index: 0, title: 'FROM', type: 'divider', tocTitleSource: 'href', text: 'FROM\nThe First Volume\n(1961)' },
+    { index: 1, title: 'Chapter 2', type: 'chapter', tocTitleSource: 'href', text: narration('Excerpt') },
+    { index: 2, title: 'A Named Essay', type: 'content', tocTitleSource: 'href', text: narration('Essay') },
+    { index: 3, title: 'Another Essay', type: 'content', tocTitleSource: 'href', text: narration('Another') }
+  ];
+  assert.strictEqual(normalizeChapterSequence(source, { sourceFormat: 'MOBI' }).length, 3,
+    'the rollout is case-insensitive about the container name');
+  assert.strictEqual(normalizeChapterSequence(source, { sourceFormat: 'epub' }).length, 4,
+    'a format outside the rollout keeps its current segmentation');
+  assert.strictEqual(normalizeChapterSequence(source).length, 4,
+    'an unknown format never re-cuts an already-imported book');
+  assert.strictEqual(mergeDegenerateSections(source).length, 3,
+    'the rule itself is format-independent; only the rollout is scoped');
+});
 
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

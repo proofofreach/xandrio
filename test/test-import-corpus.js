@@ -42,7 +42,7 @@ for (const fixture of corpus) {
     ? splitOversizedChapters(clone(fixture.chapters))
     : clone(fixture.chapters);
   const preNormalizationNarration = normalizedNarration(chapters);
-  if (fixture.normalizeSequence) chapters = normalizeChapterSequence(chapters);
+  if (fixture.normalizeSequence) chapters = normalizeChapterSequence(chapters, { sourceFormat: fixture.sourceFormat });
   const result = fixture.diagnostics
     ? createExtractionResult({
       chapters,
