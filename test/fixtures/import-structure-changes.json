@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "changes": [
+    {
+      "id": "private:fec23b8c6dbe",
+      "fromChapterCount": 23,
+      "toChapterCount": 16,
+      "reason": "degenerate-section-merge: divider and unclaimed-fragment sections joined forward; narration conserved"
+    }
+  ]
+}
