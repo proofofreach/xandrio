@@ -1,5 +1,8 @@
 /** Offline contract tests for the public Z-Library client interface. */
 const assert = require('assert');
+const { settlesBefore } = require('./timing-helper');
+// How long the stalled-DNS stub parks before resolving.
+const STALLED_LOOKUP_MS = 1000;
 const fs = require('fs').promises;
 const os = require('os');
 const path = require('path');
@@ -286,15 +289,18 @@ async function writesSession(authFile) { await fs.writeFile(authFile, JSON.strin
       fetchCalls++;
       throw new Error('must not fetch');
     }, { lookupImpl: async () => new Promise(resolve => {
-      const timer = setTimeout(() => resolve([]), 1000);
+      const timer = setTimeout(() => resolve([]), STALLED_LOOKUP_MS);
       timer.unref?.();
     }), requestTimeoutMs: 20 });
-    const started = Date.now();
-    await assert.rejects(
-      () => client.connect({ email: 'reader@example.test', password: 'not-persisted' }),
-      error => error.code === 'ZLIB_TIMEOUT'
+    // The deadline must fire while the lookup is still stalled. Letting the
+    // lookup finish first is the failure, so its duration is the bound.
+    const settled = await settlesBefore(
+      client.connect({ email: 'reader@example.test', password: 'not-persisted' }),
+      STALLED_LOOKUP_MS,
+      'the request deadline did not fire before the stalled lookup resolved'
     );
-    assert(Date.now() - started < 200);
+    assert.strictEqual(settled.status, 'rejected');
+    assert.strictEqual(settled.reason.code, 'ZLIB_TIMEOUT');
     assert.equal(fetchCalls, 0);
     await fs.rm(directory, { recursive: true, force: true });
   });

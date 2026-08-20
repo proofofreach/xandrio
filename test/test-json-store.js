@@ -7,6 +7,7 @@ const assert = require('assert');
 const crypto = require('crypto');
 const { spawnSync } = require('child_process');
 const fs = require('fs');
+const { HANG_GUARD_MS, rejectAfter } = require('./timing-helper');
 const fsp = fs.promises;
 const os = require('os');
 const path = require('path');
@@ -193,14 +194,40 @@ async function main() {
   });
 
   await test('updates to different files do not serialize against each other', async () => {
-    const started = Date.now();
-    await Promise.all([
-      jsonStore.update(file('p1.json'), async (d) => { await sleep(80); d.done = 1; }),
-      jsonStore.update(file('p2.json'), async (d) => { await sleep(80); d.done = 1; }),
-      jsonStore.update(file('p3.json'), async (d) => { await sleep(80); d.done = 1; })
-    ]);
-    const elapsed = Date.now() - started;
-    assert(elapsed < 200, `independent files should run in parallel (took ${elapsed}ms)`);
+    // Observe the overlap rather than timing it. Each mutator parks inside its
+    // own update until all three have arrived, so the barrier can only clear if
+    // three updates hold their locks at once. A wall clock cannot say this: a
+    // loaded machine makes parallel work look serial, which is how this test
+    // used to fail on CI while the lock behaviour was perfectly correct.
+    const FILES = ['p1.json', 'p2.json', 'p3.json'];
+    let inside = 0;
+    let peak = 0;
+    let openBarrier;
+    const barrier = new Promise(resolve => { openBarrier = resolve; });
+    // Only a hang guard. It never decides whether the test passes: if the locks
+    // serialize, the barrier can never clear and this reports why.
+    const guard = rejectAfter(HANG_GUARD_MS, `only ${inside} of 3 updates held their locks at once`);
+
+    try {
+      await Promise.all(FILES.map(name => jsonStore.update(file(name), async (data) => {
+        inside += 1;
+        peak = Math.max(peak, inside);
+        if (inside === FILES.length) openBarrier();
+        try {
+          await Promise.race([barrier, guard.promise]);
+        } finally {
+          inside -= 1;
+        }
+        data.done = 1;
+      })));
+    } finally {
+      guard.cancel();
+    }
+
+    assert.strictEqual(peak, FILES.length, 'each file should lock independently');
+    for (const name of FILES) {
+      assert.strictEqual((await jsonStore.load(file(name))).done, 1, `${name} was not written`);
+    }
   });
 
   await test('withLock serializes with update on the same file', async () => {

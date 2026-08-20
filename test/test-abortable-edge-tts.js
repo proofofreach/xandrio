@@ -3,6 +3,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { connectEdgeWebSocket, synthesizeEdgeTts } = require('../lib/abortable-edge-tts');
+const { settlesBefore } = require('./timing-helper');
 
 let passed = 0;
 let failed = 0;
@@ -46,15 +47,20 @@ class CompletingSocket extends EventEmitter {
 
 (async () => {
   const controller = new AbortController();
-  const startedAt = Date.now();
+  // The socket never answers, so without the abort this handshake would run the
+  // full timeout. Beating that timeout is the property; the number is its own.
+  const HANDSHAKE_TIMEOUT_MS = 5000;
   const connection = connectEdgeWebSocket({
-    outputFormat: 'audio-24khz-48kbitrate-mono-mp3', timeout: 5000
+    outputFormat: 'audio-24khz-48kbitrate-mono-mp3', timeout: HANDSHAKE_TIMEOUT_MS
   }, controller.signal, BlackholedSocket);
   controller.abort();
-  let error = null;
-  try { await connection; } catch (caught) { error = caught; }
+  const settled = await settlesBefore(
+    connection,
+    HANDSHAKE_TIMEOUT_MS,
+    'cancelled Edge handshake waited out the handshake timeout instead of aborting'
+  );
+  const error = settled.status === 'rejected' ? settled.reason : null;
   assert(error?.name === 'AbortError', 'cancelled Edge handshake rejects with AbortError');
-  assert(Date.now() - startedAt < 250, 'cancelled Edge handshake settles promptly');
   assert(BlackholedSocket.latest?.terminated === true, 'cancelled Edge handshake terminates its socket immediately');
 
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'xandrio-edge-'));
