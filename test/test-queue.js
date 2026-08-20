@@ -8,6 +8,10 @@
 const TTSQueue = require('../lib/tts-queue');
 const assert = require('assert');
 const fs = require('fs');
+const { settlesBefore } = require('./timing-helper');
+// Slow paths the cancellation tests below must be shown to short-circuit.
+const HTTP_ENGINE_TIMEOUT_MS = 5000;
+const EDGE_SYNTHESIS_TIMEOUT_MS = 5000;
 const fsp = fs.promises;
 const os = require('os');
 const path = require('path');
@@ -938,10 +942,15 @@ async function runTests() {
       };
       const id = await q.enqueue({ text: 'HTTP cancellation text.', outputPath: out });
       await fetchStartedPromise;
-      const startedAt = Date.now();
       assert.strictEqual(q.cancel(id), true);
-      await assert.rejects(q.waitFor(id), /cancelled/);
-      assert(Date.now() - startedAt < 250, 'active cancellation should settle promptly');
+      // The stub fetch never resolves on its own, so waiting rather than
+      // aborting means waiting out the engine timeout.
+      const settled = await settlesBefore(
+        q.waitFor(id).then(() => null, error => error),
+        HTTP_ENGINE_TIMEOUT_MS,
+        'cancellation waited out the engine timeout instead of aborting the request'
+      );
+      assert.match(String(settled.value?.message), /cancelled/);
       assert.strictEqual(fetchAborted, true, 'in-flight fetch receives abort');
       assert.strictEqual(q.getQueueStatus().active, 0, 'active map is cleaned');
       assert.strictEqual(q.getQueueStatus().queued, 0, 'pending queue is clean');
@@ -984,10 +993,15 @@ async function runTests() {
         voice: 'en-US-AndrewMultilingualNeural'
       });
       await startedPromise;
-      const cancelStartedAt = Date.now();
       assert.strictEqual(q.cancel(id), true);
-      await assert.rejects(q.waitFor(id), /cancel/i);
-      assert(Date.now() - cancelStartedAt < 500, 'Edge cancellation should settle promptly');
+      // The stub Edge socket never delivers audio, so anything short of a real
+      // abort leaves this synthesis running until its own timeout.
+      const settled = await settlesBefore(
+        q.waitFor(id).then(() => null, error => error),
+        EDGE_SYNTHESIS_TIMEOUT_MS,
+        'Edge cancellation waited out the synthesis timeout instead of aborting'
+      );
+      assert.match(String(settled.value?.message), /cancel/i);
       await sleep(30);
       for (const candidate of [out, `${out}.part`, `${out}.part.mp3`]) {
         assert.strictEqual(fs.existsSync(candidate), false, `${path.basename(candidate)} should be removed`);
@@ -1013,10 +1027,16 @@ async function runTests() {
       };
       const pending = q._fetchHttpTTSWithRetry(engine, { text: 'retry' }, controller.signal);
       while (calls === 0) await sleep(1);
-      const startedAt = Date.now();
       controller.abort();
-      await assert.rejects(pending, error => error.name === 'AbortError');
-      assert(Date.now() - startedAt < 250, 'retry backoff aborts promptly');
+      // An abort that is not observed sleeps out the backoff before retrying,
+      // so the backoff interval is exactly the thing this has to beat.
+      const settled = await settlesBefore(
+        pending,
+        engine.backoffBaseMs,
+        'abort slept through the retry backoff instead of settling'
+      );
+      assert.strictEqual(settled.status, 'rejected');
+      assert.strictEqual(settled.reason.name, 'AbortError');
       await sleep(20);
       assert.strictEqual(calls, 1, 'no retry starts after cancellation');
     } finally {

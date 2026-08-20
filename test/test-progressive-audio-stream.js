@@ -1,6 +1,7 @@
 const assert = require('assert');
 const express = require('express');
 const http = require('http');
+const { HANG_GUARD_MS, rejectAfter } = require('./timing-helper');
 const fsp = require('fs').promises;
 const os = require('os');
 const path = require('path');
@@ -776,6 +777,11 @@ function zeroCrossingRate(pcm) {
           206,
           'locking past the request-idle bound must not expire the native iOS stream'
         );
+        // Read the body. An abandoned one leaves the server writing into a
+        // connection that teardown then destroys, and the resulting EPIPE lands
+        // on a socket nobody is listening to — which takes the whole run down
+        // after every test has already passed.
+        assert.strictEqual((await resumedSegment.arrayBuffer()).byteLength, 32);
       } finally {
         keepRunning.resolve();
         await app.locals.hlsAudioStreamer.dispose();
@@ -834,6 +840,7 @@ function zeroCrossingRate(pcm) {
           206,
           'a completed native iOS stream must survive a long lock-screen pause'
         );
+        assert.strictEqual((await resumedSegment.arrayBuffer()).byteLength, 32);
       } finally {
         await app.locals.hlsAudioStreamer.dispose();
         await new Promise(resolve => server.close(resolve));
@@ -899,10 +906,12 @@ function zeroCrossingRate(pcm) {
         await app.locals.hlsAudioStreamer.maintain();
         assert.strictEqual(app.locals.hlsAudioStreamer.sessionsById.size, 1);
         assert.strictEqual((await fetch(`${origin}${olderSegment}`)).status, 410);
-        assert.strictEqual(
-          (await fetch(`${origin}${newerSegment}`, { headers: { Range: 'bytes=0-31' } })).status,
-          206
+        const newerSegmentResponse = await fetch(
+          `${origin}${newerSegment}`,
+          { headers: { Range: 'bytes=0-31' } }
         );
+        assert.strictEqual(newerSegmentResponse.status, 206);
+        assert.strictEqual((await newerSegmentResponse.arrayBuffer()).byteLength, 32);
       } finally {
         await app.locals.hlsAudioStreamer.dispose();
         await new Promise(resolve => server.close(resolve));
@@ -1070,8 +1079,11 @@ function zeroCrossingRate(pcm) {
         const elapsedMs = Date.now() - startedAt;
         console.log(`    pacing benchmark: ${body.length} bytes in ${elapsedMs}ms`);
         assert(body.length > 90_000, `expected about 100KB, received ${body.length} bytes`);
+        // The lower bound is the property: pacing must not deliver the whole
+        // body at once. There is deliberately no upper bound — a slow host says
+        // nothing about whether the response was paced, and asserting one only
+        // measures the machine.
         assert(elapsedMs >= 850, `paced response completed too quickly in ${elapsedMs}ms`);
-        assert(elapsedMs < 3000, `paced response was too slow at ${elapsedMs}ms`);
       } finally {
         await new Promise(resolve => server.close(resolve));
       }
@@ -1129,10 +1141,14 @@ function zeroCrossingRate(pcm) {
             if (error.code !== 'ECONNRESET') reject(error);
           });
         });
-        await Promise.race([
-          aborted.promise,
-          new Promise((_, reject) => setTimeout(() => reject(new Error('abort was not observed')), 1000))
-        ]);
+        // A hang guard, not a speed assertion: the test fails if the abort is
+        // never observed, not if a loaded machine takes a moment to observe it.
+        const abortGuard = rejectAfter(HANG_GUARD_MS, 'abort was not observed');
+        try {
+          await Promise.race([aborted.promise, abortGuard.promise]);
+        } finally {
+          abortGuard.cancel();
+        }
         for (let attempt = 0; attempt < 50 && children.size; attempt++) {
           await new Promise(resolve => setTimeout(resolve, 20));
         }
