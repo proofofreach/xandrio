@@ -92,6 +92,7 @@ function run(overrides = {}) {
       emptyWarningMessage: false
     }
   };
+  run.baselineFixture = baseline;
   run.candidateFixture = candidate;
   return compareImportBenchmark({
     baseline: overrides.baseline || baseline,
@@ -232,4 +233,50 @@ assert.equal(stale.passed, false);
 assert.equal(stale.summary.staleStructureAcceptances, 1);
 assert(stale.gates.some(gate => gate.id === 'declared-structure-changes-still-apply' && !gate.passed));
 
-console.log('22 passed, 0 failed');
+// A re-cut that leaves the chapter count alone must declare itself as one.
+const retypedCandidate = JSON.parse(JSON.stringify(run.candidateFixture));
+const retyped = retypedCandidate.cases.find(value => value.id === 'authored-epub');
+retyped.structureKey = 'structure-authored-retyped';
+
+const countStableUndeclared = run({ candidate: retypedCandidate });
+assert.equal(countStableUndeclared.passed, false);
+assert.equal(countStableUndeclared.summary.unaccountedStructureChanges, 1,
+  'a boundary change with a stable chapter count is still a structure change');
+
+const countStableVacuous = run({
+  candidate: retypedCandidate,
+  acceptedStructureChanges: [{ id: 'authored-epub', fromChapterCount: 3, toChapterCount: 3 }]
+});
+assert.equal(countStableVacuous.passed, false);
+assert.equal(countStableVacuous.summary.unaccountedStructureChanges, 1,
+  'unchanged counts alone cannot describe a change, so they cannot accept one');
+
+const countStableDeclared = run({
+  candidate: retypedCandidate,
+  acceptedStructureChanges: [{
+    id: 'authored-epub',
+    fromChapterCount: 3,
+    toChapterCount: 3,
+    structureChangedWithoutChapterCount: true
+  }]
+});
+assert.equal(countStableDeclared.passed, true);
+assert.equal(countStableDeclared.summary.acceptedStructureChanges, 1);
+
+// A case that must conserve narration but carries no comparable identity is
+// unverifiable, not conserved.
+const opaqueCandidate = JSON.parse(JSON.stringify(run.candidateFixture));
+const opaque = opaqueCandidate.cases.find(value => value.id === 'authored-epub');
+delete opaque.structureKey;
+delete opaque.chapterCount;
+const opaqueBaseline = JSON.parse(JSON.stringify(run.baselineFixture));
+const opaqueBefore = opaqueBaseline.cases.find(value => value.id === 'authored-epub');
+delete opaqueBefore.structureKey;
+delete opaqueBefore.chapterCount;
+
+const uncheckable = run({ baseline: opaqueBaseline, candidate: opaqueCandidate });
+assert.equal(uncheckable.passed, false);
+assert.equal(uncheckable.summary.uncheckableStructureCases, 1);
+assert(uncheckable.gates.some(gate => gate.id === 'chapter-structure-is-checkable' && !gate.passed));
+
+console.log('30 passed, 0 failed');
