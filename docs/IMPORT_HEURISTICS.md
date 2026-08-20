@@ -94,6 +94,28 @@ The degenerate section merge is rolled out to Kindle containers
 libraries keep their current segmentation until the set is widened, which is a
 scope decision recorded here and declared in the release benchmark.
 
+## Corpus evidence behind each structure heuristic
+
+A rule phrased generically is not the same as a rule shown to be general. These
+counts come from running every structure rule over the whole private library —
+51 books, of which the 42 EPUB ones informed none of this work and so serve as
+the out-of-sample check. Re-measure them when the rules change; a rule that
+stops firing anywhere is dead weight and should be removed rather than kept
+alive by its own unit test.
+
+| Rule | Books it fires in | Shown outside the books that shaped it |
+| --- | --- | --- |
+| Degenerate section merge | 21 of 51, 101 sections | Yes — 15 of the 42 out-of-sample books |
+| Group heading recorded | 5 of 51, 22 headings | Yes — 3 of the 42 |
+| Title page by work identity | 3 of 9 measurable | Partly; legacy caches carry no work metadata |
+| Retype after naming | 2 of 51, 7 sections | No |
+| Divider and note rejoined | 1 of 51, 1 section | No |
+
+The last two are bounded and conserve text, so the cost of their being narrow
+is capped, but they are single- or two-book evidence and are recorded here as
+such rather than presented as proven classes. Widen or remove them as the
+corpus grows.
+
 ## Previous-versus-current release benchmark
 
 Run `npm run benchmark:imports -- --candidate HEAD` before releasing an import-policy change. The command binds the comparison to the approved previous-system commit `b2873a24f7bd1c1ecc02c882abfb9321284d7bbd`, the committed candidate at `HEAD`, and exactly the five most recent private imports. It rejects a dirty worktree, a different baseline, an uncommitted candidate, or a different private-corpus size.
