@@ -35,15 +35,16 @@ async function check(name, callback) {
       }
     });
     assert.deepEqual(phases.map(phase => phase.name), [
-      'tests', 'browser', 'import-benchmark', 'publish', 'deploy'
+      'source-mirror', 'tests', 'browser', 'import-benchmark', 'publish', 'deploy'
     ]);
-    assert.match(phases[0].script, /test\/run-all\.js$/);
-    assert.match(phases[1].script, /scripts\/smoke-browser\.js$/);
-    assert.match(phases[2].script, /scripts\/benchmark-import-reliability\.js$/);
-    assert.deepEqual(phases[2].args, ['--candidate', 'HEAD']);
-    assert.match(phases[3].script, /sync-public\.mjs$/);
-    assert.match(phases[4].script, /deploy-production\.mjs$/);
-    assert.deepEqual(phases[4].args, ['--dry-run']);
+    assert.match(phases[0].script, /check-source-mirror\.mjs$/);
+    assert.match(phases[1].script, /test\/run-all\.js$/);
+    assert.match(phases[2].script, /scripts\/smoke-browser\.js$/);
+    assert.match(phases[3].script, /scripts\/benchmark-import-reliability\.js$/);
+    assert.deepEqual(phases[3].args, ['--candidate', 'HEAD']);
+    assert.match(phases[4].script, /sync-public\.mjs$/);
+    assert.match(phases[5].script, /deploy-production\.mjs$/);
+    assert.deepEqual(phases[5].args, ['--dry-run']);
   });
 
   await check('publication failure prevents any production mutation', () => {
@@ -54,7 +55,7 @@ async function check(name, callback) {
         if (name === 'tests') throw new Error('checks failed');
       }
     }), /checks failed/);
-    assert.deepEqual(phases, ['tests']);
+    assert.deepEqual(phases, ['source-mirror', 'tests']);
   });
 
   console.log(`${passed} passed, ${failed} failed`);

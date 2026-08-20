@@ -50,9 +50,13 @@ order:
 2. Any new runtime/engine capability is gated behind an env flag that defaults
    **off** and is documented in `.env.template`, so shipping the code is
    harmless before the flag is enabled anywhere.
-3. Run `npm run release:production` from `main`. This single command
-   publishes the sanitized public PR, waits for every required check and the
-   protected merge, and deploys that exact merged revision. The VPS stages an
+3. Run `npm run release:production` from `main`. This single command first
+   confirms the private source mirror already holds the revision being
+   released — publication goes through the public repository and never touches
+   the private remote, so the mirror can otherwise fall behind silently while
+   every release still succeeds — then publishes the sanitized public PR, waits
+   for every required check and the protected merge, and deploys that exact
+   merged revision. The VPS stages an
    immutable release under `/opt/xandrio/releases/<sha>`, atomically switches
    `/opt/xandrio/current`, verifies internal and external readiness, and
    automatically restores the previous release on failure. If flag-gated,
