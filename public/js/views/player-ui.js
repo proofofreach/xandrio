@@ -476,8 +476,19 @@ export function renderChapterList() {
   // the prep panel).
   const premiumMode = isPremiumVoiceSelected();
   const premiumReadiness = premiumMode ? getPremiumChapterReadiness() : [];
+  // A collection prints its source-work headings above the pieces they cover.
+  // Each heading opens an ARIA group so the listbox keeps announcing which work
+  // a piece came from, and closes when the next heading starts.
+  let openGroup = false;
+  const openGroupFor = (heading) => {
+    const prefix = openGroup ? '</div>' : '';
+    openGroup = true;
+    return `${prefix}<div class="chapter-list-group" role="group" aria-label="${escapeHTML(heading)}">`
+      + `<p class="chapter-list-heading">${escapeHTML(heading)}</p>`;
+  };
   chapterList.innerHTML = deps.getChapters().map((chapter, index) => {
     if (chapter.empty) return '';
+    const groupHeading = chapter.groupHeading ? openGroupFor(chapter.groupHeading) : '';
     const itemState = chapterListItemState(index, deps.getCurrentChapter());
     const isActive = itemState === 'active';
     const title = displayChapterTitle(chapter, index);
@@ -491,7 +502,7 @@ export function renderChapterList() {
       ? '<span class="chapter-premium-dot" role="img" aria-label="Premium audio ready"></span>'
       : '';
     const ordinal = chapterListOrdinal(deps.getChapters(), index);
-    return `
+    return `${groupHeading}
       <button class="${classes.join(' ')}" type="button" role="option" aria-selected="${isActive}" data-chapter-index="${index}">
         <span class="chapter-list-index">${premiumDot}${ordinal}</span>
         <span class="chapter-list-copy">
@@ -502,7 +513,7 @@ export function renderChapterList() {
         <span class="chapter-list-current" aria-hidden="true">${isActive ? ICON_NOW_PLAYING : ''}</span>
       </button>
     `;
-  }).join('');
+  }).join('') + (openGroup ? '</div>' : '');
 }
 
 export function openChapterSheet() {

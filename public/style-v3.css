@@ -3619,6 +3619,25 @@ body.sheet-open { overflow: hidden; }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* A collection's source-work heading, printed above the pieces it covers. */
+/* A plain block, not display:contents — that can drop the group's role from
+   the accessibility tree, and the group's whole purpose here is to announce
+   which work a piece came from. */
+.chapter-list-group {
+  display: block;
+}
+.chapter-list-heading {
+  margin: 14px 0 2px;
+  padding: 0 8px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  /* The book prints these headings in ordinary case; uppercasing them here
+     would put back the shouting the titles were just relieved of. */
+}
+.chapter-list-heading:first-child {
+  margin-top: 4px;
+}
 .chapter-list-meta {
   min-height: 16px;
   color: var(--text-secondary);
