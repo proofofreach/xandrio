@@ -555,5 +555,37 @@ test('auxiliary sections join their own kind but never narration', () => {
     'the contents page still never reaches a narrative chapter');
 });
 
+test('a section given a real name stops being a numbered chapter', () => {
+  const source = [
+    { index: 0, title: 'FROM', type: 'divider', tocTitleSource: 'href', text: 'FROM\nJonathan Troy\n(1954)' },
+    { index: 1, title: 'Chapter 2', type: 'chapter', tocTitleSource: 'href', text: narration('Excerpt') },
+    { index: 2, title: 'A Named Essay', type: 'content', tocTitleSource: 'href', text: narration('Essay') },
+    { index: 3, title: 'Another Essay', type: 'content', tocTitleSource: 'href', text: narration('Another') }
+  ];
+  const merged = mergeDegenerateSections(source);
+  assert.strictEqual(merged[0].title, 'From Jonathan Troy (1954)');
+  assert.strictEqual(merged[0].type, 'content',
+    'the ordinal was the source’s label, not the book’s; the piece has a name now');
+  assert.strictEqual(merged[0].rawType, 'chapter',
+    'the original type is retained, so the chapter structure key does not move');
+});
+
+test('a chapter the book really numbers keeps its number', () => {
+  const source = [
+    { index: 0, title: 'PART ONE', type: 'divider', tocTitleSource: 'href', text: 'PART ONE\nThe Beginning' },
+    { index: 1, title: 'Chapter 5', type: 'chapter', tocTitleSource: 'href', text: narration('Fifth') },
+    { index: 2, title: 'Chapter 6', type: 'chapter', tocTitleSource: 'href', text: narration('Sixth') },
+    { index: 3, title: 'Chapter 7', type: 'chapter', tocTitleSource: 'href', text: narration('Seventh') }
+  ];
+  const merged = mergeDegenerateSections(source);
+  assert.strictEqual(merged[0].title, 'Chapter 5',
+    'a part heading does not rename the first chapter it covers');
+  assert.strictEqual(merged[0].groupHeading, 'Part One The Beginning',
+    'it is recorded as the heading over the run, which is what the book prints');
+  assert(merged.every(chapter => chapter.type === 'chapter'),
+    'and every chapter in the run keeps the number the book gave it');
+  assert.strictEqual(normalizedNarration(merged), normalizedNarration(source));
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);
