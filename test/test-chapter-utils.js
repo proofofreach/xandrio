@@ -3,6 +3,7 @@ const {
   normalizeChapterSequence,
   mergeDegenerateSections,
   nameSectionsFromLeadingDividers,
+  mergeDividerNotesIntoExcerpt,
   repairTextArtifacts,
   stripHTML
 } = require('../lib/chapter-utils');
@@ -470,6 +471,45 @@ test('a synthesized heading settles a shouted divider label into prose case', ()
   const merged = mergeDegenerateSections(source);
   assert.strictEqual(merged[0].title, 'From Jonathan Troy (1954)',
     'the source shouts its label; the chapter list should not');
+});
+
+test('a divider, its note and the excerpt are the one entry the book lists', () => {
+  const source = [
+    { index: 0, title: 'An Essay', type: 'content', tocTitleSource: 'href', text: narration('Essay') },
+    {
+      index: 1,
+      title: 'From (novel in progress)',
+      type: 'content',
+      tocTitleSource: 'href',
+      text: 'FROM\n\nThe Rites of Spring\n(novel in progress)\nEditor’s note: this is the last of the original selections.'
+    },
+    { index: 2, title: 'Chapter 33', type: 'chapter', tocTitleSource: 'href', text: narration('Excerpt') },
+    { index: 3, title: 'A Later Essay', type: 'content', tocTitleSource: 'href', text: narration('Later') }
+  ];
+  const merged = mergeDividerNotesIntoExcerpt(source);
+  assert.strictEqual(merged.length, 3);
+  assert.strictEqual(normalizedNarration(merged), normalizedNarration(source),
+    'rejoining a split entry conserves every character');
+  assert.strictEqual(merged[1].title, 'From The Rites of Spring (novel in progress)');
+  assert.strictEqual(merged[1].rawTitle, 'Chapter 33');
+  assert(merged[1].text.startsWith('FROM'), 'the note stays ahead of the excerpt it introduces');
+  assert.deepStrictEqual(merged.map(chapter => chapter.index), [0, 1, 2]);
+});
+
+test('a named section is never swallowed by the section before it', () => {
+  const source = [
+    {
+      index: 0,
+      title: 'From (novel in progress)',
+      type: 'content',
+      tocTitleSource: 'href',
+      text: 'FROM\n\nThe Rites of Spring\n(novel in progress)\nEditor’s note: the last of the selections.'
+    },
+    { index: 1, title: 'A Named Excerpt', type: 'chapter', tocTitleSource: 'href', text: narration('Excerpt') },
+    { index: 2, title: 'A Later Essay', type: 'content', tocTitleSource: 'href', text: narration('Later') }
+  ];
+  assert.deepStrictEqual(mergeDividerNotesIntoExcerpt(source), source,
+    'only a section the source left with a bare ordinal is missing its name');
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);
