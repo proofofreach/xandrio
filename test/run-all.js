@@ -64,6 +64,7 @@ const tests = [
   'test-production-deployment.js',
   'test-runtime-revision.js',
   'test-release-production.js',
+  'test-source-mirror.js',
   'test-app-shell-versions.js',
   'test-local-service-runtime.js',
   'test-server.js',
