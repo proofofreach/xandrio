@@ -9,6 +9,7 @@ import { execFileSync } from 'node:child_process';
 import { resolve } from 'node:path';
 
 const REPO_ROOT = resolve(import.meta.dirname, '..', '..');
+const MIRROR_SCRIPT = resolve(import.meta.dirname, 'check-source-mirror.mjs');
 const TEST_SCRIPT = resolve(REPO_ROOT, 'test', 'run-all.js');
 const BROWSER_SCRIPT = resolve(REPO_ROOT, 'scripts', 'smoke-browser.js');
 const IMPORT_BENCHMARK_SCRIPT = resolve(REPO_ROOT, 'scripts', 'benchmark-import-reliability.js');
@@ -26,6 +27,10 @@ export function releaseProduction({
   deploymentArgs = [],
   runPhase = defaultRunPhase
 } = {}) {
+  // First, and before anything expensive: a release publishes through the
+  // public repository and never touches the private one, so the mirror can fall
+  // behind silently while every release still succeeds.
+  runPhase('source-mirror', MIRROR_SCRIPT, []);
   runPhase('tests', TEST_SCRIPT, []);
   runPhase('browser', BROWSER_SCRIPT, []);
   runPhase('import-benchmark', IMPORT_BENCHMARK_SCRIPT, ['--candidate', 'HEAD']);
