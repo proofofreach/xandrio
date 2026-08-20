@@ -2,7 +2,6 @@ const assert = require('assert');
 const {
   normalizeChapterSequence,
   mergeDegenerateSections,
-  nameSectionsFromLeadingDividers,
   mergeDividerNotesIntoExcerpt,
   coalesceAdjacentAuxiliary,
   normalizeChapterMetadata,
@@ -427,42 +426,6 @@ test('the merge is scoped to the formats the rollout covers', () => {
     'the rule itself is format-independent; only the rollout is scoped');
 });
 
-test('a divider carrying a note still names the excerpt it introduces', () => {
-  const source = [
-    { index: 0, title: 'An Essay', type: 'content', tocTitleSource: 'href', text: narration('Essay') },
-    {
-      index: 1,
-      title: 'From (novel in progress)',
-      type: 'content',
-      tocTitleSource: 'href',
-      text: 'FROM\n\nThe Rites of Spring\n(novel in progress)\nEditor’s note: this is the last of the original selections for this reader.'
-    },
-    { index: 2, title: 'Chapter 33', type: 'chapter', tocTitleSource: 'href', text: narration('Excerpt') }
-  ];
-  const named = nameSectionsFromLeadingDividers(source);
-  assert.strictEqual(normalizedNarration(named), normalizedNarration(source),
-    'naming a section is display metadata, never a text change');
-  assert.strictEqual(named[2].title, 'From The Rites of Spring (novel in progress)');
-  assert.strictEqual(named[2].rawTitle, 'Chapter 33',
-    'the original title is retained, so the chapter structure key does not move');
-  assert.strictEqual(named[1].title, 'From (novel in progress)', 'the donor keeps its own title');
-});
-
-test('an essay never donates its opening lines to the chapter after it', () => {
-  const source = [
-    {
-      index: 0,
-      title: 'Down the River',
-      type: 'content',
-      tocTitleSource: 'href',
-      text: `Down the River\n\nwith Henry Thoreau\n\nNovember 4, 1980\n${narration('The river')}`
-    },
-    { index: 1, title: 'Chapter 12', type: 'chapter', tocTitleSource: 'href', text: narration('Next') }
-  ];
-  assert.deepStrictEqual(nameSectionsFromLeadingDividers(source), source,
-    'only a section short enough to be a divider carrying a note can name another');
-});
-
 test('a synthesized heading settles a shouted divider label into prose case', () => {
   const source = [
     { index: 0, title: 'FROM', type: 'divider', tocTitleSource: 'href', text: 'FROM\n\nJonathan Troy\n(1954)' },
@@ -585,6 +548,27 @@ test('a chapter the book really numbers keeps its number', () => {
   assert(merged.every(chapter => chapter.type === 'chapter'),
     'and every chapter in the run keeps the number the book gave it');
   assert.strictEqual(normalizedNarration(merged), normalizedNarration(source));
+});
+
+test('a name still reaches the excerpt when rejoining would overrun the bound', () => {
+  const source = [
+    { index: 0, title: 'An Essay', type: 'content', tocTitleSource: 'href', text: narration('Essay') },
+    {
+      index: 1,
+      title: 'From (novel in progress)',
+      type: 'content',
+      tocTitleSource: 'href',
+      text: 'FROM\n\nThe Rites of Spring\n(novel in progress)\nEditor’s note: the last of the selections.'
+    },
+    { index: 2, title: 'Chapter 33', type: 'chapter', tocTitleSource: 'href', text: 'x'.repeat(100000) },
+    { index: 3, title: 'A Later Essay', type: 'content', tocTitleSource: 'href', text: narration('Later') }
+  ];
+  const merged = mergeDividerNotesIntoExcerpt(source);
+  assert.strictEqual(merged.length, 4, 'the two stay apart rather than overrun the chapter bound');
+  assert.strictEqual(normalizedNarration(merged), normalizedNarration(source));
+  assert.strictEqual(merged[2].title, 'From The Rites of Spring (novel in progress)',
+    'the name belongs to the excerpt whether or not the sections could be rejoined');
+  assert.strictEqual(merged[2].rawTitle, 'Chapter 33');
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);
