@@ -105,8 +105,8 @@ The release gate requires:
 - all required typed diagnostics and candidate selections to match;
 - at least one previously rejected listenable class to improve;
 - no import, narration, or content-defect regression;
-- every chapter-structure change to be declared, and every declaration to still
-  describe a real change;
+- every chapter-structure change to be declared, every declaration to still
+  describe a real change, and every must-conserve case to be checkable at all;
 - exact normalized narration conservation for comparable cases;
 - zero unexpected defects in synthetic and format output after accounting for
   defects deliberately present in a characterization source; and
@@ -119,9 +119,18 @@ not "nothing changed" — that would freeze chapter structure permanently. It is
 `{"schemaVersion":1,"changes":[{"id","fromChapterCount","toChapterCount"}]}`.
 An entry that names the wrong result does not pre-approve a different one, and
 an entry that no longer matches any real change fails the release in its own
-right, so a declaration cannot silently pre-approve a future re-cut. The file
-holds opaque case ids and chapter counts only, matching the report's privacy
-contract.
+right, so a declaration cannot silently pre-approve a future re-cut.
+
+A re-cut that leaves the chapter count unchanged is the one a reader cannot see
+coming and a diff cannot show. Unchanged counts describe nothing, so such an
+entry must also carry `"structureChangedWithoutChapterCount": true` before it
+accepts anything. A case that must conserve narration but exposes neither a
+structure key nor comparable chapter counts is reported as unverifiable rather
+than treated as conserved.
+
+The file holds opaque case ids and chapter counts only, matching the report's
+privacy contract; structure keys are deliberately excluded from it because they
+are content-derived.
 
 Private results are opaque. The report contains no book metadata, paths, text,
 or content hashes. Existing defects in an unrebuildable legacy artifact remain
