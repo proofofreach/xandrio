@@ -92,9 +92,11 @@ function run(overrides = {}) {
       emptyWarningMessage: false
     }
   };
+  run.candidateFixture = candidate;
   return compareImportBenchmark({
     baseline: overrides.baseline || baseline,
-    candidate: overrides.candidate || candidate
+    candidate: overrides.candidate || candidate,
+    acceptedStructureChanges: overrides.acceptedStructureChanges
   });
 }
 
@@ -193,4 +195,41 @@ assert.equal(regression.summary.diagnosticErrors, 1);
 assert.equal(regression.summary.remainingUnexpectedNonPrivateDefects, 1);
 assert(regression.gates.some(gate => gate.id === 'warning-import-auto-opens' && !gate.passed));
 
-console.log('15 passed, 0 failed');
+// An intentional re-segmentation ships only when the change declares it, and a
+// declaration only counts while it still describes what actually happens.
+const resegmentedCandidate = JSON.parse(JSON.stringify(run.candidateFixture));
+const resegmented = resegmentedCandidate.cases.find(value => value.id === 'authored-epub');
+resegmented.chapterCount = 2;
+resegmented.structureKey = 'structure-authored-merged';
+
+const undeclared = run({ candidate: resegmentedCandidate });
+assert.equal(undeclared.passed, false);
+assert.equal(undeclared.summary.structureChanges, 1);
+assert.equal(undeclared.summary.unaccountedStructureChanges, 1);
+assert(undeclared.gates.some(gate => gate.id === 'chapter-structure-changes-are-declared' && !gate.passed));
+
+const declared = run({
+  candidate: resegmentedCandidate,
+  acceptedStructureChanges: [{ id: 'authored-epub', fromChapterCount: 3, toChapterCount: 2 }]
+});
+assert.equal(declared.passed, true);
+assert.equal(declared.summary.structureChanges, 1);
+assert.equal(declared.summary.acceptedStructureChanges, 1);
+assert.equal(declared.summary.unaccountedStructureChanges, 0);
+
+const mismatched = run({
+  candidate: resegmentedCandidate,
+  acceptedStructureChanges: [{ id: 'authored-epub', fromChapterCount: 3, toChapterCount: 1 }]
+});
+assert.equal(mismatched.passed, false);
+assert.equal(mismatched.summary.unaccountedStructureChanges, 1,
+  'a declaration that names the wrong result does not pre-approve a different one');
+
+const stale = run({
+  acceptedStructureChanges: [{ id: 'authored-epub', fromChapterCount: 3, toChapterCount: 2 }]
+});
+assert.equal(stale.passed, false);
+assert.equal(stale.summary.staleStructureAcceptances, 1);
+assert(stale.gates.some(gate => gate.id === 'declared-structure-changes-still-apply' && !gate.passed));
+
+console.log('22 passed, 0 failed');

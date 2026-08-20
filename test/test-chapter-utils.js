@@ -1,6 +1,7 @@
 const assert = require('assert');
 const {
   normalizeChapterSequence,
+  mergeDegenerateSections,
   repairTextArtifacts,
   stripHTML
 } = require('../lib/chapter-utils');
@@ -197,6 +198,186 @@ test('records each heuristic text mutation through the closed registry at the tr
   ]) {
     assert(codes.has(policy.code), `missing registered activation for ${policy.code}`);
   }
+});
+
+// ── Degenerate section merge ─────────────────────────────────────────────────
+// Synthetic, non-copyrighted sources shaped like the real evidence class: a
+// collection whose authored navigation emits a bare source-work divider ahead
+// of every excerpt, and a spine that emits stray figure captions as sections.
+
+function narration(label, repetitions = 30) {
+  return `${label} continues with complete synthetic sentences for characterization. `.repeat(repetitions);
+}
+
+function normalizedNarration(chapters) {
+  return chapters
+    .map(chapter => String(chapter.text || ''))
+    .join('\n\n')
+    .normalize('NFKC')
+    .replace(/\s+/gu, ' ')
+    .trim();
+}
+
+test('authored divider sections merge forward and conserve narration exactly', () => {
+  const source = [
+    { index: 0, title: 'FROM', type: 'divider', tocTitleSource: 'href', text: 'FROM\n\nThe First Volume\n(1961)' },
+    { index: 1, title: 'Chapter 2', type: 'chapter', tocTitleSource: 'href', text: narration('Excerpt one') },
+    { index: 2, title: 'FROM', type: 'divider', tocTitleSource: 'href', text: 'FROM\n\nThe Second Volume:\n\nAn Honest Sequel\n(1972)' },
+    { index: 3, title: 'Chapter 3', type: 'chapter', tocTitleSource: 'href', text: narration('Excerpt two') },
+    { index: 4, title: 'A Named Essay', type: 'content', tocTitleSource: 'href', text: narration('Essay') }
+  ];
+  const merged = mergeDegenerateSections(source);
+  assert.strictEqual(merged.length, 3, 'each divider joins the excerpt it introduces');
+  assert.strictEqual(normalizedNarration(merged), normalizedNarration(source),
+    'merging is a boundary change, never a text change');
+  assert.deepStrictEqual(merged.map(chapter => chapter.title), [
+    'FROM The First Volume (1961)',
+    'FROM The Second Volume: An Honest Sequel (1972)',
+    'A Named Essay'
+  ], 'a divider hands its authored name to a host still labelled with an ordinal');
+  assert.deepStrictEqual(merged.map(chapter => chapter.rawTitle), ['Chapter 2', 'Chapter 3', undefined],
+    'the original title is retained, so the chapter structure key is unaffected by promotion');
+  assert.strictEqual(merged[0].mergedSectionCount, 1);
+});
+
+test('a merged stub never relabels narrative text as front matter', () => {
+  const source = [
+    { index: 0, title: 'Dedication', type: 'divider', tocTitleSource: 'href', text: 'TO MARCIA' },
+    { index: 1, title: 'ALSO BY', type: 'divider', tocTitleSource: 'href', text: 'ALSO BY A. WRITER\nAn Earlier Collection' },
+    { index: 2, title: 'Chapter 1', type: 'chapter', tocTitleSource: 'href', text: narration('First story') },
+    { index: 3, title: 'A Named Story', type: 'content', tocTitleSource: 'href', text: narration('Second story') },
+    { index: 4, title: 'Another Story', type: 'content', tocTitleSource: 'href', text: narration('Third story') }
+  ];
+  const merged = mergeDegenerateSections(source);
+  assert.strictEqual(merged.length, 3);
+  assert.strictEqual(normalizedNarration(merged), normalizedNarration(source));
+  assert.strictEqual(merged[0].title, 'Chapter 1',
+    'a single-line stub and an auxiliary label are both refused as titles for a story');
+  assert.strictEqual(merged[0].rawTitle, undefined, 'a refused promotion leaves the title untouched');
+  assert.deepStrictEqual(merged[0].parentContext, ['To Marcia', 'ALSO BY A. WRITER An Earlier Collection'],
+    'the absorbed headings stay available as context even when they cannot be titles');
+});
+
+test('an auxiliary label still names a host of the same non-narrative class', () => {
+  const source = [
+    { index: 0, title: 'Chapter 1', type: 'copyright', tocTitleSource: 'href', text: 'COPYRIGHT\nFirst Edition\nAll rights reserved' },
+    { index: 1, title: 'Chapter 2', type: 'copyright', tocTitleSource: 'href', text: `Copyright notice text. ${'Reserved rights notice. '.repeat(12)}` },
+    { index: 2, title: 'A Named Story', type: 'content', tocTitleSource: 'href', text: narration('Story') },
+    { index: 3, title: 'Another Story', type: 'content', tocTitleSource: 'href', text: narration('Second') }
+  ];
+  const merged = mergeDegenerateSections(source);
+  assert.strictEqual(merged.length, 3);
+  assert.strictEqual(merged[0].title, 'COPYRIGHT First Edition All rights reserved');
+  assert.strictEqual(merged[0].rawTitle, 'Chapter 2');
+});
+
+test('un-authored sub-threshold fragments merge into the following section', () => {
+  const source = [
+    { index: 0, title: 'Chapter 1', type: 'chapter', text: 'A ceremonial mask photographed on a field expedition' },
+    { index: 1, title: 'Opening', type: 'content', tocTitleSource: 'href', text: narration('Opening') },
+    { index: 2, title: 'Closing', type: 'content', tocTitleSource: 'href', text: narration('Closing') },
+    { index: 3, title: 'Later', type: 'content', tocTitleSource: 'href', text: narration('Later') }
+  ];
+  const merged = mergeDegenerateSections(source);
+  assert.strictEqual(merged.length, 3);
+  assert.strictEqual(normalizedNarration(merged), normalizedNarration(source));
+  assert.strictEqual(merged[0].title, 'Opening', 'a caption fragment never renames its host');
+});
+
+test('a short prose section keeps its own name and its own boundary', () => {
+  const source = [
+    { index: 0, title: 'The Door', type: 'chapter', text: 'He said nothing. The door closed behind him.' },
+    { index: 1, title: 'Chapter 5', type: 'chapter', tocTitleSource: 'href', text: narration('Fifth') },
+    { index: 2, title: 'Chapter 6', type: 'chapter', tocTitleSource: 'href', text: narration('Sixth') }
+  ];
+  assert.deepStrictEqual(mergeDegenerateSections(source), source,
+    'only an ordinal placeholder marks sub-threshold prose as unclaimed spine debris');
+});
+
+test('a short section with authored navigation and real prose is kept', () => {
+  const source = [
+    {
+      index: 0,
+      title: 'Editor’s Note',
+      type: 'content',
+      tocTitleSource: 'href',
+      text: 'The editor recorded that this excerpt comes from an unfinished manuscript, and that the spelling follows the surviving typescript exactly.'
+    },
+    { index: 1, title: 'Opening', type: 'content', tocTitleSource: 'href', text: narration('Opening') },
+    { index: 2, title: 'Closing', type: 'content', tocTitleSource: 'href', text: narration('Closing') }
+  ];
+  assert.deepStrictEqual(mergeDegenerateSections(source), source,
+    'prose behind an authored navigation entry is a section, not a divider');
+});
+
+test('a book built from short sections is left alone', () => {
+  const poems = Array.from({ length: 12 }, (unused, number) => ({
+    index: number,
+    title: `Poem ${number + 1}`,
+    type: 'content',
+    text: `Poem ${number + 1}\n\nA short verse\nof four brief lines\nabout the desert`
+  }));
+  assert.deepStrictEqual(mergeDegenerateSections(poems), poems,
+    'the density guard declines rather than destroy authored short-form structure');
+});
+
+test('merging never manufactures an unusable oversized chapter', () => {
+  const source = [
+    { index: 0, title: 'PART ONE', type: 'divider', text: 'PART ONE\n\nThe Long Section' },
+    { index: 1, title: 'Chapter 1', type: 'chapter', tocTitleSource: 'href', text: 'x'.repeat(100000) },
+    { index: 2, title: 'Chapter 2', type: 'chapter', tocTitleSource: 'href', text: narration('Second') },
+    { index: 3, title: 'Chapter 3', type: 'chapter', tocTitleSource: 'href', text: narration('Third') }
+  ];
+  const merged = mergeDegenerateSections(source);
+  assert.strictEqual(merged.length, 4, 'the divider stays separate rather than push a host over the limit');
+  assert.strictEqual(normalizedNarration(merged), normalizedNarration(source));
+});
+
+test('trailing dividers merge backward instead of ending the book on a stub', () => {
+  const source = [
+    { index: 0, title: 'Opening', type: 'content', tocTitleSource: 'href', text: narration('Opening') },
+    { index: 1, title: 'Closing', type: 'content', tocTitleSource: 'href', text: narration('Closing') },
+    { index: 2, title: 'Later', type: 'content', tocTitleSource: 'href', text: narration('Later') },
+    { index: 3, title: 'END', type: 'divider', text: 'What’s next on\n\nyour reading list' }
+  ];
+  const merged = mergeDegenerateSections(source);
+  assert.strictEqual(merged.length, 3);
+  assert.strictEqual(normalizedNarration(merged), normalizedNarration(source));
+  assert.strictEqual(merged[2].title, 'Later', 'a backward merge never renames its host');
+});
+
+test('the merge runs inside sequence normalization and is idempotent', () => {
+  const source = [
+    { index: 0, title: 'FROM', type: 'divider', tocTitleSource: 'href', text: 'FROM\n\nThe First Volume\n(1961)' },
+    { index: 1, title: 'Chapter 2', type: 'chapter', tocTitleSource: 'href', text: narration('Excerpt one') },
+    { index: 2, title: 'A Named Essay', type: 'content', tocTitleSource: 'href', text: narration('Essay') },
+    { index: 3, title: 'Another Essay', type: 'content', tocTitleSource: 'href', text: narration('Another') }
+  ];
+  const once = normalizeChapterSequence(source, { sourceFormat: 'mobi' });
+  const twice = normalizeChapterSequence(once, { sourceFormat: 'mobi' });
+  assert.strictEqual(once.length, 3);
+  assert.strictEqual(normalizedNarration(once), normalizedNarration(source));
+  assert.deepStrictEqual(twice.map(chapter => chapter.title), once.map(chapter => chapter.title));
+  assert.strictEqual(twice.length, once.length, 're-reading a stored artifact must not re-cut it');
+  assert.deepStrictEqual(once.map(chapter => chapter.index), [0, 1, 2]);
+});
+
+
+test('the merge is scoped to the formats the rollout covers', () => {
+  const source = [
+    { index: 0, title: 'FROM', type: 'divider', tocTitleSource: 'href', text: 'FROM\nThe First Volume\n(1961)' },
+    { index: 1, title: 'Chapter 2', type: 'chapter', tocTitleSource: 'href', text: narration('Excerpt') },
+    { index: 2, title: 'A Named Essay', type: 'content', tocTitleSource: 'href', text: narration('Essay') },
+    { index: 3, title: 'Another Essay', type: 'content', tocTitleSource: 'href', text: narration('Another') }
+  ];
+  assert.strictEqual(normalizeChapterSequence(source, { sourceFormat: 'MOBI' }).length, 3,
+    'the rollout is case-insensitive about the container name');
+  assert.strictEqual(normalizeChapterSequence(source, { sourceFormat: 'epub' }).length, 4,
+    'a format outside the rollout keeps its current segmentation');
+  assert.strictEqual(normalizeChapterSequence(source).length, 4,
+    'an unknown format never re-cuts an already-imported book');
+  assert.strictEqual(mergeDegenerateSections(source).length, 3,
+    'the rule itself is format-independent; only the rollout is scoped');
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);
