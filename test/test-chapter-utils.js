@@ -4,6 +4,8 @@ const {
   mergeDegenerateSections,
   nameSectionsFromLeadingDividers,
   mergeDividerNotesIntoExcerpt,
+  coalesceAdjacentAuxiliary,
+  normalizeChapterMetadata,
   repairTextArtifacts,
   stripHTML
 } = require('../lib/chapter-utils');
@@ -510,6 +512,47 @@ test('a named section is never swallowed by the section before it', () => {
   ];
   assert.deepStrictEqual(mergeDividerNotesIntoExcerpt(source), source,
     'only a section the source left with a bare ordinal is missing its name');
+});
+
+test('a title page is recognised by the work identity it restates', () => {
+  const work = { title: 'The Best of Edward Abbey', author: 'Edward Abbey' };
+  // No imprint anywhere: the book names itself, names its author, and stops.
+  const titlePage = {
+    title: 'Chapter 1',
+    type: 'chapter',
+    text: 'The Best of Edward Abbey\n\nEdward Abbey\n\nEdited by Edward Abbey\n\nwith his own illustrations'
+  };
+  assert.strictEqual(normalizeChapterMetadata(titlePage, work).type, 'cover');
+  assert.strictEqual(normalizeChapterMetadata(titlePage, work).title, 'Title Page');
+  assert.strictEqual(normalizeChapterMetadata(titlePage).type, 'chapter',
+    'without the work identity there is nothing to restate, and the rule stays quiet');
+});
+
+test('a short piece merely sharing the book’s name is not its title page', () => {
+  const work = { title: 'Earth Apples', author: 'Edward Abbey' };
+  const titlePoem = {
+    title: 'Earth Apples',
+    type: 'content',
+    text: 'Earth Apples\n\nA short verse about potatoes\ndug from the cold ground\nin a late season'
+  };
+  assert.notStrictEqual(normalizeChapterMetadata(titlePoem, work).type, 'cover',
+    'restating the title alone is not enough; the author has to be there too');
+});
+
+test('auxiliary sections join their own kind but never narration', () => {
+  const source = [
+    { index: 0, title: 'Title Page', type: 'cover', text: 'A Book\n\nAn Author' },
+    { index: 1, title: 'Title Page', type: 'cover', text: 'A Book\n\nEdited by An Author' },
+    { index: 2, title: 'Contents', type: 'toc', text: 'Contents\nOne\nTwo' },
+    { index: 3, title: 'One', type: 'content', tocTitleSource: 'href', text: narration('First') },
+    { index: 4, title: 'Two', type: 'content', tocTitleSource: 'href', text: narration('Second') }
+  ];
+  const coalesced = coalesceAdjacentAuxiliary(source);
+  assert.strictEqual(normalizedNarration(coalesced), normalizedNarration(source));
+  assert.strictEqual(coalesced.length, 4, 'the two title pages become one');
+  assert.deepStrictEqual(coalesced.map(chapter => chapter.type), ['cover', 'toc', 'content', 'content']);
+  assert(!coalesced[2].text.includes('Contents'),
+    'the contents page still never reaches a narrative chapter');
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

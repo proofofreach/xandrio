@@ -35,6 +35,7 @@ still exercises a general evidence class.
 
 | Class | Evidence and bound | Effect | Characterization |
 | --- | --- | --- | --- |
+| Work-identity front matter | A section under 700 characters whose opening line restates the work's own title and which names its author | Classified as the title page rather than a narrative chapter, so it is skipped by playback and carries no chapter number | `test-chapter-utils.js` |
 | Format dispatch | File extension and validated container/parser result | Selects EPUB, PDF, or Kindle extractor | `test-book-document.js` |
 | Compatible acquisition fallback | Canonical work identity, language, format, and provider compatibility | May try another edition; never combines unrelated works | `test-book-importer.js`, `test-search-work-groups.js` |
 | Candidate retention | Compatible candidates only; prefer more narratable text. An equally structured candidate may replace one with decode-loss markers only when it retains at least 99% of the text, has the same chapter-structure key, and removes all or at least 75% of those markers. | Chooses one extraction candidate without trading material text or structure for cosmetic cleanup | `test-import-corpus.js`, `test-book-importer.js`, `test-pdf-extraction.js`, `test-kindle-extraction.js` |
