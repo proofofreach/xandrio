@@ -2,6 +2,7 @@ const assert = require('assert');
 const {
   normalizeChapterSequence,
   mergeDegenerateSections,
+  nameSectionsFromLeadingDividers,
   repairTextArtifacts,
   stripHTML
 } = require('../lib/chapter-utils');
@@ -231,8 +232,8 @@ test('authored divider sections merge forward and conserve narration exactly', (
   assert.strictEqual(normalizedNarration(merged), normalizedNarration(source),
     'merging is a boundary change, never a text change');
   assert.deepStrictEqual(merged.map(chapter => chapter.title), [
-    'FROM The First Volume (1961)',
-    'FROM The Second Volume: An Honest Sequel (1972)',
+    'From The First Volume (1961)',
+    'From The Second Volume: An Honest Sequel (1972)',
     'A Named Essay'
   ], 'a divider hands its authored name to a host still labelled with an ordinal');
   assert.deepStrictEqual(merged.map(chapter => chapter.rawTitle), ['Chapter 2', 'Chapter 3', undefined],
@@ -254,7 +255,7 @@ test('a merged stub never relabels narrative text as front matter', () => {
   assert.strictEqual(merged[0].title, 'Chapter 1',
     'a single-line stub and an auxiliary label are both refused as titles for a story');
   assert.strictEqual(merged[0].rawTitle, undefined, 'a refused promotion leaves the title untouched');
-  assert.deepStrictEqual(merged[0].parentContext, ['To Marcia', 'ALSO BY A. WRITER An Earlier Collection'],
+  assert.deepStrictEqual(merged[0].parentContext, ['To Marcia', 'Also By A. Writer An Earlier Collection'],
     'the absorbed headings stay available as context even when they cannot be titles');
 });
 
@@ -299,7 +300,7 @@ test('a collection that introduces every excerpt with a divider is still repaire
   const merged = mergeDegenerateSections(source);
   assert.strictEqual(merged.length, 6);
   assert.strictEqual(normalizedNarration(merged), normalizedNarration(source));
-  assert.strictEqual(merged[0].title, 'FROM Volume 1 (1960)');
+  assert.strictEqual(merged[0].title, 'From Volume 1 (1960)');
 });
 
 test('a book of short un-typed sections still declines the merge', () => {
@@ -421,6 +422,54 @@ test('the merge is scoped to the formats the rollout covers', () => {
     'an unknown format never re-cuts an already-imported book');
   assert.strictEqual(mergeDegenerateSections(source).length, 3,
     'the rule itself is format-independent; only the rollout is scoped');
+});
+
+test('a divider carrying a note still names the excerpt it introduces', () => {
+  const source = [
+    { index: 0, title: 'An Essay', type: 'content', tocTitleSource: 'href', text: narration('Essay') },
+    {
+      index: 1,
+      title: 'From (novel in progress)',
+      type: 'content',
+      tocTitleSource: 'href',
+      text: 'FROM\n\nThe Rites of Spring\n(novel in progress)\nEditor’s note: this is the last of the original selections for this reader.'
+    },
+    { index: 2, title: 'Chapter 33', type: 'chapter', tocTitleSource: 'href', text: narration('Excerpt') }
+  ];
+  const named = nameSectionsFromLeadingDividers(source);
+  assert.strictEqual(normalizedNarration(named), normalizedNarration(source),
+    'naming a section is display metadata, never a text change');
+  assert.strictEqual(named[2].title, 'From The Rites of Spring (novel in progress)');
+  assert.strictEqual(named[2].rawTitle, 'Chapter 33',
+    'the original title is retained, so the chapter structure key does not move');
+  assert.strictEqual(named[1].title, 'From (novel in progress)', 'the donor keeps its own title');
+});
+
+test('an essay never donates its opening lines to the chapter after it', () => {
+  const source = [
+    {
+      index: 0,
+      title: 'Down the River',
+      type: 'content',
+      tocTitleSource: 'href',
+      text: `Down the River\n\nwith Henry Thoreau\n\nNovember 4, 1980\n${narration('The river')}`
+    },
+    { index: 1, title: 'Chapter 12', type: 'chapter', tocTitleSource: 'href', text: narration('Next') }
+  ];
+  assert.deepStrictEqual(nameSectionsFromLeadingDividers(source), source,
+    'only a section short enough to be a divider carrying a note can name another');
+});
+
+test('a synthesized heading settles a shouted divider label into prose case', () => {
+  const source = [
+    { index: 0, title: 'FROM', type: 'divider', tocTitleSource: 'href', text: 'FROM\n\nJonathan Troy\n(1954)' },
+    { index: 1, title: 'Chapter 2', type: 'chapter', tocTitleSource: 'href', text: narration('Excerpt') },
+    { index: 2, title: 'A Named Essay', type: 'content', tocTitleSource: 'href', text: narration('Essay') },
+    { index: 3, title: 'Another Essay', type: 'content', tocTitleSource: 'href', text: narration('Another') }
+  ];
+  const merged = mergeDegenerateSections(source);
+  assert.strictEqual(merged[0].title, 'From Jonathan Troy (1954)',
+    'the source shouts its label; the chapter list should not');
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);
