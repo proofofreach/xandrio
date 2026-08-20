@@ -4,8 +4,8 @@
     {
       "id": "private:fec23b8c6dbe",
       "fromChapterCount": 23,
-      "toChapterCount": 16,
-      "reason": "degenerate-section-merge: divider and unclaimed-fragment sections joined forward; narration conserved"
+      "toChapterCount": 17,
+      "reason": "degenerate-section-merge: divider and unclaimed-fragment sections joined forward; recognized auxiliary sections retained; narration conserved"
     }
   ]
 }

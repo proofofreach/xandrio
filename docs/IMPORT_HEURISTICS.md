@@ -70,7 +70,7 @@ transformation and extractor boundaries.
 | Authored navigation | EPUB TOC/spine, PDF outline/TOC, or Kindle TOC | Authored order wins when resolvable | `test-epub-parser.js`, format extractor tests |
 | Heading recovery | Generic chapter/part/volume headings and layout evidence | Falls back to page groups or content, never rejection | `test-pdf-extraction.js`, `test-epub-parser.js` |
 | Auxiliary spine filtering | Verified non-linear EPUB spine items and semantic auxiliary documents | Does not delete linear narrative content | `test-epub-parser.js` |
-| Degenerate section merge | A section at or below 500 characters whose body is nothing but heading lines, or which has no authored navigation entry and no title beyond an ordinal placeholder, adjacent to a substantive section. Declines entirely unless such sections are a clear minority, and never pushes a host past the oversized bound. | Joins its text to the neighbouring section with the same `\n\n` separator the narration hash uses; discards nothing. Runs in `normalizeChapterSequence`, so every format and every re-read of a stored artifact is treated identically. | `test-chapter-utils.js`, `test-import-corpus.js`, `test-epub-parser.js` |
+| Degenerate section merge | A section at or below 500 characters whose body is nothing but heading lines, or which has no authored navigation entry and no title beyond an ordinal placeholder, adjacent to a substantive section. A section already recognized as auxiliary (cover, copyright, contents, front or back matter, author) is never absorbed: playback skips it by type, and absorbing it would turn skippable material into narration. Declines entirely unless inferred degenerate sections are a clear minority — recognized dividers are excluded from that count, since a collection introducing every excerpt with one is half dividers by construction. Never pushes a host past the oversized bound. | Joins its text to the neighbouring section with the same `\n\n` separator the narration hash uses; discards nothing. Runs in `normalizeChapterSequence`, so every format and every re-read of a stored artifact is treated identically. | `test-chapter-utils.js`, `test-import-corpus.js`, `test-epub-parser.js` |
 | Oversized section split | More than 100,000 characters without an authored boundary, or more than 150,000 with one | Splits at punctuation/word boundaries and conserves normalized narration | `test-import-corpus.js`, `test-chapter-utils.js` |
 | Sequence/title repair | A complete generic numeric or Roman-numeral series with local structural evidence, or a merged divider heading adjacent to a host still labelled with a generic ordinal | Changes display metadata, not narration text; `rawTitle` retains the original, so the chapter structure key is unaffected | `test-chapter-utils.js`, `test-epub-parser.js` |
 | Chapter rebuild | Retained source plus exact continuous normalized narration match | Commits only text-conserving boundary changes | `test-chapter-rebuild.js`, `test-chapter-transition-state.js` |
@@ -117,9 +117,12 @@ not "nothing changed" — that would freeze chapter structure permanently. It is
 "nothing changed that the change did not declare". Declare each re-cut case in
 `test/fixtures/import-structure-changes.json` as
 `{"schemaVersion":1,"changes":[{"id","fromChapterCount","toChapterCount"}]}`.
-An entry that names the wrong result does not pre-approve a different one, and
-an entry that no longer matches any real change fails the release in its own
-right, so a declaration cannot silently pre-approve a future re-cut.
+An entry that names a different chapter count does not pre-approve the change,
+and an entry that no longer matches any real change fails the release in its own
+right. The check is exact at chapter-count granularity only: a later, different
+re-cut of the same book that happens to land on the same count would still be
+accepted. Structure keys would describe it exactly but are content-derived, and
+this report publishes no content hashes.
 
 A re-cut that leaves the chapter count unchanged is the one a reader cannot see
 coming and a diff cannot show. Unchanged counts describe nothing, so such an

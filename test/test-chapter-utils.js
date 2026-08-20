@@ -258,18 +258,61 @@ test('a merged stub never relabels narrative text as front matter', () => {
     'the absorbed headings stay available as context even when they cannot be titles');
 });
 
-test('an auxiliary label still names a host of the same non-narrative class', () => {
+test('a recognized auxiliary section is never absorbed into narration', () => {
   const source = [
-    { index: 0, title: 'Chapter 1', type: 'copyright', tocTitleSource: 'href', text: 'COPYRIGHT\nFirst Edition\nAll rights reserved' },
-    { index: 1, title: 'Chapter 2', type: 'copyright', tocTitleSource: 'href', text: `Copyright notice text. ${'Reserved rights notice. '.repeat(12)}` },
-    { index: 2, title: 'A Named Story', type: 'content', tocTitleSource: 'href', text: narration('Story') },
-    { index: 3, title: 'Another Story', type: 'content', tocTitleSource: 'href', text: narration('Second') }
+    { index: 0, title: 'Contents', type: 'toc', tocTitleSource: 'href', text: 'Contents\nCover\nTitle Page\nCopyright\nThe First Story\nThe Second Story' },
+    { index: 1, title: 'Copyright', type: 'copyright', tocTitleSource: 'href', text: 'COPYRIGHT\nFirst Edition\nAll rights reserved' },
+    { index: 2, title: 'Dedication', type: 'divider', tocTitleSource: 'href', text: 'TO MARCIA' },
+    { index: 3, title: 'Chapter 1', type: 'chapter', tocTitleSource: 'href', text: narration('First story') },
+    { index: 4, title: 'A Named Story', type: 'content', tocTitleSource: 'href', text: narration('Second story') },
+    { index: 5, title: 'Another Story', type: 'content', tocTitleSource: 'href', text: narration('Third story') }
   ];
   const merged = mergeDegenerateSections(source);
-  assert.strictEqual(merged.length, 3);
-  assert.strictEqual(merged[0].title, 'COPYRIGHT First Edition All rights reserved');
-  assert.strictEqual(merged[0].rawTitle, 'Chapter 2');
+  assert.strictEqual(normalizedNarration(merged), normalizedNarration(source));
+  assert.strictEqual(merged.length, 5, 'only the divider merges; the auxiliary sections keep their own boundaries');
+  assert.deepStrictEqual(merged.map(chapter => chapter.type), ['toc', 'copyright', 'chapter', 'content', 'content']);
+  assert(!merged[2].text.includes('Contents'),
+    'a table of contents must never become the audible opening of a story');
+  assert(merged[2].text.startsWith('TO MARCIA'), 'the divider still merges forward');
 });
+
+test('a collection that introduces every excerpt with a divider is still repaired', () => {
+  // Strict alternation is exactly half dividers by construction. Counting them
+  // toward the density guard would decline the shape the pass exists for.
+  const source = [];
+  for (let work = 0; work < 6; work++) {
+    source.push({
+      index: source.length,
+      title: 'FROM',
+      type: 'divider',
+      tocTitleSource: 'href',
+      text: `FROM\nVolume ${work + 1}\n(196${work})`
+    });
+    source.push({
+      index: source.length,
+      title: `Chapter ${work + 1}`,
+      type: 'chapter',
+      tocTitleSource: 'href',
+      text: narration(`Excerpt ${work + 1}`)
+    });
+  }
+  const merged = mergeDegenerateSections(source);
+  assert.strictEqual(merged.length, 6);
+  assert.strictEqual(normalizedNarration(merged), normalizedNarration(source));
+  assert.strictEqual(merged[0].title, 'FROM Volume 1 (1960)');
+});
+
+test('a book of short un-typed sections still declines the merge', () => {
+  const poems = Array.from({ length: 12 }, (unused, number) => ({
+    index: number,
+    title: `Poem ${number + 1}`,
+    type: 'content',
+    text: `Poem ${number + 1}\n\nA short verse\nof four brief lines\nabout the desert`
+  }));
+  assert.deepStrictEqual(mergeDegenerateSections(poems), poems,
+    'excluding recognized dividers must not disarm the guard for inferred ones');
+});
+
 
 test('un-authored sub-threshold fragments merge into the following section', () => {
   const source = [
