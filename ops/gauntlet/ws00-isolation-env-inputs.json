@@ -1,0 +1,7 @@
+{
+  "gap": "Complete the same network-isolation repair: test/fixtures/scenarios/lib/environment.js still builds dataset-server child environments with {...process.env}, so operator credentials and private-provider feature flags enter the supposedly credential-free harness. Replace broad inheritance with the smallest explicit safe runtime environment needed by Xandrio and extend scenario:verify-isolation to prove representative secrets and private-mode flags are absent from the child environment while required scenario variables remain present.",
+  "evidence": "Fresh Opus critic xandrio-ws00-wave-05 found that PPQ_API_KEY, OPDS credentials, Standard Ebooks credentials, web-push private keys, and XANDRIO_PRIVATE_CODEX_GUIDES could enter dataset children. The first isolation builder fixed request/get/fetch interception and its independent 10/10 regression passes, but environment.js remains unchanged at line 55 with {...process.env}.",
+  "artifact_path": ".",
+  "progress_path": "artifacts/gauntlet/progress.md",
+  "verify_command": "npm run scenario:verify-isolation"
+}

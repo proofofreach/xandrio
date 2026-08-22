@@ -1,0 +1,7 @@
+{
+  "gap": "Implement only the fresh wave-07 settings-addressability gap: the harness cannot open Xandrio's closed-by-default settings accordions or relevant stateful sheet, so settings loading/error/degraded/full are byte-identical. Add deterministic settings interactions that expose the real state-bearing Voice/provider UI at both mobile and desktop viewports, give those cells honest DOM signatures, and add a focused executable regression proving the four declared settings states render the intended distinguishable surfaces. Do not change product code or fabricate visual differences.",
+  "evidence": "Fresh Opus critic xandrio-ws00-wave-07 reproduced all four settings primary screenshots at sha256 206d45fb70730748 and the finite scenario gate exited actionable. It traced the cause to the closed Voice settings details/stateful sheets. The critic scored 72/100, found 2 critical/high issues, and still judged the harness competitive once this gap is fixed.",
+  "artifact_path": ".",
+  "progress_path": "artifacts/gauntlet/progress.md",
+  "verify_command": "npm run scenario:verify-settings"
+}

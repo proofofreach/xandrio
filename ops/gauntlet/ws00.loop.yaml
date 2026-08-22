@@ -1,0 +1,113 @@
+loopspec: "0.1"
+id: xandrio-ws00-scenario-gauntlet
+meta:
+  name: Xandrio WS-00 critic-first scenario-harness Gauntlet
+  version: 0.1.0
+  description: Fresh critics inspect the running synthetic scenario surface before a one-gap builder may edit it.
+pattern: gauntlet
+inputs:
+  goal: { type: string, required: true }
+  bar: { type: string, required: true }
+  references: { type: string, required: true }
+  artifact_path: { type: string, default: "." }
+  progress_path: { type: string, default: "artifacts/gauntlet/progress.md" }
+  threshold: { type: number, default: 90 }
+state:
+  store: journal
+  vars:
+    review_history: { type: list, init: [] }
+    latest_review: { type: json, init: null }
+    score: { type: number, init: 0 }
+    gap: { type: string, init: "" }
+    critical_high: { type: int, init: 1 }
+    competitive: { type: boolean, init: false }
+    gate_status: { type: "enum[pending,actionable,complete]", init: pending }
+    gate_evidence: { type: json, init: null }
+    gate_fingerprint: { type: string, init: "pending" }
+    rounds: { type: int, init: 0 }
+body:
+  - id: critique-running-harness
+    kind: agent
+    harness: claude-code
+    allowed-tools: [Read, Bash]
+    prompt: >-
+      [ROLE:CRITIC] Fresh read-only WS-00 review. Read AGENTS.md. Do not trust prior reviews,
+      builder claims, or code alone. At ${inputs.artifact_path}, run the finite synthetic scenario
+      screenshot command and inspect the actual rendered Xandrio output at iPhone/PWA-sized and
+      desktop viewports. Verify that declared cold, empty, loading, skeleton, error, offline,
+      degraded, and full states are real and visually distinguishable where applicable; that all
+      important Xandrio screens and stateful sheets are addressable; that synthetic covers and
+      content render; that custom ports work; that test processes terminate; and that no private
+      data, credentials, or live provider/TTS/network calls can enter or leave the harness. Judge
+      it against ${inputs.goal}, ${inputs.bar}, and these reference limits: ${inputs.references}.
+      Record inaccessible reference flows and never invent a comparison. Return only JSON
+      {"score":0,"gap":"single highest-leverage gap","critical_high":0,"competitive":false,
+      "evidence":["running-product evidence"],"access_limits":["limit"]}.
+    save:
+      latest_review: "$"
+      score: "$.score"
+      gap: "$.gap"
+      critical_high: "$.critical_high"
+      competitive: "$.competitive"
+    on_done:
+      append:
+        review_history:
+          score: { $expr: state.latest_review.score }
+          gap: { $expr: state.latest_review.gap }
+          critical_high: { $expr: state.latest_review.critical_high }
+          competitive: { $expr: state.latest_review.competitive }
+          evidence: { $expr: state.latest_review.evidence }
+          access_limits: { $expr: state.latest_review.access_limits }
+      incr: rounds
+  - id: fix-single-gap
+    when: "${state.score < inputs.threshold || state.critical_high > 0 || state.competitive == false}"
+    kind: agent
+    harness: claude-code
+    allowed-tools: [Read, Edit, Bash]
+    prompt: >-
+      [ROLE:BUILDER] Read AGENTS.md. At ${inputs.artifact_path}, fix exactly this fresh critic's
+      single WS-00 gap: ${state.gap}. Work only in scripts/scenario-server.js,
+      scripts/scenario-shots.js, scripts/run-ws00-scenario-gate.mjs,
+      test/fixtures/scenarios/**, docs/SCENARIO_SERVER.md, package.json, and .gitignore.
+      Do not change product behavior merely to make screenshots
+      differ. Add focused executable assertions for the gap. Use only finite commands; never
+      launch a persistent server without bounded cleanup. Preserve every product feature and
+      governance boundary. Use synthetic/public fixtures only. Do not commit, push, deploy,
+      publish, access private data, inherit credentials unnecessarily, or make live provider/TTS
+      calls. Return after focused tests finish.
+  - id: finite-external-gate
+    when: "${state.score >= inputs.threshold && state.critical_high == 0 && state.competitive == true}"
+    kind: shell
+    cmd: node
+    args: [scripts/run-ws00-scenario-gate.mjs, "${inputs.artifact_path}"]
+    normalize: judge-envelope
+    save:
+      gate_status: "$.status"
+      gate_evidence: "$.evidence"
+      gate_fingerprint: "$.evidence.fingerprint"
+terminate:
+  signal: state-predicate
+  until: "${state.score >= inputs.threshold && state.critical_high == 0 && state.competitive == true && state.gate_status == 'complete'}"
+caps:
+  max_iterations: 4
+  no_progress:
+    fingerprint: "${state.score + ':' + state.critical_high + ':' + state.competitive + ':' + state.gap + ':' + state.gate_fingerprint}"
+    max_repeats: 2
+  budget: { tokens: 100000, usd: 4, wallclock: "2h" }
+  on_cap_exceeded: breakpoint
+schedule: { mode: manual }
+artifacts:
+  include: ["artifacts/gauntlet/**/*.md", "artifacts/scenario-shots/**/*.png"]
+  exclude: ["**/.env*", "**/.git/**", "**/node_modules/**", "**/*secret*"]
+  max_files: 500
+  max_bytes: 100000000
+notify: { policy: never, channels: [] }
+observe:
+  trace: journal
+  hooks: { completed: { kind: shell, cmd: "test -f ${inputs.progress_path}" } }
+target:
+  runtime: standalone
+  emit: [cli, skill, doctor]
+provenance:
+  factory_version: "0.8.0"
+  source: "verified-gauntlet+critic-first-ws00"
