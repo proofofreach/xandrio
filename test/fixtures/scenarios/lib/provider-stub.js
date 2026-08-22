@@ -62,6 +62,10 @@ function sendXml(res, status, body) {
   res.end(payload);
 }
 
+function sendInternalError(res) {
+  sendJson(res, 500, { error: 'Scenario provider failed' });
+}
+
 function listenOn(server, port = 0) {
   return new Promise((resolve, reject) => {
     server.once('error', reject);
@@ -103,8 +107,8 @@ function createTtsEngineStub(name, { failing = false } = {}) {
         return res.end(wav);
       }
       return sendJson(res, 404, { error: 'Not found' });
-    } catch (error) {
-      sendJson(res, 500, { error: String(error?.message || error) });
+    } catch {
+      sendInternalError(res);
     }
   });
   return {
@@ -209,8 +213,8 @@ function createProviderNetworkStub(searchResults) {
       // the guard redirected here: never fabricate imagery, just say "not
       // found" — a realistic, already-exercised UI state.
       return sendJson(res, 404, { error: 'Not found (scenario provider stub)' });
-    } catch (error) {
-      sendJson(res, 500, { error: String(error?.message || error) });
+    } catch {
+      sendInternalError(res);
     }
   });
   return {

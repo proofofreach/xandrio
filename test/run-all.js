@@ -80,6 +80,7 @@ const tests = [
   'test-concurrency-limit.js',
   'test-graceful-shutdown.js',
   'test-security-http.js',
+  'test-scenario-provider-stub-security.js',
   'test-python-locks.js',
   'test-docker-context.js',
   'test-release-public-root.js',
