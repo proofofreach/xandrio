@@ -1109,18 +1109,21 @@ async function verifyLibraryActions(page) {
   await page.goto(`${origin}/#/library`, { waitUntil: 'networkidle' });
   await page.waitForSelector('#shelf-empty-hint:not([hidden])');
   const libraryOrder = await page.locator('#library-panel').evaluate(panel => {
-    const children = [...panel.children];
+    const workspace = panel.querySelector('.library-workspace') || panel;
+    const contextRail = workspace.querySelector('.library-context-rail');
+    const primary = workspace.querySelector('.library-primary') || workspace;
+    const workspaceChildren = [...workspace.children];
+    const primaryChildren = [...primary.children];
     return {
-      continueRail: children.indexOf(document.getElementById('continue-rail')),
-      upNextRail: children.indexOf(document.getElementById('up-next-rail')),
-      controls: children.indexOf(panel.querySelector('.library-controls')),
-      bookList: children.indexOf(document.getElementById('library-list'))
+      contextRail: workspaceChildren.indexOf(contextRail),
+      primary: workspaceChildren.indexOf(primary),
+      controls: primaryChildren.indexOf(primary.querySelector('.library-controls')),
+      bookList: primaryChildren.indexOf(primary.querySelector('#library-list'))
     };
   });
-  if (!(libraryOrder.continueRail < libraryOrder.controls &&
-        libraryOrder.upNextRail < libraryOrder.controls &&
+  if (!(libraryOrder.contextRail < libraryOrder.primary &&
         libraryOrder.controls < libraryOrder.bookList)) {
-    throw new Error(`Library sort and view controls do not sit between the listening rails and book list: ${JSON.stringify(libraryOrder)}`);
+    throw new Error(`Library context, controls, and book list are not in their intended DOM sequence: ${JSON.stringify(libraryOrder)}`);
   }
   if (await page.locator('[data-library-tab="shelf"]').textContent() !== 'My Shelf' ||
       await page.locator('[data-library-tab="downloaded"]').textContent() !== 'Downloaded' ||

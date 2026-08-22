@@ -61,6 +61,8 @@
     "recover:json": "node scripts/recover-json-store.js",
     "test": "node test/run-all.js",
     "test:browser": "node scripts/smoke-browser.js",
+    "test:desktop-workspace": "node test/test-desktop-workspace-geometry.js",
+    "test:ui-findings": "node test/test-ui-findings-regression.js",
     "scenario:serve": "node scripts/scenario-server.js",
     "scenario:shots": "node scripts/scenario-shots.js",
     "scenario:verify-viewport": "node test/fixtures/scenarios/verify-viewport-rendering.js",

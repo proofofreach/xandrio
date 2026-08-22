@@ -11,7 +11,7 @@
   <title>Xandrio - Audiobook Library</title>
   <link rel="preload" href="/fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin>
   <!-- ?v= values must match ASSET_VERSIONS in sw.js (single source of truth) -->
-  <link rel="stylesheet" href="style-v3.css?v=106">
+  <link rel="stylesheet" href="style-v3.css?v=107">
   <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=2">
 </head>
 <body>
@@ -50,6 +50,7 @@
         <div class="header-actions">
           <button id="stats-btn" class="btn-icon" aria-label="Listening stats" title="Your listening">
             <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="width:20px;height:20px"><path stroke-linecap="round" stroke-linejoin="round" d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75zM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625zM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V4.125z"/></svg>
+            <span class="header-action-label">Stats</span>
           </button>
           <button id="queue-status" class="btn-icon audio-activity-trigger" type="button"
                   aria-label="Audio activity" aria-controls="audio-activity-sheet"
@@ -67,9 +68,11 @@
           <span id="audio-activity-announcement" class="sr-only" aria-live="polite"></span>
           <button id="settings-btn" class="btn-icon" aria-label="Settings" title="Settings">
             <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="width:20px;height:20px"><path stroke-linecap="round" stroke-linejoin="round" d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.325.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 011.37.49l1.296 2.247a1.125 1.125 0 01-.26 1.431l-1.003.827c-.293.24-.438.613-.431.992a6.759 6.759 0 010 .255c-.007.378.138.75.43.99l1.005.828c.424.35.534.954.26 1.43l-1.298 2.247a1.125 1.125 0 01-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.57 6.57 0 01-.22.128c-.331.183-.581.495-.644.869l-.213 1.28c-.09.543-.56.941-1.11.941h-2.594c-.55 0-1.02-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 01-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 01-1.369-.49l-1.297-2.247a1.125 1.125 0 01.26-1.431l1.004-.827c.292-.24.437-.613.43-.992a6.932 6.932 0 010-.255c.007-.378-.138-.75-.43-.99l-1.004-.828a1.125 1.125 0 01-.26-1.43l1.297-2.247a1.125 1.125 0 011.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.087.22-.128.332-.183.582-.495.644-.869l.214-1.281z"/><path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+            <span class="header-action-label">Settings</span>
           </button>
           <button id="library-search-toggle" class="btn-icon" aria-label="Search library" title="Filter library">
             <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="width:20px;height:20px"><path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z"/></svg>
+            <span class="header-action-label">Filter</span>
           </button>
           <button id="add-book-btn" class="btn-primary btn-add-book" aria-label="Add a new book to library">
             <span class="btn-add-symbol" aria-hidden="true">+</span>
@@ -78,7 +81,7 @@
         </div>
       </header>
 
-      <div id="library-search-bar" class="library-search-bar collapsed">
+      <div id="library-search-bar" class="library-search-bar collapsed" aria-hidden="true" inert>
         <input type="text" id="library-search" placeholder="Filter books…" aria-label="Filter books by title or author" />
         <button id="library-search-close" class="library-search-close" aria-label="Close search"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="icon"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg></button>
       </div>
@@ -95,11 +98,15 @@
         Audio preparation continues on the server when Xandrio is closed. During the later device download, keep Xandrio visible and the screen awake. Interrupted downloads resume safely.
       </p>
 
-      <div id="library-panel" role="tabpanel" aria-labelledby="library-tab-shelf" tabindex="0">
-        <div id="continue-rail" class="continue-rail" hidden></div>
-        <section id="up-next-rail" class="up-next-rail" hidden aria-label="Up Next"></section>
+      <div id="library-panel" role="tabpanel" aria-labelledby="library-tab-shelf">
+        <div class="library-workspace">
+          <div class="library-context-rail">
+            <div id="continue-rail" class="continue-rail" hidden></div>
+            <section id="up-next-rail" class="up-next-rail" hidden aria-label="Up Next"></section>
+          </div>
 
-        <div class="library-controls">
+          <div class="library-primary">
+          <div class="library-controls">
           <div class="control-row">
             <select id="sort-select" aria-label="Sort books">
               <option value="last-read" selected>Last Played</option>
@@ -115,7 +122,7 @@
           </div>
         </div>
 
-        <section id="shelf-empty-hint" class="shelf-empty-hint" aria-labelledby="shelf-empty-title" hidden>
+          <section id="shelf-empty-hint" class="shelf-empty-hint" aria-labelledby="shelf-empty-title" hidden>
           <div class="shelf-empty-copy">
             <h2 id="shelf-empty-title">Start Your Shelf</h2>
             <p>Find a title to add, or save one that is already in the Shared Library.</p>
@@ -124,9 +131,9 @@
             <button class="btn-primary" type="button" data-add-book-shelf>Find a Book</button>
             <button class="btn-secondary" type="button" data-browse-shared-library>Browse Shared Library</button>
           </div>
-        </section>
+          </section>
 
-        <section id="downloaded-empty-hint" class="shelf-empty-hint" aria-labelledby="downloaded-empty-title" hidden>
+          <section id="downloaded-empty-hint" class="shelf-empty-hint" aria-labelledby="downloaded-empty-title" hidden>
           <div class="shelf-empty-copy">
             <h2 id="downloaded-empty-title">No Downloaded Books</h2>
             <p>No books downloaded on this device.</p>
@@ -134,9 +141,9 @@
           <div class="shelf-empty-actions">
             <button class="btn-secondary" type="button" data-browse-shelf>Browse My Shelf</button>
           </div>
-        </section>
+          </section>
 
-        <div id="library-list" class="book-list" aria-busy="true">
+          <div id="library-list" class="book-list" aria-busy="true">
           <p id="library-loading-status" class="sr-only" role="status" aria-live="polite">Loading library…</p>
           <div class="book-item skeleton" aria-hidden="true">
             <div class="book-item-inner">
@@ -198,6 +205,8 @@
               </div>
             </div>
           </div>
+          </div>
+          </div>
         </div>
       </div>
     </div>
@@ -209,6 +218,7 @@
         <h2>Search Books</h2>
       </header>
 
+      <div class="search-content-workspace">
       <section class="search-workspace" aria-label="Book search">
         <div class="search-box">
           <div class="search-input-wrap">
@@ -316,6 +326,7 @@
 
       <div id="download-error" class="download-error-notification" role="alert" aria-live="polite" style="display: none;"></div>
       <div id="search-results" class="search-results"></div>
+      </div>
     </div>
 
     <!-- Settings View -->
@@ -784,7 +795,7 @@
 
     <!-- Player View — Libby-inspired -->
     <div id="player-view" class="view">
-      <div class="player-ambient" aria-hidden="true"><img id="player-ambient-img" alt="" /></div>
+      <div class="player-ambient" aria-hidden="true"><img id="player-ambient-img" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==" alt="" /></div>
       <!-- Top bar -->
       <div class="player-topbar">
         <div class="player-topbar-left">
@@ -838,7 +849,7 @@
         <div class="player-art-column">
           <!-- Large cover art -->
           <div class="player-cover-wrap">
-            <img id="book-cover" src="" alt="" class="player-cover" />
+            <img id="book-cover" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==" alt="" class="player-cover" />
           </div>
 
           <!-- About this book -->
@@ -1219,7 +1230,7 @@
   <div id="mini-player" class="mini-player" style="display:none" role="complementary" aria-label="Now playing">
     <div class="mini-player-progress" id="mini-player-progress"></div>
     <div class="mini-player-content" id="mini-player-tap">
-      <img id="mini-player-cover" class="mini-player-cover" src="" alt="" />
+      <img id="mini-player-cover" class="mini-player-cover" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==" alt="" />
       <div class="mini-player-info">
         <span id="mini-player-title" class="mini-player-title"></span>
         <span id="mini-player-chapter" class="mini-player-chapter"></span>

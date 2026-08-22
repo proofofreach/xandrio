@@ -1,8 +1,8 @@
 # Xandrio product Gauntlet
 
-Updated: 2026-08-21
+Updated: 2026-08-22
 
-Status: **WS-00 passed at 94/100; WS-01 is in progress (baseline 79/100; first repaired slice 98/100)**
+Status: **WS-00 passed at 94/100; every recorded WS-01 finding is implemented and executable verification is green. A fresh whole-slice critic was intentionally not rerun at the user's cutoff.**
 
 ## Quality contract
 
@@ -16,7 +16,7 @@ Status: **WS-00 passed at 94/100; WS-01 is in progress (baseline 79/100; first r
 | ID | Experience slice | Status | Latest critic | Largest gap | External evidence |
 |---|---|---|---:|---|---|
 | WS-00 | Synthetic all-screen visual scenario server | **passed** | **94/100; 0 critical/high; competitive** | None | Isolation: 12/12; viewport: 4/4; fixture integrity: 12/12; capture integrity: 7/7; Guide UI 63/63; Guide routes 11/11; settings, stats, guide provenance, login, and player-sheet addressability passed; browser smoke passed; 2,998/2,998 tests passed before final focused Guide verification; 90 clean screenshots; content-addressed gate complete |
-| WS-01 | Visual foundations, typography, spacing, elevation, and motion | **in progress** | **Baseline 79/100; offline-banner slice passed 98/100** | Desktop library/search/stats remain mobile-width compositions with weak use of space | Offline banner geometry 5/5; offline 99/99; shell versions 122/122; 90-state scenario gate complete |
+| WS-01 | Visual foundations, typography, spacing, elevation, and motion | **implementation complete; subjective recertification not rerun** | **Baseline 79/100; offline-banner slice passed 98/100** | No unresolved recorded finding; fresh whole-slice critic skipped at user cutoff | UI findings 8/8; desktop geometry 32/32; offline banner 5/5; offline 99/99; shell versions 122/122; browser smoke passed; full repository 3,005/3,005; 90-state scenario gate complete |
 | WS-02 | App shell, routing, transitions, and status banners | queued | — | Awaiting baseline | Router and lifecycle suites |
 | WS-03 | Login, first run, and account entry | queued | — | Awaiting baseline | Authentication/account suites |
 | WS-04 | Library, shelves, queue, and book identity | queued | — | Awaiting baseline | Library/state suites |
@@ -40,9 +40,7 @@ Status: **WS-00 passed at 94/100; WS-01 is in progress (baseline 79/100; first r
 
 ## Next work
 
-1. Adapt desktop library, search, and Stats into intentional desktop compositions without weakening the strong mobile player.
-2. Send only that gap to a fresh builder, then rerun focused and external evidence.
-3. Continue WS-01 until a fresh whole-slice critic reaches at least 90/100 with no critical/high defect.
+No further WS-01 loop is active. If work resumes, the next bounded step is a fresh whole-slice running-product critic or physical iOS verification. Neither is required for this implementation cutoff.
 
 Contract receipt: validation has zero warnings and one honest mixed-grounding note; verification is bounded, deterministic, and resume-stable; the native score is 91/A. Standalone compilation succeeded with the preserved warning that artifact exposure is soft-enforced rather than a filesystem write sandbox.
 
@@ -109,6 +107,8 @@ The one agreed final fresh GPT-5.6 Sol cutoff critic passed WS-00 at 94/100 with
 WS-01 opened with two independent running-product assessments. The design-director pass returned 79/100 with one P1; it judged the mobile player strong and authored, but found the responsive app shell uncompetitive. The evidence pass returned 88/100 and independently measured a Settings helper-text contrast failure, a 26×26 Continue Listening dismiss target, and three fragile empty image sources. The persisted critique is under `.impeccable/critique/`. The Gauntlet selected the highest-severity visible slice first: the fixed global offline banner obscured primary navigation.
 
 A fresh Terra builder made the app reserve the banner's measured height and added a rendered geometry regression. The first fresh Sol critic rejected the mobile-only repair at 76/100 because desktop Library, Player, and Settings headers remained covered. The builder corrected the scope to every viewport and expanded the regression. A second fresh Sol critic then passed the bounded repair at 98/100 with zero P0/P1 defects after nine live route/viewport checks: no overlap, overflow, clipping, desktop drift, or reconnect gap. Independent focused evidence passed 5/5 geometry checks, 99/99 offline tests, and 122/122 shell-version tests. The complete 90-state scenario gate returned `complete` with zero failures and content-addressed fingerprint `74d84afff949a8cacc3d2d0e6926e2f3056b460180d9e01f37c43fb487f14cad`. The next single WS-01 gap is intentional desktop composition for Library, Search, and Stats.
+
+At the user's cutoff, the remaining recorded WS-01 findings were consolidated into one bounded implementation instead of continuing the critic loop. Library, Search, Settings, and Stats now use intentional wide-screen workspaces; desktop navigation has visible labels; collapsed search and swipe-delete controls no longer leak into keyboard focus; small controls meet the 44×44 target; muted/helper text is stronger; Settings voice controls use desktop columns; the emoji cloning badge is replaced with an authored icon; the Guide thesis uses the normal surface language; and image placeholders no longer use empty sources. Independent verification passed UI findings 8/8, desktop workspace geometry 32/32, offline-banner geometry 5/5, browser smoke, app-shell versions 122/122, offline cache 99/99, Guide UI 63/63, voice catalog 3/3, the full repository suite at 3,005/3,005 across 149 suites, and the complete 90-frame scenario gate with zero failures and content-addressed fingerprint `267438c433c40cfdfb3edc2bed4e2e76beb83a24ce71d98237720194b44f0eba`. The final Library, Search, and Stats desktop frames were visually inspected. No fresh subjective whole-slice critic was run after the user ended the loop, so WS-01 is not represented as Gauntlet-certified at 90+.
 
 <!-- GAUNTLET_EXTERNAL_START -->
 ## Latest external gate receipt
