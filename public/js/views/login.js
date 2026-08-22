@@ -7,9 +7,10 @@
 
 import { login, loginWithToken } from '../api.js';
 
-let gate, form, usernameInput, passwordInput, errorLine, submitBtn;
+let gate, form, usernameInput, passwordInput, errorLine, submitBtn, offlineStatus;
 let tokenMode = false;
 let onSignedIn = null;
+let signingIn = false;
 
 function setError(message) {
   if (!errorLine) return;
@@ -33,6 +34,18 @@ function setTokenMode(enabled) {
   }
 }
 
+function updateConnectivityState() {
+  const offline = navigator.onLine === false;
+  if (offlineStatus) offlineStatus.hidden = !offline;
+  if (!submitBtn) return;
+  submitBtn.disabled = signingIn || offline;
+  submitBtn.textContent = signingIn
+    ? 'Signing in…'
+    : offline
+    ? 'Reconnect to sign in'
+    : 'Sign In';
+}
+
 export function initLogin(options = {}) {
   onSignedIn = options.onSignedIn || (() => window.location.reload());
   gate = document.getElementById('login-view');
@@ -41,13 +54,27 @@ export function initLogin(options = {}) {
   passwordInput = document.getElementById('login-password');
   errorLine = document.getElementById('login-error');
   submitBtn = document.getElementById('login-submit');
+  offlineStatus = document.getElementById('login-offline-status');
   if (!gate || !form) return;
+
+  // This runs before app.js checks authentication. The authenticated app owns
+  // offline storage and playback; the gate only needs connection state so a
+  // reader is never offered an impossible sign-in while disconnected.
+  window.removeEventListener('online', updateConnectivityState);
+  window.removeEventListener('offline', updateConnectivityState);
+  window.addEventListener('online', updateConnectivityState);
+  window.addEventListener('offline', updateConnectivityState);
+  updateConnectivityState();
 
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
+    if (navigator.onLine === false) {
+      updateConnectivityState();
+      return;
+    }
     setError('');
-    submitBtn.disabled = true;
-    submitBtn.textContent = 'Signing in…';
+    signingIn = true;
+    updateConnectivityState();
     try {
       if (tokenMode) {
         await loginWithToken(passwordInput.value.trim());
@@ -60,8 +87,8 @@ export function initLogin(options = {}) {
     } catch (err) {
       setError(err.message || 'Sign-in failed');
     } finally {
-      submitBtn.disabled = false;
-      submitBtn.textContent = 'Sign In';
+      signingIn = false;
+      updateConnectivityState();
     }
   });
 
@@ -82,6 +109,7 @@ export function showLoginGate(options = {}) {
   if (!gate) return;
   setTokenMode(Boolean(options.tokenMode));
   setError('');
+  updateConnectivityState();
   gate.classList.add('active');
   document.body.classList.add('login-gate-open');
   (tokenMode ? passwordInput : usernameInput)?.focus();

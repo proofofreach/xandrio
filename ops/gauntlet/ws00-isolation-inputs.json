@@ -1,0 +1,7 @@
+{
+  "gap": "The scenario harness's no-egress guarantee is false: network-guard.js redirects http/https request(), but global fetch uses undici sockets and escaped to the live Gutendex host during search:full. Make all server-side fetch paths deterministic and loopback-only, fail closed for any unmodeled destination, and add an executable regression that proves request(), get(), and fetch cannot create non-loopback egress.",
+  "evidence": "Fresh Opus critic xandrio-ws00-wave-05 observed a dataset server with an ESTABLISHED TLS socket to 104.21.80.54:443 while GET /api/search-cover ran; that address resolved to gutendex.com. An isolated repro showed https.request was redirected while global fetch to 192.0.2.1 escaped and timed out. Current environment children also inherit process.env broadly, so keep credentials out of the harness while fixing this single isolation gap.",
+  "artifact_path": ".",
+  "progress_path": "artifacts/gauntlet/progress.md",
+  "verify_command": "npm run scenario:verify-isolation"
+}
