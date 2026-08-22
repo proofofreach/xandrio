@@ -2,7 +2,7 @@
 
 Updated: 2026-08-21
 
-Status: **WS-00 passed at 94/100; WS-01 visual foundations is next**
+Status: **WS-00 passed at 94/100; WS-01 is in progress (baseline 79/100; first repaired slice 98/100)**
 
 ## Quality contract
 
@@ -16,7 +16,7 @@ Status: **WS-00 passed at 94/100; WS-01 visual foundations is next**
 | ID | Experience slice | Status | Latest critic | Largest gap | External evidence |
 |---|---|---|---:|---|---|
 | WS-00 | Synthetic all-screen visual scenario server | **passed** | **94/100; 0 critical/high; competitive** | None | Isolation: 12/12; viewport: 4/4; fixture integrity: 12/12; capture integrity: 7/7; Guide UI 63/63; Guide routes 11/11; settings, stats, guide provenance, login, and player-sheet addressability passed; browser smoke passed; 2,998/2,998 tests passed before final focused Guide verification; 90 clean screenshots; content-addressed gate complete |
-| WS-01 | Visual foundations, typography, spacing, elevation, and motion | queued | — | Awaiting WS-00 | Existing unit/browser coverage |
+| WS-01 | Visual foundations, typography, spacing, elevation, and motion | **in progress** | **Baseline 79/100; offline-banner slice passed 98/100** | Desktop library/search/stats remain mobile-width compositions with weak use of space | Offline banner geometry 5/5; offline 99/99; shell versions 122/122; 90-state scenario gate complete |
 | WS-02 | App shell, routing, transitions, and status banners | queued | — | Awaiting baseline | Router and lifecycle suites |
 | WS-03 | Login, first run, and account entry | queued | — | Awaiting baseline | Authentication/account suites |
 | WS-04 | Library, shelves, queue, and book identity | queued | — | Awaiting baseline | Library/state suites |
@@ -40,9 +40,9 @@ Status: **WS-00 passed at 94/100; WS-01 visual foundations is next**
 
 ## Next work
 
-1. Checkpoint and push the verified WS-00 work.
-2. Start WS-01 visual foundations with a fresh running-product critic.
-3. Send only its single largest gap to a fresh builder, then rerun focused and external evidence.
+1. Adapt desktop library, search, and Stats into intentional desktop compositions without weakening the strong mobile player.
+2. Send only that gap to a fresh builder, then rerun focused and external evidence.
+3. Continue WS-01 until a fresh whole-slice critic reaches at least 90/100 with no critical/high defect.
 
 Contract receipt: validation has zero warnings and one honest mixed-grounding note; verification is bounded, deterministic, and resume-stable; the native score is 91/A. Standalone compilation succeeded with the preserved warning that artifact exposure is soft-enforced rather than a filesystem write sandbox.
 
@@ -105,6 +105,10 @@ Fresh read-only GPT-5.6 Sol critic Wave 12 independently reproduced a clean 90-f
 A fresh scoped Terra builder replaced reader-facing Guide destination/model/digest diagnostics with concise capability-aware recovery. Administrators retain safe `Try again` and `Open settings` actions plus generic rights/cost disclosure; members receive an administrator-handoff message without management controls. Full generation diagnostics remain available only through the admin response path. Independent Guide UI (63/63), Guide routes (11/11), Guide service (21/21), app-shell versions (122/122), and browser smoke passed. A subsequent full gate exposed an intermittent but real `player:cold` fixture mismatch: the cold dataset contained no routed book, so the first-run notice could cover a missing-book error. Cold now means unacknowledged rather than empty and retains the synthetic library behind the operator notice; focused capture passed without contamination. The complete gate then returned 90/90 with zero failures and fingerprint `fd26e52382e98fc0d5595e55600cecdb2d3dc8a217d494d2dd358b138d4a56a5`.
 
 The one agreed final fresh GPT-5.6 Sol cutoff critic passed WS-00 at 94/100 with 0 critical/high defects and `competitive: true`. It operated the running product, visually inspected every base state and first-class player/activity/login surface at mobile, desktop, normal text, and 1.4× text, and independently produced 90/90 fresh frames with content fingerprint `442ff5d11ce21f73d00bb3c73d2485e7a42a325acce75ce381d9f5fb82d1d317`. It confirmed reader-safe Guide recovery, no cold-player error, no stale/debug provenance, no unexpected warnings/toasts, one bookmark row, final-frame containment, custom-port teardown, loopback-only requests, synthetic fixture identities, and credential/environment isolation. The critic judged Xandrio preferable for self-hosted bring-your-own-book study workflows against accessible official public reference material. Access limits: Chromium rather than physical devices, 1.4× CSS zoom rather than OS Dynamic Type, service workers blocked in scenario captures, and no signed-in, entitled, purchased, private, paywalled, or native-only competitor flows.
+
+WS-01 opened with two independent running-product assessments. The design-director pass returned 79/100 with one P1; it judged the mobile player strong and authored, but found the responsive app shell uncompetitive. The evidence pass returned 88/100 and independently measured a Settings helper-text contrast failure, a 26×26 Continue Listening dismiss target, and three fragile empty image sources. The persisted critique is under `.impeccable/critique/`. The Gauntlet selected the highest-severity visible slice first: the fixed global offline banner obscured primary navigation.
+
+A fresh Terra builder made the app reserve the banner's measured height and added a rendered geometry regression. The first fresh Sol critic rejected the mobile-only repair at 76/100 because desktop Library, Player, and Settings headers remained covered. The builder corrected the scope to every viewport and expanded the regression. A second fresh Sol critic then passed the bounded repair at 98/100 with zero P0/P1 defects after nine live route/viewport checks: no overlap, overflow, clipping, desktop drift, or reconnect gap. Independent focused evidence passed 5/5 geometry checks, 99/99 offline tests, and 122/122 shell-version tests. The complete 90-state scenario gate returned `complete` with zero failures and content-addressed fingerprint `74d84afff949a8cacc3d2d0e6926e2f3056b460180d9e01f37c43fb487f14cad`. The next single WS-01 gap is intentional desktop composition for Library, Search, and Stats.
 
 <!-- GAUNTLET_EXTERNAL_START -->
 ## Latest external gate receipt
