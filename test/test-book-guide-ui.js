@@ -94,7 +94,7 @@ assert(guide.includes('await refreshGuideState();'), 'generation refreshes the c
 assert(index.includes('id="guide-btn"') && index.includes('id="utility-guide-btn"') && guide.includes("toggleAttribute('hidden', !showEntry)"), 'player guide entry points follow feature or artifact availability');
 assert(guide.includes('existing guide remains available'), 'disabling generation preserves existing guide access');
 assert(guide.includes('Could not create the guide'), 'guide renders actionable server failure details');
-const rawDestination = 'https://provider.example/internal/guide-route';
+const rawDestination = 'provider.example/internal/guide-route';
 const rawGenerator = `generator@sha256:${'a'.repeat(64)}`;
 const rawVerifier = `verifier@sha256:${'b'.repeat(64)}`;
 const privateGeneration = { destination: rawDestination, generatorModel: rawGenerator, verifierModel: rawVerifier };
