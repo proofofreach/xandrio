@@ -1,0 +1,7 @@
+{
+  "gap": "npm run scenario:verify emits status=actionable for semantic failures but exits 0, so ordinary CI and shell chains treat the failed gate as passing.",
+  "evidence": "Fresh Opus critic xandrio-ws00-wave-03 ran the gate twice, observed 71 screenshots and 7 failures both times, and measured exit code 0. Loopy still requires actionable JSON to remain parseable as a judge envelope.",
+  "artifact_path": ".",
+  "progress_path": "artifacts/gauntlet/progress.md",
+  "verify_command": "npm run scenario:verify-exit"
+}

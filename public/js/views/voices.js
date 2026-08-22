@@ -348,7 +348,7 @@ function renderCloneVoicePanel() {
       <div class="voice-section-title">Chatterbox</div>
       <form class="clone-voice-form${hasCustomVoices ? '' : ' clone-voice-form--cta'}">
         <div class="clone-voice-copy">
-          ${hasCustomVoices ? '' : '<span class="clone-voice-badge" aria-hidden="true">✨ Voice cloning</span>'}
+          ${hasCustomVoices ? '' : '<span class="clone-voice-badge"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M12 3v18M8.5 7.5A3.5 3.5 0 0 1 12 4a3.5 3.5 0 0 1 3.5 3.5v5A3.5 3.5 0 0 1 12 16a3.5 3.5 0 0 1-3.5-3.5v-5Z"/><path stroke-linecap="round" d="M5.5 12.5A6.5 6.5 0 0 0 12 19a6.5 6.5 0 0 0 6.5-6.5"/></svg><span>Voice cloning</span></span>'}
           <strong>${heading}</strong>
           <span>${subcopy}</span>
           ${engineDown ? '<span class="clone-voice-offline">Local engine offline. Uploads still save; narration resumes when it is back.</span>' : ''}

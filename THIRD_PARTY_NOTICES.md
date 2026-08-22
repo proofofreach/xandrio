@@ -8,10 +8,41 @@ This file is generated from the locked installed Node dependency tree by `npm ru
 | --- | --- | --- | --- |
 | @cyclonedx/cyclonedx-library | 10.1.0 | Apache-2.0 | https://github.com/CycloneDX/cyclonedx-javascript-library.git |
 | @cyclonedx/cyclonedx-npm | 6.0.0 | Apache-2.0 | https://github.com/CycloneDX/cyclonedx-node-npm.git |
+| @esbuild/aix-ppc64 | 0.28.2 | MIT | https://www.npmjs.com/package/@esbuild/aix-ppc64 |
+| @esbuild/android-arm | 0.28.2 | MIT | https://www.npmjs.com/package/@esbuild/android-arm |
+| @esbuild/android-arm64 | 0.28.2 | MIT | https://www.npmjs.com/package/@esbuild/android-arm64 |
+| @esbuild/android-x64 | 0.28.2 | MIT | https://www.npmjs.com/package/@esbuild/android-x64 |
+| @esbuild/darwin-arm64 | 0.28.2 | MIT | https://www.npmjs.com/package/@esbuild/darwin-arm64 |
+| @esbuild/darwin-x64 | 0.28.2 | MIT | https://www.npmjs.com/package/@esbuild/darwin-x64 |
+| @esbuild/freebsd-arm64 | 0.28.2 | MIT | https://www.npmjs.com/package/@esbuild/freebsd-arm64 |
+| @esbuild/freebsd-x64 | 0.28.2 | MIT | https://www.npmjs.com/package/@esbuild/freebsd-x64 |
+| @esbuild/linux-arm | 0.28.2 | MIT | https://www.npmjs.com/package/@esbuild/linux-arm |
+| @esbuild/linux-arm64 | 0.28.2 | MIT | https://www.npmjs.com/package/@esbuild/linux-arm64 |
+| @esbuild/linux-ia32 | 0.28.2 | MIT | https://www.npmjs.com/package/@esbuild/linux-ia32 |
+| @esbuild/linux-loong64 | 0.28.2 | MIT | https://www.npmjs.com/package/@esbuild/linux-loong64 |
+| @esbuild/linux-mips64el | 0.28.2 | MIT | https://www.npmjs.com/package/@esbuild/linux-mips64el |
+| @esbuild/linux-ppc64 | 0.28.2 | MIT | https://www.npmjs.com/package/@esbuild/linux-ppc64 |
+| @esbuild/linux-riscv64 | 0.28.2 | MIT | https://www.npmjs.com/package/@esbuild/linux-riscv64 |
+| @esbuild/linux-s390x | 0.28.2 | MIT | https://www.npmjs.com/package/@esbuild/linux-s390x |
+| @esbuild/linux-x64 | 0.28.2 | MIT | https://www.npmjs.com/package/@esbuild/linux-x64 |
+| @esbuild/netbsd-arm64 | 0.28.2 | MIT | https://www.npmjs.com/package/@esbuild/netbsd-arm64 |
+| @esbuild/netbsd-x64 | 0.28.2 | MIT | https://www.npmjs.com/package/@esbuild/netbsd-x64 |
+| @esbuild/openbsd-arm64 | 0.28.2 | MIT | https://www.npmjs.com/package/@esbuild/openbsd-arm64 |
+| @esbuild/openbsd-x64 | 0.28.2 | MIT | https://www.npmjs.com/package/@esbuild/openbsd-x64 |
+| @esbuild/openharmony-arm64 | 0.28.2 | MIT | https://www.npmjs.com/package/@esbuild/openharmony-arm64 |
+| @esbuild/sunos-x64 | 0.28.2 | MIT | https://www.npmjs.com/package/@esbuild/sunos-x64 |
+| @esbuild/win32-arm64 | 0.28.2 | MIT | https://www.npmjs.com/package/@esbuild/win32-arm64 |
+| @esbuild/win32-ia32 | 0.28.2 | MIT | https://www.npmjs.com/package/@esbuild/win32-ia32 |
+| @esbuild/win32-x64 | 0.28.2 | MIT | https://www.npmjs.com/package/@esbuild/win32-x64 |
 | @isaacs/cliui | 8.0.2 | ISC | yargs/cliui |
 | @isaacs/fs-minipass | 4.0.1 | ISC | https://github.com/npm/fs-minipass.git |
 | @lingo-reader/mobi-parser | 0.4.6 | MIT | git@github.com:hhk-png/lingo-reader.git |
 | @lingo-reader/shared | 0.4.6 | MIT | git@github.com:hhk-png/lingo-reader.git |
+| @loopyc/cli | 0.8.0 | MIT | https://github.com/MaTriXy/Monkey.D.Loopy.git |
+| @loopyc/core | 0.8.0 | MIT | https://github.com/MaTriXy/Monkey.D.Loopy.git |
+| @loopyc/infer | 0.8.0 | MIT | https://github.com/MaTriXy/Monkey.D.Loopy.git |
+| @loopyc/runtime | 0.8.0 | MIT | https://github.com/MaTriXy/Monkey.D.Loopy.git |
+| @loopyc/verify | 0.8.0 | MIT | https://github.com/MaTriXy/Monkey.D.Loopy.git |
 | @napi-rs/canvas | 0.1.80 | MIT | https://github.com/Brooooooklyn/canvas.git |
 | @napi-rs/canvas-android-arm64 | 0.1.80 | MIT | https://www.npmjs.com/package/@napi-rs/canvas-android-arm64 |
 | @napi-rs/canvas-darwin-arm64 | 0.1.80 | MIT | https://www.npmjs.com/package/@napi-rs/canvas-darwin-arm64 |
@@ -115,6 +146,7 @@ This file is generated from the locked installed Node dependency tree by `npm ru
 | es-errors | 1.3.0 | MIT | https://github.com/ljharb/es-errors.git |
 | es-object-atoms | 1.1.1 | MIT | https://github.com/ljharb/es-object-atoms.git |
 | es-set-tostringtag | 2.1.0 | MIT | https://github.com/es-shims/es-set-tostringtag.git |
+| esbuild | 0.28.2 | MIT | https://github.com/evanw/esbuild.git |
 | escalade | 3.2.0 | MIT | lukeed/escalade |
 | escape-html | 1.0.3 | MIT | component/escape-html |
 | etag | 1.8.1 | MIT | jshttp/etag |
@@ -365,6 +397,7 @@ This file is generated from the locked installed Node dependency tree by `npm ru
 | type-is | 2.1.0 | MIT | jshttp/type-is |
 | type-is | 2.1.0 | MIT | jshttp/type-is |
 | typedarray | 0.0.6 | MIT | git://github.com/substack/typedarray.git |
+| typescript | 5.9.3 | Apache-2.0 | https://github.com/microsoft/TypeScript.git |
 | undefsafe | 2.0.5 | MIT | https://github.com/remy/undefsafe.git |
 | unique-filename | 4.0.0 | ISC | https://github.com/npm/unique-filename.git |
 | unique-slug | 5.0.0 | ISC | https://github.com/npm/unique-slug.git |
@@ -389,8 +422,10 @@ This file is generated from the locked installed Node dependency tree by `npm ru
 | yallist | 4.0.0 | ISC | https://github.com/isaacs/yallist.git |
 | yallist | 4.0.0 | ISC | https://github.com/isaacs/yallist.git |
 | yallist | 5.0.0 | BlueOak-1.0.0 | https://github.com/isaacs/yallist.git |
+| yaml | 2.9.0 | ISC | github:eemeli/yaml |
 | yargs | 17.7.2 | MIT | https://github.com/yargs/yargs.git |
 | yargs-parser | 21.1.1 | ISC | https://github.com/yargs/yargs-parser.git |
+| zod | 3.25.76 | MIT | https://github.com/colinhacks/zod.git |
 
 ## Bundled and optional assets
 

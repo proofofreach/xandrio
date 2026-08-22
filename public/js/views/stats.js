@@ -95,7 +95,13 @@ function render(stats) {
       <div class="stats-progress-list">${stats.inProgress.map(progressRowHTML).join('')}</div>
     </section>` : '';
 
-  statsBody.innerHTML = tiles + recent + inProgress;
+  const context = tiles + recent;
+  statsBody.innerHTML = inProgress
+    ? `<div class="stats-workspace">
+        <aside class="stats-context-rail" aria-label="Listening summary">${context}</aside>
+        <div class="stats-primary">${inProgress}</div>
+      </div>`
+    : context;
 }
 
 function renderError() {
