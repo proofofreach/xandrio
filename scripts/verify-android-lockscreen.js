@@ -53,9 +53,10 @@ function jsonResponse(res, body, status = 200) {
   res.end(payload);
 }
 
-async function startFixtureServer() {
+async function startFixtureServer({ singleFileReady = false } = {}) {
   const publicRoot = path.join(__dirname, '..', 'public');
   const chapterWavs = [wavBuffer(FIRST_CHAPTER_SECONDS), wavBuffer(10)];
+  const continuousWav = wavBuffer(FIRST_CHAPTER_SECONDS + 10);
   const mime = {
     '.html': 'text/html; charset=utf-8',
     '.js': 'text/javascript; charset=utf-8',
@@ -129,6 +130,47 @@ async function startFixtureServer() {
     if (pathname.startsWith('/api/voice-cache/')) return jsonResponse(res, { voices: [] });
     if (pathname.startsWith('/api/premium-prep/')) return jsonResponse(res, {}, 404);
     if (pathname === '/api/pronunciations') return jsonResponse(res, { book: [], global: [] });
+    if (pathname.startsWith('/api/audio-timeline/')) {
+      return jsonResponse(res, {
+        startChapterIndex: 0,
+        startOffsetSeconds: 0,
+        durations: [FIRST_CHAPTER_SECONDS, 10]
+      });
+    }
+    const chapterPrepareMatch = pathname.match(/^\/api\/chunks\/lockscreen\/([01])\/prepare-chapter-audio$/);
+    if (chapterPrepareMatch && singleFileReady) {
+      return jsonResponse(res, {
+        ready: true,
+        status: 'ready',
+        runwayPolicy: 'buffer-current-lookahead-next-playable'
+      });
+    }
+    const chapterAudioStatusMatch = pathname.match(/^\/api\/chunks\/lockscreen\/([01])\/chapter-audio-status$/);
+    if (chapterAudioStatusMatch && singleFileReady) {
+      const chapterIndex = Number(chapterAudioStatusMatch[1]);
+      return jsonResponse(res, {
+        ready: true,
+        status: 'ready',
+        variantKey: 'instant-lockscreen-fixture',
+        servedTier: 'instant',
+        totalChunks: 1,
+        readyChunks: 1,
+        errorChunks: 0,
+        url: `/api/audio-ios/lockscreen/${chapterIndex}`
+      });
+    }
+
+    const continuousMatch = pathname.match(/^\/api\/audio-continuous\/lockscreen\/0$/);
+    if (continuousMatch) {
+      res.writeHead(200, {
+        'Content-Type': 'audio/wav',
+        'Content-Length': continuousWav.length,
+        'Accept-Ranges': 'none',
+        'Cache-Control': 'no-store',
+        'X-Accel-Buffering': 'no'
+      });
+      return res.end(continuousWav);
+    }
 
     const streamMatch = pathname.match(/^\/api\/audio-stream\/lockscreen\/([01])$/);
     if (streamMatch) {
@@ -254,7 +296,7 @@ async function benchmarkFirstListening(browser, fixture) {
       source: document.getElementById('audio-player')?.getAttribute('src')
     }));
     assert(before.audioElements === 1, `Expected one persistent audio element, found ${before.audioElements}`);
-    assert(before.source === '/api/audio-stream/lockscreen/0', `Unexpected initial source: ${before.source}`);
+    assert(before.source?.startsWith('/api/audio-continuous/lockscreen/0?'), `Unexpected initial source: ${before.source}`);
 
     await page.evaluate(() => { window.__benchmarkClickAt = performance.now(); });
     await page.click('#play-pause-btn');
@@ -311,7 +353,7 @@ async function benchmarkFirstListening(browser, fixture) {
       };
     }, FIRST_CHAPTER_SECONDS);
     const lockedAdvanceSeconds = after.logicalTime - lockedStart;
-    const streamRequests = fixture.state.requests.filter(request => request.startsWith('/api/audio-stream/lockscreen/'));
+    const continuousRequests = fixture.state.requests.filter(request => request.startsWith('/api/audio-continuous/lockscreen/'));
     const fallbackRequests = fixture.state.requests.filter(request => {
       const pathname = request.split('?')[0];
       return /^\/api\/(?:audio|audio-ios)\/lockscreen\/[01]$/.test(pathname) ||
@@ -325,8 +367,8 @@ async function benchmarkFirstListening(browser, fixture) {
     assert(!after.paused && after.report.isPlaying, 'Playback paused while the PWA was backgrounded');
     assert(after.resumePromptHidden, 'The UI asked the listener to resume playback');
     assert(after.report.currentChapter === 1, `Playback did not auto-advance while locked: chapter ${after.report.currentChapter}`);
-    assert(after.source === '/api/audio-stream/lockscreen/1', `Unexpected next-chapter source: ${after.source}`);
-    assert(streamRequests.length === 2, `Expected one stable stream request per chapter, saw ${streamRequests.length}`);
+    assert(after.source === before.source, `Continuous source changed at the chapter boundary: ${after.source}`);
+    assert(continuousRequests.length === 1, `Expected one continuous media request, saw ${continuousRequests.length}`);
     assert(fallbackRequests.length === 0, `Unexpected fallback media requests: ${fallbackRequests.join(', ')}`);
     assert(lockedAdvanceSeconds >= MIN_LOCKED_ADVANCE_SECONDS, `Audio advanced only ${lockedAdvanceSeconds.toFixed(2)}s while locked`);
     assert(longestStallMs <= MAX_STALL_MS, `Longest playback stall was ${longestStallMs.toFixed(0)}ms`);
@@ -338,7 +380,7 @@ async function benchmarkFirstListening(browser, fixture) {
       lockedAdvanceSeconds,
       mediaElements: after.audioElements,
       playCalls: after.playCalls.length,
-      streamRequests: streamRequests.length,
+      continuousRequests: continuousRequests.length,
       fallbackRequests: fallbackRequests.length
     };
   } finally {
@@ -347,7 +389,7 @@ async function benchmarkFirstListening(browser, fixture) {
 }
 
 async function main() {
-  const fixture = await startFixtureServer();
+  const fixture = await startFixtureServer({ singleFileReady: true });
   const browser = await chromium.launch({ headless: true });
   try {
     const result = await benchmarkFirstListening(browser, fixture);
@@ -364,7 +406,7 @@ async function main() {
         lockedAdvanceSeconds: Number(result.lockedAdvanceSeconds.toFixed(2)),
         mediaElements: result.mediaElements,
         playCalls: result.playCalls,
-        streamRequests: result.streamRequests,
+        continuousRequests: result.continuousRequests,
         fallbackRequests: result.fallbackRequests
       },
       passed: true

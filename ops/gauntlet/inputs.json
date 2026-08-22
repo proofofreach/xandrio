@@ -1,0 +1,8 @@
+{
+  "goal": "Raise the actual running Xandrio self-hosted reading PWA to the interaction, visual, accessibility, reliability, and emotional-quality bar of the best consumer reading and audiobook products without removing features or weakening operator control, privacy, security, rights disclosure, or deployment support.",
+  "bar": "For each smallest judgeable slice, operate the running mobile and desktop product. Compare the closest accessible reference flow. Score hierarchy, clarity, task completion, perceived speed, feedback, touch and keyboard behavior, accessibility, motion, recovery, trust, polish, and product-specific delight. Pass only at 90/100 or higher, competitive or preferable for Xandrio's use case, with no critical or high defect. Name exactly one largest gap when failing. Executable repository gates must also pass.",
+  "references": "Use only lawful accessible flows: Audible (library, player, narration status, discovery); Apple Books (iOS reading and audiobook interaction, with hardware/access limits recorded); Libby (library, borrowing language, player, offline state); Spotify Audiobooks (player, queue, progress, perceived speed); and Speechify (voice selection, text-to-speech setup, playback). Also inspect docs/PRD.md, docs/FEATURE_MATRIX.md, and docs/RELEASE_TEST_MATRIX.md. Record inaccessible, account-gated, paid, native-only, or unsupported comparisons and never invent evidence.",
+  "artifact_path": ".",
+  "progress_path": "artifacts/gauntlet/progress.md",
+  "threshold": 90
+}

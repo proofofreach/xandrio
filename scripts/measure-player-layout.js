@@ -116,8 +116,7 @@ async function measureDevice(browser, origin, device, { standalone }) {
 }
 
 async function main() {
-  const fixture = await startFixtureServer();
-  fixture.state.chapterAudioReady = true;
+  const fixture = await startFixtureServer({ singleFileReady: true });
   const failures = [];
   try {
     for (const [browserName, browserType] of [['Chromium', chromium], ['WebKit', webkit]]) {
