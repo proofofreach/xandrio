@@ -250,7 +250,7 @@ function renderBookCard(book, position, onShelf = false) {
         </div>
         ${progressBar}
       </div>
-      <button class="delete-btn-reveal" data-delete-book-id="${safeAttr(id)}" data-delete-book-title="${safeAttr(title)}" data-delete-book-author="${safeAttr(author)}" aria-label="Delete ${safeAttr(title)}">
+      <button class="delete-btn-reveal" tabindex="-1" aria-hidden="true" data-delete-book-id="${safeAttr(id)}" data-delete-book-title="${safeAttr(title)}" data-delete-book-author="${safeAttr(author)}" aria-label="Delete ${safeAttr(title)}">
         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="delete-icon"><path stroke-linecap="round" stroke-linejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0"/></svg>
       </button>
     </div>
@@ -795,13 +795,20 @@ export function initLibrary(options = {}) {
   document.addEventListener('xandrio:offlinechange', refreshOfflineIndicators);
 
   document.getElementById('library-search-toggle')?.addEventListener('click', () => {
-    document.getElementById('library-search-bar')?.classList.remove('collapsed');
+    const searchBar = document.getElementById('library-search-bar');
+    searchBar?.removeAttribute('inert');
+    searchBar?.setAttribute('aria-hidden', 'false');
+    searchBar?.classList.remove('collapsed');
     librarySearch?.focus();
   });
   document.getElementById('library-search-close')?.addEventListener('click', () => {
     librarySearch.value = '';
     filterLibrary();
-    document.getElementById('library-search-bar')?.classList.add('collapsed');
+    document.getElementById('library-search-toggle')?.focus();
+    const searchBar = document.getElementById('library-search-bar');
+    searchBar?.classList.add('collapsed');
+    searchBar?.setAttribute('aria-hidden', 'true');
+    searchBar?.setAttribute('inert', '');
   });
   librarySearch?.addEventListener('input', filterLibrary);
   sortSelect?.addEventListener('change', sortLibrary);

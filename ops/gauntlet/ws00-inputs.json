@@ -1,0 +1,8 @@
+{
+  "goal": "Make Xandrio's synthetic scenario harness a trustworthy, isolated, finite running-product surface for harsh mobile and desktop quality criticism.",
+  "bar": "Pass only when a fresh critic scores at least 90/100, finds the harness competitive or preferable for Xandrio's use case, finds no critical/high defect, names exactly one largest gap when failing, and a finite executable screenshot gate also passes.",
+  "references": "Audible, Apple Books, Libby, Spotify Audiobooks, and Speechify may require accounts, payment, native hardware, or unsupported flows. Compare only lawful accessible public surfaces and record every access limit. The harness itself must render real Xandrio, not recreate reference-product UI.",
+  "artifact_path": ".",
+  "progress_path": "artifacts/gauntlet/progress.md",
+  "threshold": 90
+}

@@ -22,6 +22,8 @@ jobs:
       - name: Install system media tools
         run: sudo apt-get update && sudo apt-get install -y ffmpeg poppler-utils
       - run: npm ci
+      - name: Install browser
+        run: npx playwright install --with-deps chromium
       - name: Release declaration consistency
         run: npm run release:verify -- --tag "v$(node -p "require('./package.json').version")"
       - name: Static checks
@@ -46,8 +48,6 @@ jobs:
       - run: npm test
       - name: Verify calibrated audio fixtures
         run: npm run verify:audio:ci
-      - name: Install browser
-        run: npx playwright install --with-deps chromium
       - run: npm run test:browser
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:

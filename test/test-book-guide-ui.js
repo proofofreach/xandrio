@@ -1,6 +1,7 @@
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
+const vm = require('vm');
 
 const root = path.join(__dirname, '..');
 const index = fs.readFileSync(path.join(root, 'public', 'index.html'), 'utf8');
@@ -11,6 +12,28 @@ const settings = fs.readFileSync(path.join(root, 'public', 'js', 'views', 'setti
 const library = fs.readFileSync(path.join(root, 'public', 'js', 'views', 'library.js'), 'utf8');
 const style = fs.readFileSync(path.join(root, 'public', 'style-v3.css'), 'utf8');
 const server = fs.readFileSync(path.join(root, 'server.js'), 'utf8');
+
+function readerStatusHTML(data, user = { role: 'admin' }) {
+  const executableGuide = guide
+    .replace(/^import .*;\n/gm, '')
+    .replace(/^export /gm, '')
+    .concat('\nglobalThis.__readerStatusHTML = statusHTML;');
+  const sandbox = {
+    console,
+    getCurrentUser: () => user,
+    escapeHTML: value => String(value ?? '').replace(/[&<>"']/g, character => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    })[character]),
+    safeAttr: value => String(value ?? ''),
+    window: {},
+    document: {},
+    localStorage: {},
+    navigator: { onLine: true },
+    requestAnimationFrame() {}
+  };
+  vm.runInNewContext(executableGuide, sandbox, { filename: 'book-guide.js' });
+  return sandbox.__readerStatusHTML(data);
+}
 
 assert(index.includes('id="guide-view"'), 'guide has a full-screen view');
 assert(index.includes('id="guide-body"') && index.includes('aria-busy="false"'), 'guide body exposes loading state');
@@ -71,7 +94,55 @@ assert(guide.includes('await refreshGuideState();'), 'generation refreshes the c
 assert(index.includes('id="guide-btn"') && index.includes('id="utility-guide-btn"') && guide.includes("toggleAttribute('hidden', !showEntry)"), 'player guide entry points follow feature or artifact availability');
 assert(guide.includes('existing guide remains available'), 'disabling generation preserves existing guide access');
 assert(guide.includes('Could not create the guide'), 'guide renders actionable server failure details');
+const rawDestination = 'provider.example/internal/guide-route';
+const rawGenerator = `generator@sha256:${'a'.repeat(64)}`;
+const rawVerifier = `verifier@sha256:${'b'.repeat(64)}`;
+const privateGeneration = { destination: rawDestination, generatorModel: rawGenerator, verifierModel: rawVerifier };
+const adminError = readerStatusHTML({
+  featureEnabled: true,
+  status: 'error',
+  canGenerate: true,
+  canManage: true,
+  message: `Provider failed at ${rawDestination} using ${rawGenerator} and ${rawVerifier}.`,
+  generation: privateGeneration
+});
+assert(!adminError.includes(rawDestination) && !adminError.includes(rawGenerator) && !adminError.includes(rawVerifier),
+  'reader error recovery never renders provider destinations or model digests');
+assert(adminError.includes('Try again') && adminError.includes('Open settings') && adminError.includes('authorized to process'),
+  'administrator error recovery gives a safe retry, settings path, and rights reminder');
+const memberError = readerStatusHTML({
+  featureEnabled: true,
+  status: 'error',
+  canGenerate: false,
+  message: `Provider failed at ${rawDestination} using ${rawGenerator}.`,
+  generation: privateGeneration
+}, { role: 'member' });
+assert(!memberError.includes(rawDestination) && !memberError.includes(rawGenerator) && !memberError.includes(rawVerifier),
+  'member error recovery never renders provider diagnostics');
+assert(memberError.includes('An administrator can try again') && !memberError.includes('data-guide-generate'),
+  'member recovery explains the available administrator path without exposing controls');
+const disabledError = readerStatusHTML({
+  featureEnabled: false,
+  status: 'error',
+  canGenerate: false,
+  message: `Provider failed at ${rawDestination} using ${rawVerifier}.`,
+  generation: privateGeneration
+}, { role: 'member' });
+assert(!disabledError.includes(rawDestination) && !disabledError.includes(rawGenerator) && !disabledError.includes(rawVerifier),
+  'disabled reader error recovery also suppresses provider diagnostics');
+const degradedGuide = readerStatusHTML({
+  featureEnabled: true,
+  status: 'stale',
+  canGenerate: true,
+  artifact: { guide: {} },
+  message: `Source changed at ${rawDestination} with ${rawGenerator}.`,
+  generation: privateGeneration
+});
+assert(!degradedGuide.includes(rawDestination) && !degradedGuide.includes(rawGenerator) && !degradedGuide.includes(rawVerifier),
+  'degraded reader recovery never renders provider diagnostics');
+assert(degradedGuide.includes('Refresh guide') && degradedGuide.includes('updated source'),
+  'degraded reader recovery explains the safe refresh action');
 assert(guide.includes('progressMeta') && guide.includes('Pass ${Number(progress.attempt)') && guide.includes('etaSeconds'), 'guide reports pass, resumed work, and a live ETA');
 assert(guide.includes('You can leave this page.') && guide.includes('Guide creation continues on the server.') && guide.includes('href="#/library">Browse library</a>'), 'guide generation explains background processing and provides a library exit');
 
-console.log('56 passed, 0 failed');
+console.log('63 passed, 0 failed');

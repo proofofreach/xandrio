@@ -1,0 +1,89 @@
+{
+  "defaultQuery": "meridian",
+  "emptyQuery": "zzznonexistentscenarioquery",
+  "errorQuery": "trigger scenario error",
+  "gutenberg": [
+    {
+      "id": 71001,
+      "title": "A Treatise on Old Boundaries",
+      "authors": [{ "name": "Fairweather, Constance" }],
+      "languages": ["en"],
+      "download_count": 4213,
+      "subjects": ["Surveying", "Boundaries", "Public domain"],
+      "summaries": ["A 19th-century public-domain treatise on how towns historically settled boundary disputes."],
+      "formats": {
+        "application/epub+zip": "https://gutendex.com/files/71001/pg71001-images.epub",
+        "image/jpeg": "https://gutendex.com/files/71001/pg71001.cover.medium.jpg"
+      }
+    },
+    {
+      "id": 71002,
+      "title": "Lighthouses of the Northern Coast",
+      "authors": [{ "name": "Marsh, Theodore" }],
+      "languages": ["en"],
+      "download_count": 1897,
+      "subjects": ["Lighthouses", "Maritime history"],
+      "summaries": ["A public-domain survey of coastal lighthouses and the keepers who maintained them."],
+      "formats": {
+        "application/epub+zip": "https://gutendex.com/files/71002/pg71002-images.epub"
+      }
+    }
+  ],
+  "internetArchive": {
+    "docs": [
+      {
+        "identifier": "scenario-fieldnotes-1924",
+        "title": "Notes on Rural Acoustics",
+        "creator": "Calder, J. (attrib.)",
+        "date": "1924",
+        "year": "1924",
+        "language": "eng",
+        "publisher": "Understory Reprint Society",
+        "downloads": 522
+      }
+    ],
+    "metadata": {
+      "scenario-fieldnotes-1924": {
+        "metadata": {
+          "title": "Notes on Rural Acoustics",
+          "creator": "Calder, J. (attrib.)",
+          "publisher": "Understory Reprint Society",
+          "language": "eng",
+          "description": "A scanned public-domain pamphlet on rural sound surveys, archived for scenario-harness use."
+        },
+        "files": [
+          { "name": "notesonruralacoustics_djvu.epub", "format": "EPUB" }
+        ]
+      }
+    }
+  },
+  "standardEbooksOpds": {
+    "id": "https://standardebooks.org/collections/scenario-fixture",
+    "entries": [
+      {
+        "id": "https://standardebooks.org/ebooks/scenario/driftwood-correspondence",
+        "title": "Driftwood Correspondence",
+        "author": "Mara Lindqvist",
+        "language": "en",
+        "rights": "Public domain in the United States (scenario fixture).",
+        "summary": "A scenario-harness Standard-Ebooks-shaped fixture edition of a synthetic epistolary novella.",
+        "href": "/scenario/driftwood-correspondence.epub",
+        "licenseHref": "https://creativecommons.org/publicdomain/zero/1.0/"
+      }
+    ]
+  },
+  "customOpds": {
+    "id": "https://opds.example.internal/scenario-feed",
+    "entries": [
+      {
+        "id": "https://opds.example.internal/scenario/the-meridian-line",
+        "title": "The Meridian Line",
+        "author": "Adaeze Okonkwo",
+        "language": "en",
+        "rights": "Licensed for this self-hosted OPDS catalog (scenario fixture).",
+        "summary": "A scenario-harness custom-OPDS-shaped fixture edition.",
+        "href": "/scenario/the-meridian-line.epub"
+      }
+    ]
+  }
+}

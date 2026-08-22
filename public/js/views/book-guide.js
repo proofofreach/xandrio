@@ -216,8 +216,8 @@ function recallHTMLSection(artifact) {
   return sectionHeading('guide-recall', 'Active review', `<p class="guide-section-intro">Try each prompt before revealing the answer.</p><div class="guide-recall">${questions.map(recallHTML).join('')}</div>${explanations ? `<h4>Explain it yourself</h4><ul>${explanations}</ul>` : ''}`);
 }
 
-function generationAttestation(data) {
-  return `${generationDisclosure(data)}<p id="guide-action-error" class="settings-error" hidden></p>`;
+function generationAttestation() {
+  return `${generationDisclosure()}<p id="guide-action-error" class="settings-error" hidden></p>`;
 }
 
 function passagesHTML(artifact) {
@@ -277,20 +277,22 @@ function readyGuideHTML(data) {
   return `${narrationHTML(data)}${renderGuide(data.artifact)}`;
 }
 
-function generationDisclosure(data) {
-  const destination = text(data?.localDestination || data?.generation?.destination);
-  const generator = text(data?.generatorModel || data?.generation?.generatorModel);
-  const verifier = text(data?.verifierModel || data?.generation?.verifierModel);
-  const duration = text(data?.estimatedDuration || data?.generation?.estimatedDuration);
-  const cost = text(data?.estimatedCost || data?.generation?.estimatedCost);
-  const details = [
-    destination && `External destination: ${destination}`,
-    generator && `Generator: ${generator}`,
-    verifier && `Verifier: ${verifier}`,
-    duration && `Estimated time: ${duration}`,
-    cost && `Estimated cost: ${cost}`
-  ].filter(Boolean);
-  return details.length ? `<p class="guide-generation-disclosure">${escapeHTML(details.join(' · '))}</p>` : '';
+function generationDisclosure() {
+  return '<p class="guide-generation-disclosure">Creating a guide sends book text and evidence to the configured study-guide provider. Use only books you are authorized to process. Time and cost vary by book length and retries.</p>';
+}
+
+function errorRecoveryCopy({ hasArtifact, canGenerate }) {
+  if (hasArtifact) {
+    return 'The latest guide update did not finish. Your existing guide is still available.';
+  }
+  if (canGenerate) {
+    return 'No guide was published. Try again, or check Study Guide settings if the problem continues.';
+  }
+  return 'No guide was published. An administrator can try again in Study Guide settings.';
+}
+
+function adminRecoveryActions() {
+  return '<div class="guide-generation-actions"><button class="btn-primary" type="button" data-guide-generate>Try again</button><a class="btn-secondary" href="#/settings">Open settings</a></div>';
 }
 
 function guideManagementActions(data) {
@@ -313,6 +315,10 @@ function statusHTML(data) {
       <p id="guide-action-error" class="settings-error" role="alert" hidden></p>
     </section>`;
   }
+  if (status === 'error') {
+    const recovery = errorRecoveryCopy({ hasArtifact: Boolean(data?.artifact), canGenerate });
+    return `<section class="guide-state" data-state="error" aria-live="polite"><h3>Could not create the guide</h3><p>${escapeHTML(recovery)}</p>${canGenerate ? `${generationAttestation()}${adminRecoveryActions()}` : ''}</section>${data?.artifact ? readyGuideHTML(data) + guideManagementActions(data) : ''}`;
+  }
   if (!data?.featureEnabled || status === 'disabled' || status === 'unavailable') {
     return `<section class="guide-state" data-state="unavailable"><h3>Study guides are unavailable</h3><p>${escapeHTML(message || 'This instance has not enabled Book Guides.')}</p></section>`;
   }
@@ -331,11 +337,8 @@ function statusHTML(data) {
       </div>
     </section>`;
   }
-  if (status === 'error') {
-    return `<section class="guide-state" data-state="error"><h3>Could not create the guide</h3><p>${escapeHTML(message || 'No replacement guide was published. You can try again when the issue is resolved.')}</p>${canGenerate ? `${generationAttestation(data)}<button class="btn-primary" type="button" data-guide-generate>Try again</button>` : ''}</section>${data?.artifact ? readyGuideHTML(data) + guideManagementActions(data) : ''}`;
-  }
   if (status === 'stale' && data?.artifact) {
-    return `<section class="guide-stale" aria-live="polite"><strong>Guide may be out of date.</strong><span>${escapeHTML(message || 'The book changed after this guide was generated.')}</span>${canGenerate ? `${generationAttestation(data)}<button class="btn-ghost btn-sm" type="button" data-guide-generate>Refresh guide</button>` : ''}</section>${readyGuideHTML(data)}${guideManagementActions(data)}`;
+    return `<section class="guide-stale" aria-live="polite"><strong>Guide may be out of date.</strong><span>The book changed after this guide was created. Refresh it to check the updated source.</span>${canGenerate ? `${generationAttestation()}<button class="btn-ghost btn-sm" type="button" data-guide-generate>Refresh guide</button>` : ''}</section>${readyGuideHTML(data)}${guideManagementActions(data)}`;
   }
   if (data?.artifact) return `${readyGuideHTML(data)}${guideManagementActions(data)}`;
   if (!canGenerate) {
@@ -344,7 +347,7 @@ function statusHTML(data) {
   return `<section class="guide-state" data-state="empty">
     <h3>Create a study guide</h3>
     <p>Guides organize the book’s claims, chapter map, and active-review prompts with source links.</p>
-    ${generationAttestation(data)}
+    ${generationAttestation()}
     <button class="btn-primary" type="button" data-guide-generate>Create study guide</button>
   </section>`;
 }

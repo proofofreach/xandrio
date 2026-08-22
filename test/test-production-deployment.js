@@ -201,6 +201,17 @@ async function check(name, callback) {
     assert.match(source, /public\/main:scripts\/deploy-prod\.sh/);
   });
 
+  await check('public workflows install Chromium before browser-backed unit suites', () => {
+    for (const workflow of ['test.yml', 'docker-image.yml']) {
+      const source = readFileSync(resolve(__dirname, '..', '.github', 'workflows', workflow), 'utf8');
+      const installBrowser = source.indexOf('playwright install --with-deps chromium');
+      const runTests = source.indexOf('npm test');
+      assert.notEqual(installBrowser, -1, `${workflow} must install Chromium`);
+      assert.notEqual(runTests, -1, `${workflow} must run the repository suite`);
+      assert.ok(installBrowser < runTests, `${workflow} must install Chromium before npm test`);
+    }
+  });
+
   console.log(`${passed} passed, ${failed} failed`);
   process.exitCode = failed ? 1 : 0;
 })();

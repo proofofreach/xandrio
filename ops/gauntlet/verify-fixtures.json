@@ -1,0 +1,17 @@
+{
+  "agent": {
+    "workstreams": [{ "id": "fixture", "title": "Fixture workstream", "scope": "public/**" }],
+    "score": 95,
+    "gap": "",
+    "critical_high": 0,
+    "competitive": true,
+    "evidence": ["deterministic verification fixture"]
+  },
+  "shell": {
+    "status": "complete",
+    "evidence": {
+      "fingerprint": "fixture-complete",
+      "workstreams": []
+    }
+  }
+}

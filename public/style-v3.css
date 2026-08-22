@@ -27,7 +27,7 @@
   --border-strong: oklch(39% 0.018 255);
   --text: oklch(94% 0.012 82);
   --text-secondary: oklch(72% 0.014 82);
-  --text-muted: oklch(54% 0.014 82);
+  --text-muted: oklch(60% 0.014 82);
   --accent: oklch(76% 0.14 82);
   --accent-strong: oklch(82% 0.15 82);
   --accent-dim: oklch(76% 0.14 82 / 0.15);
@@ -86,6 +86,13 @@ summary:focus-visible,
   min-height: 100dvh;
 }
 
+/* The global offline notice stays fixed so it remains visible while a reader
+   scrolls. The app content reserves its measured height, which keeps the
+   notice from covering the active view's navigation at every viewport size. */
+#app {
+  padding-top: var(--offline-banner-offset, 0px);
+}
+
 /* ==================== VIEWS ==================== */
 
 .view { display: none; }
@@ -136,6 +143,7 @@ summary:focus-visible,
   gap: 8px;
   flex: 0 0 auto;
 }
+.header-action-label { display: none; }
 
 /* Buttons */
 .btn-primary {
@@ -710,8 +718,8 @@ summary:focus-visible,
   top: 50%;
   display: grid;
   place-items: center;
-  width: 40px;
-  height: 40px;
+  width: 44px;
+  height: 44px;
   border: 0;
   border-radius: 8px;
   background: transparent;
@@ -1453,7 +1461,7 @@ summary:focus-visible,
 
 .settings-label { flex: 1; min-width: 0; }
 .settings-label-text { display: block; font-size: 14px; font-weight: 500; color: var(--text); }
-.settings-label-hint { display: block; font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+.settings-label-hint { display: block; margin-top: 3px; color: var(--text-secondary); font-size: 12px; line-height: 1.45; }
 
 .settings-status {
   font-size: 12px;
@@ -2309,7 +2317,6 @@ summary:focus-visible,
   font-weight: 750;
   text-align: right;
 }
-
 
 .playback-reliability {
   align-self: center;
@@ -3554,6 +3561,7 @@ body.sheet-open { overflow: hidden; }
   }
 }
 
+
 .chapter-sheet-panel {
   max-height: min(82vh, 760px);
 }
@@ -4115,14 +4123,14 @@ body.has-mini-player #settings-view {
 }
 .rail-dismiss {
   position: absolute;
-  top: 4px;
-  right: 4px;
+  top: 2px;
+  right: 2px;
   z-index: 2;
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 26px;
-  height: 26px;
+  width: 44px;
+  height: 44px;
   padding: 0;
   border: none;
   border-radius: 50%;
@@ -4796,9 +4804,9 @@ body.has-mini-player #guide-view { padding-bottom: calc(80px + env(safe-area-ins
 .guide-thesis {
   margin: 0 0 14px;
   padding: 14px;
-  border: 1px solid var(--accent-border-soft);
+  border: 1px solid var(--border-strong);
   border-radius: 12px;
-  background: var(--accent-dim);
+  background: var(--surface-raised);
   color: var(--text) !important;
   font-size: 16px !important;
   font-weight: 650;
@@ -5079,6 +5087,9 @@ body.has-mini-player #stats-view { padding-bottom: calc(80px + env(safe-area-ins
   background: var(--accent-dim);
 }
 .clone-voice-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   align-self: flex-start;
   padding: 2px 8px;
   border-radius: 6px;
@@ -5088,6 +5099,7 @@ body.has-mini-player #stats-view { padding-bottom: calc(80px + env(safe-area-ins
   font-weight: 800;
   letter-spacing: 0.02em;
 }
+.clone-voice-badge svg { width: 14px; height: 14px; flex: 0 0 auto; }
 .clone-voice-form--cta .clone-voice-copy strong { font-size: 15px; }
 
 @media (min-width: 760px) {
@@ -5596,6 +5608,12 @@ body.login-gate-open { overflow: hidden; }
 .login-logo { width: 56px; height: 56px; margin: 0 auto; }
 .login-card h1 { font-size: 22px; margin: 0; }
 .login-hint { color: var(--text-secondary); font-size: 13px; margin: 0 0 8px; }
+.login-offline-status {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.45;
+}
 .login-card input {
   width: 100%;
   padding: 10px 12px;
@@ -5607,6 +5625,7 @@ body.login-gate-open { overflow: hidden; }
 }
 .login-card input:focus { outline: none; border-color: var(--accent-border-strong); }
 .login-card .btn-primary { margin-top: 4px; }
+.login-card .btn-primary:disabled { cursor: not-allowed; opacity: 0.56; }
 
 /* ─── Library tabs + shelf ─────────────────────────────────────────────── */
 .library-tabs {
@@ -5760,4 +5779,50 @@ body.login-gate-open { overflow: hidden; }
   border-radius: 8px;
   background: transparent;
   color: inherit;
+}
+
+/* Wide desktop workspace: headers and tabs keep their full shared-shell
+   width; contextual rails supplement the primary task without changing DOM
+   or keyboard order. Tablet and phone layouts retain their existing stack. */
+@media (min-width: 1200px) {
+  #library-view,
+  #search-view,
+  #settings-view,
+  #stats-view {
+    width: min(1120px, calc(100vw - 64px));
+  }
+
+  .header-action-label { display: inline; font-size: 13px; font-weight: 650; }
+  .header-actions > .btn-icon:has(.header-action-label) { width: auto; padding: 0 12px; gap: 7px; }
+
+  .library-workspace { display: grid; gap: 32px; }
+  .library-context-rail:not(:has(> :not([hidden]))) { display: none; }
+  .library-workspace:has(.library-context-rail > :not([hidden])) { grid-template-columns: 280px minmax(0, 1fr); }
+  .library-context-rail { grid-column: 1; align-self: start; }
+  .library-context-rail .rail-track { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); overflow: visible; }
+  .library-context-rail .rail-card { width: auto; }
+  .library-context-rail .up-next-track { gap: 8px; }
+  .library-primary { min-width: 0; }
+  .library-workspace:has(.library-context-rail > :not([hidden])) > .library-primary { grid-column: 2; }
+
+  .search-content-workspace { display: grid; grid-template-columns: 280px minmax(0, 1fr); align-items: start; gap: 0 32px; }
+  .search-content-workspace > .search-workspace,
+  .search-content-workspace > .upload-section { grid-column: 1; }
+  .search-content-workspace > .download-error,
+  .search-content-workspace > .search-results { grid-column: 2; }
+  .search-workspace { margin-bottom: 18px; }
+  .search-filter-panel { grid-template-columns: minmax(0, 1fr); }
+  .search-source-controls { align-items: stretch; flex-direction: column; }
+  .search-source-group-pills { flex-wrap: wrap; }
+  .upload-section { margin-top: 12px; }
+  .search-results-list { grid-template-columns: repeat(auto-fill, minmax(200px, 240px)); justify-content: start; }
+
+  .stats-workspace { display: grid; grid-template-columns: 280px minmax(0, 1fr); align-items: start; gap: 32px; }
+  .stats-context-rail .stats-tiles { grid-template-columns: 1fr; }
+  .stats-context-rail .rail-track { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); overflow: visible; }
+  .stats-context-rail .rail-card { width: auto; }
+
+  #voice-list .voice-section { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  #voice-list .voice-section-title,
+  #voice-list .clone-voice-form { grid-column: 1 / -1; }
 }

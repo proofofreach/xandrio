@@ -58,6 +58,7 @@ jobs:
           cache: npm
       - run: sudo apt-get update && sudo apt-get install -y ffmpeg poppler-utils
       - run: npm ci
+      - run: npx playwright install --with-deps chromium
       - name: Verify tagged version declarations
         run: npm run release:verify -- --tag "${{ inputs.tag || github.ref_name }}"
       - run: npm run audit:release
@@ -73,7 +74,6 @@ jobs:
         run: node scripts/release/check-release-evidence.mjs
       - run: npm test
       - run: npm run verify:audio:ci
-      - run: npx playwright install --with-deps chromium
       - run: npm run test:browser
       - run: npm run sbom:npm
       - name: Generate optional Python-engine declared-dependency inventories
