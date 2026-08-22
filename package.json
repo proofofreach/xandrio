@@ -98,7 +98,7 @@
     "web-push": "3.6.7"
   },
   "devDependencies": {
-    "@cyclonedx/cyclonedx-npm": "6.0.0",
+    "@cyclonedx/cyclonedx-npm": "6.0.1",
     "@loopyc/cli": "0.8.0",
     "axios": "1.18.1",
     "nodemon": "^3.1.14"
