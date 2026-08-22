@@ -86,6 +86,13 @@ summary:focus-visible,
   min-height: 100dvh;
 }
 
+/* The global offline notice stays fixed so it remains visible while a reader
+   scrolls. The app content reserves its measured height, which keeps the
+   notice from covering the active view's navigation at every viewport size. */
+#app {
+  padding-top: var(--offline-banner-offset, 0px);
+}
+
 /* ==================== VIEWS ==================== */
 
 .view { display: none; }

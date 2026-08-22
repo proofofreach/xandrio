@@ -26,7 +26,7 @@ const OFFLINE_CONTRACT_MARKER = 'x-xandrio-offline-contract';
  * with OFFLINE_ROUTE_CONTRACT_VERSION instead of tying downloads to a build id.
  * This value MUST equal CACHE_VERSION in public/sw.js.
  */
-export const EXPECTED_OFFLINE_SW_VERSION = 'xandrio-v155';
+export const EXPECTED_OFFLINE_SW_VERSION = 'xandrio-v156';
 export const MINIMUM_OFFLINE_ROUTE_CONTRACT = 1;
 // A chapter is only ever invalidated after this many playback failures whose
 // cheap probe still says the cache is fine. Below it, we assume Safari.
@@ -149,6 +149,7 @@ export function initOffline(options = {}) {
   window.addEventListener('online', resumeInterruptedOfflineDownloads);
   window.addEventListener('online', updateOfflineBanner);
   window.addEventListener('offline', updateOfflineBanner);
+  window.addEventListener('resize', updateOfflineBanner);
   // A download can finish while the page is uncontrolled (first install) or
   // while an older worker is still in charge. Both resolve on their own, so
   // re-check at startup and whenever the controlling worker changes rather than
@@ -240,6 +241,13 @@ function updateOfflineBanner() {
   const banner = document.getElementById('offline-banner');
   if (!banner) return;
   banner.hidden = navigator.onLine;
+  const rootStyle = document.documentElement?.style;
+  if (!rootStyle) return;
+  if (banner.hidden) {
+    rootStyle.removeProperty('--offline-banner-offset');
+    return;
+  }
+  rootStyle.setProperty('--offline-banner-offset', `${Math.ceil(banner.getBoundingClientRect().height)}px`);
 }
 
 export function getOfflineManifest(scopeId = offlineScopeId()) {
