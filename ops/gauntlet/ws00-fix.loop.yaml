@@ -1,0 +1,66 @@
+loopspec: "0.1"
+id: xandrio-ws00-single-gap-fix
+meta:
+  name: Xandrio WS-00 bounded single-gap builder
+  version: 0.1.0
+  description: Applies one journaled critic gap, then requires a focused executable check.
+pattern: gauntlet
+inputs:
+  gap: { type: string, required: true }
+  evidence: { type: string, required: true }
+  artifact_path: { type: string, default: "." }
+  progress_path: { type: string, default: "artifacts/gauntlet/progress.md" }
+  verify_command: { type: string, required: true }
+state:
+  store: journal
+  vars:
+    built: { type: boolean, init: false }
+    gate_status: { type: "enum[pending,complete]", init: pending }
+body:
+  - id: fix-journaled-gap
+    kind: agent
+    harness: codex
+    allowed-tools: [Read, Edit, Bash]
+    prompt: >-
+      [ROLE:BUILDER] Read AGENTS.md. At ${inputs.artifact_path}, fix exactly this journaled fresh
+      critic gap and nothing else: ${inputs.gap}. The durable critic evidence is: ${inputs.evidence}.
+      Work only in scripts/scenario-server.js, scripts/scenario-shots.js,
+      scripts/run-ws00-scenario-gate.mjs, test/fixtures/scenarios/**,
+      docs/SCENARIO_SERVER.md, package.json, and .gitignore. Add a focused executable regression
+      check. Preserve the strict JSON judge envelope needed by Loopy while making normal CLI/CI
+      failure unambiguous. Use only finite commands. Do not commit, push, deploy, publish, change
+      product behavior, access private data, inherit credentials unnecessarily, or make live
+      provider/TTS calls.
+    on_done: { set: { built: true } }
+  - id: focused-external-check
+    when: "${state.built == true}"
+    kind: shell
+    cmd: sh
+    args: [-c, "${inputs.verify_command}"]
+    on_done: { set: { gate_status: complete } }
+terminate:
+  signal: state-predicate
+  until: "${state.built == true && state.gate_status == 'complete'}"
+caps:
+  max_iterations: 1
+  no_progress:
+    fingerprint: "${state.built + ':' + state.gate_status}"
+    max_repeats: 1
+  budget: { tokens: 30000, usd: 1.5, wallclock: "1h" }
+  on_cap_exceeded: breakpoint
+schedule: { mode: manual }
+artifacts:
+  include: ["artifacts/gauntlet/**/*.md"]
+  exclude: ["**/.env*", "**/.git/**", "**/node_modules/**", "**/*secret*"]
+  max_files: 200
+  max_bytes: 20000000
+notify: { policy: never, channels: [] }
+observe:
+  trace: journal
+  hooks: { completed: { kind: shell, cmd: "test -f ${inputs.progress_path}" } }
+target:
+  runtime: standalone
+  emit: [cli, skill, doctor]
+provenance:
+  factory_version: "0.8.0"
+  source: "verified-gauntlet+single-gap-builder"

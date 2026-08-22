@@ -1,0 +1,102 @@
+[
+  {
+    "id": "scn-meridian",
+    "title": "The Meridian Line",
+    "author": "Adaeze Okonkwo",
+    "publisher": "Fictional Harbor Press",
+    "language": "en",
+    "publishedDate": 2019,
+    "description": "A synthetic scenario-harness fixture: a surveyor traces an old border line through three towns that no longer agree on where it runs.",
+    "cover": "cover-meridian.jpg",
+    "nonfiction": false,
+    "chapters": [
+      {
+        "title": "The Old Survey",
+        "text": "Nadia found the survey marker where the map said it would be, half buried under a decade of leaf litter, and she knelt to brush it clean the way her grandfather had taught her. The brass disk still held its stamped numbers, though the paint in the grooves had worn to a memory of red. She photographed it from four angles, logged the coordinates against the modern reading on her handset, and noted a drift of eleven centimeters that no one back at the office was going to believe without a second opinion. The town below her, Halbrook, had built its water tower on what everyone assumed was town land. If the marker was right and the old survey was wrong, that tower sat two meters into the neighboring township, and two meters was exactly the kind of number that started arguments at council meetings. She packed the marker's photograph away, checked the light, and started down the ridge toward the second point on her list, thinking about how a boundary was really just a story two towns had agreed to stop arguing about, and how her job this week was to reopen the argument."
+      },
+      {
+        "title": "Halbrook Township",
+        "text": "The council clerk, a patient man named Osei who had clearly fielded this exact complaint before, laid three separate maps on the counter and asked Nadia which century she wanted to believe. The 1911 survey, hand-drawn and lovely, put the line through the middle of what was now a parking lot. The 1958 revision moved it forty meters east to follow a creek that had since been culverted under the very same lot. The digital cadastral map, generated in an afternoon by a contractor who had never set foot in Halbrook, split the difference and called it authoritative because it came with a timestamp. Nadia explained, as gently as she could, that a timestamp was not the same thing as being correct, and that her instruments agreed with the buried marker, not with the contractor's afternoon. Osei sighed in the specific way of a man who now had to write a memo, and asked whether she could at least wait until after the harvest festival before filing the report, because nothing in this town moved fast in October, boundary or otherwise."
+      },
+      {
+        "title": "What the Creek Remembers",
+        "text": "She found the old creek bed exactly where the culvert plans said it should be, dry now except for a dark stain in the concrete that widened after rain, and she understood, standing there, that the second survey had not been wrong so much as it had been describing a version of the land that no longer existed. Water moves a boundary as surely as any council vote, just slower and without anyone's permission. She measured the culvert's angle, cross-checked it against both historical surveys, and began to see how a line could be simultaneously accurate and obsolete, correct for the year it was drawn and useless for the year it was read. Her report, when she finally wrote it that evening in the guesthouse above the bakery, did not pick a winner among the three maps. Instead it recommended a fourth, one that acknowledged the tower's two meters, the creek's slow migration, and the plain fact that Halbrook and its neighbor were going to have to sit down together and redraw a line that had never really been a line at all, only a shared decision that people kept forgetting they had made."
+      }
+    ]
+  },
+  {
+    "id": "scn-lighthouse",
+    "title": "The Lighthouse Keeper's Almanac",
+    "author": "R. Voss",
+    "publisher": "Salt Point Editions",
+    "language": "en",
+    "publishedDate": 2015,
+    "description": "A synthetic scenario-harness fixture: a season of weather logs, tide notes, and small repairs kept by the last keeper of an automated lighthouse.",
+    "cover": "cover-lighthouse.jpg",
+    "nonfiction": false,
+    "chapters": [
+      {
+        "title": "March, Fogbound",
+        "text": "The horn had been running for six straight days when Iris finally climbed the tower to check the mechanism herself, since the automated log insisted everything was within tolerance and the automated log had been wrong before. She found nothing broken, only fog thick enough to swallow the beam entirely, turning the light into a rumor rather than a warning. She logged the visibility at under thirty meters, the longest stretch of true fog she had recorded since taking the post, and made a note to ask the harbor authority whether any vessel had actually needed the horn this week or whether the whole exercise had simply been the tower talking to itself. On the walk back down she counted the stairs out of habit, one hundred and forty-two, the same number they had always been, and felt the small, specific comfort of a fact that fog could not change."
+      },
+      {
+        "title": "The Boat That Didn't Answer",
+        "text": "At 0340 a trawler's transponder dropped off the harbor board without explanation, and Iris spent forty minutes at the radio getting nothing back but static shaped like a held breath. She was drafting the emergency call when the transponder reappeared on its own, the boat apparently having drifted into the tower's own radio shadow rather than having sunk, which was the kind of relief that arrived indistinguishable from anger. She wrote up the incident anyway, because a near-miss unrecorded was a lesson thrown away, and noted for the third time that season that the shadow zone west of the point deserved a repeater the harbor authority kept declining to fund. She made tea, watched the light sweep past the window on its patient rotation, and did not sleep again that night."
+      },
+      {
+        "title": "Handover Notes",
+        "text": "Whoever reads this after me should know that the automated system is good but not honest, that it will report nominal status through weather it has never actually been tested against, and that the only way to know the light is truly working is to stand where a ship would stand and watch it come around. The tide tables in the second drawer are more accurate than the printed almanac by about four minutes, consistently, and I never did find out why. Feed the gulls if you want company, but not on the railing, they leave marks that take a season to weather off. The job is smaller than it looks from the outside and larger than it looks from the inside, and I am leaving it in better order than I found it, which is all any keeper can really promise the next one."
+      }
+    ]
+  },
+  {
+    "id": "scn-fieldnotes",
+    "title": "Field Notes on Silence",
+    "author": "June Calder",
+    "publisher": "Understory Books",
+    "language": "en",
+    "publishedDate": 2021,
+    "description": "A synthetic scenario-harness fixture: an acoustic ecologist's essays on what quiet places are actually made of.",
+    "cover": "cover-fieldnotes.jpg",
+    "nonfiction": true,
+    "chapters": [
+      {
+        "title": "There Is No Such Thing as Silence",
+        "text": "The first thing every acoustic ecologist learns in the field is that the quietest place they will ever measure is still, on paper, a wall of sound. A microphone left overnight in a supposedly silent valley returns hours of wind moving through grass, insects negotiating territory, the almost subliminal hum of distant traffic bent around a mountain by temperature layers in the air. What people mean when they say a place is silent is that it lacks the specific sounds they associate with human intrusion, and that distinction matters more than the literal absence of sound ever could. This book is an attempt to describe a dozen such places honestly, not as silent, but as full of a kind of sound most listeners have simply stopped noticing, and to ask what we lose when an engine, however distant, finally arrives to fill that space in."
+      },
+      {
+        "title": "The Ten Minutes That Never Come",
+        "text": "In the standard soundscape survey, researchers look for what the field calls a true quiet interval, ten consecutive minutes with no anthropogenic sound at all, not a single aircraft, road, or generator crossing the recording. In the early years of this kind of study such intervals were common even in national parks. In the most recent decade-long dataset I worked with, drawn from forty protected sites across three continents, the median site produced exactly zero true quiet intervals in a full month of continuous recording. The sound is not always loud. It is often a single distant plane, gone in ninety seconds, that nonetheless disqualifies an entire ten-minute window. The absence we are measuring, in other words, is disappearing not through any single dramatic noise but through the sheer statistical density of small ones."
+      },
+      {
+        "title": "Listening as Instrument",
+        "text": "None of this is an argument for nostalgia, since the soundscape of any given valley has always been changing, long before engines, as glaciers retreated and species moved in and out of range. What has changed is the rate, and more specifically the introduction of sound sources that do not belong to the place at all, that arrive from elsewhere and leave no ecological trace behind except in the recordings. My own practice, after a decade of this work, has become less about documenting loss and more about training attention, teaching visitors and colleagues alike to hear the layered structure of a place the way they would look at a photograph, foreground and background, near and far, insect and wind and water, so that when a human sound does arrive, it registers not as ambient wallpaper but as the specific, namable interruption it actually is."
+      }
+    ]
+  },
+  {
+    "id": "scn-driftwood",
+    "title": "Driftwood Correspondence",
+    "author": "Mara Lindqvist",
+    "publisher": "Coastal Notebook Press",
+    "language": "en",
+    "publishedDate": 2023,
+    "description": "A synthetic scenario-harness fixture: letters exchanged between two former lighthouse keepers, mailed in bottles as a private joke that outlasted the joke.",
+    "cover": "cover-driftwood.jpg",
+    "nonfiction": false,
+    "chapters": [
+      {
+        "title": "The First Bottle",
+        "text": "It started as a joke, mailing you a letter the slow way, corked into a bottle and thrown from the point on a falling tide, and I never expected the currents to actually cooperate, let alone for you to find it wedged in the rocks below your own tower nine days later like the ocean had simply passed a note between two people who already had a working telephone. I am keeping this one going anyway, because a letter that takes nine days and a bottle to arrive says something different than one that arrives instantly, even if the words themselves would read the same. Tell me about the weather down there. Tell me something you would not bother telling me on the phone, precisely because the phone is too fast for it."
+      },
+      {
+        "title": "Reply, Delayed by Weather",
+        "text": "Your bottle sat in a drawer for three weeks before I found a good tide to send this back on, which feels appropriate, since everything in this correspondence seems to run on its own schedule regardless of what either of us intends. The weather down here has been the kind of grey that stops being a color and starts being a texture, and I have taken up a habit I am slightly embarrassed to admit to you directly except that a bottle feels safer than a phone call somehow, which is that I have started narrating the weather out loud to no one in particular, the way the old logs used to, because I think the tower gets lonely too and someone ought to keep it company."
+      },
+      {
+        "title": "What the Tide Keeps",
+        "text": "I have started keeping a small shelf for the bottles that don't make it back, the ones I find washed up with someone else's letter inside, addressed to a name I don't recognize, meant for a shore I have never heard of. There are four now. I do not open them, mostly, except the one time I did, and found a letter in a language I could not read, which felt like the most honest possible message the ocean could have sent me: that most of what passes between people never quite arrives where it was aimed, and the trying is most of the point anyway. Keep writing. I will keep finding better tides."
+      }
+    ]
+  }
+]

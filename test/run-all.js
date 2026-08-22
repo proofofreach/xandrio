@@ -72,6 +72,7 @@ const tests = [
   'test-books-store.js',
   'test-book-artifact-paths.js',
   'test-auth.js',
+  'test-login-offline-ui.js',
   'test-accounts.js',
   'test-shelves.js',
   'test-voice-catalog.js',

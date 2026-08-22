@@ -11,7 +11,7 @@
   <title>Xandrio - Audiobook Library</title>
   <link rel="preload" href="/fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin>
   <!-- ?v= values must match ASSET_VERSIONS in sw.js (single source of truth) -->
-  <link rel="stylesheet" href="style-v3.css?v=104">
+  <link rel="stylesheet" href="style-v3.css?v=105">
   <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=2">
 </head>
 <body>
@@ -31,6 +31,9 @@
         <input type="text" id="login-username" placeholder="Username" autocomplete="username" autocapitalize="none" spellcheck="false" />
       </div>
       <input type="password" id="login-password" placeholder="Password" autocomplete="current-password" />
+      <p id="login-offline-status" class="login-offline-status" role="status" aria-live="polite" hidden>
+        You're offline. Reconnect to sign in.
+      </p>
       <p id="login-error" class="settings-error" style="display:none"></p>
       <button type="submit" id="login-submit" class="btn-primary">Sign In</button>
     </form>
@@ -1251,6 +1254,6 @@
 
   <script src="/js/lifecycle.js?v=1"></script>
   <script src="/js/chunk-player.js?v=23"></script>
-  <script type="module" src="app.js?v=121"></script>
+  <script type="module" src="app.js?v=122"></script>
 </body>
 </html>

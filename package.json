@@ -60,7 +60,23 @@
     "backfill:metadata": "node scripts/backfill-book-metadata.js",
     "recover:json": "node scripts/recover-json-store.js",
     "test": "node test/run-all.js",
-    "test:browser": "node scripts/smoke-browser.js"
+    "test:browser": "node scripts/smoke-browser.js",
+    "scenario:serve": "node scripts/scenario-server.js",
+    "scenario:shots": "node scripts/scenario-shots.js",
+    "scenario:verify-viewport": "node test/fixtures/scenarios/verify-viewport-rendering.js",
+    "scenario:verify-fixtures": "node test/fixtures/scenarios/verify-fixture-integrity.js",
+    "scenario:verify-settings": "node test/fixtures/scenarios/verify-settings-state-addressability.js",
+    "scenario:verify-stats": "node test/fixtures/scenarios/verify-stats-state-addressability.js",
+    "scenario:verify-player-sheets": "node test/fixtures/scenarios/verify-player-sheet-addressability.js",
+    "scenario:verify-exit": "node test/fixtures/scenarios/verify-scenario-gate-exit.js",
+    "scenario:verify-isolation": "node test/fixtures/scenarios/verify-network-guard.js",
+    "scenario:verify": "node scripts/run-ws00-scenario-gate.mjs .",
+    "verify:android-lockscreen": "node scripts/verify-android-lockscreen.js",
+    "gauntlet:validate": "loopc validate ops/gauntlet/xandrio.loop.yaml",
+    "gauntlet:verify": "loopc verify ops/gauntlet/xandrio.loop.yaml --fixtures ops/gauntlet/verify-fixtures.json",
+    "gauntlet:score": "loopc score ops/gauntlet/xandrio.loop.yaml --fixtures ops/gauntlet/verify-fixtures.json",
+    "gauntlet:compile": "loopc compile ops/gauntlet/xandrio.loop.yaml --target standalone --out output/xandrio-gauntlet",
+    "gauntlet:judge": "node scripts/run-xandrio-gauntlet-judge.mjs . artifacts/gauntlet/progress.md"
   },
   "dependencies": {
     "@lingo-reader/mobi-parser": "^0.4.6",
@@ -81,6 +97,7 @@
   },
   "devDependencies": {
     "@cyclonedx/cyclonedx-npm": "6.0.0",
+    "@loopyc/cli": "0.8.0",
     "axios": "1.18.1",
     "nodemon": "^3.1.14"
   },

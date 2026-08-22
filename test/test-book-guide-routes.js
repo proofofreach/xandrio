@@ -156,7 +156,12 @@ async function run() {
 
   await test('derives management and generation capability from the authenticated role', async () => {
     const route = app.find(item => item.method === 'get' && item.path === '/api/book/:bookId/guide');
-    service.get = async () => ({ status: 'not-generated', canGenerate: true, canManage: true, generation: { destination: 'https://api.ppq.ai' } });
+    const generation = {
+      destination: 'https://api.ppq.ai/private-route',
+      generatorModel: `generator@sha256:${'a'.repeat(64)}`,
+      verifierModel: `verifier@sha256:${'b'.repeat(64)}`
+    };
+    service.get = async () => ({ status: 'not-generated', canGenerate: true, canManage: true, generation });
     const memberResponse = response();
     await route.handlers.at(-1)({ params: { bookId: 'book_1' }, user: { role: 'member' } }, memberResponse);
     assert.strictEqual(memberResponse.body.canManage, false);
@@ -166,7 +171,8 @@ async function run() {
     await route.handlers.at(-1)({ params: { bookId: 'book_1' }, user: { role: 'admin' } }, adminResponse);
     assert.strictEqual(adminResponse.body.canManage, true);
     assert.strictEqual(adminResponse.body.canGenerate, true);
-    assert.deepStrictEqual(adminResponse.body.generation, { destination: 'https://api.ppq.ai' });
+    assert.deepStrictEqual(adminResponse.body.generation, generation,
+      'full operational diagnostics remain available to an administrator');
   });
 
   await test('versions narration URLs by guide artifact and active voice', async () => {
