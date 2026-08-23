@@ -340,6 +340,84 @@ async function writesSession(authFile) { await fs.writeFile(authFile, JSON.strin
     await fs.rm(directory, { recursive: true, force: true });
   });
 
+  await test('the edge cookie gate is answered instead of dying on its redirect', async () => {
+    // Z-Library's edge answers the first API call 307 back to the SAME url with a
+    // Set-Cookie, and serves the retry that returns it. The client followed no hop
+    // and returned no cookie, so every request died on the 307 and every mirror
+    // looked permanently down at once.
+    const mock = queuedFetch(
+      new Response('<html>wall</html>', {
+        status: 307,
+        headers: { location: 'https://z-library.test/eapi/book/search', 'set-cookie': '__diamwall=0xABC; Path=/', 'content-type': 'text/html' }
+      }),
+      json({ success: 1, books: [{ id: '9', hash: 'b'.repeat(32), title: 'Moby Dick', author: 'Melville', extension: 'epub' }] })
+    );
+    const { client, directory } = await tempClient(mock.fetchImpl, { sleep: async () => {} });
+    const books = await client.search('moby dick');
+    assert.equal(books.length, 1, 'the replay behind the cookie gate is served');
+    const replay = mock.calls[1];
+    assert.match(String(replay.options.headers.Cookie || ''), /__diamwall=0xABC/,
+      'the gate cookie is returned on the replay');
+    await fs.rm(directory, { recursive: true, force: true });
+  });
+
+  await test('the gate cookie is not carried to a different origin', async () => {
+    const mock = queuedFetch(
+      new Response('<html>wall</html>', {
+        status: 307,
+        headers: { location: 'https://elsewhere.test/eapi/book/search', 'set-cookie': '__diamwall=0xABC; Path=/', 'content-type': 'text/html' }
+      }),
+      json({ success: 1, books: [] })
+    );
+    const { client, directory } = await tempClient(mock.fetchImpl, { sleep: async () => {} });
+    await client.search('moby dick').catch(() => {});
+    const offOrigin = mock.calls.find(call => call.url.startsWith('https://elsewhere.test'));
+    assert.equal(offOrigin, undefined, 'a cross-origin redirect is never replayed');
+    await fs.rm(directory, { recursive: true, force: true });
+  });
+
+  await test('a walled mirror rotates to one that is still serving the API', async () => {
+    // A wall page is terminal for THIS host but says nothing about the others.
+    // Treating it as terminal outright stopped the client from ever reaching a
+    // mirror that was still up.
+    const mock = queuedFetch(
+      new Response('<html><title>Access Denied</title></html>', { status: 513, headers: { 'content-type': 'text/html' } }),
+      json({ success: 1, books: [{ id: '4', hash: 'c'.repeat(32), title: 'Dracula', author: 'Stoker', extension: 'epub' }] })
+    );
+    const { client, directory } = await tempClient(mock.fetchImpl, {
+      fallbackBaseUrls: ['https://backup.test'],
+      sleep: async () => {}
+    });
+    const books = await client.search('dracula');
+    assert.equal(books.length, 1, 'the working mirror answers after the walled one');
+    assert.equal(new URL(mock.calls[1].url).origin, 'https://backup.test', 'it rotated to the fallback mirror');
+    await fs.rm(directory, { recursive: true, force: true });
+  });
+
+  await test('an empty fallback answer does not pin the domain for later searches', async () => {
+    // Z-Library's bot wall answers a blocked client with 200 and an empty book
+    // list. Pinning on that response stranded every later search on a domain
+    // that could only ever return zero results.
+    const mock = queuedFetch(
+      json({ message: 'down' }, 503),
+      json({ message: 'down' }, 503),
+      json({ success: 1, books: [] }),
+      json({ success: 1, books: [{ id: '5', hash: 'a'.repeat(32), title: 'Dracula', author: 'Stoker', extension: 'epub' }] })
+    );
+    const { client, directory } = await tempClient(mock.fetchImpl, {
+      fallbackBaseUrls: ['https://backup.test'],
+      sleep: async () => {}
+    });
+    assert.deepEqual(await client.search('dracula'), [], 'the empty answer is still returned');
+    const second = await client.search('dracula');
+    assert.equal(second.length, 1, 'the retry finds the book once the configured host answers');
+    const searchHosts = mock.calls.filter(call => call.url.includes('/eapi/book/search'))
+      .map(call => new URL(call.url).origin);
+    assert.equal(searchHosts[searchHosts.length - 1], 'https://z-library.test',
+      'the second search starts from the configured host rather than the unproven fallback');
+    await fs.rm(directory, { recursive: true, force: true });
+  });
+
   await test('credential recovery stops after one alternative instead of spraying every trusted host', async () => {
     // Three trusted hosts (configured + two operator-named fallbacks), all
     // unreachable. The session credential must only ever be sent to the
