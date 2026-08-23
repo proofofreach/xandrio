@@ -1,6 +1,13 @@
 const assert = require('assert');
+const { execFileSync } = require('child_process');
+const https = require('https');
+const os = require('os');
+const path = require('path');
+const tls = require('tls');
+const { mkdtempSync, rmSync } = require('fs');
 const { Readable } = require('stream');
-const { requestRemote, readBoundedBuffer } = require('../lib/remote-fetch');
+const { Agent: UndiciAgent } = require('undici');
+const { requestRemote, pinnedUndiciFetch, readBoundedBuffer } = require('../lib/remote-fetch');
 
 let passed = 0;
 let failed = 0;
@@ -181,6 +188,59 @@ function responseStream(body) {
     };
     await assert.rejects(readBoundedBuffer(response, 1024), /exceeds the allowed size/);
     assert.strictEqual(bodyAccessed, false);
+  });
+
+  await test('real Undici transport honors address pinning and identity end-to-end', async () => {
+    // Generate a throwaway self-signed certificate at runtime so no
+    // private-key material is ever committed (the history scanner runs
+    // gitleaks over every ref before publication).
+    const certDir = mkdtempSync(path.join(os.tmpdir(), 'remote-fetch-tls-'));
+    execFileSync('openssl', [
+      'req', '-x509', '-newkey', 'rsa:2048', '-sha256', '-days', '2', '-nodes',
+      '-keyout', `${certDir}/key.pem`, '-out', `${certDir}/cert.pem`,
+      '-subj', '/CN=catalog.example', '-addext', 'subjectAltName=DNS:catalog.example'
+    ], { stdio: 'ignore' });
+    const fs = require('fs');
+    const tlsOptions = {
+      key: fs.readFileSync(`${certDir}/key.pem`),
+      cert: fs.readFileSync(`${certDir}/cert.pem`)
+    };
+    const secureContext = tls.createSecureContext(tlsOptions);
+    const captured = {};
+    const server = https.createServer({
+      ...tlsOptions,
+      SNICallback: (servername, callback) => { captured.sni = servername; callback(null, secureContext); }
+    }, (req, res) => {
+      captured.host = req.headers.host;
+      res.end('pinned-ok');
+    });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
+    try {
+      await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+      const port = server.address().port;
+      // The hostname would resolve publicly on its own; the only way this
+      // request reaches the local server is if Undici honors the pinned
+      // lookup callback instead of resolving the hostname itself.
+      const response = await pinnedUndiciFetch(new URL(`https://catalog.example:${port}/feed.xml`), {
+        method: 'GET',
+        headers: {},
+        signal: controller.signal
+      }, { address: '127.0.0.1', family: 4 }, {
+        dispatcherFactory: options => new UndiciAgent({
+          ...options,
+          connect: { ...options.connect, rejectUnauthorized: false }
+        })
+      });
+      assert.strictEqual(response.status, 200);
+      assert.strictEqual(await response.text(), 'pinned-ok');
+      assert.strictEqual(captured.host, `catalog.example:${port}`);
+      assert.strictEqual(captured.sni, 'catalog.example');
+    } finally {
+      clearTimeout(timeout);
+      await new Promise(resolve => server.close(resolve));
+      rmSync(certDir, { recursive: true, force: true });
+    }
   });
 
   console.log(`\n${passed} passed, ${failed} failed`);
