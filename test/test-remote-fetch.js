@@ -27,30 +27,68 @@ function responseStream(body) {
 
 (async () => {
   await test('production transport pins its connection to the validated DNS address', async () => {
-    let requestOptions;
+    let fetchOptions;
+    let dispatcherOptions;
+    let dispatcherClosed = false;
     const remote = await requestRemote('https://catalog.example/feed.xml', {
       lookupImpl: async () => [{ address: '93.184.216.34', family: 4 }],
-      requestImpl: (_url, options, callback) => {
-        requestOptions = options;
-        queueMicrotask(() => callback(responseStream('ok')));
-        return { once: () => {}, end: () => {} };
+      requestImpl: () => { throw new Error('legacy https transport used'); },
+      directFetchImpl: async (_url, options) => {
+        fetchOptions = options;
+        return new Response('ok');
+      },
+      dispatcherFactory: options => {
+        dispatcherOptions = options;
+        return { close: async () => { dispatcherClosed = true; } };
       }
     });
     try {
       const pinned = await new Promise((resolve, reject) => {
-        requestOptions.lookup('catalog.example', {}, (error, address, family) => {
+        dispatcherOptions.connect.lookup('catalog.example', {}, (error, address, family) => {
           if (error) reject(error);
           else resolve({ address, family });
         });
       });
       assert.deepStrictEqual(pinned, { address: '93.184.216.34', family: 4 });
       const pinnedAll = await new Promise((resolve, reject) => {
-        requestOptions.lookup('catalog.example', { all: true }, (error, records) => {
+        dispatcherOptions.connect.lookup('catalog.example', { all: true }, (error, records) => {
           if (error) reject(error);
           else resolve(records);
         });
       });
       assert.deepStrictEqual(pinnedAll, [{ address: '93.184.216.34', family: 4 }]);
+      assert.strictEqual(fetchOptions.dispatcher !== undefined, true);
+      assert.strictEqual((await readBoundedBuffer(remote.response, 16)).toString(), 'ok');
+    } finally {
+      remote.close();
+    }
+    await new Promise(resolve => setImmediate(resolve));
+    assert.strictEqual(dispatcherClosed, true);
+  });
+
+  await test('proxy transport connects to the validated address while preserving TLS and Host identity', async () => {
+    let fetchUrl;
+    let fetchOptions;
+    let dispatcherOptions;
+    const remote = await requestRemote('https://catalog.example/feed.xml', {
+      proxyUrl: 'http://127.0.0.1:3128',
+      lookupImpl: async () => [{ address: '93.184.216.34', family: 4 }],
+      requestImpl: () => { throw new Error('legacy proxy transport used'); },
+      directFetchImpl: async (url, options) => {
+        fetchUrl = new URL(url);
+        fetchOptions = options;
+        return new Response('ok');
+      },
+      proxyDispatcherFactory: options => {
+        dispatcherOptions = options;
+        return { close: async () => {} };
+      }
+    });
+    try {
+      assert.strictEqual(fetchUrl.hostname, '93.184.216.34');
+      assert.strictEqual(fetchOptions.headers.host, 'catalog.example');
+      assert.strictEqual(dispatcherOptions.uri, 'http://127.0.0.1:3128');
+      assert.strictEqual(dispatcherOptions.requestTls.servername, 'catalog.example');
       assert.strictEqual((await readBoundedBuffer(remote.response, 16)).toString(), 'ok');
     } finally {
       remote.close();
