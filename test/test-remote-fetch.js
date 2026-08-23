@@ -73,17 +73,15 @@ function responseStream(body) {
     assert.strictEqual(dispatcherClosed, true);
   });
 
-  await test('proxy transport connects to the validated address while preserving TLS and Host identity', async () => {
+  await test('proxy transport sends the hostname authority while preserving TLS identity', async () => {
     let fetchUrl;
-    let fetchOptions;
     let dispatcherOptions;
     const remote = await requestRemote('https://catalog.example/feed.xml', {
       proxyUrl: 'http://127.0.0.1:3128',
       lookupImpl: async () => [{ address: '93.184.216.34', family: 4 }],
       requestImpl: () => { throw new Error('legacy proxy transport used'); },
-      directFetchImpl: async (url, options) => {
+      directFetchImpl: async url => {
         fetchUrl = new URL(url);
-        fetchOptions = options;
         return new Response('ok');
       },
       proxyDispatcherFactory: options => {
@@ -92,11 +90,36 @@ function responseStream(body) {
       }
     });
     try {
-      assert.strictEqual(fetchUrl.hostname, '93.184.216.34');
-      assert.strictEqual(fetchOptions.headers.host, 'catalog.example');
+      // The trusted egress proxy resolves DNS itself; literal-IP authorities
+      // are bot-walled by far-side CDNs, so the URL keeps its hostname.
+      assert.strictEqual(fetchUrl.hostname, 'catalog.example');
+      assert.strictEqual(fetchUrl.port, '');
       assert.strictEqual(dispatcherOptions.uri, 'http://127.0.0.1:3128');
       assert.strictEqual(dispatcherOptions.requestTls.servername, 'catalog.example');
       assert.strictEqual((await readBoundedBuffer(remote.response, 16)).toString(), 'ok');
+    } finally {
+      remote.close();
+    }
+  });
+
+  await test('legacy proxied https transport sends the hostname authority', async () => {
+    let requestUrl;
+    const remote = await requestRemote('https://catalog.example:8443/feed.xml', {
+      proxyUrl: 'http://127.0.0.1:3128',
+      lookupImpl: async () => [{ address: '93.184.216.34', family: 4 }],
+      requestImpl: (url, _options, callback) => {
+        requestUrl = new URL(url);
+        queueMicrotask(() => callback(responseStream('ok')));
+        return { once: () => {}, end: () => {} };
+      }
+    });
+    try {
+      // The trusted egress proxy resolves DNS itself; the CONNECT authority
+      // must stay the hostname (with any explicit port preserved).
+      assert.strictEqual((await readBoundedBuffer(remote.response, 16)).toString(), 'ok');
+      assert.strictEqual(requestUrl.protocol, 'https:');
+      assert.strictEqual(requestUrl.hostname, 'catalog.example');
+      assert.strictEqual(requestUrl.port, '8443');
     } finally {
       remote.close();
     }
