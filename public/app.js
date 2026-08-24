@@ -123,6 +123,7 @@ let shortcutOverlayController = null;
 let serviceWorkerReadiness = null;
 let serviceWorkerBootWindowOpen = true;
 let blockedWorkerOnlineRetry = null;
+let offlineUnavailableOnlineRetry = createOnlineRetryOwner(window);
 const foregroundPrioritySignals = new Map();
 const OFFLINE_WORKER_RELOAD_KEY = 'xandrio_offline_worker_reload';
 const SERVICE_WORKER_BOOT_DEADLINE_MS = 6000;
@@ -1497,6 +1498,32 @@ function closeTransientSheets() {
   clearSheetStack();
 }
 
+// Best-effort recovery after a failed open: put the previously playing book
+// back in the player without touching browser history. Re-fetches its data so
+// the player shows real state; playback stays paused (the user explicitly
+// tried to switch books) but the session is intact and resumable.
+async function restorePreviousSession(previous) {
+  const data = await apiGet(`/api/book/${encodeURIComponent(previous.bookId)}`);
+  // A newer open may have started while this fetch was in flight. The
+  // snapshot's token is the open that FAILED; if it no longer owns the
+  // player, restoration must discard itself entirely.
+  if (previous.token !== openBookToken) return false;
+  if (!data?.book || !Array.isArray(data.chapters)) return false;
+  currentBook = data.book;
+  chapters = data.chapters;
+  currentChapter = Math.max(0, Math.min(chapters.length - 1, previous.chapterIndex || 0));
+  currentBookFinished = false;
+  currentBookPlaybackSettings = previous.playbackSettings || {};
+  loadPlaybackSpeed(currentBookPlaybackSettings.playbackSpeed || 1);
+  syncPlayerHash(currentBook.id);
+  chapterSelect.value = currentChapter;
+  bookTitle.textContent = currentBook.title || '';
+  updatePlaybackUI(false);
+  playbackSession.setBook(currentBook, { chapterIndex: currentChapter, finished: false });
+  await loadChapter(currentChapter);
+  return true;
+}
+
 async function prioritizeForegroundBook(bookId = currentBook?.id) {
   if (!bookId || navigator.onLine === false) return false;
   const signaledAt = Date.now();
@@ -1554,22 +1581,18 @@ async function clearDeletedBookFromPlayer(bookId) {
 // Player Functions
 let openBookToken = 0;
 let openingBookId = null;
+// Snapshot of the outgoing session, filled at commit time so the catch block
+// can restore what the user was doing if a late open failure strands them.
+let previousSession = null;
 async function openBook(bookId) {
   const token = ++openBookToken;
+  offlineUnavailableOnlineRetry.clear();
   openingBookId = String(bookId);
-  // Retire chapter selection/transport work owned by the book being left.
-  // A later book response also checks `token` before touching shared state.
-  loadChapterToken++;
-  if (currentBook?.id && String(currentBook.id) !== String(bookId)) {
-    try { chunkPlayer?.pause?.(); } catch {}
-    updatePlaybackUI(false);
-    checkpointPlayback();
-  }
-  // Keep the address bar/history in sync no matter who called us (router,
-  // library tap, post-download/upload flow).
-  syncPlayerHash(bookId);
-  void prioritizeForegroundBook(bookId);
   try {
+    // Fire-and-forget hint: mutates no player state, so it is safe to send
+    // before the open is known to succeed. The server drops the preference
+    // if this book never becomes active.
+    void prioritizeForegroundBook(bookId);
     let data;
     let usedOfflineFallback = false;
     try {
@@ -1587,11 +1610,36 @@ async function openBook(bookId) {
     }
 
     if (token !== openBookToken) return false;
-    const nextBook = data.book;
-    const nextChapters = data.chapters;
+    const nextBook = data?.book;
+    const nextChapters = data?.chapters;
+    if (!nextBook || typeof nextBook !== 'object' || nextBook.id == null || !Array.isArray(nextChapters)) {
+      throw new Error('Invalid book data');
+    }
     const nextPlaybackSettings = await getBookPlaybackSettings(bookId);
     if (token !== openBookToken) return false;
 
+    // Snapshot the outgoing session so any failure AFTER this point (chapter
+    // load, engine selection, transition) can restore what the user was
+    // doing instead of stranding them on a broken book. Stored on the module
+    // slot ONLY so the catch block can reach it; each invocation overwrites
+    previousSession = currentBook ? {
+      token,
+      bookId: String(currentBook.id),
+      chapterIndex: currentChapter,
+      wasPlaying: Boolean(chunkPlayer?.isPlaying),
+      playbackSettings: currentBookPlaybackSettings
+    } : null;
+    // Do not disturb the active session until the target can be opened. From
+    // here, this request owns the player, route, and chapter-selection work.
+    loadChapterToken++;
+    if (currentBook?.id && String(currentBook.id) !== String(bookId)) {
+      try { chunkPlayer?.pause?.(); } catch {}
+      updatePlaybackUI(false);
+      checkpointPlayback();
+    }
+    // Keep the address bar/history in sync no matter who called us (router,
+    // library tap, post-download/upload flow).
+    syncPlayerHash(bookId);
     currentBook = nextBook;
     chapters = nextChapters;
     void refreshGuideState(bookId);
@@ -1726,13 +1774,13 @@ async function openBook(bookId) {
     // Load saved playback speed
     loadPlaybackSpeed(currentBookPlaybackSettings.playbackSpeed);
     
-    // Restore sleep timer if active
     restoreSleepTimer();
 
     const chapterLoad = await loadRestoredChapter(chapterToLoad, restorePosition);
     if (token !== openBookToken || currentBook?.id !== nextBook.id) return false;
     if (chapterLoad?.loaded !== true) {
       updatePlaybackUI(false);
+      if (previousSession?.token === token) previousSession = null;
       return true;
     }
     checkpointPlayback();
@@ -1740,12 +1788,26 @@ async function openBook(bookId) {
     if (reconcileBackward) {
       await savePosition({ allowBackward: true, force: true });
     }
-    
+
+    if (previousSession?.token === token) previousSession = null;
     return true;
   } catch (err) {
     if (token !== openBookToken) return false;
     console.error('Failed to open book:', err);
     showToast("Couldn't open book", 'error');
+    const snapshot = previousSession?.token === token ? previousSession : null;
+    previousSession = previousSession && previousSession.token !== token ? previousSession : null;
+    if (snapshot && snapshot.token === token) {
+      // Restore the interrupted session: reload the previous book's player
+      // state without re-entering openBook (which would rewrite history).
+      // Awaited and token-guarded so a slow restore can never overwrite a
+      // newer open that starts while it runs.
+      try {
+        await restorePreviousSession(snapshot);
+      } catch (restoreError) {
+        console.error('Failed to restore previous playback session:', restoreError);
+      }
+    }
     return false;
   } finally {
     if (token === openBookToken) openingBookId = null;
@@ -1780,11 +1842,36 @@ function clearBlockedWorkerOnlineRetry() {
   blockedWorkerOnlineRetry = null;
 }
 
+function createOnlineRetryOwner(eventTarget) {
+  let listener = null;
+  let key = null;
+
+  return {
+    clear() {
+      if (listener) eventTarget.removeEventListener('online', listener);
+      listener = null;
+      key = null;
+    },
+    register({ bookId, chapterIndex, onRetry }) {
+      this.clear();
+      key = { bookId, chapterIndex };
+      listener = () => {
+        const target = key;
+        listener = null;
+        key = null;
+        onRetry(target);
+      };
+      eventTarget.addEventListener('online', listener, { once: true });
+    }
+  };
+}
+
 async function loadChapter(index, options = {}) {
   if (!Number.isInteger(index) || index < 0 || index >= chapters.length) {
     return { loaded: false, reason: 'invalid-chapter' };
   }
   clearBlockedWorkerOnlineRetry();
+  offlineUnavailableOnlineRetry.clear();
   if (!['automatic-recovery', 'manual-recovery'].includes(options.reason)) {
     clearPlaybackRecoveryTimers();
     automaticRecoveryAttempts = 0;
@@ -1924,11 +2011,16 @@ async function loadChapter(index, options = {}) {
       detail: 'This book isn’t downloaded. It will start when you’re back online.'
     });
     updatePlaybackUI(false);
-    const resumeWhenOnline = () => {
-      currentBookOfflineFallback = false;
-      if (currentBook?.id && currentChapter === index) loadChapter(index);
-    };
-    window.addEventListener('online', resumeWhenOnline, { once: true });
+    offlineUnavailableOnlineRetry.register({
+      bookId: currentBook?.id || '',
+      chapterIndex: index,
+      onRetry: ({ bookId, chapterIndex }) => {
+        currentBookOfflineFallback = false;
+        if (currentBook?.id === bookId && currentChapter === chapterIndex) {
+          void loadChapter(chapterIndex);
+        }
+      }
+    });
     return { loaded: false, reason: 'offline-unavailable' };
   }
 

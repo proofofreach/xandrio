@@ -2488,6 +2488,60 @@ section('21. Error responses and bounded caches');
   deletedBookIds.clear();
 }
 
+{
+  const previousSettings = serverTestHooks.readSettingsSync();
+  const originalReadFileSync = fs.readFileSync;
+  let diskReads = 0;
+  fs.readFileSync = () => {
+    diskReads++;
+    throw new Error('snapshot lookup must not read disk');
+  };
+  try {
+    serverTestHooks.updateSettingsCache({ voice: 'edge:snapshot' });
+    serverTestHooks.updateCustomVoiceRegistry({
+      voices: [{ id: 'snapshot', name: 'Snapshot', refVersion: 'snapshot-v1' }]
+    });
+    assertEqual(serverTestHooks.readSettingsSync().voice, 'edge:snapshot',
+      'settings writes update the in-memory snapshot without reading disk');
+    assertEqual(serverTestHooks.getChatterboxRefVersionSync('chatterbox:snapshot'), 'snapshot-v1',
+      'custom-voice writes update the narration snapshot without reading disk');
+    assertEqual(diskReads, 0, 'snapshot reads perform no synchronous disk reads');
+  } finally {
+    fs.readFileSync = originalReadFileSync;
+    serverTestHooks.updateSettingsCache(previousSettings);
+  }
+}
+
+pendingAsyncTests.push((async () => {
+  const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'alexandrio-snapshot-refresh-'));
+  const settingsFile = path.join(root, 'settings.json');
+  const customVoicesFile = path.join(root, 'custom-voices.json');
+  const previousSettings = serverTestHooks.readSettingsSync();
+  const previousCustomVoiceRegistry = await serverTestHooks.loadCustomVoiceRegistry();
+  try {
+    await fs.promises.writeFile(settingsFile, JSON.stringify({ voice: 'edge:before' }));
+    await fs.promises.writeFile(customVoicesFile, JSON.stringify({
+      voices: [{ id: 'before', name: 'Before', refVersion: 'before-v1' }]
+    }));
+    await serverTestHooks.refreshSettingsSnapshots({ settingsFile, customVoicesFile });
+
+    await fs.promises.writeFile(settingsFile, JSON.stringify({ voice: 'edge:after-external-edit' }));
+    await fs.promises.writeFile(customVoicesFile, JSON.stringify({
+      voices: [{ id: 'after', name: 'After', refVersion: 'after-v2' }]
+    }));
+    await serverTestHooks.refreshSettingsSnapshots({ settingsFile, customVoicesFile });
+
+    assertEqual(serverTestHooks.readSettingsSync().voice, 'edge:after-external-edit',
+      'background snapshot refresh reads externally edited settings');
+    assertEqual(serverTestHooks.getChatterboxRefVersionSync('chatterbox:after'), 'after-v2',
+      'background snapshot refresh reads externally edited custom voices');
+  } finally {
+    serverTestHooks.updateSettingsCache(previousSettings);
+    serverTestHooks.updateCustomVoiceRegistry(previousCustomVoiceRegistry);
+    await fs.promises.rm(root, { recursive: true, force: true });
+  }
+})());
+
 // ─── Summary ─────────────────────────────────────────────────────────────────
 
 Promise.all(pendingAsyncTests).then(() => {

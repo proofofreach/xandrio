@@ -32,6 +32,7 @@ const skipSave = Symbol('SKIP_SAVE');
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xandrio-voice-authority-'));
   const voicesFile = path.join(root, 'voices.json');
   let registry = { voices: [] };
+  let customVoiceSnapshot = null;
   const app = express();
   // Voice cloning writes to the server-wide voice registry, so the route is
   // admin-only in production. This suite covers the authority/consent contract
@@ -61,6 +62,7 @@ const skipSave = Symbol('SKIP_SAVE');
     },
     settingsFile: path.join(root, 'settings.json'),
     updateSettingsCache: () => {},
+    updateCustomVoiceRegistry: value => { customVoiceSnapshot = value; },
     voiceSamplesDir: root,
     zlibrary: {
       connect: async () => ({}),
@@ -84,6 +86,8 @@ const skipSave = Symbol('SKIP_SAVE');
     });
     assert(accepted.status === 201, 'a confirmed voice reference remains fully supported');
     assert(registry.voices.length === 1, 'the confirmed custom voice is registered');
+    assert(customVoiceSnapshot === registry,
+      'the custom-voice write updates the injected in-memory snapshot');
     const voicePath = path.join(root, 'authorized-voice.wav');
     assert(((await fs.stat(voicePath)).mode & 0o777) === 0o600,
       'stored voice references are readable and writable only by the server account');

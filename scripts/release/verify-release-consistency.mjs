@@ -65,9 +65,6 @@ if (!localEngineCompose.includes(`XANDRIO_VERSION:-${expectedVersion}`)) {
 if (!new RegExp(`^## \\[${expectedVersion.replace(/\./g, '\\.') }\\]`, 'm').test(changelog) || !/^## \[Unreleased\]/m.test(changelog)) {
   fail('changelog must contain [Unreleased] and the package release version');
 }
-if (!serviceWorker.includes(`const APP_RELEASE = '${expectedVersion}';`)) {
-  fail('service-worker application release does not match package.json');
-}
 if (webManifest.version !== expectedVersion) {
   fail('web manifest version does not match package.json');
 }

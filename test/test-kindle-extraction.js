@@ -491,6 +491,47 @@ section('Kindle Extraction');
     assert(!ok && !outputExists, 'rejects unsupported Kindle cover bytes before compact-source deletion');
   }
 
+  {
+    const events = [];
+    let finishRemoval;
+    let signalRemovalStarted;
+    const removalStarted = new Promise(resolve => {
+      signalRemovalStarted = resolve;
+    });
+    const resourceRemoval = new Promise(resolve => {
+      finishRemoval = resolve;
+    });
+    const fakeFs = {
+      mkdtemp: async () => '/tmp/xandrio-kindle-deferred-cleanup',
+      rm: async () => {
+        events.push('resource removal started');
+        signalRemovalStarted();
+        await resourceRemoval;
+        events.push('resource removal finished');
+      }
+    };
+    const metadataPromise = extractKindleMetadata('/tmp/book.mobi', {
+      format: 'mobi',
+      fs: fakeFs,
+      parserFactories: parserFactories({
+        mobi: goodKindleConfig(),
+        kf8: new Error('not a KF8 file')
+      })
+    });
+    await removalStarted;
+    let metadataResolved = false;
+    metadataPromise.then(() => {
+      metadataResolved = true;
+      events.push('success became available');
+    });
+    await Promise.resolve();
+    assert(!metadataResolved, 'does not make Kindle success available before temporary resource removal');
+    finishRemoval();
+    await metadataPromise;
+    assert(events.join('|') === 'resource removal started|resource removal finished|success became available',
+      'waits for temporary Kindle resource removal before reporting success');
+  }
+
   console.log(`\nKindle extraction tests: ${passed} passed, ${failed} failed`);
   if (failed > 0) process.exit(1);
 })().catch(err => {

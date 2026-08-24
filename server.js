@@ -93,6 +93,9 @@ const { registerBookmarksRoutes, removeBookBookmarks } = require('./lib/routes/b
 const { registerListeningQueueRoutes } = require('./lib/routes/listening-queue-routes');
 const { registerOperatorPolicyRoutes } = require('./lib/routes/operator-policy-routes');
 const { registerBookGuideRoutes } = require('./lib/routes/book-guide-routes');
+const { registerLibraryBookRoutes } = require('./lib/routes/library-book-routes');
+const { registerAudioPrepRoutes } = require('./lib/routes/audio-prep-routes');
+const { registerSyncPositionRoutes } = require('./lib/routes/sync-position-routes');
 const { createBookGuideJournal } = require('./lib/book-guide-journal');
 const { createPpqBookGuideProvider } = require('./lib/book-guide-provider');
 const { createCodexBookGuideProvider } = require('./lib/book-guide-codex-provider');
@@ -112,6 +115,7 @@ const { createAccountsStore } = require('./lib/accounts');
 const { createCalibreAccessStore } = require('./lib/calibre-integration');
 const { registerCalibreRoutes } = require('./lib/routes/calibre-routes');
 const shelves = require('./lib/shelves');
+const { writeFileAtomic } = require('./lib/write-file-atomic');
 const { parseVoiceProviders, filterVoicesByProvider } = require('./lib/voice-catalog');
 const { registerAccountRoutes } = require('./lib/routes/accounts-routes');
 const { createRateLimitMiddleware, positiveInteger } = require('./lib/rate-limit');
@@ -1003,38 +1007,108 @@ const BOOK_MIME_TYPES = new Map([
   ['application/pdf', 'pdf']
 ]);
 
-const SETTINGS_CACHE_TTL_MS = 250;
-let settingsCache = { value: null, expiresAt: 0 };
-const FILE_IDENTITY_CACHE_TTL_MS = 250;
-const fileIdentityCache = new Map();
-
-function readSettingsSync() {
-  const now = Date.now();
-  if (settingsCache.value && settingsCache.expiresAt > now) {
-    return settingsCache.value;
-  }
-
+function readJsonSnapshotSync(filePath, defaultValue) {
   try {
-    const value = JSON.parse(fsSync.readFileSync(SETTINGS_FILE, 'utf-8'));
-    settingsCache = { value, expiresAt: now + SETTINGS_CACHE_TTL_MS };
-    return value;
+    return JSON.parse(fsSync.readFileSync(filePath, 'utf8'));
   } catch {
-    settingsCache = { value: {}, expiresAt: now + SETTINGS_CACHE_TTL_MS };
-    return settingsCache.value;
+    return defaultValue;
   }
 }
 
-function updateSettingsCache(settings) {
-  settingsCache = { value: settings || {}, expiresAt: Date.now() + SETTINGS_CACHE_TTL_MS };
-}
-
-async function loadCustomVoiceRegistry() {
-  const registry = await loadJSON(CUSTOM_VOICES_FILE, { voices: [] });
+function normalizeCustomVoiceRegistry(registry) {
   return {
-    voices: Array.isArray(registry.voices) ? registry.voices.filter(voice =>
+    voices: Array.isArray(registry?.voices) ? registry.voices.filter(voice =>
       voice && typeof voice.id === 'string' && typeof voice.name === 'string'
     ) : []
   };
+}
+
+function snapshotFileIdentitySync(filePath) {
+  try {
+    const { mtimeMs, size } = fsSync.statSync(filePath);
+    return { mtimeMs, size };
+  } catch {
+    return null;
+  }
+}
+
+let settingsSnapshot = readJsonSnapshotSync(SETTINGS_FILE, {});
+let customVoiceRegistrySnapshot = normalizeCustomVoiceRegistry(
+  readJsonSnapshotSync(CUSTOM_VOICES_FILE, { voices: [] })
+);
+const snapshotFileIdentities = new Map([
+  [SETTINGS_FILE, snapshotFileIdentitySync(SETTINGS_FILE)],
+  [CUSTOM_VOICES_FILE, snapshotFileIdentitySync(CUSTOM_VOICES_FILE)]
+]);
+const snapshotRefreshErrorFiles = new Set();
+const FILE_IDENTITY_CACHE_TTL_MS = 250;
+const fileIdentityCache = new Map();
+
+function sameSnapshotFileIdentity(left, right) {
+  return left?.mtimeMs === right?.mtimeMs && left?.size === right?.size;
+}
+
+function logSnapshotRefreshErrorOnce(filePath, err) {
+  if (snapshotRefreshErrorFiles.has(filePath)) return;
+  snapshotRefreshErrorFiles.add(filePath);
+  console.error(`Failed to refresh JSON snapshot ${filePath}:`, err.message);
+}
+
+async function refreshSettingsSnapshots({
+  settingsFile = SETTINGS_FILE,
+  customVoicesFile = CUSTOM_VOICES_FILE
+} = {}) {
+  const snapshots = [
+    [settingsFile, {}, value => { settingsSnapshot = value || {}; }],
+    [customVoicesFile, { voices: [] }, value => {
+      customVoiceRegistrySnapshot = normalizeCustomVoiceRegistry(value);
+    }]
+  ];
+
+  await Promise.all(snapshots.map(async ([filePath, defaultValue, updateSnapshot]) => {
+    try {
+      const { mtimeMs, size } = await fs.stat(filePath);
+      const identity = { mtimeMs, size };
+      if (sameSnapshotFileIdentity(snapshotFileIdentities.get(filePath), identity)) return;
+
+      const parsed = JSON.parse(await fs.readFile(filePath, 'utf8'));
+      updateSnapshot(parsed);
+      snapshotFileIdentities.set(filePath, identity);
+      snapshotRefreshErrorFiles.delete(filePath);
+    } catch (err) {
+      if (err.code === 'ENOENT') {
+        // An external delete is an operator action: reset to defaults instead
+        // of serving a stale snapshot indefinitely. Identity cleared so a
+        // recreated file is picked up on the next tick.
+        updateSnapshot(structuredClone(defaultValue));
+        snapshotFileIdentities.delete(filePath);
+        snapshotRefreshErrorFiles.delete(filePath);
+        return;
+      }
+      logSnapshotRefreshErrorOnce(filePath, err);
+    }
+  }));
+}
+
+const settingsSnapshotRefreshInterval = setInterval(() => {
+  refreshSettingsSnapshots();
+}, 15_000);
+settingsSnapshotRefreshInterval.unref();
+
+function readSettingsSync() {
+  return settingsSnapshot;
+}
+
+function updateSettingsCache(settings) {
+  settingsSnapshot = settings || {};
+}
+
+function updateCustomVoiceRegistry(registry) {
+  customVoiceRegistrySnapshot = normalizeCustomVoiceRegistry(registry);
+}
+
+async function loadCustomVoiceRegistry() {
+  return customVoiceRegistrySnapshot;
 }
 
 function customVoiceEntries(registry) {
@@ -1089,13 +1163,7 @@ async function getAvailableVoices() {
 function getChatterboxRefVersionSync(voiceId) {
   if (!isChatterboxVoice(voiceId)) return null;
   const localId = String(voiceId).slice('chatterbox:'.length);
-  try {
-    const registry = JSON.parse(fsSync.readFileSync(CUSTOM_VOICES_FILE, 'utf8'));
-    const voices = Array.isArray(registry.voices) ? registry.voices : [];
-    return voices.find(voice => voice?.id === localId)?.refVersion || null;
-  } catch {
-    return null;
-  }
+  return customVoiceRegistrySnapshot.voices.find(voice => voice.id === localId)?.refVersion || null;
 }
 
 const narrationRuntime = createNarrationRuntime({
@@ -1537,8 +1605,10 @@ const bookImporter = createBookImporter({
   // happens to belong to an already-imported book destroyed that book's source
   // file. assertImportTargetAvailable throws on a collision; the importer wants
   // a predicate.
+  // Alternative candidates are checked with isPrimary=false: the same-owner
+  // refresh exemption must never open an occupied alternative id.
   isImportTargetAvailable: (id, addedBy) =>
-    assertImportTargetAvailable(id, addedBy).then(() => true).catch(() => false),
+    assertImportTargetAvailable(id, addedBy, false).then(() => true).catch(() => false),
   document: {
     validateBook,
     validateExtractedChapters: bookDocument.validateExtractedChapters,
@@ -1550,7 +1620,8 @@ const bookImporter = createBookImporter({
   relaxValidation: maybeRelaxMissingTocValidation,
   shouldDiscardSourceAfterExtract,
   createArtifact: writeXBookArtifact,
-  writeArtifactData: (artifactPath, artifact) => fs.writeFile(artifactPath, JSON.stringify(artifact)),
+  writeArtifactData: (artifactPath, artifact) =>
+    writeFileAtomic(artifactPath, JSON.stringify(artifact)),
   assessExtractedContent,
   proveArtifactRecovery,
   metadata: {
@@ -1753,7 +1824,44 @@ function manifestNeedsResume(manifest) {
 const chapterAudioPrepareJobs = new Map();
 const cleanChapterAudioPrepareJobs = new Map();
 const importJobs = new Map();
+const IMPORT_JOB_SUBSCRIBER_LIMIT = 10;
 const IMPORT_JOB_TTL_MS = 30 * 60 * 1000;
+const IMPORT_JOB_TERMINAL_GRACE_MS = Number(process.env.IMPORT_JOB_TERMINAL_GRACE_MS) || 30 * 1000;
+const IMPORT_JOB_TERMINAL_STATUSES = new Set(['complete', 'completed', 'failed', 'error']);
+function closeImportJobSubscribers(job) {
+  for (const subscriber of job.subscribers) {
+    clearInterval(subscriber.heartbeat);
+    job.listeners.delete(subscriber.listener);
+    subscriber.res.end();
+  }
+  job.subscribers.clear();
+}
+
+function expireImportJob(job) {
+  if (importJobs.get(job.id) !== job) return;
+  clearTimeout(job.terminalGraceTimer);
+  job.terminalGraceTimer = null;
+  closeImportJobSubscribers(job);
+  importJobs.delete(job.id);
+}
+
+function armImportJobExpiry(job) {
+  if (job.expiryTimer || !IMPORT_JOB_TERMINAL_STATUSES.has(job.status)) return;
+  job.expiryTimer = setTimeout(() => expireImportJob(job), IMPORT_JOB_TTL_MS);
+  job.expiryTimer.unref?.();
+}
+
+function armImportJobTerminalGrace(job) {
+  if (job.terminalGraceTimer || !job.subscribers.size || !IMPORT_JOB_TERMINAL_STATUSES.has(job.status)) return;
+  job.terminalGraceTimer = setTimeout(() => {
+    job.terminalGraceTimer = null;
+    if (importJobs.get(job.id) === job && IMPORT_JOB_TERMINAL_STATUSES.has(job.status)) {
+      closeImportJobSubscribers(job);
+    }
+  }, IMPORT_JOB_TERMINAL_GRACE_MS);
+  job.terminalGraceTimer.unref?.();
+}
+
 const IMPORT_STEPS = [
   'Preparing source',
   'Downloading file',
@@ -1777,11 +1885,13 @@ function createImportJob() {
     updatedAt: new Date().toISOString(),
     events: [],
     listeners: new Set(),
+    subscribers: new Set(),
     result: null,
-    error: null
+    error: null,
+    expiryTimer: null,
+    terminalGraceTimer: null
   };
   importJobs.set(jobId, job);
-  setTimeout(() => importJobs.delete(jobId), IMPORT_JOB_TTL_MS).unref?.();
   return job;
 }
 
@@ -1815,6 +1925,8 @@ function emitImportJob(job, event, payload = {}) {
   job.events.push(message);
   if (job.events.length > 200) job.events.shift();
   for (const listener of job.listeners) listener(message);
+  armImportJobExpiry(job);
+  armImportJobTerminalGrace(job);
 }
 
 function progressForImportJob(job) {
@@ -2450,15 +2562,17 @@ async function prepareBookGuideNarrationAudio(bookId, sectionId) {
 
 // Multer configuration for file uploads
 const storage = multer.diskStorage({
-  destination: async (req, file, cb) => {
-    await fs.mkdir(CACHE_DIR, { recursive: true });
-    cb(null, CACHE_DIR);
+  destination: (req, file, cb) => {
+    fs.mkdir(CACHE_DIR, { recursive: true }).then(() => cb(null, CACHE_DIR), cb);
   },
   filename: (req, file, cb) => {
-    // Generate a unique filename using hash
-    const hash = crypto.createHash('md5').update(file.originalname + Date.now()).digest('hex');
-    const ext = path.extname(file.originalname) || `.${getBookFormat(file)}`;
-    cb(null, `upload_${hash}${ext}`);
+    // Cryptographically random nonce: concurrent same-name uploads must never share a path.
+    // The client-controlled originalname extension can disagree with the real
+    // (MIME-filtered) format; a mismatched name would be stored as e.g. .bin
+    // and then fail import as unsupported. Derive the extension exclusively
+    // from the validated book format.
+    const ext = `.${getBookFormat(file)}`;
+    cb(null, `upload_${crypto.randomUUID()}${ext}`);
   }
 });
 
@@ -2925,12 +3039,24 @@ function downloadImportCommand(body, { download = searchProviders.download.bind(
 // records whose id equals the incoming id, so naming an existing book's id
 // walked straight into that book's record and cache artifacts. Ownership is
 // checked here, before anything is written.
-async function assertImportTargetAvailable(bookId, addedBy) {
+//
+// isPrimary distinguishes the requested id from an alternative candidate id:
+// re-importing your own book stays a legitimate refresh, but an alternative
+// that happens to carry an id this user already imported is a DIFFERENT book —
+// treating it as available would let this import delete/replace that book's
+// canonical artifact during normalization.
+async function assertImportTargetAvailable(bookId, addedBy, isPrimary = true) {
   const books = await loadJSON(BOOKS_FILE, {});
   const existing = books?.[bookId];
   if (!existing) return;
-  // Re-importing your own book stays a legitimate refresh.
-  if (addedBy && existing.addedBy && existing.addedBy === addedBy) return;
+  if (addedBy && existing.addedBy && existing.addedBy === addedBy) {
+    if (isPrimary) return;
+    throw new BookImportError('An imported book already uses this identifier', {
+      statusCode: 409,
+      response: { error: 'A different book already uses this identifier' },
+      existingBookId: bookId
+    });
+  }
   throw new BookImportError('A different book already uses this identifier', {
     statusCode: 409,
     response: { error: 'A different book already uses this identifier' },
@@ -2941,7 +3067,14 @@ async function assertImportTargetAvailable(bookId, addedBy) {
 async function importDownloadedBook(body, progress, { addedBy = null } = {}) {
   const command = downloadImportCommand(body);
   if (addedBy) command.addedBy = addedBy;
-  return bookMutationLocks.withBookMutationLock(command.id, async () => {
+  // Lock the primary id AND every alternative candidate id up front, in sorted
+  // order (deadlock-free). Availability is checked inside; without covering
+  // alternative ids, two imports contending on the same fallback id could both
+  // pass the check and each delete/replace the other's canonical artifact.
+  const candidateIds = [command.id, ...(command.alternatives || []).map(a => a?.id)]
+    .filter(Boolean)
+    .map(String);
+  return bookMutationLocks.withBookMutationLocks(candidateIds, async () => {
     await assertImportTargetAvailable(command.id, addedBy);
     deletedBookIds.delete(command.id);
     const result = await bookImporter.import(command, progress);
@@ -3076,6 +3209,9 @@ app.get('/api/download/:jobId/status', (req, res) => {
 app.get('/api/download/:jobId/events', (req, res) => {
   const job = importJobs.get(req.params.jobId);
   if (!job) return res.status(404).json({ error: 'Job not found' });
+  if (job.subscribers.size >= IMPORT_JOB_SUBSCRIBER_LIMIT) {
+    return res.status(429).json({ error: 'Too many event subscribers' });
+  }
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache, no-transform');
   res.setHeader('Connection', 'keep-alive');
@@ -3085,20 +3221,26 @@ app.get('/api/download/:jobId/events', (req, res) => {
   writeSseEvent(res, { event: 'snapshot', data: importJobSnapshot(job) });
 
   const listener = message => writeSseEvent(res, message);
-  job.listeners.add(listener);
   const heartbeat = setInterval(() => res.write(': keepalive\n\n'), 15000);
+  const subscriber = { listener, heartbeat, res };
+  job.listeners.add(listener);
+  job.subscribers.add(subscriber);
+  armImportJobTerminalGrace(job);
   req.on('close', () => {
     clearInterval(heartbeat);
     job.listeners.delete(listener);
+    job.subscribers.delete(subscriber);
+    if (!job.subscribers.size && job.terminalGraceTimer) {
+      clearTimeout(job.terminalGraceTimer);
+      job.terminalGraceTimer = null;
+    }
   });
 });
 
 async function handleUploadImport(req, res) {
   if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
   const originalName = req.file.originalname;
-  const bookId = crypto.createHash('md5')
-    .update(originalName + Date.now())
-    .digest('hex');
+  const bookId = crypto.randomUUID();
   const uploadUserId = positionUserId(req);
   try {
     const result = await bookMutationLocks.withBookMutationLock(bookId, async () => {
@@ -3133,7 +3275,6 @@ async function handleUploadImport(req, res) {
   }
 }
 
-// API: Upload book file
 // API: Upload book file
 app.post('/api/upload', uploadSingleEpub, handleUploadImport);
 registerCalibreRoutes(app, {
@@ -3281,55 +3422,6 @@ app.get('/ready', async (req, res) => {
   res.json({ status: 'ready' });
 });
 
-app.get('/api/library', async (req, res) => {
-  try {
-    const userId = positionUserId(req);
-    const [books, shelvesStore] = await Promise.all([
-      loadJSON(BOOKS_FILE, {}),
-      loadJSON(SHELVES_FILE, {})
-    ]);
-    const shelf = new Set(shelves.shelfForUser(shelvesStore, userId));
-    res.json({
-      userId,
-      shelf: [...shelf].filter(bookId => books[bookId]),
-      books: await Promise.all(Object.values(books).map(book => publicBookRecordWithCoverArtifact(book)))
-    });
-  } catch (err) {
-    sendServerError(res, err, "Failed to load library");
-  }
-});
-
-app.post('/api/shelf/:bookId', async (req, res) => {
-  try {
-    const { bookId } = req.params;
-    if (!isSafeBookId(bookId)) return res.status(400).json({ error: 'Invalid book identifier' });
-    const books = await loadJSON(BOOKS_FILE, {});
-    if (!books[bookId]) return res.status(404).json({ error: 'Book not found' });
-    const userId = positionUserId(req);
-    await updateJSON(SHELVES_FILE, (data) => {
-      shelves.addToShelf(data, userId, bookId);
-    });
-    res.json({ success: true });
-  } catch (err) {
-    sendServerError(res, err, "Failed to update shelf");
-  }
-});
-
-app.delete('/api/shelf/:bookId', async (req, res) => {
-  try {
-    const { bookId } = req.params;
-    if (!isSafeBookId(bookId)) return res.status(400).json({ error: 'Invalid book identifier' });
-    const userId = positionUserId(req);
-    const removed = await updateJSON(SHELVES_FILE, (data) => {
-      const found = shelves.removeFromShelf(data, userId, bookId);
-      return found || jsonStore.SKIP_SAVE;
-    });
-    if (removed === jsonStore.SKIP_SAVE) return res.status(404).json({ error: 'Book is not on your shelf' });
-    res.json({ success: true });
-  } catch (err) {
-    sendServerError(res, err, "Failed to update shelf");
-  }
-});
 
 const bookDeletionLog = createBookDeletionLog({
   filePath: BOOK_DELETIONS_FILE,
@@ -3434,246 +3526,6 @@ const bookMetadataRefreshService = createBookMetadataRefreshService({
     bookMutationLocks.withBookStateLock(bookId, operation)
 });
 
-// API: Delete book
-app.delete('/api/book/:bookId', async (req, res) => {
-  try {
-    const { bookId } = req.params;
-    if (!isSafeBookId(bookId)) {
-      return res.status(400).json({ error: 'Invalid book identifier' });
-    }
-    const deletion = await bookMutationLocks.withBookMutationLock(bookId, () =>
-      bookDeletionService.deleteBook({ bookId, actor: req.user })
-    );
-    if (deletion.status === DELETE_BOOK_RESULT.FORBIDDEN) {
-      return res.status(403).json({ error: 'Only the book owner or an admin can delete this book' });
-    }
-    if (deletion.status === DELETE_BOOK_RESULT.NOT_FOUND) {
-      return res.status(404).json({ error: 'Book not found' });
-    }
-    res.json({
-      success: true,
-      message: 'Book deleted successfully',
-      deletedArtifacts: deletion.artifactCleanup.deleted.length,
-      failedArtifacts: deletion.artifactCleanup.failed,
-      cancelledJobs: deletion.cancelledJobs
-    });
-  } catch (err) {
-    console.error('Delete book error:', err);
-    sendServerError(res, err, "Failed to delete book");
-  }
-});
-
-// API: Refresh metadata for a book
-// DELETE /api/book/:bookId enforces "a member may only touch a book they added"
-// (lib/book-deletion.js:118), but the other destructive routes did not: any
-// member could rewrite another account's metadata or discard and rebuild their
-// chapters. Same predicate, so the three routes agree. Returns an error string
-// when refused, null when allowed.
-async function refuseIfNotBookOwner(req, bookId) {
-  const actor = req.user;
-  if (actor?.role !== 'member') return null;
-  const books = await loadJSON(BOOKS_FILE, {});
-  const book = books?.[bookId];
-  if (!book) return null; // absent book: let the handler report 404 as before
-  if (book.addedBy === actor.id) return null;
-  return 'Only the book owner or an admin can modify this book';
-}
-
-app.post('/api/refresh-metadata/:bookId', async (req, res) => {
-  try {
-    const { bookId } = req.params;
-    if (!isSafeBookId(bookId)) {
-      return res.status(400).json({ error: 'Invalid book identifier' });
-    }
-    const refusal = await refuseIfNotBookOwner(req, bookId);
-    if (refusal) return res.status(403).json({ error: refusal });
-    const refresh = await bookMutationLocks.withBookMutationLock(bookId, () =>
-      bookMetadataRefreshService.refreshBook(bookId)
-    );
-    if (refresh.status === REFRESH_BOOK_RESULT.NOT_FOUND) {
-      return res.status(404).json({ error: 'Book not found' });
-    }
-    res.json({ success: true, book: publicBookRecord(refresh.book) });
-  } catch (err) {
-    console.error('Metadata refresh error:', err);
-    sendServerError(res, err, "Failed to refresh metadata");
-  }
-});
-
-// API: Get book details and chapters
-app.get('/api/book/:bookId', async (req, res) => {
-  try {
-    const { bookId } = req.params;
-    if (!isSafeBookId(bookId)) {
-      return res.status(400).json({ error: 'Invalid book identifier' });
-    }
-    await chapterRebuildService?.recoverBook(bookId);
-    const details = await bookMutationLocks.withBookMutationLock(bookId, async () => {
-      const books = await loadJSON(BOOKS_FILE, {});
-      const book = books[bookId];
-      if (!book) return null;
-
-      // Keep extraction and any resulting structure reconciliation under the
-      // same per-book lock as rebuild, refresh, re-import, and deletion.
-      const chapters = await getChaptersCached(book.path);
-      const structureReconcile = await bookMetadataRefreshService
-        .reconcileChapterStructure(bookId, chapters)
-        .catch(err => {
-          console.error(`Chapter structure reconciliation failed for ${bookId}: ${err.message}`);
-          return null;
-        });
-      if (structureReconcile?.book) Object.assign(book, structureReconcile.book);
-      const displayChapters = chapters.map(ch => ({
-        ...ch,
-        rawTitle: ch.rawTitle || ch.title,
-        title: normalizeChapterTitleForDisplay(ch.title || `Chapter ${ch.index + 1}`)
-      }));
-
-      if (book.totalDuration === undefined || book.chapterCount === undefined) {
-        if (book.totalDuration === undefined) {
-          book.totalDuration = chapters.reduce((sum, ch) => sum + (ch.estimatedDuration || 0), 0);
-        }
-        if (book.chapterCount === undefined) book.chapterCount = chapters.length;
-        const totalDuration = book.totalDuration;
-        const chapterCount = book.chapterCount;
-        await updateJSON(BOOKS_FILE, (currentBooks) => {
-          const current = currentBooks[bookId];
-          if (!current) return jsonStore.SKIP_SAVE;
-          let updated = false;
-          if (current.totalDuration === undefined) {
-            current.totalDuration = totalDuration;
-            updated = true;
-          }
-          if (current.chapterCount === undefined) {
-            current.chapterCount = chapterCount;
-            updated = true;
-          }
-          if (!updated) return jsonStore.SKIP_SAVE;
-        });
-      }
-
-      const publicBook = await publicBookRecordWithCoverArtifact(book);
-      publicBook.canRebuildChapters = Boolean(
-        book.canRebuildChapters ||
-        chapters.sourceDocument?.pages?.length ||
-        (isXBookPath(book.path) && await xbookStore.canRebuildXBookArtifact(book.path))
-      ) || undefined;
-      return { book: publicBook, chapters: displayChapters, hasCover: publicBook.hasCover };
-    });
-    if (!details) return res.status(404).json({ error: 'Book not found' });
-    res.json(details);
-  } catch (err) {
-    console.error('Book details error:', err);
-    sendServerError(res, err, "Failed to load book");
-  }
-});
-
-async function handleRebuildChapters(req, res) {
-  try {
-    const { bookId } = req.params;
-    if (!isSafeBookId(bookId)) {
-      return res.status(400).json({ error: 'Invalid book identifier' });
-    }
-    const refusal = await refuseIfNotBookOwner(req, bookId);
-    if (refusal) return res.status(403).json({ error: refusal });
-    const result = await chapterRebuildService.rebuild(bookId);
-    if (result.reason === 'book-not-found') return res.status(404).json({ error: 'Book not found' });
-    if (result.reason === 'unsafe-rebuild') {
-      return res.status(409).json({
-        error: 'Chapters could not be rebuilt without changing narration text. The current chapters were kept.'
-      });
-    }
-
-    const books = await loadJSON(BOOKS_FILE, {});
-    const book = books[bookId];
-    if (!book) return res.status(404).json({ error: 'Book not found' });
-    const chapters = await getChaptersCached(book.path);
-    const displayChapters = chapters.map(chapter => ({
-      ...chapter,
-      rawTitle: chapter.rawTitle || chapter.title,
-      title: normalizeChapterTitleForDisplay(chapter.title || `Chapter ${chapter.index + 1}`)
-    }));
-    res.json({
-      success: true,
-      changed: Boolean(result.changed),
-      reason: result.changed ? undefined : result.reason,
-      book: publicBookRecord(book),
-      chapters: displayChapters
-    });
-  } catch (err) {
-    if (err.code === 'PDF_SOURCE_DATA_UNAVAILABLE' || err.code === 'XBOOK_REPROCESS_UNSUPPORTED') {
-      return res.status(409).json({
-        error: 'This book does not contain a retained source document that can rebuild chapters.'
-      });
-    }
-    console.error('Chapter rebuild error:', err);
-    sendServerError(res, err, 'Failed to rebuild chapters');
-  }
-}
-
-app.post('/api/book/:bookId/rebuild-chapters', handleRebuildChapters);
-// Compatibility alias. Remove after 2026-12-31, once pre-capability clients
-// have aged out. It executes the same generic rebuild transaction.
-app.post('/api/book/:bookId/reprocess-pdf', (req, res) => {
-  res.setHeader('Deprecation', 'true');
-  res.setHeader('Sunset', 'Thu, 31 Dec 2026 23:59:59 GMT');
-  res.setHeader('Link', `</api/book/${encodeURIComponent(req.params.bookId)}/rebuild-chapters>; rel="successor-version"`);
-  return handleRebuildChapters(req, res);
-});
-
-// API: Get book cover image
-app.get('/api/cover/:bookId', async (req, res) => {
-  try {
-    const { bookId } = req.params;
-    if (!isSafeBookId(bookId)) {
-      return res.status(400).json({ error: 'Invalid book identifier' });
-    }
-    const books = await loadJSON(BOOKS_FILE, {});
-    const book = books[bookId];
-    
-    if (!book) {
-      return res.status(404).json({ error: 'Book not found' });
-    }
-
-    const coverPath = canonicalBookCoverPath(bookId);
-    const force = req.query.force === '1'; // ?force=1 to re-fetch
-    const cachedCover = await readValidatedLibraryCover(coverPath);
-    const refreshCachedCover = shouldRefreshCachedCover(book, force, cachedCover);
-    
-    // Check if cover already cached and meets quality standards
-    if (!refreshCachedCover) {
-      if (cachedCover) {
-        await persistCanonicalCoverPath(bookId, coverPath);
-        return res.type(cachedCover.contentType).send(cachedCover.buffer);
-      }
-      // A stale `.jpg` extension is not proof that the bytes are an image.
-      // Delete invalid/truncated data before resolution so it cannot be served
-      // or short-circuit a fallback source.
-      await removeFileIfExists(coverPath);
-    } else if (cachedCover) {
-      await removeFileIfExists(coverPath);
-    }
-
-    console.log(`[cover] Fetching cover for: "${book.title}" by ${book.author}`);
-    const fetchedCoverPath = await ensureBookCover(book, { coverPath, force });
-    
-    if (fetchedCoverPath) {
-      const fetchedCover = await readValidatedLibraryCover(fetchedCoverPath);
-      if (!fetchedCover) {
-        await removeFileIfExists(fetchedCoverPath);
-        return res.status(404).json({ error: 'No cover found' });
-      }
-      console.log(`[cover] Final cover: ${fetchedCover.dimensions.width}x${fetchedCover.dimensions.height} for "${book.title}"`);
-      await persistCanonicalCoverPath(bookId, coverPath, book.coverSource);
-      return res.type(fetchedCover.contentType).send(fetchedCover.buffer);
-    } else {
-      res.status(404).json({ error: 'No cover found' });
-    }
-  } catch (err) {
-    console.error('Cover extraction error:', err);
-    sendServerError(res, err, "Failed to load cover");
-  }
-});
 
 // Playback, chapter audio, and chunk delivery — see lib/routes/playback-routes.js.
 // Registered here so the chunk routes keep their position relative to the
@@ -3856,6 +3708,34 @@ chapterRebuildService = createChapterRebuildService({
     console.error(`Chapter rebuild committed for ${bookId}, but audio reconciliation failed: ${error.message}`);
   }
 });
+registerLibraryBookRoutes(app, {
+  booksFile: BOOKS_FILE,
+  shelvesFile: SHELVES_FILE,
+  loadJSON,
+  updateJSON,
+  jsonStore,
+  shelves,
+  userIdFromRequest: req => positionUserId(req),
+  publicBookRecord,
+  publicBookRecordWithCoverArtifact,
+  bookMutationLocks,
+  bookDeletionService,
+  DELETE_BOOK_RESULT,
+  bookMetadataRefreshService,
+  REFRESH_BOOK_RESULT,
+  chapterRebuildService,
+  getChaptersCached,
+  normalizeChapterTitleForDisplay,
+  isXBookPath,
+  xbookStore,
+  canonicalBookCoverPath,
+  readValidatedLibraryCover,
+  shouldRefreshCachedCover,
+  removeFileIfExists,
+  ensureBookCover,
+  persistCanonicalCoverPath,
+  sendServerError
+});
 
 function prioritizeForegroundBook(bookId) {
   const queuedJobs = ttsQueue.prioritizeBook(bookId);
@@ -3911,255 +3791,6 @@ registerPlaybackRoutes(app, {
 // Chunk API endpoints that still reach into server-local state
 // =========================================================================
 
-app.get('/api/voice-cache/:bookId/:chapterIndex', async (req, res) => {
-  try {
-    const { bookId } = req.params;
-    const chapterIndex = parseNonNegativeInteger(req.params.chapterIndex);
-    if (!isSafeBookId(bookId) || chapterIndex === null) {
-      return res.status(400).json({ error: 'Invalid book or chapter identifier' });
-    }
-    const books = await loadJSON(BOOKS_FILE, {});
-    const book = books[bookId];
-
-    if (!book) {
-      return res.status(404).json({ error: 'Book not found' });
-    }
-
-    const chapters = await getChaptersCached(book.path);
-    const chapter = chapters[chapterIndex];
-
-    if (!chapter) {
-      return res.status(404).json({ error: 'Chapter not found' });
-    }
-
-    const voices = await getAvailableVoices();
-    const narrationText = await transformNarrationText({ text: chapter.text, bookId });
-    const summaries = await Promise.all(voices.map(async voice => {
-      const chunkSize = getChunkSizeForVoice(voice.id);
-      const chunkTexts = chunkedTTS.splitIntoChunks(narrationText, chunkSize);
-      const variantKey = getTTSVariantKeyForVoice(voice.id);
-      let readyChunks = 0;
-
-      await Promise.all(chunkTexts.map(async (_text, index) => {
-        const chunkPath = chunkedTTS.chunkPathForVariant(
-          bookId,
-          chapterIndex,
-          index,
-          variantKey,
-          getTtsOutputFormatForVoice(voice.id)
-        );
-        try {
-          await fs.access(chunkPath);
-          readyChunks++;
-        } catch {}
-      }));
-
-      return {
-        voiceId: voice.id,
-        totalChunks: chunkTexts.length,
-        readyChunks,
-        status: readyChunks === 0 ? 'uncached' : (readyChunks === chunkTexts.length ? 'ready' : 'partial')
-      };
-    }));
-
-    res.json({ bookId, chapterIndex, voices: summaries });
-  } catch (err) {
-    console.error('Voice cache status error:', err);
-    sendServerError(res, err, "Failed to read voice cache status");
-  }
-});
-
-
-// --- Progressive premium audio: book-level background prep -----------------
-
-// Status for the book prep panel and chapter-sheet readiness dots.
-app.get('/api/premium-prep/:bookId/status', async (req, res) => {
-  try {
-    const { bookId } = req.params;
-    if (!isSafeBookId(bookId)) {
-      return res.status(400).json({ error: 'Invalid book identifier' });
-    }
-    const books = await loadJSON(BOOKS_FILE, {});
-    const book = books[bookId];
-    if (!book) return res.status(404).json({ error: 'Book not found' });
-
-    const enabled = isPremiumPrepEnabled();
-    const premiumActive = isPremiumVoiceActive();
-    if (!premiumActive) {
-      return res.json({ enabled, premiumActive, status: 'idle' });
-    }
-
-    const chapters = await getChaptersCached(book.path);
-    // Chapter-file existence only: cheap stats, and the prep pipeline always
-    // concatenates, so this is the authoritative "fully premium" signal.
-    const readiness = await Promise.all(chapters.map(async (_, index) => {
-      try {
-        const stat = await fs.stat(chunkedTTS.chapterPath(bookId, index));
-        return stat.size > 0;
-      } catch {
-        return false;
-      }
-    }));
-    const readyChapters = readiness.filter(Boolean).length;
-
-    const state = premiumPrep.getState(bookId);
-    let status = state && state.variantKey === getTTSVariantKey() ? state.status : 'idle';
-    if (readyChapters === chapters.length) status = 'ready';
-
-    res.json({
-      enabled,
-      premiumActive,
-      instantVoice: getActiveInstantVoice(),
-      status,
-      readyChapters,
-      totalChapters: chapters.length,
-      currentChapter: state?.currentChapter ?? null,
-      error: state?.error || null,
-      chapters: readiness
-    });
-  } catch (err) {
-    console.error('Premium prep status error:', err);
-    sendServerError(res, err, "Failed to get premium prep status");
-  }
-});
-
-// Start, reposition, or retry book prep (also the panel's Retry action).
-app.post('/api/premium-prep/:bookId/start', async (req, res) => {
-  try {
-    const { bookId } = req.params;
-    if (!isSafeBookId(bookId)) {
-      return res.status(400).json({ error: 'Invalid book identifier' });
-    }
-    if (!isPremiumVoiceActive()) {
-      return res.status(409).json({ error: 'Active voice has no premium tier' });
-    }
-    const fromChapter = parseNonNegativeInteger(String(req.body?.fromChapter ?? 0)) ?? 0;
-    const retry = Boolean(req.body?.retry);
-    const state = retry
-      ? premiumPrep.retry(bookId, fromChapter)
-      : premiumPrep.ensureBookPrep(bookId, fromChapter);
-    res.json({ started: Boolean(state), status: state?.status || 'idle' });
-  } catch (err) {
-    console.error('Premium prep start error:', err);
-    sendServerError(res, err, "Failed to start premium prep");
-  }
-});
-
-app.get('/api/premium-prep/settings', (req, res) => {
-  res.json({ enabled: isPremiumPrepEnabled() });
-});
-
-// Single settings toggle: "Prepare premium audio in background" (default on).
-app.post('/api/premium-prep/settings', async (req, res) => {
-  try {
-    const enabled = req.body?.enabled;
-    if (typeof enabled !== 'boolean') {
-      return res.status(400).json({ error: 'enabled must be a boolean' });
-    }
-    const settings = await updateJSON(SETTINGS_FILE, current => {
-      current.premiumPrepEnabled = enabled;
-      return current;
-    });
-    updateSettingsCache(settings);
-    res.json({ enabled });
-  } catch (err) {
-    console.error('Premium prep settings error:', err);
-    sendServerError(res, err, "Failed to save premium prep settings");
-  }
-});
-
-// API: Get reader-facing audio activity. Raw global queue counts remain in
-// operator diagnostics; this endpoint only exposes books relevant to the
-// requesting account.
-app.get('/api/queue/status', async (req, res) => {
-  try {
-    const userId = positionUserId(req);
-    const [books, shelvesStore, positionsStore] = await Promise.all([
-      loadJSON(BOOKS_FILE, {}),
-      loadJSON(SHELVES_FILE, {}),
-      loadJSON(POSITIONS_FILE, {})
-    ]);
-    const relevantBookIds = new Set([
-      ...shelves.shelfForUser(shelvesStore, userId),
-      ...Object.keys(positionsForUser(positionsStore, userId))
-    ]);
-    const activity = ttsQueue.getQueueActivity({ bookIds: relevantBookIds });
-    const activityBooks = await Promise.all(activity.books.map(async item => {
-      const book = books[item.bookId];
-      if (!book) return null;
-      const chapters = await getChaptersCached(book.path).catch(() => []);
-      return {
-        id: item.bookId,
-        title: book.title || 'Untitled',
-        author: book.author || 'Unknown Author',
-        hasCover: Boolean(book.coverPath),
-        active: item.active,
-        queued: item.queued,
-        origins: item.origins || {},
-        chapters: item.chapters.map(chapter => ({
-          ...chapter,
-          title: String(chapters[chapter.chapterIndex]?.title || '').trim() || undefined
-        }))
-      };
-    }));
-    res.json({
-      active: activity.active,
-      queued: activity.queued,
-      books: activityBooks.filter(Boolean)
-    });
-  } catch (err) {
-    sendServerError(res, err, 'Failed to load audio activity');
-  }
-});
-
-// API: Move one title through the audio generation order.
-//
-// The order is a tie-break inside each priority band, never across them, so
-// this can rearrange a backlog but can never put speculative work in front of
-// the chapter someone is listening to. The move is expressed relative to the
-// list the reader is looking at: the account's own activity order is what gets
-// seeded, so a reader can only reposition titles they can already see.
-app.post('/api/queue/order', async (req, res) => {
-  try {
-    const bookId = String(req.body?.bookId || '');
-    const direction = req.body?.direction;
-    if (!isSafeBookId(bookId)) {
-      return res.status(400).json({ error: 'Invalid book identifier' });
-    }
-    if (direction !== 'up' && direction !== 'down') {
-      return res.status(400).json({ error: "Direction must be 'up' or 'down'" });
-    }
-    const userId = positionUserId(req);
-    const [shelvesStore, positionsStore] = await Promise.all([
-      loadJSON(SHELVES_FILE, {}),
-      loadJSON(POSITIONS_FILE, {})
-    ]);
-    const relevantBookIds = new Set([
-      ...shelves.shelfForUser(shelvesStore, userId),
-      ...Object.keys(positionsForUser(positionsStore, userId))
-    ]);
-    if (!relevantBookIds.has(bookId)) {
-      return res.status(404).json({ error: 'Book is not in this library' });
-    }
-    const visible = ttsQueue
-      .getQueueActivity({ bookIds: relevantBookIds })
-      .books.map(item => item.bookId);
-    const movedPreparation = offlinePreparationCoordinator.move(bookId, direction);
-    const order = ttsQueue.moveBook(bookId, direction, visible);
-    if (!order && !movedPreparation) {
-      // Nothing to reorder: either the title holds no queued work, or it is
-      // already at the end it was moved towards.
-      return res.status(409).json({
-        error: 'This title cannot move any further',
-        code: 'QUEUE_ORDER_UNCHANGED',
-        order: ttsQueue.bookOrder()
-      });
-    }
-    res.json({ bookId, direction, order: order || ttsQueue.bookOrder() });
-  } catch (err) {
-    sendServerError(res, err, 'Failed to reorder audio activity');
-  }
-});
 
 // =========================================================================
 
@@ -4189,263 +3820,67 @@ const {
   createPairingCode,
   recordPosition
 } = userLibraryState;
-
-app.get('/api/sync/profile', async (req, res) => {
-  try {
-    const userId = positionUserId(req);
-    const deviceId = syncDeviceId(req);
-    let user = null;
-    await updateJSON(USERS_FILE, (data) => {
-      const users = normalizeUsersStore(data);
-      user = users.users[userId] || null;
-      if (!user) return jsonStore.SKIP_SAVE;
-      upsertDevice(user, deviceId, req.headers['x-xandrio-device-name']);
-    });
-    res.json({ userId, deviceId, profile: publicSyncProfile(user, deviceId) });
-  } catch (err) {
-    sendServerError(res, err, "Failed to load profile");
-  }
+registerAudioPrepRoutes(app, {
+  booksFile: BOOKS_FILE,
+  shelvesFile: SHELVES_FILE,
+  positionsFile: POSITIONS_FILE,
+  settingsFile: SETTINGS_FILE,
+  loadJSON,
+  updateJSON,
+  fs,
+  shelves,
+  positionsForUser,
+  ttsQueue,
+  premiumPrep,
+  offlinePreparationCoordinator,
+  getChaptersCached,
+  chunkedTTS,
+  getTTSVariantKey,
+  getActiveInstantVoice,
+  isPremiumPrepEnabled,
+  isPremiumVoiceActive,
+  updateSettingsCache,
+  userIdFromRequest: positionUserId,
+  getAvailableVoices,
+  transformNarrationText,
+  getChunkSizeForVoice,
+  getTTSVariantKeyForVoice,
+  getTtsOutputFormatForVoice,
+  sendServerError
+});
+registerSyncPositionRoutes(app, {
+  booksFile: BOOKS_FILE,
+  usersFile: USERS_FILE,
+  positionsFile: POSITIONS_FILE,
+  listeningQueueFile: LISTENING_QUEUE_FILE,
+  transitionsFile: CHAPTER_TRANSITIONS_FILE,
+  loadJSON,
+  updateJSON,
+  jsonStore,
+  bookMutationLocks,
+  userIdFromRequest: positionUserId,
+  syncDeviceId,
+  sanitizeSyncId,
+  DEFAULT_USER_ID,
+  newUserId,
+  syncDisplayName,
+  normalizeUsersStore,
+  upsertDevice,
+  publicSyncProfile,
+  migratePositions,
+  migrateUserScopedStore,
+  recordPosition,
+  positionForBook,
+  positionsForUser,
+  positionsForBooks,
+  positionMatchesChapterStructure,
+  mapStateWriteToCurrent,
+  observePlaybackHorizon,
+  playbackPrefetch,
+  computeListeningStats,
+  sendServerError
 });
 
-app.post('/api/sync/profile', async (req, res) => {
-  try {
-    const now = new Date().toISOString();
-    // Account sessions always operate on their own profile; only trusted-LAN
-    // and legacy shared-token callers may still self-assert a profile id.
-    const requestedUserId = sanitizeSyncId(req.body?.userId, '');
-    const userId = req.user?.id
-      || (requestedUserId && requestedUserId !== DEFAULT_USER_ID ? requestedUserId : newUserId());
-    const deviceId = syncDeviceId(req);
-    const deviceName = req.body?.deviceName || req.headers['x-xandrio-device-name'];
-    const profileName = syncDisplayName(req.body?.name, 'My Library', 80);
-    const user = await updateJSON(USERS_FILE, (data) => {
-      const users = normalizeUsersStore(data);
-      const record = users.users[userId] || {
-        id: userId,
-        name: profileName,
-        createdAt: now,
-        devices: {}
-      };
-      record.name = profileName;
-      upsertDevice(record, deviceId, deviceName);
-      users.users[userId] = record;
-      return record;
-    });
-
-    let migrateFromUserId = sanitizeSyncId(req.body?.migrateFromUserId, '');
-    // Account sessions may only absorb the shared legacy "default" data;
-    // merging from another account would expose that user's positions.
-    if (req.user?.id && migrateFromUserId !== DEFAULT_USER_ID) migrateFromUserId = '';
-    if (migrateFromUserId && migrateFromUserId !== userId) {
-      await updateJSON(POSITIONS_FILE, (data) => {
-        migratePositions(data, migrateFromUserId, userId);
-      });
-      await updateJSON(LISTENING_QUEUE_FILE, (data) => {
-        migrateUserScopedStore(data, migrateFromUserId, userId);
-      });
-    }
-
-    res.json({ success: true, userId, deviceId, profile: publicSyncProfile(user, deviceId) });
-  } catch (err) {
-    sendServerError(res, err, "Failed to save profile");
-  }
-});
-
-app.post('/api/sync/device', async (req, res) => {
-  try {
-    const userId = positionUserId(req);
-    const deviceId = syncDeviceId(req);
-    const user = await updateJSON(USERS_FILE, (data) => {
-      const users = normalizeUsersStore(data);
-      const now = new Date().toISOString();
-      const record = users.users[userId] || {
-        id: userId,
-        name: syncDisplayName(req.body?.profileName, 'My Library', 80),
-        createdAt: now,
-        devices: {}
-      };
-      upsertDevice(record, deviceId, req.body?.deviceName || req.headers['x-xandrio-device-name']);
-      users.users[userId] = record;
-      return record;
-    });
-    res.json({ success: true, userId, deviceId, profile: publicSyncProfile(user, deviceId) });
-  } catch (err) {
-    sendServerError(res, err, "Failed to register device");
-  }
-});
-
-app.post('/api/position', async (req, res) => {
-  try {
-    const { bookId, chapterIndex, timestamp, chunkIndex, chunkTime, characterOffset, positionApproximate, chapterStructureKey: suppliedStructureKey, playbackRate, wasPlaying, updatedAt, allowBackward, finished } = req.body;
-    const parsedChapterIndex = parseNonNegativeInteger(chapterIndex);
-    const parsedTimestamp = Number(timestamp);
-    const parsedChunkIndex = chunkIndex === undefined ? null : parseNonNegativeInteger(chunkIndex);
-    const parsedChunkTime = chunkTime === undefined ? null : Number(chunkTime);
-    const parsedCharacterOffset = characterOffset === undefined ? null : parseNonNegativeInteger(characterOffset);
-    if (!isSafeBookId(bookId) || parsedChapterIndex === null || !Number.isFinite(parsedTimestamp) || parsedTimestamp < 0) {
-      return res.status(400).json({ error: 'Invalid playback position' });
-    }
-    if (chunkIndex !== undefined && parsedChunkIndex === null) {
-      return res.status(400).json({ error: 'Invalid playback chunk' });
-    }
-    if (chunkTime !== undefined && (!Number.isFinite(parsedChunkTime) || parsedChunkTime < 0)) {
-      return res.status(400).json({ error: 'Invalid playback chunk time' });
-    }
-    if (characterOffset !== undefined && parsedCharacterOffset === null) {
-      return res.status(400).json({ error: 'Invalid playback character offset' });
-    }
-
-    const userId = positionUserId(req);
-    const write = await bookMutationLocks.withBookStateLock(bookId, async () => {
-      const books = await loadJSON(BOOKS_FILE, {});
-      const book = books[bookId];
-      if (!book) return { status: 404 };
-      const transitions = positionMatchesChapterStructure(
-        { chapterStructureKey: suppliedStructureKey },
-        book
-      ) ? {} : await loadJSON(CHAPTER_TRANSITIONS_FILE, {});
-      const mapped = mapStateWriteToCurrent({
-        bookId,
-        suppliedStructureKey,
-        book,
-        transitions,
-        state: {
-          chapterIndex: parsedChapterIndex,
-          timestamp: parsedTimestamp,
-          chunkIndex: parsedChunkIndex ?? undefined,
-          chunkTime: parsedChunkTime ?? undefined,
-          characterOffset: parsedCharacterOffset ?? undefined,
-          positionApproximate: positionApproximate === true || undefined
-        }
-      });
-      if (mapped.stale) {
-        const existing = positionForBook(await loadJSON(POSITIONS_FILE, {}), userId, bookId);
-        return {
-          status: 200,
-          outcome: {
-            success: true,
-            ignored: true,
-            reason: 'chapter-structure-changed',
-            position: positionMatchesChapterStructure(existing, book) ? existing : null
-          }
-        };
-      }
-
-      let outcome;
-      await updateJSON(POSITIONS_FILE, (data) => {
-        outcome = recordPosition(data, {
-        userId,
-        bookId,
-        chapterIndex: mapped.state.chapterIndex,
-        timestamp: mapped.state.timestamp,
-        chunkIndex: mapped.state.chunkIndex,
-        chunkTime: mapped.state.chunkTime,
-        characterOffset: mapped.state.characterOffset,
-        positionApproximate: mapped.state.positionApproximate,
-        chapterStructureKey: book.chapterStructureKey || undefined,
-        playbackRate,
-        wasPlaying,
-        finished,
-        allowBackward,
-        updatedAtMs: updatedAt
-      });
-        return outcome.ignored ? jsonStore.SKIP_SAVE : undefined;
-      });
-      return { status: 200, outcome, chapterIndex: mapped.state.chapterIndex };
-    });
-    if (write.status === 404) return res.status(404).json({ error: 'Book not found' });
-    const outcome = write.outcome;
-    const prefetchSessionId = `${userId}:${syncDeviceId(req)}`;
-    if (!outcome.ignored && Boolean(wasPlaying) && !Boolean(finished)) {
-      observePlaybackHorizon({
-        bookId,
-        chapterIndex: write.chapterIndex,
-        sessionId: prefetchSessionId
-      }).catch(error => {
-        console.warn(`Playback look-ahead observation failed for ${bookId}: ${error.message}`);
-      });
-    } else if (!outcome.ignored) {
-      playbackPrefetch.removeSession(prefetchSessionId).catch(error => {
-        console.warn(`Playback look-ahead retirement failed for ${bookId}: ${error.message}`);
-      });
-    }
-    res.json(outcome);
-  } catch (err) {
-    sendServerError(res, err, "Failed to save position");
-  }
-});
-
-app.get('/api/position/:bookId', async (req, res) => {
-  try {
-    const { bookId } = req.params;
-    if (!isSafeBookId(bookId)) {
-      return res.status(400).json({ error: 'Invalid book identifier' });
-    }
-    const userId = positionUserId(req);
-    const [positions, books] = await Promise.all([
-      loadJSON(POSITIONS_FILE, {}),
-      loadJSON(BOOKS_FILE, {})
-    ]);
-    const position = positionForBook(positions, userId, bookId);
-    res.json({ position: positionMatchesChapterStructure(position, books[bookId]) ? position : null });
-  } catch (err) {
-    sendServerError(res, err, "Failed to load position");
-  }
-});
-
-app.get('/api/positions', async (req, res) => {
-  try {
-    const userId = positionUserId(req);
-    const [positions, books] = await Promise.all([loadJSON(POSITIONS_FILE, {}), loadJSON(BOOKS_FILE, {})]);
-    const currentPositions = Object.fromEntries(Object.entries(positionsForUser(positions, userId))
-      .filter(([bookId, position]) => positionMatchesChapterStructure(position, books[bookId])));
-    res.json({ userId, positions: currentPositions });
-  } catch (err) {
-    sendServerError(res, err, "Failed to load positions");
-  }
-});
-
-// Listening-history / stats surface. Auth-exempt like other GETs. Aggregates
-// the current sync user's per-book positions against book metadata into
-// hours-listened, finished/in-progress counts, and a recently-listened rail.
-app.get('/api/stats', async (req, res) => {
-  try {
-    const userId = positionUserId(req);
-    const books = await loadJSON(BOOKS_FILE, {});
-    const storedPositions = positionsForUser(await loadJSON(POSITIONS_FILE, {}), userId);
-    const currentPositions = Object.fromEntries(Object.entries(storedPositions)
-      .filter(([bookId, position]) => positionMatchesChapterStructure(position, books[bookId])));
-    const stats = computeListeningStats(books, currentPositions, { recentLimit: 5 });
-    res.json({ userId, stats });
-  } catch (err) {
-    sendServerError(res, err, "Failed to load stats");
-  }
-});
-
-app.post('/api/positions/batch', async (req, res) => {
-  try {
-    const bookIds = Array.isArray(req.body?.bookIds) ? req.body.bookIds : [];
-    if (bookIds.length > 500) {
-      return res.status(400).json({ error: 'Too many book identifiers' });
-    }
-    const safeIds = [];
-    for (const bookId of bookIds) {
-      if (!isSafeBookId(bookId)) {
-        return res.status(400).json({ error: 'Invalid book identifier' });
-      }
-      safeIds.push(bookId);
-    }
-    const userId = positionUserId(req);
-    const [storedPositions, books] = await Promise.all([loadJSON(POSITIONS_FILE, {}), loadJSON(BOOKS_FILE, {})]);
-    const positions = positionsForBooks(storedPositions, userId, safeIds);
-    for (const bookId of safeIds) {
-      if (!positionMatchesChapterStructure(positions[bookId], books[bookId])) positions[bookId] = null;
-    }
-    res.json({ userId, positions });
-  } catch (err) {
-    sendServerError(res, err, "Failed to load positions");
-  }
-});
 
 async function extractBookChapters(bookPath) {
   return bookDocument.extractChapters(bookPath);
@@ -4739,6 +4174,7 @@ const preferencesRoutes = registerPreferencesRoutes(app, {
   TTSQueue,
   updateSettingsCache,
   voiceSamplesDir: VOICE_SAMPLES_DIR,
+  updateCustomVoiceRegistry,
   zlibrary
 });
 
@@ -5094,6 +4530,7 @@ module.exports.__test = {
   validateEPUB,
   coverSourceSteps,
   shouldRefreshCachedCover,
+  importJobs,
   ensureBookCover,
   validatedLibraryCoverInfo,
   createImportJob,
@@ -5129,5 +4566,11 @@ module.exports.__test = {
   configuredTrustProxy,
   annasMcpExecutable,
   buildAnnasCliEnv,
-  acquireDownloadSource
+  acquireDownloadSource,
+  readSettingsSync,
+  updateSettingsCache,
+  getChatterboxRefVersionSync,
+  updateCustomVoiceRegistry,
+  loadCustomVoiceRegistry,
+  refreshSettingsSnapshots
 };
