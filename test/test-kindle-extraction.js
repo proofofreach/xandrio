@@ -202,6 +202,47 @@ section('Kindle Extraction');
   }
 
   {
+    const config = goodKindleConfig({
+      spine: [
+        { id: 'contents' },
+        { id: 'story-one' },
+        { id: 'story-two' },
+        { id: 'story-three' }
+      ],
+      toc: [
+        { label: undefined, href: 'filepos:100' },
+        { label: undefined, href: 'filepos:200' },
+        { label: undefined, href: 'filepos:300' }
+      ],
+      resolveMap: {
+        'filepos:100': { id: 'story-one', selector: '[id="filepos:100"]' },
+        'filepos:200': { id: 'story-two', selector: '[id="filepos:200"]' },
+        'filepos:300': { id: 'story-three', selector: '[id="filepos:300"]' }
+      },
+      chapters: {
+        contents: `<html><body><h1>Contents</h1>
+          <a href="filepos:0000000100">The Brass Orchard</a>
+          <a href="filepos:0000000200">A Map of Rain</a>
+          <a href="filepos:0000000300">The Patient Telescope</a>
+        </body></html>`,
+        'story-one': `<html><body><p>${prose(51)}</p></body></html>`,
+        'story-two': `<html><body><p>${prose(52)}</p></body></html>`,
+        'story-three': `<html><body><p>${prose(53)}</p></body></html>`
+      }
+    });
+    const extracted = __test.buildKindleChaptersFromParser(
+      makeParser(config),
+      'Malformed MOBI navigation',
+      'mobi'
+    );
+    assert(extracted.chapters.slice(1).map(chapter => chapter.title).join('|') ===
+      'The Brass Orchard|A Map of Rain|The Patient Telescope',
+    'recovers missing MOBI TOC labels from exact zero-padded HTML filepos anchors');
+    assert(extracted.stats.recoveredTocLabelCount === 3 && extracted.stats.mappedTocCount === 3,
+      'reports recovered TOC labels as resolved authored navigation');
+  }
+
+  {
     const giantText = prose(30, 2600);
     const config = goodKindleConfig({
       chapters: {
@@ -228,6 +269,29 @@ section('Kindle Extraction');
       .trim();
     assert(maxChars <= 100000, 'splits a valid 239K-style Kindle spine section into usable chapters');
     assert(extractedGiantText === giantText.replace(/\s+/g, ' ').trim(), 'oversized-section repair preserves all prose in order');
+  }
+
+  {
+    const authoredLongText = prose(31, 1600);
+    const config = goodKindleConfig({
+      chapters: {
+        c1: `<html><body><p>${authoredLongText}</p></body></html>`,
+        c2: chapterHtml('Second Story', 2),
+        c3: chapterHtml('Third Story', 3)
+      }
+    });
+    const chapters = await extractKindleChapters('/tmp/authored-long-story.mobi', {
+      format: 'mobi',
+      warn: false,
+      container: { available: true, extension: 'mobi', likelyMobi7: true },
+      parserFactories: parserFactories({
+        mobi: config,
+        kf8: new Error('not a KF8 file')
+      })
+    });
+    assert(authoredLongText.length > 100000 && authoredLongText.length < 150000 &&
+      chapters.filter(chapter => chapter.sourceSpineId === 'c1').length === 1,
+    'preserves a long Kindle section when resolved TOC navigation proves an authored boundary');
   }
 
   {

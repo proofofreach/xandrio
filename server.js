@@ -3554,7 +3554,9 @@ app.get('/api/book/:bookId', async (req, res) => {
 
       const publicBook = await publicBookRecordWithCoverArtifact(book);
       publicBook.canRebuildChapters = Boolean(
-        book.canRebuildChapters || chapters.sourceDocument?.pages?.length
+        book.canRebuildChapters ||
+        chapters.sourceDocument?.pages?.length ||
+        (isXBookPath(book.path) && await xbookStore.canRebuildXBookArtifact(book.path))
       ) || undefined;
       return { book: publicBook, chapters: displayChapters, hasCover: publicBook.hasCover };
     });

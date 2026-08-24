@@ -288,6 +288,43 @@ section('Format dispatch, metadata, and covers');
       'keeps existing version-one XBook artifacts readable after the version bump');
     assert((await store.readXBookArtifact(legacyPath)).processingVersion === undefined,
       'treats a missing legacy processing version in memory without rewriting on read');
+
+    const retainedMobiPath = path.join(xbookDir, 'retained.mobi');
+    const retainedXBookPath = path.join(xbookDir, 'retained.xbook.json');
+    await fs.writeFile(retainedMobiPath, 'synthetic MOBI container');
+    await fs.writeFile(retainedXBookPath, JSON.stringify({
+      _xbookVersion: 2,
+      id: 'retained',
+      sourceFormat: 'MOBI',
+      sourceDeleted: false,
+      sourcePath: retainedMobiPath,
+      metadata: {},
+      chapters: [chapter('Chapter 1')]
+    }));
+    const retainedStore = createXBookStore({
+      cacheDir: xbookDir,
+      xbookVersion: 2,
+      deleteSourceAfterExtract: true,
+      getFileIdentity: async filePath => {
+        const stat = await fs.stat(filePath);
+        return { mtimeMs: stat.mtimeMs, size: stat.size };
+      },
+      invalidateFileIdentity() {},
+      extractBookMetadata: async () => ({}),
+      extractBookChapters: async sourcePath => {
+        assert(sourcePath === retainedMobiPath,
+          'rebuilds a retained Kindle artifact from its canonical cache source');
+        return [chapter('Authored story title')];
+      },
+      extractMobiCover: async () => false,
+      getBookFormatFromName: filePath => path.extname(filePath).slice(1).toLowerCase()
+    });
+    assert(await retainedStore.canRebuildXBookArtifact(retainedXBookPath),
+      'advertises chapter rebuild for an available retained Kindle source');
+    const retainedPlan = await retainedStore.planXBookRebuild(retainedXBookPath);
+    assert(retainedPlan.safe && retainedPlan.changed &&
+      retainedPlan.candidate.chapters[0].title === 'Authored story title',
+    'plans a text-conserving retained-Kindle rebuild without mutating the artifact');
   } finally {
     await fs.rm(xbookDir, { recursive: true, force: true });
   }
