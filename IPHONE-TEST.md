@@ -9,7 +9,7 @@ Run this on a real iPhone in Safari and from the Home Screen PWA. Use the LAN or
 5. Lock screen playback: title, artwork, controls, and skip interval match Settings. Background playback survives at least 5 minutes and chapter handoff works. Operational playback shows no in-app reliability notice; an interruption surfaces the resume action.
 6. Back/forward behavior: iOS PWA edge-swipe closes sheets or returns to the library without requiring a browser back button.
 7. Haptics may be unsupported; active/tap feedback still feels clear.
-8. Safe areas: mini player controls, notch/Dynamic Island, and book-progress line are not clipped.
+8. Safe areas: mini player controls, notch/Dynamic Island, and book-progress line are not clipped. Rotate to landscape on Search: the input, Search button, Filters sheet, mini player, and player top bar clear the Dynamic Island on both sides. In both orientations the Search label stays inside its button. Tap the search input: the page must not zoom, and the full-width Search button stays visible under the input with the keyboard open. In the installed Home Screen app, pinch-to-zoom still magnifies the page when no text field is focused.
 9. Voice sample playback ducks the main player and restores volume afterward.
 
 Likely failure areas to inspect first: expensive ambient blur, mini-player swipe threshold near iOS gestures, and stale Media Session metadata after playback handoff.

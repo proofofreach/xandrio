@@ -42,6 +42,13 @@
   --focus-ring: oklch(84% 0.16 82);
   --font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   --touch-min: 45px;
+  /* Horizontal safe areas (Dynamic Island / notch in landscape). Portrait
+     resolves to the plain 16px gutter; landscape on notched iPhones resolves
+     to the 59px inset so edge controls are never drawn under the island. */
+  --safe-left: env(safe-area-inset-left, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+  --view-pad-left: max(16px, var(--safe-left));
+  --view-pad-right: max(16px, var(--safe-right));
   --radius: 8px;
   --transition: 200ms cubic-bezier(0.22, 1, 0.36, 1);
 }
@@ -51,6 +58,14 @@
     animation-duration: 0.01ms !important;
     transition-duration: 0.01ms !important;
   }
+}
+
+html {
+  /* iOS Safari inflates text after a rotation to landscape unless told not
+     to. The app sets its own type scale, and inflated labels overflow
+     fixed-width controls such as the Search button. */
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
 }
 
 body {
@@ -102,6 +117,7 @@ summary:focus-visible,
 
 #library-view {
   padding: 16px;
+  padding-inline: var(--view-pad-left) var(--view-pad-right);
   padding-top: max(16px, env(safe-area-inset-top));
   padding-bottom: max(16px, env(safe-area-inset-bottom));
 }
@@ -643,6 +659,7 @@ summary:focus-visible,
 
 #search-view {
   padding: 16px;
+  padding-inline: var(--view-pad-left) var(--view-pad-right);
   padding-top: max(16px, env(safe-area-inset-top));
   padding-bottom: max(16px, env(safe-area-inset-bottom));
 }
@@ -775,6 +792,9 @@ summary:focus-visible,
   font-size: 12px;
 }
 .search-sort-wrap[hidden] { display: none; }
+/* 12px is below the 16px iOS focus-zoom threshold; js/ios-focus-zoom.js keeps
+   Safari from zooming when this select is tapped. Do not drop that script
+   without raising this size (the 112px mobile width cannot fit 16px labels). */
 .search-sort-wrap select {
   min-height: var(--touch-min);
   max-width: 150px;
@@ -813,7 +833,7 @@ summary:focus-visible,
   border: 1px solid var(--border);
   border-radius: var(--radius);
   color: var(--text);
-  font-size: 14px;
+  font-size: 16px;
   font-family: var(--font);
   cursor: pointer;
 }
@@ -1402,6 +1422,7 @@ summary:focus-visible,
 /* Settings View */
 #settings-view {
   padding: 16px;
+  padding-inline: var(--view-pad-left) var(--view-pad-right);
   padding-top: max(16px, env(safe-area-inset-top));
   padding-bottom: max(16px, env(safe-area-inset-bottom));
 }
@@ -2050,6 +2071,9 @@ summary:focus-visible,
   min-height: 100vh;
   min-height: 100dvh;
   padding: 0;
+  /* Raw insets, not the 16px gutter: the player is edge-to-edge in portrait
+     and only needs to clear the Dynamic Island in landscape. */
+  padding-inline: var(--safe-left) var(--safe-right);
   background: var(--player-cover-tint, var(--bg));
   transition: background-color 240ms ease;
 }
@@ -3168,12 +3192,6 @@ button, a, .book-item, .timer-option, select, input[type="range"] {
 /* ==================== RESPONSIVE ==================== */
 
 @media (max-width: 480px) {
-  #library-view,
-  #search-view,
-  #settings-view {
-    padding-inline: 16px;
-  }
-
   .library-header {
     align-items: flex-start;
     gap: 10px;
@@ -3233,15 +3251,6 @@ button, a, .book-item, .timer-option, select, input[type="range"] {
 
   .book-title {
     font-size: 15px;
-  }
-
-  .search-box {
-    grid-template-columns: minmax(0, 1fr) 92px;
-  }
-
-  .search-box .btn-primary {
-    min-width: 0;
-    padding-inline: 12px;
   }
 
   .search-filter-panel { grid-template-columns: minmax(0, 1fr); }
@@ -3696,7 +3705,7 @@ body.sheet-open { overflow: hidden; }
   align-items: center;
   gap: 12px;
   height: 100%;
-  padding: 0 16px;
+  padding: 0 var(--view-pad-right) 0 var(--view-pad-left);
   cursor: pointer;
 }
 .mini-player-cover {
@@ -4208,8 +4217,8 @@ body.has-mini-player #settings-view {
 @media (max-width: 640px) {
   .rail-track {
     scroll-snap-type: x proximity;
-    margin: 0 -16px;
-    padding: 0 16px 2px;
+    margin: 0 calc(-1 * var(--view-pad-right)) 0 calc(-1 * var(--view-pad-left));
+    padding: 0 var(--view-pad-right) 2px var(--view-pad-left);
   }
   .rail-card {
     scroll-snap-align: start;
@@ -4921,6 +4930,7 @@ body.has-mini-player #guide-view { padding-bottom: calc(80px + env(safe-area-ins
 
 #stats-view {
   padding: 16px;
+  padding-inline: var(--view-pad-left) var(--view-pad-right);
   padding-top: max(16px, env(safe-area-inset-top));
   padding-bottom: max(16px, env(safe-area-inset-bottom));
 }
@@ -5306,9 +5316,9 @@ body.has-mini-player #stats-view { padding-bottom: calc(80px + env(safe-area-ins
     position: sticky;
     top: env(safe-area-inset-top);
     z-index: 20;
-    margin-inline: -16px;
+    margin-inline: calc(-1 * var(--view-pad-left)) calc(-1 * var(--view-pad-right));
     margin-bottom: 10px;
-    padding: 8px 16px 0;
+    padding: 8px var(--view-pad-right) 0 var(--view-pad-left);
     background: var(--bg);
   }
 
@@ -5316,8 +5326,24 @@ body.has-mini-player #stats-view { padding-bottom: calc(80px + env(safe-area-ins
     z-index: 80;
   }
 
+  /* Phones: the Search button sits on its own row under the input. A side-by-side
+     button loses its right edge whenever iOS zooms the focused input; a
+     full-width row stays reachable and gives a proper touch target. */
   .search-box {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 8px;
     margin-bottom: 2px;
+  }
+
+  .search-box .btn-primary {
+    width: 100%;
+    min-height: 48px;
+    font-size: 16px;
+  }
+
+  .search-box .btn-primary:disabled {
+    opacity: 0.56;
+    cursor: not-allowed;
   }
 
   .search-toolbar {
@@ -5353,7 +5379,7 @@ body.has-mini-player #stats-view { padding-bottom: calc(80px + env(safe-area-ins
 
   .search-filter-panel:not([hidden]) {
     position: fixed;
-    inset: auto 8px 8px;
+    inset: auto max(8px, var(--safe-right)) 8px max(8px, var(--safe-left));
     z-index: 2;
     display: grid;
     grid-template-columns: minmax(0, 1fr);
