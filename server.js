@@ -21,6 +21,7 @@ const { resolveRuntimeRevision } = require('./lib/runtime-revision');
 const TTSQueue = require('./lib/tts-queue');
 const ChunkedTTS = require('./lib/chunked-tts');
 const { searchAnnas: searchAnnasDirect, closeBrowser: closeAnnasBrowser } = require('./lib/annas-scraper');
+const { searchLibgen } = require('./lib/libgen');
 const zlibrary = require('./lib/zlibrary');
 const gutenberg = require('./lib/gutenberg');
 const { isSafeBookId: requestGuardIsSafeBookId, parseNonNegativeInteger } = require('./lib/request-guards');
@@ -701,6 +702,21 @@ function annasCliReportedFailure(stderr) {
 }
 
 async function searchAnnasProvider(query) {
+  // Primary search: the open Library Genesis index. Anna's Archive aggregates
+  // LibGen, so a LibGen md5 is the same content address the member download API
+  // expects. Unlike the anonymous annas-archive.gl search -- which answers a
+  // server with a DDoS-Guard JS challenge it cannot clear -- LibGen serves
+  // ordinary results. A transport failure across every mirror is remembered so
+  // a refused search is still reported as unavailable, never as empty.
+  let libgenFailed = false;
+  try {
+    const libgenResults = await searchLibgen(query, { limit: 25, timeoutMs: 10000 });
+    if (libgenResults.length > 0) return libgenResults;
+  } catch {
+    console.log('libgen search unavailable');
+    libgenFailed = true;
+  }
+
   let cliResults = [];
   let cliFailed = false;
   try {
@@ -721,7 +737,7 @@ async function searchAnnasProvider(query) {
   if (!annasBrowserSearchPermitted()) {
     // Nothing else can answer this query. Report the refusal so the source is
     // marked unavailable instead of silently claiming the catalogue is empty.
-    if (cliFailed) throw new Error("Anna's Archive search is unavailable");
+    if (cliFailed || libgenFailed) throw new Error("Anna's Archive search is unavailable");
     return cliResults;
   }
 
@@ -739,7 +755,7 @@ async function searchAnnasProvider(query) {
     return fulfilled.flatMap(result => result.value);
   } catch (err) {
     console.error('Anna browser fallback unavailable');
-    if (cliFailed) throw err;
+    if (cliFailed || libgenFailed) throw err;
     return [];
   }
 }

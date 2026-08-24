@@ -126,6 +126,7 @@ const tests = [
   'test-acquisition-fetch-safety.js',
   'test-annas-origin.js',
   'test-annas-routes.js',
+  'test-libgen.js',
   'test-pinned-browser-proxy.js',
   'test-search-cover-service.js',
   'test-cover-selection.js',
