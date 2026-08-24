@@ -124,7 +124,7 @@ function page(...rows) {
     assert.equal(called, false);
   });
 
-  await test('rotates past a mirror that errors and returns the next one that answers', async () => {
+  await test('queries mirrors concurrently and returns the one that answers, ignoring one that errors', async () => {
     const md5 = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
     const answered = page(row({ title: 'Found', author: 'A', publisher: 'P', language: 'English', size: '1 MB', ext: 'epub', md5 }));
     const seen = [];
