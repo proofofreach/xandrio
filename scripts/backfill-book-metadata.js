@@ -7,8 +7,9 @@
 // - Mutates only through the booksStore critical-update API: reads fail closed
 //   (a corrupt or unreadable catalog aborts the run instead of being replaced
 //   with an empty object), and writes are atomic with bounded backups.
-// - Takes an OS-level O_EXCL lockfile for cross-process exclusion; json-store
-//   locks are process-local and do not protect against a concurrent server.
+// - Takes an OS-level O_EXCL lockfile so two backfills cannot run at once.
+//   Catalog writes go through booksStore.update, which also takes json-store's
+//   cross-process lock, so a live server serializes against each patch.
 
 const fs = require('fs').promises;
 const path = require('path');
@@ -92,6 +93,7 @@ async function backfillBook(book, hooks, bookId) {
   } catch {
     const fetched = await hooks.ensureBookCover(book, { coverPath }).catch(() => undefined);
     if (fetched) {
+      if (!book.coverPath) book.coverPath = coverPath;
       changed = true;
       return { changed, coverFetched: true };
     }
@@ -106,16 +108,38 @@ async function main(hooks) {
     let updated = 0;
     let covers = 0;
 
-    // Critical-store update: fail-closed read + atomic write + backups.
-    const result = await booksStore.update(async books => {
-      for (const [bookId, book] of Object.entries(books)) {
-        // eslint-disable-next-line no-await-in-loop
-        const outcome = await backfillBook(book, hooks, bookId);
-        if (outcome.changed) updated++;
-        if (outcome.coverFetched) covers++;
-      }
-      return books;
-    });
+    const books = await booksStore.load();
+    for (const [bookId, book] of Object.entries(books)) {
+      const working = { ...book };
+      // eslint-disable-next-line no-await-in-loop
+      const outcome = await backfillBook(working, hooks, bookId);
+      if (!outcome.changed) continue;
+      // eslint-disable-next-line no-await-in-loop
+      const patched = await booksStore.update(async catalog => {
+        const current = catalog[bookId];
+        if (!current) return jsonStore.SKIP_SAVE;
+        let changed = false;
+        if (current.id === undefined) {
+          current.id = bookId;
+          changed = true;
+        }
+        if (!current.downloadSource && working.downloadSource) {
+          current.downloadSource = working.downloadSource;
+          changed = true;
+        }
+        if (!current.gutenbergId && working.gutenbergId) {
+          current.gutenbergId = working.gutenbergId;
+          changed = true;
+        }
+        if (!current.coverPath && working.coverPath) {
+          current.coverPath = working.coverPath;
+          changed = true;
+        }
+        return changed ? current : jsonStore.SKIP_SAVE;
+      });
+      if (patched !== jsonStore.SKIP_SAVE) updated++;
+      if (outcome.coverFetched) covers++;
+    }
 
     console.log(`Backfilled ${updated} book records; fetched ${covers} covers.`);
     return { updated, covers };

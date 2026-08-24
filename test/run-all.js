@@ -72,6 +72,7 @@ const tests = [
   'test-server.js',
   'test-upload-multer-config.js',
   'test-json-store.js',
+  'test-write-file-atomic.js',
   'test-books-store.js',
   'test-book-artifact-paths.js',
   'test-auth.js',

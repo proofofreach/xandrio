@@ -83,7 +83,7 @@ saved reading positions to approximate and clears generated audio for every
 affected book, so which libraries get re-cut is a scope decision separate from
 whether the rule is correct.
 
-`DEGENERATE_MERGE_SOURCE_FORMATS` in `lib/chapter-utils.js` names the source
+`DEGENERATE_MERGE_SOURCE_FORMATS` in `lib/chapters/partitioning.js` (re-exported from `lib/chapter-utils.js`) names the source
 formats a segmentation rule is currently rolled out to; `lib/book-document.js`
 passes the artifact's source format into `normalizeChapterSequence`. The rule
 itself never inspects a container: `mergeDegenerateSections` is

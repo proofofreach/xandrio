@@ -6,7 +6,8 @@ Xandrio is a single self-hosted Node.js application. It serves a vanilla JavaScr
 
 | Component | Responsibility |
 | --- | --- |
-| `server.js` | Express routes, import workflow, library state, provider orchestration, playback APIs, and local persistence |
+| `server.js` | App boot, import workflow, library state, provider orchestration, playback APIs, and local persistence |
+| `lib/routes/` | HTTP route modules (library/book, audio prep, sync/position, preferences, and related APIs) mounted from `server.js` |
 | `lib/search-providers/` | Anna's Archive, Z-Library, Project Gutenberg, Internet Archive, Standard Ebooks, and OPDS adapters |
 | `lib/book-importer.js` | Format validation, metadata extraction, persistence, and source artifact handling |
 | `lib/chunked-tts.js`, `lib/tts-queue.js` | Chunk scheduling, narration generation, cache variants, and playback manifests |

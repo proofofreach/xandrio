@@ -58,6 +58,18 @@ function createStore(cacheDir) {
     assert(await rejects(() => store.readXBookArtifact(outsideArtifact)),
       'rejects reads whose artifact path escapes the cache directory');
 
+    const escapeDir = await fs.mkdtemp(path.join(os.tmpdir(), 'alexandrio-xbook-escape-'));
+    try {
+      const secret = path.join(escapeDir, 'secret.xbook.json');
+      await fs.writeFile(secret, '{"id":"nope"}');
+      const linked = path.join(cacheDir, 'escaped.xbook.json');
+      await fs.symlink(secret, linked);
+      assert(await rejects(() => store.readXBookArtifact(linked)),
+        'rejects reads that symlink out of the cache directory');
+    } finally {
+      await fs.rm(escapeDir, { recursive: true, force: true });
+    }
+
     const bookId = 'book.2026-08_24';
     const written = await store.writeXBookArtifact(bookId, '/library/book.pdf');
     const loaded = await store.readXBookArtifact(written.xbookPath);

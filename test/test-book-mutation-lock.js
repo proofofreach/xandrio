@@ -63,8 +63,10 @@ const { createBookMutationLocks } = require('../lib/book-mutation-lock');
   // A single-key task touching a non-held key is not blocked by a multi-key holder.
   const unrelated = multi.withBookMutationLock('c', async () => 'c-ok');
   assert.strictEqual(await unrelated, 'c-ok', 'unrelated single-key task unaffected');
+  const empty = await multi.withBookMutationLocks([], async () => 'empty-ok');
+  assert.strictEqual(empty, 'empty-ok', 'an empty key set still runs the task');
 
-  console.log('8 passed, 0 failed');
+  console.log('9 passed, 0 failed');
 })().catch(error => {
   console.error(error);
   process.exit(1);

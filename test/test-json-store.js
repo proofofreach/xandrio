@@ -380,6 +380,32 @@ async function main() {
     assert.deepStrictEqual(await store.load(), { version: 1 });
   });
 
+  await test('update holds an OS lockfile that other processes cannot steal', async () => {
+    const target = file('os-lock.json');
+    await jsonStore.save(target, { n: 0 });
+    await jsonStore.withLock(target, async () => {
+      await fsp.access(`${target}.lock`);
+      const child = spawnSync(process.execPath, ['-e', `
+        const fs = require('fs');
+        try {
+          fs.openSync(${JSON.stringify(`${target}.lock`)}, 'wx');
+          process.exit(2);
+        } catch (error) {
+          process.exit(error.code === 'EEXIST' ? 0 : 1);
+        }
+      `], { encoding: 'utf8' });
+      assert.strictEqual(child.status, 0, child.stderr);
+    });
+  });
+
+  await test('a dead lockfile pid is stolen instead of blocking forever', async () => {
+    const target = file('stale-lock.json');
+    await jsonStore.save(target, { ok: true });
+    await fsp.writeFile(`${target}.lock`, '99999999');
+    await jsonStore.update(target, data => { data.ok = 'after-stale'; });
+    assert.strictEqual((await jsonStore.load(target)).ok, 'after-stale');
+  });
+
   await fsp.rm(dir, { recursive: true, force: true });
 
   console.log(`\n${'═'.repeat(50)}`);

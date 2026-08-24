@@ -51,6 +51,7 @@ function createHarness({
   };
   const player = {
     isPlaying: true,
+    getCurrentTime() { return 2221; },
     pause() {
       events.pauses++;
       this.isPlaying = false;
@@ -205,6 +206,8 @@ async function run() {
     assert.ok(harness.events.restored, 'restoration ran');
     assert.strictEqual(harness.events.restored.bookId, 'prior',
       'the interrupted prior session is what gets restored');
+    assert.strictEqual(harness.events.restored.position.currentTime, 2221,
+      'the snapshot keeps the live playback offset');
     assert.strictEqual(harness.events.pauses, 1,
       'the old player was paused at commit time');
     assert.strictEqual(harness.events.toasts.length, 1,
@@ -285,7 +288,7 @@ async function run() {
         appSource.indexOf('async function restorePreviousSession('),
         appSource.indexOf('async function prioritizeForegroundBook(')
       );
-    const events2 = { fetches: [], loads: [], chapterLoads: [] };
+    const events2 = { fetches: [], loads: [], chapterLoads: [], hashes: [] };
     let releaseRestore;
     let gateReleased = false;
     const gate = new Promise(r => { releaseRestore = () => { gateReleased = true; r(); }; });
@@ -306,7 +309,7 @@ async function run() {
       getBookPlaybackSettings: async () => ({}),
       shouldUseOfflineBookFallback: () => false,
       getOfflineBookData: () => null,
-      syncPlayerHash() {},
+      syncPlayerHash(bookId, options) { events2.hashes.push({ bookId, replace: Boolean(options?.replace) }); },
       prioritizeForegroundBook: async () => true,
       offlineUnavailableOnlineRetry: { clear() {} },
       updatePlaybackUI() {},
@@ -323,8 +326,9 @@ async function run() {
       renderChapterList() {}, syncMiniPlayerInfo() {}, renderOfflineState() {},
       updateMediaSessionMetadata() {}, showView() {}, loadVoices() {},
       loadPlaybackSpeed() {}, restoreSleepTimer() {}, savePosition: async () => {},
-      showToast() {}, loadRestoredChapter: async (...a) => { events2.loads.push(a); return { loaded: true }; },
-      loadChapter: async (...a) => { events2.chapterLoads.push(a); return { loaded: true }; },
+      showToast() {},
+      loadChapter: async (...a) => { events2.chapterLoads.push(['loadChapter', ...a]); return { loaded: true }; },
+      loadRestoredChapter: async (...a) => { events2.chapterLoads.push(['loadRestoredChapter', ...a]); return { loaded: true }; },
       currentBook: { id: 'prior', title: 'Prior' },
       chapters: [{ title: 'Prior' }], currentBookOfflineFallback: false,
       currentBookFinished: false, currentBookPlaybackSettings: { playbackSpeed: 2 },
@@ -347,16 +351,28 @@ async function run() {
     assert.strictEqual(staleResult, false, 'stale restoration discards itself');
     assert.strictEqual(ctx.currentBook.id, 'prior',
       'state untouched by the discarded restoration');
-    assert.strictEqual(events2.loads.length, 0, 'no chapter load for a discarded restore');
+    assert.strictEqual(events2.chapterLoads.length, 0, 'no chapter load for a discarded restore');
 
     // Now the fresh path: token matches, restoration proceeds.
     releaseRestore();
     const fresh = await vm.runInContext(`
       openBookToken = 3; // the failed open still owns the player
-      restorePreviousSession({ token: 3, bookId: 'prior', chapterIndex: 0, playbackSettings: { playbackSpeed: 2 } });
+      restorePreviousSession({
+        token: 3,
+        bookId: 'prior',
+        chapterIndex: 0,
+        playbackSettings: { playbackSpeed: 2 },
+        position: { chapterIndex: 0, currentTime: 2221, chunkTime: 2221, timestamp: 2221 }
+      });
     `, ctx);
     assert.strictEqual(fresh, true, 'current-token restoration completes');
     assert.strictEqual(events2.chapterLoads.length, 1, 'restoration reloads the previous chapter');
+    assert.strictEqual(events2.chapterLoads[0][0], 'loadRestoredChapter',
+      'restoration seeks through the restored-chapter path');
+    assert.strictEqual(events2.chapterLoads[0][2].currentTime, 2221,
+      'restoration keeps the saved playback offset');
+    assert.deepStrictEqual(events2.hashes, [{ bookId: 'prior', replace: true }],
+      'restoration replaces the failed book in history instead of pushing');
     assert.strictEqual(ctx.currentBook.id, 'prior', 'restored book is live in state');
     assert.strictEqual(ctx.chapters.length, 1, 'restored chapters are live in state');
     assert.strictEqual(ctx.currentBookPlaybackSettings.playbackSpeed, 2,

@@ -1512,15 +1512,17 @@ async function restorePreviousSession(previous) {
   currentBook = data.book;
   chapters = data.chapters;
   currentChapter = Math.max(0, Math.min(chapters.length - 1, previous.chapterIndex || 0));
-  currentBookFinished = false;
+  currentBookFinished = Boolean(previous.position?.finished);
   currentBookPlaybackSettings = previous.playbackSettings || {};
   loadPlaybackSpeed(currentBookPlaybackSettings.playbackSpeed || 1);
-  syncPlayerHash(currentBook.id);
+  // Replace the failed book's hash instead of pushing, so Back does not keep
+  // the book that never opened.
+  syncPlayerHash(currentBook.id, { replace: true });
   chapterSelect.value = currentChapter;
   bookTitle.textContent = currentBook.title || '';
   updatePlaybackUI(false);
-  playbackSession.setBook(currentBook, { chapterIndex: currentChapter, finished: false });
-  await loadChapter(currentChapter);
+  playbackSession.setBook(currentBook, { chapterIndex: currentChapter, finished: currentBookFinished });
+  await loadRestoredChapter(currentChapter, previous.position);
   return true;
 }
 
@@ -1622,10 +1624,22 @@ async function openBook(bookId) {
     // load, engine selection, transition) can restore what the user was
     // doing instead of stranding them on a broken book. Stored on the module
     // slot ONLY so the catch block can reach it; each invocation overwrites
+    const liveTime = Number(chunkPlayer?.getCurrentTime?.());
+    const checkpoint = currentBook ? getLocalPlaybackCheckpoint(String(currentBook.id)) : null;
+    const offset = Number.isFinite(liveTime) && liveTime > 0
+      ? liveTime
+      : Number(checkpoint?.timestamp ?? checkpoint?.currentTime ?? checkpoint?.chunkTime) || 0;
     previousSession = currentBook ? {
       token,
       bookId: String(currentBook.id),
       chapterIndex: currentChapter,
+      position: {
+        chapterIndex: currentChapter,
+        currentTime: offset,
+        chunkTime: offset,
+        timestamp: offset,
+        finished: Boolean(currentBookFinished)
+      },
       wasPlaying: Boolean(chunkPlayer?.isPlaying),
       playbackSettings: currentBookPlaybackSettings
     } : null;

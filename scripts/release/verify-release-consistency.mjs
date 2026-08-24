@@ -35,7 +35,6 @@ const umbrelReadme = readFileSync(resolve(root, 'alexandrio-xandrio/README.md'),
 const rootCompose = readFileSync(resolve(root, 'docker-compose.yml'), 'utf8');
 const localEngineCompose = readFileSync(resolve(root, 'docker-compose.local-engines.yml'), 'utf8');
 const changelog = readFileSync(resolve(root, 'docs/CHANGELOG.md'), 'utf8');
-const serviceWorker = readFileSync(resolve(root, 'public/sw.js'), 'utf8');
 const webManifest = readJson('public/manifest.webmanifest');
 
 if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(expectedVersion)) {

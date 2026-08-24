@@ -78,8 +78,8 @@ function makeParser(config = {}) {
       if (typeof value === 'string') return { html: value, css: [] };
       return value;
     },
-    destroy: () => {
-      if (typeof config.onDestroy === 'function') config.onDestroy();
+    destroy: async () => {
+      if (typeof config.onDestroy === 'function') await config.onDestroy();
     }
   };
 }
@@ -467,6 +467,41 @@ section('Kindle Extraction');
     assert(ok, 'extracts embedded Kindle cover');
     assert(output.equals(jpegFixture()), 'writes validated embedded Kindle cover bytes');
     assert(!resourceDirExists, 'cleans temporary Kindle resource directory');
+  }
+
+  {
+    const events = [];
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'xandrio-kindle-cover-destroy-'));
+    const coverSource = path.join(dir, 'source-cover.jpg');
+    const coverOutput = path.join(dir, 'out-cover.jpg');
+    await fs.writeFile(coverSource, jpegFixture());
+    const fakeFs = {
+      mkdir: async () => {},
+      readFile: (...args) => fs.readFile(...args),
+      writeFile: (...args) => fs.writeFile(...args),
+      rm: async () => {
+        events.push('rm');
+      }
+    };
+    const factories = parserFactories({
+      mobi: goodKindleConfig({
+        coverPath: coverSource,
+        onDestroy: async () => {
+          events.push('destroy-start');
+          await new Promise(resolve => setTimeout(resolve, 20));
+          events.push('destroy-end');
+        }
+      }),
+      kf8: new Error('not KF8')
+    });
+    await extractKindleCover('/tmp/book.mobi', 'mobi', coverOutput, {
+      resourceSaveDir: path.join(dir, 'resources'),
+      fs: fakeFs,
+      parserFactories: factories
+    });
+    await fs.rm(dir, { recursive: true, force: true });
+    assert(events.join('|') === 'destroy-start|destroy-end|rm',
+      'awaits Kindle cover parser destroy before removing the resource directory');
   }
 
   {
