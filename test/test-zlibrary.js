@@ -371,7 +371,7 @@ async function writesSession(authFile) { await fs.writeFile(authFile, JSON.strin
     );
     const { client, directory } = await tempClient(mock.fetchImpl, { sleep: async () => {} });
     await client.search('moby dick').catch(() => {});
-    const offOrigin = mock.calls.find(call => call.url.startsWith('https://elsewhere.test'));
+    const offOrigin = mock.calls.find(call => call.url.startsWith('https://elsewhere.test/'));
     assert.equal(offOrigin, undefined, 'a cross-origin redirect is never replayed');
     await fs.rm(directory, { recursive: true, force: true });
   });
