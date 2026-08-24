@@ -91,11 +91,13 @@ assert(parsed[0].downloadUrl.startsWith('https://standardebooks.org/ebooks/'), '
 assert(__test.matchesQuery(parsed[0], 'joyce dubliners'), 'matches title and author query words');
 
 const standard = createStandardEbooksProvider({ username: '', password: '' });
-assertEqual(standard.configured(), true, 'Standard Ebooks public feed is configured without credentials');
+assertEqual(standard.configured(), false, 'the patrons-only Standard Ebooks feed is unconfigured without credentials');
 const configured = createStandardEbooksProvider({ username: 'reader@example.test', password: '' });
 assertEqual(configured.configured(), true, 'Standard Ebooks is configured with username');
 const privateFeed = createStandardEbooksProvider({ requiresAuth: true, username: '', password: '' });
 assertEqual(privateFeed.configured(), false, 'an explicitly authenticated Standard Ebooks mirror requires credentials');
+const publicMirror = createStandardEbooksProvider({ requiresAuth: false, username: '', password: '' });
+assertEqual(publicMirror.configured(), true, 'an explicitly public OPDS mirror needs no credentials');
 
 async function securityTests() {
   let fetches = 0;

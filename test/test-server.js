@@ -439,6 +439,22 @@ assertEqual(serverTestHooks.annasSearchTimeoutMs({ ANNAS_BROWSER_SEARCH_MODE: 'p
   'permitted browser fallback receives an end-to-end provider budget');
 assertEqual(serverTestHooks.annasSearchTimeoutMs({ ANNAS_SEARCH_TIMEOUT_MS: '90000' }), 90000,
   'Anna search timeout accepts a bounded operator override');
+
+// annas-mcp exits 0 and prints "No books found." when Anna's Archive refuses the
+// search behind its DDoS-Guard challenge. Only stderr separates that refusal
+// from a real empty result, and reading it wrong reports a blocked source as a
+// healthy, empty one.
+assertEqual(serverTestHooks.annasCliReportedFailure(
+  '2026-08-23T10:06:36.164-0500\tERROR\tanna/anna.go:139\tSearch request failed\t{"statusCode": 403}'
+), true, 'a refused upstream search is recognised as a failure');
+assertEqual(serverTestHooks.annasCliReportedFailure(
+  '2026-08-23T10:09:54.854-0500\tWARN\tmodes/cli.go:25\tError loading .env file'
+), false, 'a WARN about a missing .env is not a failed search');
+assertEqual(serverTestHooks.annasCliReportedFailure(''), false,
+  'a silent CLI run is a genuinely empty result');
+assertEqual(serverTestHooks.annasCliReportedFailure(
+  'searching for ERROR HANDLING in title'
+), false, 'the word ERROR inside ordinary output is not a log level');
 // A valid XANDRIO_TRUST_PROXY used to be silently downgraded to false, which
 // took the Secure session cookie and the real client IP down with it.
 assertEqual(serverTestHooks.configuredTrustProxy('1'), 1, 'a hop count is honoured');
@@ -452,6 +468,30 @@ assertEqual(serverTestHooks.configuredTrustProxy('false'), false, 'an explicit f
 assertEqual(serverTestHooks.configuredTrustProxy('not-an-address'), false, 'garbage still falls back to disabled');
 assertEqual(serverTestHooks.configuredTrustProxy('10.0.0.1, garbage'), false,
   'one bad entry rejects the whole list rather than trusting part of it');
+
+// annas-mcp reads its proxy from the environment, so BOOK_PROXY_URL -- the egress
+// every other book request already uses -- has to be handed to it explicitly.
+// Without this the search was the one book request still leaving from the
+// server's own (bot-walled) address.
+assertDeep(serverTestHooks.annasCliProxyEnv({}), {},
+  'no configured egress leaves the CLI on a direct request');
+assertDeep(serverTestHooks.annasCliProxyEnv({ BOOK_PROXY_URL: 'http://egress.test:3128' }), {
+  HTTP_PROXY: 'http://egress.test:3128', HTTPS_PROXY: 'http://egress.test:3128',
+  http_proxy: 'http://egress.test:3128', https_proxy: 'http://egress.test:3128'
+}, 'the book egress is handed to the CLI in both header casings');
+assertDeep(serverTestHooks.annasCliProxyEnv({ BOOK_PROXY_URL: 'not a url' }), {},
+  'a malformed egress is dropped rather than failing every search');
+assertDeep(serverTestHooks.annasCliProxyEnv({ BOOK_PROXY_URL: 'file:///etc/passwd' }), {},
+  'a non-HTTP egress scheme is refused');
+assertEqual(
+  serverTestHooks.buildAnnasCliEnv({ secretKey: 'k', baseUrl: '' },
+    { PATH: '/bin', HTTPS_PROXY: 'http://corp:8080', BOOK_PROXY_URL: 'http://egress.test:3128' }).HTTPS_PROXY,
+  'http://egress.test:3128',
+  'the book-specific egress wins over a general proxy inherited from the environment');
+assertEqual(
+  'XANDRIO_TOKEN' in serverTestHooks.buildAnnasCliEnv({ secretKey: 'k', baseUrl: '' },
+    { PATH: '/bin', XANDRIO_TOKEN: 'secret', BOOK_PROXY_URL: 'http://egress.test:3128' }),
+  false, 'routing the CLI through the egress still withholds unrelated secrets');
 
 assertDeep(serverTestHooks.annasMcpSearchArgs('Moby Dick'), ['book-search', '--', 'Moby Dick'],
   'Anna search uses the current annas-mcp book-search command');

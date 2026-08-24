@@ -456,13 +456,27 @@ function sourceValue(source, selected, configured) {
   return '<span class="source-status-dot is-issue" aria-hidden="true"></span><span class="sr-only">Source issue</span>';
 }
 
+// Every caller renders this as `${sourceLabel}: ${sourceIssueLabel(status)}`, so
+// a label must not name its own source. The server's public errors are written
+// as whole sentences for non-browser clients ("Anna's Archive search is
+// unavailable right now."), which read as a stutter once prefixed; carry the
+// short form for the codes we know and only fall back to the sentence.
+const SOURCE_ISSUE_LABELS = {
+  ZLIB_AUTH_EXPIRED: 'Reconnect required',
+  ZLIB_TIMEOUT: 'Timed out',
+  ZLIB_UNAVAILABLE: 'Temporarily unavailable',
+  ZLIB_RATE_LIMITED: 'Rate limited',
+  ZLIB_PROTOCOL: 'Unexpected response',
+  ANNAS_SEARCH_UNAVAILABLE: 'Unavailable',
+  GUTENBERG_SEARCH_UNAVAILABLE: 'Unavailable',
+  INTERNET_ARCHIVE_SEARCH_UNAVAILABLE: 'Unavailable',
+  STANDARD_EBOOKS_SEARCH_UNAVAILABLE: 'Unavailable',
+  SEARCH_PROVIDER_UNAVAILABLE: 'Unavailable'
+};
+
 function sourceIssueLabel(status = {}) {
   const code = status.errorCode || status.code;
-  if (code === 'ZLIB_AUTH_EXPIRED') return 'Reconnect required';
-  if (code === 'ZLIB_TIMEOUT') return 'Timed out';
-  if (code === 'ZLIB_UNAVAILABLE') return 'Temporarily unavailable';
-  if (code === 'ZLIB_RATE_LIMITED') return 'Rate limited';
-  return status.message || status.error || 'Unavailable';
+  return SOURCE_ISSUE_LABELS[code] || status.message || status.error || 'Unavailable';
 }
 
 function sourceStatusMessage() {

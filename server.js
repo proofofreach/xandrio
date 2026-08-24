@@ -21,6 +21,7 @@ const { resolveRuntimeRevision } = require('./lib/runtime-revision');
 const TTSQueue = require('./lib/tts-queue');
 const ChunkedTTS = require('./lib/chunked-tts');
 const { searchAnnas: searchAnnasDirect, closeBrowser: closeAnnasBrowser } = require('./lib/annas-scraper');
+const { searchLibgen } = require('./lib/libgen');
 const zlibrary = require('./lib/zlibrary');
 const gutenberg = require('./lib/gutenberg');
 const { isSafeBookId: requestGuardIsSafeBookId, parseNonNegativeInteger } = require('./lib/request-guards');
@@ -548,6 +549,31 @@ const ANNAS_CLI_ENV_ALLOWLIST = [
   'http_proxy', 'https_proxy', 'no_proxy'
 ];
 
+// BOOK_PROXY_URL is the egress every other book request already uses: Z-Library,
+// Gutendex, and Anna's own download path all pass it to requestRemote. The search
+// path is a third-party binary that takes its proxy from the environment rather
+// than from an option, so the same egress has to be handed to it as HTTP(S)_PROXY.
+// Without this, Anna's *search* is the single book request that still leaves from
+// the server's own address -- and that address is exactly what gets bot-walled,
+// so a correctly configured proxy still produced zero results.
+//
+// This does hand the CLI the proxy URL, which may embed proxy credentials. That
+// is inherent in routing its traffic at all, and the allowlist below already
+// forwards an operator-set HTTPS_PROXY for the same reason.
+function annasCliProxyEnv(baseEnv = process.env) {
+  const configured = String(baseEnv.BOOK_PROXY_URL || '').trim();
+  if (!configured) return {};
+  let parsed;
+  // A malformed value must not be forwarded: the CLI would fail every search on
+  // it. Falling through to a direct request is the same behaviour as today.
+  try { parsed = new URL(configured); } catch { return {}; }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return {};
+  return {
+    HTTP_PROXY: configured, HTTPS_PROXY: configured,
+    http_proxy: configured, https_proxy: configured
+  };
+}
+
 function buildAnnasCliEnv(cfg = getAnnasConfig(), baseEnv = process.env) {
   // Previously this spread all of process.env into the child, handing a
   // third-party binary every secret the server holds — XANDRIO_TOKEN, the
@@ -564,6 +590,9 @@ function buildAnnasCliEnv(cfg = getAnnasConfig(), baseEnv = process.env) {
   }
   cliEnv.ANNAS_SECRET_KEY = cfg.secretKey;
   cliEnv.ANNAS_DOWNLOAD_PATH = CACHE_DIR;
+  // Applied last: the book-specific egress is the more deliberate setting, so it
+  // wins over a general-purpose proxy inherited through the allowlist above.
+  Object.assign(cliEnv, annasCliProxyEnv(baseEnv));
   // annas-mcp performs its own current-mirror discovery. A stale app mirror
   // suppresses that discovery and turns a healthy search into an empty result.
   // ANNAS_BASE_URL is simply never copied in.
@@ -661,19 +690,56 @@ function annasMcpExecutable(env = process.env, {
   return existsSync(userLocal) ? userLocal : 'annas-mcp';
 }
 
+// annas-mcp exits 0 and prints "No books found." even when the upstream search
+// was refused -- Anna's Archive currently answers an anonymous client with a
+// DDoS-Guard JS challenge (302 to ?check=1, then 403). Only the CLI's stderr
+// distinguishes a refused search from a genuinely empty one, and without that
+// signal every blocked search is reported to the client as a healthy zero-result
+// source. Treat an ERROR-level log line as a failed search; the CLI's own
+// non-error diagnostics (a missing .env, for example) are logged at WARN.
+function annasCliReportedFailure(stderr) {
+  return /^\S+\s+ERROR\s/m.test(String(stderr || ''));
+}
+
 async function searchAnnasProvider(query) {
-  let cliResults = [];
+  // Primary search: the open Library Genesis index. Anna's Archive aggregates
+  // LibGen, so a LibGen md5 is the same content address the member download API
+  // expects. Unlike the anonymous annas-archive.gl search -- which answers a
+  // server with a DDoS-Guard JS challenge it cannot clear -- LibGen serves
+  // ordinary results. A transport failure across every mirror is remembered so
+  // a refused search is still reported as unavailable, never as empty.
+  let libgenFailed = false;
   try {
-    const { stdout } = await execFileAsync(
+    const libgenResults = await searchLibgen(query, { limit: 25, timeoutMs: 10000 });
+    if (libgenResults.length > 0) return libgenResults;
+  } catch {
+    console.log('libgen search unavailable');
+    libgenFailed = true;
+  }
+
+  let cliResults = [];
+  let cliFailed = false;
+  try {
+    const { stdout, stderr } = await execFileAsync(
       annasMcpExecutable(), annasMcpSearchArgs(query),
       { timeout: 15000, env: buildAnnasCliEnv() }
     );
     cliResults = parseAnnasResults(stdout);
+    // The stderr text can carry the discovered mirror and the operator's key,
+    // so it is only ever read as a boolean signal and never logged.
+    cliFailed = cliResults.length === 0 && annasCliReportedFailure(stderr);
   } catch {
     // External CLI errors can contain endpoints or credentials. Keep logs stable.
     console.log('annas-mcp search unavailable');
+    cliFailed = true;
   }
-  if (cliResults.length > 0 || !annasBrowserSearchPermitted()) return cliResults;
+  if (cliResults.length > 0) return cliResults;
+  if (!annasBrowserSearchPermitted()) {
+    // Nothing else can answer this query. Report the refusal so the source is
+    // marked unavailable instead of silently claiming the catalogue is empty.
+    if (cliFailed || libgenFailed) throw new Error("Anna's Archive search is unavailable");
+    return cliResults;
+  }
 
   try {
     const annasConfig = getAnnasConfig();
@@ -684,11 +750,12 @@ async function searchAnnasProvider(query) {
         baseUrl: annasConfig.baseUrl
       }))
     );
-    return directResults
-      .filter(result => result.status === 'fulfilled')
-      .flatMap(result => result.value);
-  } catch {
+    const fulfilled = directResults.filter(result => result.status === 'fulfilled');
+    if (fulfilled.length === 0) throw new Error("Anna's Archive search is unavailable");
+    return fulfilled.flatMap(result => result.value);
+  } catch (err) {
     console.error('Anna browser fallback unavailable');
+    if (cliFailed || libgenFailed) throw err;
     return [];
   }
 }
@@ -3487,7 +3554,9 @@ app.get('/api/book/:bookId', async (req, res) => {
 
       const publicBook = await publicBookRecordWithCoverArtifact(book);
       publicBook.canRebuildChapters = Boolean(
-        book.canRebuildChapters || chapters.sourceDocument?.pages?.length
+        book.canRebuildChapters ||
+        chapters.sourceDocument?.pages?.length ||
+        (isXBookPath(book.path) && await xbookStore.canRebuildXBookArtifact(book.path))
       ) || undefined;
       return { book: publicBook, chapters: displayChapters, hasCover: publicBook.hasCover };
     });
@@ -5053,6 +5122,8 @@ module.exports.__test = {
   concurrencyLimits: CONCURRENCY_LIMITS,
   getAnnasConfig,
   annasBrowserSearchPermitted,
+  annasCliProxyEnv,
+  annasCliReportedFailure,
   annasSearchTimeoutMs,
   annasMcpSearchArgs,
   configuredTrustProxy,
