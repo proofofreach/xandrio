@@ -92,7 +92,7 @@
     "node-edge-tts": "1.2.10",
     "pdf-parse": "^2.4.5",
     "pdfjs-dist": "5.4.296",
-    "playwright": "1.61.1",
+    "playwright": "1.62.1",
     "playwright-extra": "^4.3.6",
     "puppeteer-extra-plugin-stealth": "^2.11.2",
     "puppeteer-extra-plugin-user-data-dir": "2.3.3",
