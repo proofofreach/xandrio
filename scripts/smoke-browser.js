@@ -27,11 +27,11 @@ async function assertReferencedPwaAssets() {
   ]);
   const manifest = JSON.parse(manifestText);
   const htmlVersions = Object.fromEntries(
-    [...html.matchAll(/(?:href|src)=["'][^"']*(style-v3\.css|app\.js|chunk-player\.js)\?v=(\d+)["']/g)]
+    [...html.matchAll(/(?:href|src)=["'][^"']*(style-v3\.css|app\.js)\?v=(\d+)["']/g)]
       .map(match => [match[1], Number(match[2])])
   );
   const swVersions = Object.fromEntries(
-    [...sw.matchAll(/['"]\/(?:js\/)?(style-v3\.css|app\.js|chunk-player\.js)['"]:\s*(\d+)/g)]
+    [...sw.matchAll(/['"]\/(?:js\/)?(style-v3\.css|app\.js)['"]:\s*(\d+)/g)]
       .map(match => [match[1], Number(match[2])])
   );
   for (const [asset, version] of Object.entries(htmlVersions)) {

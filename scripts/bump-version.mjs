@@ -4,7 +4,6 @@
 // Usage: node scripts/bump-version.mjs [asset...]
 //   node scripts/bump-version.mjs              # bump app.js + style-v3.css + SW cache
 //   node scripts/bump-version.mjs app.js       # bump only app.js (+ SW cache)
-//   node scripts/bump-version.mjs chunk-player # bump only chunk-player.js (+ SW cache)
 //
 // Rewrites the ?v=N query strings in public/index.html and the matching
 // APP_SHELL entries in public/sw.js, and always bumps CACHE_VERSION so
@@ -18,11 +17,10 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const indexPath = join(root, 'public', 'index.html');
 const swPath = join(root, 'public', 'sw.js');
 
-const KNOWN = ['app.js', 'style-v3.css', 'chunk-player.js'];
+const KNOWN = ['app.js', 'style-v3.css'];
 const SW_ASSET_KEYS = {
   'app.js': '/app.js',
-  'style-v3.css': '/style-v3.css',
-  'chunk-player.js': '/js/chunk-player.js'
+  'style-v3.css': '/style-v3.css'
 };
 const args = process.argv.slice(2);
 const targets = args.length

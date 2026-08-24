@@ -253,6 +253,48 @@ function fakeAudio() {
     await load;
   });
 
+  await test('play refuses an in-flight load until the new source is ready', async () => {
+    const audio = fakeAudio();
+    const { player } = makePlayer(audio);
+    const load = player.loadChapter('book1', 1);
+    await new Promise(resolve => setImmediate(resolve));
+
+    assert.strictEqual(
+      player.ownsReadySource('book1', 1),
+      false,
+      'the requested chapter is not playable before media is ready'
+    );
+    await assert.rejects(
+      player.play(),
+      error => error?.code === 'SOURCE_NOT_READY',
+      'play() must not start the previous source during a chapter load'
+    );
+    assert.strictEqual(audio.playCalls, 0);
+
+    audio.emit('loadedmetadata');
+    await load;
+    assert.strictEqual(player.ownsReadySource('book1', 1), true);
+    assert.strictEqual(player.ownsReadySource('book1', 0), false);
+
+    const play = player.play();
+    audio.emit('playing');
+    audio.currentTime = 1;
+    audio.emit('timeupdate');
+    await play;
+    assert.strictEqual(audio.playCalls, 1);
+  });
+
+  await test('a ready continuous source still owns later chapters in its range', async () => {
+    const audio = fakeAudio();
+    const { player } = makePlayer(audio, { getChapterCount: () => 4 });
+    const load = player.loadChapter('book1', 0);
+    audio.emit('loadedmetadata');
+    await load;
+    assert.strictEqual(player.ownsReadySource('book1', 0), true);
+    assert.strictEqual(player.ownsReadySource('book1', 2), true);
+    assert.strictEqual(player.ownsReadySource('other', 0), false);
+  });
+
   await test('continuous first listening needs only the original play call', async () => {
     const audio = fakeAudio();
     const { player } = makePlayer(audio);

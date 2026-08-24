@@ -141,6 +141,11 @@ export class SingleFileChapterPlayer {
     // so an in-flight load can't fire onReady for a superseded chapter.
     // Mirrors the same guard in ChunkPlayer.
     this._generation = 0;
+    // The book/chapter the media element can actually play. `bookId` and
+    // `chapterIndex` update when a load starts, but `audio.src` still belongs
+    // to the previous chapter until the new source is ready. Play must key
+    // off this identity, not the in-flight request.
+    this._readySource = null;
     // Tears down the in-flight loadChapter() wait, if any.
     this._loadWait = null;
     this._runwayController = null;
@@ -184,8 +189,49 @@ export class SingleFileChapterPlayer {
    *   seeking afterwards relocated the stream, which minted a second server
    *   session for every retry — the churn behind the production incident.
    */
+  _invalidateReadySource() {
+    this._readySource = null;
+  }
+
+  _commitReadySource() {
+    if (!this.bookId || !Number.isInteger(this.chapterIndex)) {
+      this._readySource = null;
+      return;
+    }
+    this._readySource = {
+      bookId: this.bookId,
+      chapterIndex: this.chapterIndex,
+      startChapterIndex: Number.isInteger(this.startChapterIndex)
+        ? this.startChapterIndex
+        : this.chapterIndex,
+      endChapterIndex: Number.isInteger(this.endChapterIndex) ? this.endChapterIndex : null,
+      continuous: Boolean(this.isContinuous)
+    };
+  }
+
+  /**
+   * True when the media element is ready to play this book/chapter.
+   * Continuous sources cover every chapter from the stream start through the
+   * optional end chapter; a finite file covers only the committed chapter.
+   */
+  ownsReadySource(bookId, chapterIndex) {
+    const ready = this._readySource;
+    if (!ready || this._isLoading) return false;
+    if (!bookId || String(ready.bookId) !== String(bookId)) return false;
+    if (!Number.isInteger(chapterIndex) || chapterIndex < 0) return false;
+    if (ready.continuous) {
+      if (chapterIndex < ready.startChapterIndex) return false;
+      if (Number.isInteger(ready.endChapterIndex) && chapterIndex > ready.endChapterIndex) {
+        return false;
+      }
+      return true;
+    }
+    return chapterIndex === ready.chapterIndex;
+  }
+
   async loadChapter(bookId, chapterIndex, options = {}) {
     const gen = ++this._generation;
+    this._invalidateReadySource();
     this._cancelRunwayPreparation();
     // An explicit load supersedes whatever was pre-warmed for the chapter that
     // would have followed the one being left behind.
@@ -329,6 +375,7 @@ export class SingleFileChapterPlayer {
         }
       }
       if (lastError) throw lastError;
+      this._commitReadySource();
     } catch (error) {
       if (gen === this._generation && !error?.cancelled) {
         await this._classifyLoadFailure(error, sourceCandidates);
@@ -1098,6 +1145,7 @@ export class SingleFileChapterPlayer {
       previousChapterIndex,
       chapterIndex: nextChapterIndex
     });
+    this._commitReadySource();
     this.onChapterAdvance?.({
       previousChapterIndex,
       chapterIndex: nextChapterIndex,
@@ -1181,6 +1229,11 @@ export class SingleFileChapterPlayer {
   }
 
   async play() {
+    if (this._isLoading || !this._readySource) {
+      const error = new Error('Playback source is not ready');
+      error.code = 'SOURCE_NOT_READY';
+      throw error;
+    }
     this._pauseReason = null;
     this._playReason = 'app';
     this._isPlaying = true;
@@ -1332,6 +1385,7 @@ export class SingleFileChapterPlayer {
   async _reloadContinuousAtOffset(chapterTime) {
     const wasPlaying = this.isPlaying || !this.audio.paused;
     const generation = ++this._generation;
+    this._invalidateReadySource();
     const encodedBookId = encodeURIComponent(this.bookId);
     const tierQuery = this.servedTier
       ? `?tier=${encodeURIComponent(this.servedTier)}`
@@ -1377,6 +1431,7 @@ export class SingleFileChapterPlayer {
       await wait.promise;
       if (nativePlay) await nativePlay;
       if (generation !== this._generation) return;
+      this._commitReadySource();
       this._startTimelinePolling();
       this._handleTimeUpdate();
     } finally {
@@ -1427,6 +1482,7 @@ export class SingleFileChapterPlayer {
   cancelPendingLoad() {
     this._generation++;
     this._isLoading = false;
+    this._invalidateReadySource();
     this._cancelRunwayPreparation();
     this.pause();
     this._detach();

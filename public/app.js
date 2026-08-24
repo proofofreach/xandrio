@@ -493,6 +493,10 @@ function recoverySourceTuple(snapshot, chapterIndex) {
 // Runs inside the tap. Nothing may be awaited before play().
 function resumeFromPreparedSource() {
   if (!chunkPlayer) return Promise.resolve();
+  if (!playbackEngineOwnsReadySource()) {
+    setPlaybackReliabilityState('active', 'Loading chapter');
+    return Promise.resolve();
+  }
   applySmartRewindForResume();
   const started = Promise.resolve(chunkPlayer.play());
   setResumePromptVisible(false);
@@ -2236,6 +2240,13 @@ function playbackEngineOwnsSelectedBook() {
   );
 }
 
+function playbackEngineOwnsReadySource() {
+  if (!playbackEngineOwnsSelectedBook()) return false;
+  if (typeof chunkPlayer.ownsReadySource !== 'function') return true;
+  const selectedBookId = openingBookId || currentBook?.id;
+  return chunkPlayer.ownsReadySource(selectedBookId, currentChapter);
+}
+
 async function togglePlayPause(forcePlay = false) {
   forcePlay = forcePlay === true;
   if (!currentBook || !chunkPlayer) return;
@@ -2245,15 +2256,19 @@ async function togglePlayPause(forcePlay = false) {
       // local-source checks are still pending. Until the media engine has been
       // retargeted, its persistent audio element still belongs to the outgoing
       // book. Never let a tap (or lock-screen command) resume that stale source.
-      if (!playbackEngineOwnsSelectedBook()) {
+      if (!playbackEngineOwnsReadySource()) {
         try { chunkPlayer.pause?.(); } catch {}
+        const reason = playbackEngineOwnsSelectedBook() ? 'source-not-ready' : 'book-switch';
         recordPlaybackEvent({
           type: 'stale-play-blocked',
-          reason: 'book-switch',
+          reason,
           chapterIndex: currentChapter,
           sourceKind: chunkPlayer.backend || playbackBackend || 'unknown'
         });
-        setPlaybackReliabilityState('active', 'Loading selected book');
+        setPlaybackReliabilityState(
+          'active',
+          reason === 'book-switch' ? 'Loading selected book' : 'Loading chapter'
+        );
         updatePlaybackUI(false);
         return;
       }
@@ -2272,6 +2287,10 @@ async function togglePlayPause(forcePlay = false) {
     scheduleServerPositionSave();
   } catch (err) {
     updatePlaybackUI(false);
+    if (err?.code === 'SOURCE_NOT_READY') {
+      setPlaybackReliabilityState('active', 'Loading chapter');
+      return;
+    }
     if (needsReliablePlayback() && (err.name === 'NotAllowedError' || err.name === 'AbortError')) {
       console.error('Playback error:', err);
       setResumePromptVisible(true);
@@ -2397,7 +2416,7 @@ function isNativeSingleFileReady() {
     audioPlayer &&
     audioPlayer.src &&
     chunkPlayer?.supportsNativeMediaSession &&
-    playbackEngineOwnsSelectedBook()
+    playbackEngineOwnsReadySource()
   );
 }
 

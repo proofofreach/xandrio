@@ -458,10 +458,10 @@ function fakeAudio() {
     const appTestSource = appSource
       .replace(/^import \{([^}]+)\} from ['"][^'"]+['"];$/gm, 'const {$1} = globalThis.__playbackAppImports;')
       + `\nglobalThis.__playbackAppHarness = {
-        configure({ book, chapters: nextChapters, player, chapter, openingBook = null }) {
+        configure({ book, chapters: nextChapters, player, chapter, openingBook = null, chapterIndex = 0 }) {
           currentBook = book;
           openingBookId = openingBook;
-          currentChapter = 0;
+          currentChapter = Number.isInteger(chapterIndex) ? chapterIndex : 0;
           chapters = nextChapters;
           chunkPlayer = player;
           chunkedPlayer = player;
@@ -588,6 +588,31 @@ function fakeAudio() {
         staleBookPlayer.calls.filter(call => call[0] === 'play').length,
         1,
         'Play reaches the engine after it owns the selected book'
+      );
+
+      const chapterLoadingPlayer = engine('chapter-loading', { backend: 'audio-stream' });
+      chapterLoadingPlayer.bookId = 'book-a';
+      chapterLoadingPlayer.ownsReadySource = (bookId, chapterIndex) =>
+        String(bookId) === 'book-a' && chapterIndex === 0;
+      globalThis.__playbackAppHarness.configure({
+        book: { id: 'book-a' },
+        chapters: [{ title: 'One' }, { title: 'Two' }],
+        player: chapterLoadingPlayer,
+        chapter: uiElement,
+        chapterIndex: 1
+      });
+      await globalThis.__playbackAppHarness.togglePlayPause(true);
+      assert(
+        !chapterLoadingPlayer.calls.some(call => call[0] === 'play'),
+        'Play cannot restart the previous chapter while the next source is still loading'
+      );
+      chapterLoadingPlayer.ownsReadySource = (bookId, chapterIndex) =>
+        String(bookId) === 'book-a' && chapterIndex === 1;
+      await globalThis.__playbackAppHarness.togglePlayPause(true);
+      assert.strictEqual(
+        chapterLoadingPlayer.calls.filter(call => call[0] === 'play').length,
+        1,
+        'Play reaches the engine once the requested chapter source is ready'
       );
 
       globalThis.__playbackAppHarness.configure({
@@ -942,6 +967,7 @@ function fakeAudio() {
         backend: 'audio-stream',
         onPlayInvoked: () => playInvocations.push({ activationOpen })
       });
+      manualPlayer.bookId = 'book-a';
       manualPlayer.isContinuous = true;
       manualPlayer.servedTier = 'premium';
       manualPlayer.endChapterIndex = 4;
