@@ -18,7 +18,11 @@ const DEVICES = [
   { name: 'iPhone SE (3rd gen)', width: 375, height: 667, insetTop: 20, insetBottom: 0 },
   { name: 'iPhone 13 mini', width: 375, height: 812, insetTop: 50, insetBottom: 34 },
   { name: 'iPhone 15/16', width: 393, height: 852, insetTop: 59, insetBottom: 34 },
-  { name: 'iPhone 16 Pro Max', width: 440, height: 956, insetTop: 62, insetBottom: 34 }
+  { name: 'iPhone 16 Pro Max', width: 440, height: 956, insetTop: 62, insetBottom: 34 },
+  // Landscape: the Dynamic Island sits on one side and iOS reports a 59px
+  // inset on both; edge controls must clear it. The height fold is not a
+  // pass/fail here (the player scrolls in landscape); horizontal containment is.
+  { name: 'iPhone 15 Pro Max landscape', width: 932, height: 430, insetTop: 0, insetBottom: 21, insetLeft: 59, insetRight: 59 }
 ];
 
 async function measureDevice(browser, origin, device, { standalone }) {
@@ -36,7 +40,9 @@ async function measureDevice(browser, origin, device, { standalone }) {
     let css = await response.text();
     css = css
       .replaceAll('env(safe-area-inset-top)', `${device.insetTop}px`)
-      .replaceAll('env(safe-area-inset-bottom)', `${device.insetBottom}px`);
+      .replaceAll('env(safe-area-inset-bottom)', `${device.insetBottom}px`)
+      .replaceAll('env(safe-area-inset-left, 0px)', `${device.insetLeft || 0}px`)
+      .replaceAll('env(safe-area-inset-right, 0px)', `${device.insetRight || 0}px`);
     if (standalone) {
       css = css.replaceAll('@media (display-mode: standalone)', '@media all');
     }
@@ -131,7 +137,7 @@ async function main() {
             const fits = primaryBottom !== null && primaryBottom <= fold && m.pageScroll <= 0;
             const mainIsContained = m.mainSizing.width <= m.viewportWidth + 1 && m.mainSizing.minWidth === '0px';
             const fitsWidth = mainIsContained && m.pageOverflowX <= 0 && m.viewOverflowX <= 0 && m.overflowing.length === 0;
-            console.log(`${device.name} (${device.width}x${device.height}, insets ${device.insetTop}/${device.insetBottom})`);
+            console.log(`${device.name} (${device.width}x${device.height}, insets top/bottom ${device.insetTop}/${device.insetBottom}, sides ${device.insetLeft || 0}/${device.insetRight || 0})`);
             console.log(`  bodyPadTop=${m.bodyPaddingTop} topbarH=${m.topbar?.height} coverH=${m.cover?.height} pageScroll=${m.pageScroll} viewScroll=${m.viewScroll}`);
             console.log(`  controlsBottom=${m.controls?.bottom} utilityBottom=${m.utility?.bottom} viewport=${fold} -> primary controls ${fits ? 'FIT' : 'OVERFLOW by ' + (primaryBottom - fold + Math.max(m.pageScroll, 0)) + 'px'}`);
             console.log(`  horizontal page=${m.pageOverflowX}px view=${m.viewOverflowX}px main=${JSON.stringify(m.mainSizing)} -> ${fitsWidth ? 'FIT' : 'UNCONTAINED'}${m.overflowing.length ? ` ${JSON.stringify(m.overflowing)}` : ''}`);
