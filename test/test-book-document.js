@@ -325,6 +325,111 @@ section('Format dispatch, metadata, and covers');
     assert(retainedPlan.safe && retainedPlan.changed &&
       retainedPlan.candidate.chapters[0].title === 'Authored story title',
     'plans a text-conserving retained-Kindle rebuild without mutating the artifact');
+
+    const legacySplitPath = path.join(xbookDir, 'legacy-split.xbook.json');
+    const legacyTextParts = ['Legacy punctuation.One', 'Legacy punctuation.Two'];
+    await fs.writeFile(legacySplitPath, JSON.stringify({
+      _xbookVersion: 2,
+      id: 'legacy-split',
+      sourceFormat: 'MOBI',
+      sourceDeleted: false,
+      sourcePath: retainedMobiPath,
+      metadata: {},
+      chapters: legacyTextParts.map((text, index) => ({
+        title: `Chapter 1 — Part ${index + 1} of 2`,
+        type: 'chapter',
+        text,
+        estimatedDuration: 10,
+        originalIndex: 4,
+        sourceSpineId: 'filepos:400'
+      }))
+    }));
+    const legacySplitStore = createXBookStore({
+      cacheDir: xbookDir,
+      xbookVersion: 2,
+      deleteSourceAfterExtract: true,
+      getFileIdentity: async filePath => {
+        const stat = await fs.stat(filePath);
+        return { mtimeMs: stat.mtimeMs, size: stat.size };
+      },
+      invalidateFileIdentity() {},
+      extractBookMetadata: async () => ({}),
+      extractBookChapters: async () => [{
+        title: 'Recovered authored title',
+        type: 'chapter',
+        text: 'Legacy punctuation. One Legacy punctuation. Two',
+        estimatedDuration: 20,
+        originalIndex: 4,
+        sourceSpineId: 'filepos:400',
+        fromToc: true,
+        authoredBoundary: true
+      }],
+      extractMobiCover: async () => false,
+      getBookFormatFromName: filePath => path.extname(filePath).slice(1).toLowerCase()
+    });
+    const legacySplitPlan = await legacySplitStore.planXBookRebuild(legacySplitPath);
+    assert(legacySplitPlan.safe && legacySplitPlan.narrationPreserved &&
+      legacySplitPlan.candidate.chapters.length === 1 &&
+      legacySplitPlan.candidate.chapters[0].title === 'Recovered authored title' &&
+      legacySplitPlan.candidate.chapters[0].text === legacyTextParts.join(' '),
+    'recovers retained-Kindle structure while preserving legacy split narration exactly');
+
+    const punctuationDriftPath = path.join(xbookDir, 'punctuation-drift.xbook.json');
+    await fs.writeFile(punctuationDriftPath, JSON.stringify({
+      _xbookVersion: 2,
+      id: 'punctuation-drift',
+      sourceFormat: 'MOBI',
+      sourceDeleted: false,
+      sourcePath: retainedMobiPath,
+      metadata: {},
+      chapters: [
+        { title: 'Chapter 1', type: 'chapter', text: 'ALPHA prose.One', estimatedDuration: 10 },
+        { title: 'Chapter 2', type: 'chapter', text: 'BETA prose.Two', estimatedDuration: 10 }
+      ]
+    }));
+    const punctuationDriftStore = createXBookStore({
+      cacheDir: xbookDir,
+      xbookVersion: 2,
+      deleteSourceAfterExtract: true,
+      getFileIdentity: async filePath => {
+        const stat = await fs.stat(filePath);
+        return { mtimeMs: stat.mtimeMs, size: stat.size };
+      },
+      invalidateFileIdentity() {},
+      extractBookMetadata: async () => ({}),
+      extractBookChapters: async () => [
+        { title: 'First authored title', type: 'chapter', text: 'Alpha prose. One beta', estimatedDuration: 10 },
+        { title: 'Second authored title', type: 'chapter', text: 'prose. Two', estimatedDuration: 10 }
+      ],
+      extractMobiCover: async () => false,
+      getBookFormatFromName: filePath => path.extname(filePath).slice(1).toLowerCase()
+    });
+    const punctuationDriftPlan = await punctuationDriftStore.planXBookRebuild(punctuationDriftPath);
+    assert(punctuationDriftPlan.safe && punctuationDriftPlan.narrationPreserved &&
+      punctuationDriftPlan.candidate.chapters.map(item => item.text).join(' ') ===
+        'ALPHA prose.One BETA prose.Two' &&
+      punctuationDriftPlan.candidate.chapters[0].title === 'First authored title',
+    'adopts fresh Kindle structure when ordered words match despite legacy case and punctuation drift');
+
+    const unidentifiedPath = path.join(xbookDir, 'unidentified.xbook.json');
+    await fs.writeFile(unidentifiedPath, JSON.stringify({
+      _xbookVersion: 2,
+      id: 'unidentified',
+      sourceFormat: 'MOBI',
+      sourceDeleted: false,
+      sourcePath: retainedMobiPath,
+      metadata: {},
+      chapters: [{
+        title: 'Chapter 1',
+        type: 'chapter',
+        text: 'Old narration',
+        originalIndex: 4,
+        sourceSpineId: 'filepos:400'
+      }]
+    }));
+    const unidentifiedPlan = await legacySplitStore.planXBookRebuild(unidentifiedPath);
+    assert(!unidentifiedPlan.safe && !unidentifiedPlan.narrationPreserved,
+      'refuses narration preservation when the ordered narration words change');
   } finally {
     await fs.rm(xbookDir, { recursive: true, force: true });
   }
