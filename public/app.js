@@ -73,6 +73,8 @@ const ONLINE_LOCAL_FIRST_ENABLED = true;
 
 let automaticRecoveryAttempts = 0;
 let automaticRecoveryTimer = null;
+let waitingForOnline = false;
+let rateLimitedUntil = 0;
 // Recovery ownership. Every attempt captures the token that was current when it
 // started; a newer attempt, a chapter change or a book change replaces it, and
 // the older attempt then abandons instead of committing a stale source. Without
@@ -494,7 +496,7 @@ function recoverySourceTuple(snapshot, chapterIndex) {
 function resumeFromPreparedSource() {
   if (!chunkPlayer) return Promise.resolve();
   if (!playbackEngineOwnsReadySource()) {
-    setPlaybackReliabilityState('active', 'Loading chapter');
+    recoverIdleUnreadyPlayback();
     return Promise.resolve();
   }
   applySmartRewindForResume();
@@ -530,6 +532,7 @@ function stopPendingAutomaticRecovery() {
 // the automatic-to-manual handoff deliberately does neither.
 function cancelPlaybackRecovery() {
   stopPendingAutomaticRecovery();
+  waitingForOnline = false;
   manualRecoveryInFlight = false;
   manualRecoveryToken = null;
   automaticRecoveryAttempts = 0;
@@ -598,8 +601,25 @@ function scheduleAutomaticPlaybackRecovery(error, snapshot) {
     const wait = Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0
       ? ` Try again in ${Math.ceil(retryAfterSeconds)}s.`
       : '';
+    if (Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0) {
+      rateLimitedUntil = Date.now() + retryAfterSeconds * 1000;
+    }
     setPlaybackReliabilityState('resume', 'Too many playback attempts');
     showToast(`Too many playback sessions started.${wait}`, 'error');
+    return true;
+  }
+
+  if (!navigator.onLine) {
+    if (waitingForOnline) return true;
+    waitingForOnline = true;
+    setPlaybackReliabilityState('resume', 'Waiting for connection');
+    window.addEventListener('online', () => {
+      waitingForOnline = false;
+      if (recoveryToken.cancelled) return;
+      if (!scheduleAutomaticPlaybackRecovery(error, lineageSnapshot)) {
+        offerManualPlaybackRecovery(error, lineageSnapshot);
+      }
+    }, { once: true });
     return true;
   }
 
@@ -618,16 +638,6 @@ function scheduleAutomaticPlaybackRecovery(error, snapshot) {
     let followUpError = null;
     try {
       if (token.cancelled) return;
-      if (!navigator.onLine) {
-        setPlaybackReliabilityState('resume', 'Waiting for connection');
-        window.addEventListener('online', () => {
-          if (token.cancelled) return;
-          if (!scheduleAutomaticPlaybackRecovery(error, lineageSnapshot)) {
-            offerManualPlaybackRecovery(error, lineageSnapshot);
-          }
-        }, { once: true });
-        return;
-      }
       recordPlaybackEvent({
         type: 'automatic-recovery',
         reason: error?.code || 'playback-error',
@@ -688,6 +698,7 @@ function handleChunkError(error) {
     // A stream that went dead mid-playback. Listed explicitly so a downloaded
     // chapter that stalls recovers the same way a continuous one does.
     || error?.code === 'MEDIA_STALLED'
+    || error?.code === 'MEDIA_RELOCATE_FAILED'
     // A rate limit is about the account, not the transport: it must be reported
     // even when the engine that failed had not reached continuous playback.
     || error?.status === 429
@@ -2247,6 +2258,45 @@ function playbackEngineOwnsReadySource() {
   return chunkPlayer.ownsReadySource(selectedBookId, currentChapter);
 }
 
+function isPlaybackSourcePreparing() {
+  return Boolean(
+    chunkPlayer?.isPreparingSource?.()
+    || automaticRecoveryInFlight
+    || manualRecoveryInFlight
+    || waitingForOnline
+  );
+}
+
+function recoverIdleUnreadyPlayback() {
+  if (!currentBook || !chunkPlayer) return;
+  if (isPlaybackSourcePreparing()) return;
+  if (Date.now() < rateLimitedUntil) {
+    const wait = Math.ceil((rateLimitedUntil - Date.now()) / 1000);
+    setPlaybackReliabilityState('resume', 'Too many playback attempts');
+    showToast(
+      wait > 0
+        ? `Too many playback sessions started. Try again in ${wait}s.`
+        : 'Too many playback sessions started.',
+      'error'
+    );
+    return;
+  }
+  const snapshot = retainRecoverySnapshot({
+    bookId: currentBook.id,
+    chapterIndex: currentChapter,
+    startOffsetSeconds: Math.max(0, Number(chunkPlayer.getCurrentTime?.()) || 0),
+    servedTier: chunkPlayer.servedTier || null,
+    endChapterIndex: Number.isInteger(chunkPlayer.endChapterIndex)
+      ? chunkPlayer.endChapterIndex
+      : null
+  });
+  if (!snapshot) return;
+  offerManualPlaybackRecovery(
+    Object.assign(new Error('Playback source is not ready'), { code: 'SOURCE_NOT_READY' }),
+    snapshot
+  );
+}
+
 async function togglePlayPause(forcePlay = false) {
   forcePlay = forcePlay === true;
   if (!currentBook || !chunkPlayer) return;
@@ -2265,11 +2315,12 @@ async function togglePlayPause(forcePlay = false) {
           chapterIndex: currentChapter,
           sourceKind: chunkPlayer.backend || playbackBackend || 'unknown'
         });
-        setPlaybackReliabilityState(
-          'active',
-          reason === 'book-switch' ? 'Loading selected book' : 'Loading chapter'
-        );
         updatePlaybackUI(false);
+        if (reason === 'book-switch') {
+          setPlaybackReliabilityState('active', 'Loading selected book');
+          return;
+        }
+        recoverIdleUnreadyPlayback();
         return;
       }
       // Nothing may be awaited between here and play(): iOS revokes the user
@@ -2288,7 +2339,7 @@ async function togglePlayPause(forcePlay = false) {
   } catch (err) {
     updatePlaybackUI(false);
     if (err?.code === 'SOURCE_NOT_READY') {
-      setPlaybackReliabilityState('active', 'Loading chapter');
+      recoverIdleUnreadyPlayback();
       return;
     }
     if (needsReliablePlayback() && (err.name === 'NotAllowedError' || err.name === 'AbortError')) {
@@ -2481,10 +2532,14 @@ function setupMediaSessionHandlers() {
     seekto: async (details) => {
       if (!chunkPlayer || typeof details.seekTime !== 'number') return;
       invalidatePlaybackRecoveryForUserSeek();
-      await chunkPlayer.seek(details.seekTime);
-      checkpointPlayback();
-      savePosition({ allowBackward: true });
-      updateMediaSessionPosition();
+      try {
+        await chunkPlayer.seek(details.seekTime);
+        checkpointPlayback();
+        savePosition({ allowBackward: true });
+        updateMediaSessionPosition();
+      } catch (error) {
+        handleChunkError(error);
+      }
     }
   };
   Object.entries(handlers).forEach(([action, handler]) => {
@@ -2520,12 +2575,15 @@ function setupLifecycleHandlers() {
 }
 
 async function skip(seconds) {
-  if (chunkPlayer) {
-    invalidatePlaybackRecoveryForUserSeek();
+  if (!chunkPlayer) return;
+  invalidatePlaybackRecoveryForUserSeek();
+  try {
     await chunkPlayer.skip(seconds);
     checkpointPlayback();
     savePosition({ allowBackward: seconds < 0 });
     updateMediaSessionPosition();
+  } catch (error) {
+    handleChunkError(error);
   }
 }
 
@@ -2546,6 +2604,30 @@ async function handleAudioEnd(detail = {}) {
       streamTime: audioPlayer?.currentTime
     });
     expireSleepTimer('chapter');
+    const nextChapter = currentChapter + 1;
+    if (nextChapter < chapters.length) {
+      currentChapter = nextChapter;
+      playbackSession.setBook(currentBook, {
+        chapterIndex: nextChapter,
+        finished: false
+      });
+      if (chapterSelect) chapterSelect.value = String(nextChapter);
+      syncPlaybackProgressScope();
+      updateChapterTrigger();
+      renderChapterList();
+      syncMiniPlayerInfo();
+      updateMediaSessionMetadata();
+      updateMediaSessionPosition();
+      updateBookProgress();
+      checkpointPlayback({ force: true });
+      scheduleServerPositionSave(0);
+    } else {
+      setCurrentBookFinished(true);
+      checkpointPlayback({ force: true, finished: true });
+      await savePosition({ force: true, finished: true });
+      updateBookProgress();
+    }
+    updatePlaybackUI(false);
     return;
   }
   if (isSleepTimerChapterTarget(currentBook?.id, currentChapter)) {

@@ -214,6 +214,10 @@ export class SingleFileChapterPlayer {
    * Continuous sources cover every chapter from the stream start through the
    * optional end chapter; a finite file covers only the committed chapter.
    */
+  isPreparingSource() {
+    return Boolean(this._isLoading);
+  }
+
   ownsReadySource(bookId, chapterIndex) {
     const ready = this._readySource;
     if (!ready || this._isLoading) return false;
@@ -1166,6 +1170,7 @@ export class SingleFileChapterPlayer {
     if (this.isContinuous) {
       this._syncContinuousChapter(Number(this.audio.currentTime) || 0);
       if (Number.isInteger(this.endChapterIndex)) {
+        this._invalidateReadySource();
         this._emitDiagnostic('continuous-limit-ended', {
           reason: 'end-chapter-limit',
           endChapterIndex: this.endChapterIndex
@@ -1434,6 +1439,19 @@ export class SingleFileChapterPlayer {
       this._commitReadySource();
       this._startTimelinePolling();
       this._handleTimeUpdate();
+    } catch (error) {
+      if (generation === this._generation && !error?.cancelled) {
+        error.code = error.code || 'MEDIA_RELOCATE_FAILED';
+        error.recoverable = true;
+        error.chapterIndex = this.chapterIndex;
+        error.chapterTime = chapterTime;
+        this._emitDiagnostic('source-reload-failed', {
+          chapterTime,
+          reason: error.code
+        });
+        this.onError?.(error);
+      }
+      throw error;
     } finally {
       if (this._loadWait === wait) this._loadWait = null;
       this._isLoading = false;

@@ -451,6 +451,7 @@ function fakeAudio() {
     appImports.pendingTimeouts = [];
     appImports.nextTimeoutId = 1;
     appImports.toasts = [];
+    appImports.windowListeners = [];
     appImports.localSourceQueries = [];
     appImports.suspectMarks = [];
     appImports.chapterTimePaints = [];
@@ -477,6 +478,8 @@ function fakeAudio() {
         playbackEvents() { return playbackEventLedger.slice(); },
         handleChapterEnd,
         handleContinuousChapterTransition,
+        currentChapter() { return currentChapter; },
+        skip,
         estimateChapterPlaybackDuration,
         togglePlayPause,
         handleChunkError,
@@ -516,7 +519,9 @@ function fakeAudio() {
           configurable: true,
           writable: true,
           value: {
-            addEventListener() {},
+            addEventListener(type, fn, options) {
+              appImports.windowListeners.push({ type, fn, options });
+            },
             localStorage: fakeLocalStorage,
             setTimeout(callback, delay) {
               const id = appImports.nextTimeoutId++;
@@ -614,6 +619,68 @@ function fakeAudio() {
         1,
         'Play reaches the engine once the requested chapter source is ready'
       );
+
+      const idleUnreadyPlayer = engine('idle-unready', { backend: 'audio-stream' });
+      idleUnreadyPlayer.bookId = 'book-a';
+      idleUnreadyPlayer.ownsReadySource = () => false;
+      idleUnreadyPlayer.isPreparingSource = () => false;
+      idleUnreadyPlayer.getCurrentTime = () => 12;
+      appImports.toasts.length = 0;
+      appImports.transitionRequests.length = 0;
+      globalThis.__playbackAppHarness.cancelPlaybackRecovery();
+      globalThis.__playbackAppHarness.configure({
+        book: { id: 'book-a' },
+        chapters: [{ title: 'One' }, { title: 'Two' }],
+        player: idleUnreadyPlayer,
+        chapter: uiElement
+      });
+      await globalThis.__playbackAppHarness.togglePlayPause(true);
+      assert(
+        !idleUnreadyPlayer.calls.some(call => call[0] === 'play'),
+        'an idle unready engine must not play the previous source'
+      );
+      for (let i = 0; i < 12; i++) await new Promise(resolve => setImmediate(resolve));
+      assert(
+        appImports.transitionRequests.length > 0,
+        'an idle unready Play prepares a source instead of going silent'
+      );
+      assert(
+        appImports.toasts.some(([, , options]) => options?.actionLabel === 'Resume'),
+        'Resume is offered once the idle source is prepared'
+      );
+
+      appImports.windowListeners.length = 0;
+      appImports.timeoutDelays.length = 0;
+      globalThis.navigator.onLine = false;
+      const offlinePlayer = engine('offline-stall', { backend: 'audio-stream' });
+      offlinePlayer.bookId = 'book-a';
+      offlinePlayer.isContinuous = true;
+      globalThis.__playbackAppHarness.configure({
+        book: { id: 'book-a' },
+        chapters: [{ title: 'One' }],
+        player: offlinePlayer,
+        chapter: uiElement
+      });
+      globalThis.__playbackAppHarness.cancelPlaybackRecovery();
+      const stalled = new Error('stalled');
+      stalled.code = 'MEDIA_STALLED';
+      stalled.chapterTime = 40;
+      globalThis.__playbackAppHarness.handleChunkError(stalled);
+      globalThis.__playbackAppHarness.handleChunkError(stalled);
+      assert.deepStrictEqual(appImports.timeoutDelays, [], 'offline waits do not spend load timers');
+      assert.strictEqual(
+        appImports.windowListeners.filter(entry => entry.type === 'online').length,
+        1,
+        'one online listener is registered for the lineage'
+      );
+      globalThis.navigator.onLine = true;
+      appImports.windowListeners.find(entry => entry.type === 'online').fn();
+      assert.strictEqual(
+        appImports.timeoutDelays.filter(delay => delay === 250).length,
+        1,
+        'reconnect spends the first automatic load attempt, not a third'
+      );
+      globalThis.navigator.onLine = true;
 
       globalThis.__playbackAppHarness.configure({
         book: { id: 'book-a' },
@@ -1228,6 +1295,11 @@ function fakeAudio() {
       assert(
         globalThis.__playbackAppHarness.playbackEvents()
           .some(event => event.type === 'sleep-timer-stop' && event.reason === 'server-end-chapter-limit')
+      );
+      assert.strictEqual(
+        globalThis.__playbackAppHarness.currentChapter(),
+        1,
+        'the next chapter is the resume position after a chapter-limit stop'
       );
     } finally {
       process.removeListener('unhandledRejection', onUnhandled);
