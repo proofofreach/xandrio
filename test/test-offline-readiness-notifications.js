@@ -116,6 +116,35 @@ function subscription(endpoint = 'https://push.example.test/device-1') {
     assert.strictEqual(attempts, 1);
   });
 
+  await test('bounds a stalled push delivery with the configured deadline', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'offline-push-timeout-'));
+    let options;
+    const service = createOfflineReadinessNotifications({
+      filePath: path.join(dir, 'push-subscriptions.json'),
+      vapidPublicKey: 'public-vapid',
+      vapidPrivateKey: 'private-vapid',
+      vapidSubject: 'mailto:operator@example.test',
+      assertTarget: async () => {},
+      sendTimeoutMs: 20,
+      log: { warn() {} },
+      webPush: {
+        setVapidDetails() {},
+        sendNotification: async (_subscription, _payload, value) => {
+          options = value;
+          return new Promise(() => {});
+        }
+      }
+    });
+    await service.subscribe('account:device', subscription());
+    const startedAt = Date.now();
+    assert.deepStrictEqual(
+      await service.notifyOwners(['account:device'], { bookId: 'book-1' }),
+      { sent: 0, failed: 1, removed: 0 }
+    );
+    assert(Date.now() - startedAt < 500, 'stalled delivery must not retain the worker');
+    assert.strictEqual(options.timeout, 20, 'web-push receives the same transport deadline');
+  });
+
   await test('is safely disabled when VAPID configuration is absent', async () => {
     const service = createOfflineReadinessNotifications({
       filePath: '/unused',
