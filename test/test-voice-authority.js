@@ -92,6 +92,63 @@ const skipSave = Symbol('SKIP_SAVE');
     assert(((await fs.stat(voicePath)).mode & 0o777) === 0o600,
       'stored voice references are readable and writable only by the server account');
 
+    const cancellable = express();
+    const sampleDir = path.join(root, 'samples');
+    let generationAborted = false;
+    registerPreferencesRoutes(cancellable, {
+      requireAdmin: (_req, _res, next) => next(),
+      annasAuthFile: path.join(root, 'annas.json'),
+      availableVoices: [{ id: 'edge:test' }],
+      cacheDir: root,
+      customVoicesFile: voicesFile,
+      customVoiceDir: root,
+      defaultVoice: 'edge:test',
+      getAnnasConfig: () => ({}),
+      gutenberg: { isEnabled: () => false, setEnabled: async () => {} },
+      loadJSON: async () => ({}),
+      saveJSON: async () => {},
+      settingsFile: path.join(root, 'settings.json'),
+      updateSettingsCache: () => {},
+      voiceSamplesDir: sampleDir,
+      voiceSampleGenerator: ({ signal }) => new Promise((resolve, reject) => {
+        signal.addEventListener('abort', () => {
+          generationAborted = true;
+          const error = new Error('cancelled');
+          error.name = 'AbortError';
+          reject(error);
+        }, { once: true });
+      }),
+      zlibrary: {
+        connect: async () => ({}),
+        disconnect: async () => ({}),
+        getStatus: async () => ({ configured: false })
+      }
+    });
+    const cancellableServer = http.createServer(cancellable);
+    await new Promise(resolve => cancellableServer.listen(0, '127.0.0.1', resolve));
+    try {
+      const aborted = new Promise((resolve, reject) => {
+        const request = http.get({
+          host: '127.0.0.1',
+          port: cancellableServer.address().port,
+          path: '/api/voice-sample/edge%3Atest'
+        });
+        request.once('error', () => {});
+        setTimeout(() => request.destroy(), 20);
+        const deadline = setTimeout(() => reject(new Error('voice generation was not cancelled')), 500);
+        const check = setInterval(() => {
+          if (!generationAborted) return;
+          clearInterval(check);
+          clearTimeout(deadline);
+          resolve();
+        }, 5);
+      });
+      await aborted;
+      assert(generationAborted, 'abandoning the last voice-sample waiter cancels generation');
+    } finally {
+      await new Promise(resolve => cancellableServer.close(resolve));
+    }
+
     const guarded = express();
     registerPreferencesRoutes(guarded, {
       annasAuthFile: path.join(root, 'annas.json'),

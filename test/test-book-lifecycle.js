@@ -509,6 +509,31 @@ function metadataHarness(options = {}) {
     assert(!removed.includes('/cache/abc_2_cover.jpg'));
   });
 
+  await test('deletion guards retire only after every deferred sweep settles', async () => {
+    const timers = [];
+    const completed = [];
+    const cleaner = createBookArtifactCleaner({
+      cacheDir: '/cache',
+      fs: {
+        readdir: async () => [],
+        rm: async () => {}
+      },
+      invalidateChapterCache: () => {},
+      isBookDeleted: () => true,
+      withSweepLock: (_bookId, task) => task(),
+      onSweepsComplete: bookId => completed.push(bookId),
+      setTimer: callback => timers.push(callback),
+      log: { log() {}, error() {} }
+    });
+    cleaner.scheduleSweeps('book_1', {});
+    assert.strictEqual(timers.length, 3);
+    for (let index = 0; index < timers.length; index += 1) {
+      timers[index]();
+      await new Promise(resolve => setImmediate(resolve));
+      assert.deepStrictEqual(completed, index === timers.length - 1 ? ['book_1'] : []);
+    }
+  });
+
   await test('metadata refresh preserves precedence and clears stale structure positions', async () => {
     const harness = metadataHarness({ chapterStructureKey: 'structure-old' });
     const result = await harness.service.refreshBook('book_1');

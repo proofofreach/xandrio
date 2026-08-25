@@ -401,7 +401,7 @@ async function trackDownloadFileHandle(run) {
     await fs.rm(directory, { recursive: true, force: true });
   });
 
-  await test('status falls back directly to a trusted built-in domain', async () => {
+  await test('status never fails over a credential to another trusted origin', async () => {
     const mock = queuedFetch(
       json({ message: 'down' }, 503),
       json({ message: 'down' }, 503),
@@ -412,9 +412,9 @@ async function trackDownloadFileHandle(run) {
       sleep: async () => {}
     });
     await writesSession(authFile);
-    assert.equal((await client.getStatus()).state, 'connected');
-    assert.equal(mock.calls[2].url, 'https://backup.test/eapi/user/profile');
-    assert.equal(JSON.parse(await fs.readFile(authFile, 'utf8')).baseUrl, 'https://backup.test');
+    assert.equal((await client.getStatus()).state, 'unavailable');
+    assert.equal(mock.calls.length, 2, 'only same-origin transport retries are attempted');
+    assert.equal(JSON.parse(await fs.readFile(authFile, 'utf8')).baseUrl, 'https://z-library.test');
     await fs.rm(directory, { recursive: true, force: true });
   });
 
@@ -496,13 +496,8 @@ async function trackDownloadFileHandle(run) {
     await fs.rm(directory, { recursive: true, force: true });
   });
 
-  await test('credential recovery stops after one alternative instead of spraying every trusted host', async () => {
-    // Three trusted hosts (configured + two operator-named fallbacks), all
-    // unreachable. The session credential must only ever be sent to the
-    // configured host plus exactly one alternative -- never all three.
+  await test('authenticated profile checks never send the session to an alternate origin', async () => {
     const mock = queuedFetch(
-      json({ message: 'down' }, 503),
-      json({ message: 'down' }, 503),
       json({ message: 'down' }, 503),
       json({ message: 'down' }, 503)
     );
@@ -516,11 +511,13 @@ async function trackDownloadFileHandle(run) {
     const profileUrls = mock.calls.filter(call => call.url.endsWith('/eapi/user/profile')).map(call => call.url);
     assert.deepEqual(profileUrls, [
       'https://z-library.test/eapi/user/profile',
-      'https://z-library.test/eapi/user/profile',
-      'https://backup-a.test/eapi/user/profile',
-      'https://backup-a.test/eapi/user/profile'
+      'https://z-library.test/eapi/user/profile'
     ]);
-    assert.equal(profileUrls.some(url => url.startsWith('https://backup-b.test/')), false, 'must not reach the second alternative');
+    assert.equal(
+      profileUrls.some(url => !url.startsWith('https://z-library.test/')),
+      false,
+      'session credentials stay on their issuing origin'
+    );
     await fs.rm(directory, { recursive: true, force: true });
   });
 

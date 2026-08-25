@@ -163,7 +163,7 @@ async function test(name, fn) {
     assert.strictEqual(status.packageVariantKey, 'voice-a:offline-mp3-v1:br48k');
   });
 
-  await test('a second device reuses ready server audio without downgrading or notifying again', async () => {
+  await test('a second device reuses ready audio without waiting on or repeating notification delivery', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'offline-ready-reuse-'));
     const journal = new GenerationJournal(path.join(dir, 'generation-state.json'));
     let prepared = false;
@@ -193,7 +193,10 @@ async function test(name, fn) {
         prepareCalls += 1;
         prepared = true;
       },
-      onReady: async () => { readyNotifications += 1; }
+      onReady: async () => {
+        readyNotifications += 1;
+        return new Promise(() => {});
+      }
     });
 
     await coordinator.request('shared-ready', { ownerId: 'account:device-a' });

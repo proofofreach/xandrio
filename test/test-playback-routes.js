@@ -2,6 +2,7 @@ const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
 const { app } = require('../server');
+const { hlsOwnerKey, registerPlaybackRoutes } = require('../lib/routes/playback-routes');
 
 let passed = 0;
 let failed = 0;
@@ -36,6 +37,52 @@ async function test(name, fn) {
       assert.strictEqual(response.status, 403);
     });
 
+
+    await test('foreground priority refuses a book outside the caller library', async () => {
+      const routes = [];
+      const fakeApp = {};
+      for (const method of ['get', 'post', 'put', 'delete']) {
+        fakeApp[method] = (routePath, ...handlers) => routes.push({ method, path: routePath, handlers });
+      }
+      let prioritized = 0;
+      registerPlaybackRoutes(fakeApp, {
+        playbackOrchestrator: {},
+        ttsForTier: () => ({}),
+        generationJournal: {},
+        offlinePreparationCoordinator: {},
+        chapterAudioStreamer: {},
+        hlsAudioStreamer: {},
+        serveAudioFile() {},
+        sendServerError(res, error) { res.status(500).json({ error: error.message }); },
+        fs: {},
+        getBookChapters: async () => ({ book: {}, chapters: [] }),
+        getOfflineChapterAudio: async () => ({}),
+        canPrioritizeForegroundBook: async () => false,
+        prioritizeForegroundBook: () => { prioritized += 1; return {}; }
+      });
+      const route = routes.find(item => item.method === 'post' && item.path === '/api/playback/foreground/:bookId');
+      const res = {
+        statusCode: 200,
+        body: null,
+        status(code) { this.statusCode = code; return this; },
+        json(body) { this.body = body; return this; }
+      };
+      await route.handlers.at(-1)({ params: { bookId: 'book-one' } }, res);
+      assert.strictEqual(res.statusCode, 404);
+      assert.strictEqual(prioritized, 0);
+    });
+
+    await test('authenticated HLS ownership ignores caller-controlled owner ids', () => {
+      const req = {
+        user: { id: 'account-one', sessionToken: 'opaque-session-token' },
+        ip: '127.0.0.1'
+      };
+      assert.strictEqual(hlsOwnerKey(req, 'owner-a'), hlsOwnerKey(req, 'owner-b'));
+      assert.notStrictEqual(
+        hlsOwnerKey(req, 'owner-a'),
+        hlsOwnerKey({ user: { id: 'account-one', sessionToken: 'other-session-token' }, ip: '127.0.0.1' }, 'owner-a')
+      );
+    });
     // One deadline contract. The client owns abandonment; cancellation is
     // disconnect-driven (servePlaylist aborts on req 'aborted'/res 'close').
     // The server deadline exists only to stop a socket that never closes from
