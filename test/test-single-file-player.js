@@ -1019,6 +1019,218 @@ function fakeAudio() {
     player.dispose();
   });
 
+  await test('a source-change pause keeps autoplay so native fallback can continue', async () => {
+    const audio = fakeAudio();
+    const { player } = makePlayer(audio);
+    audio.autoplay = true;
+    player.pause('source-change');
+    assert.strictEqual(audio.autoplay, true);
+    player.pause();
+    assert.strictEqual(audio.autoplay, false);
+    player.dispose();
+  });
+
+  await test('a stale pre-warm cannot cancel a newer same-chapter handoff', async () => {
+    const audio = fakeAudio();
+    let resolveFirstLookup;
+    let lookups = 0;
+    let finishFetch;
+    const advances = [];
+    const { player } = makePlayer(audio, {
+      preferStandardAudio: true,
+      getChapterCount: () => 3,
+      resolveOfflineAudioUrl: (bookId, chapterIndex) => `/offline/${bookId}/${chapterIndex}`,
+      resolveNextChapterUrl: () => {
+        lookups += 1;
+        if (lookups === 1) {
+          return new Promise(resolve => {
+            resolveFirstLookup = () => resolve('/offline/book1/1');
+          });
+        }
+        return Promise.resolve('/offline/book1/1');
+      },
+      fetch: (_url, options = {}) => new Promise((resolve, reject) => {
+        options.signal?.addEventListener('abort', () => {
+          reject(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+        });
+        finishFetch = () => resolve({
+          ok: true,
+          status: 200,
+          async blob() { return new Blob(['audio']); }
+        });
+      }),
+      onChapterAdvance: detail => advances.push(detail)
+    });
+
+    let load = player.loadChapter('book1', 0);
+    audio.emit('loadedmetadata');
+    await load;
+    let play = player.play();
+    audio.emit('playing');
+    audio.currentTime = 1;
+    audio.emit('timeupdate');
+    await play;
+    await new Promise(resolve => setImmediate(resolve));
+    assert.strictEqual(lookups, 1);
+
+    load = player.loadChapter('book1', 0);
+    audio.emit('loadedmetadata');
+    await load;
+    audio.currentTime = 0;
+    play = player.play();
+    audio.emit('playing');
+    audio.currentTime = 1;
+    audio.emit('timeupdate');
+    await play;
+    await new Promise(resolve => setImmediate(resolve));
+    await new Promise(resolve => setImmediate(resolve));
+    assert.strictEqual(lookups, 2);
+
+    audio.ended = true;
+    audio.emit('ended');
+    assert.strictEqual(player.chapterIndex, 0);
+
+    resolveFirstLookup();
+    await new Promise(resolve => setImmediate(resolve));
+    await new Promise(resolve => setImmediate(resolve));
+    assert.strictEqual(player.chapterIndex, 0);
+
+    finishFetch();
+    await new Promise(resolve => setImmediate(resolve));
+    await new Promise(resolve => setImmediate(resolve));
+    assert.strictEqual(player.chapterIndex, 1);
+    assert.strictEqual(advances.length, 1);
+    player.dispose();
+  });
+
+  await test('Play during a boundary wait does not restart the finished chapter', async () => {
+    const audio = fakeAudio();
+    audio.canPlayType = () => '';
+    let finishFetch;
+    const { player } = makePlayer(audio, {
+      isIOSLike: () => true,
+      getChapterCount: () => 3,
+      resolveNextChapterUrl: async () => null,
+      fetch: (_url, options = {}) => new Promise(resolve => {
+        finishFetch = () => resolve({
+          ok: true,
+          status: 200,
+          async blob() { return new Blob(['audio']); }
+        });
+      })
+    });
+
+    const load = player.loadChapter('book1', 0);
+    await new Promise(resolve => setImmediate(resolve));
+    audio.emit('loadedmetadata');
+    await load;
+    const play = player.play();
+    audio.emit('playing');
+    audio.currentTime = 1;
+    audio.emit('timeupdate');
+    await play;
+    await new Promise(resolve => setImmediate(resolve));
+
+    audio.ended = true;
+    audio.paused = true;
+    audio.emit('ended');
+    const playCallsAtBoundary = audio.playCalls;
+    await player.play();
+    assert.strictEqual(audio.playCalls, playCallsAtBoundary);
+    assert.strictEqual(player.chapterIndex, 0);
+
+    finishFetch();
+    await new Promise(resolve => setImmediate(resolve));
+    await new Promise(resolve => setImmediate(resolve));
+    assert.strictEqual(player.chapterIndex, 1);
+    player.dispose();
+  });
+
+  await test('a hung boundary pre-warm gives up and ends the ordinary way', async () => {
+    const audio = fakeAudio();
+    const chapterEnds = [];
+    const { player } = makePlayer(audio, {
+      preferStandardAudio: true,
+      getChapterCount: () => 3,
+      resolveOfflineAudioUrl: (bookId, chapterIndex) => `/offline/${bookId}/${chapterIndex}`,
+      resolveNextChapterUrl: async (bookId, chapterIndex) => `/offline/${bookId}/${chapterIndex}`,
+      fetch: () => new Promise(() => {}),
+      boundaryPrewarmTimeoutMs: 20,
+      onChapterEnd: detail => chapterEnds.push(detail ?? null)
+    });
+
+    const load = player.loadChapter('book1', 0);
+    audio.emit('loadedmetadata');
+    await load;
+    const play = player.play();
+    audio.emit('playing');
+    audio.currentTime = 1;
+    audio.emit('timeupdate');
+    await play;
+    await new Promise(resolve => setImmediate(resolve));
+
+    audio.ended = true;
+    audio.emit('ended');
+    assert.strictEqual(chapterEnds.length, 0);
+    await new Promise(resolve => setTimeout(resolve, 50));
+    assert.strictEqual(player.chapterIndex, 0);
+    assert.strictEqual(chapterEnds.length, 1);
+    player.dispose();
+  });
+
+  await test('a deferred chapter start that never plays reports a recoverable failure', async () => {
+    const audio = fakeAudio();
+    audio.canPlayType = () => '';
+    let finishFetch;
+    const errors = [];
+    const { player } = makePlayer(audio, {
+      isIOSLike: () => true,
+      getChapterCount: () => 3,
+      resolveNextChapterUrl: async () => null,
+      chapterAdvancePlayWatchdogMs: 20,
+      fetch: () => new Promise(resolve => {
+        finishFetch = () => resolve({
+          ok: true,
+          status: 200,
+          async blob() { return new Blob(['audio']); }
+        });
+      }),
+      onError: error => errors.push(error)
+    });
+
+    const load = player.loadChapter('book1', 0);
+    await new Promise(resolve => setImmediate(resolve));
+    audio.emit('loadedmetadata');
+    await load;
+    const play = player.play();
+    audio.emit('playing');
+    audio.currentTime = 1;
+    audio.emit('timeupdate');
+    await play;
+    await new Promise(resolve => setImmediate(resolve));
+
+    audio.play = async () => {
+      audio.playCalls += 1;
+      const error = new Error('not allowed');
+      error.name = 'NotAllowedError';
+      throw error;
+    };
+    audio.ended = true;
+    audio.emit('ended');
+    finishFetch();
+    await new Promise(resolve => setImmediate(resolve));
+    await new Promise(resolve => setImmediate(resolve));
+    await new Promise(resolve => setImmediate(resolve));
+    assert.strictEqual(player.chapterIndex, 1);
+    assert.strictEqual(audio.autoplay, true);
+
+    await new Promise(resolve => setTimeout(resolve, 50));
+    assert.strictEqual(errors[0]?.code, 'CHAPTER_ADVANCE_NOT_ALLOWED');
+    assert.strictEqual(audio.autoplay, false);
+    assert.strictEqual(player._isPlaying, false);
+    player.dispose();
+  });
+
   await test('a boundary reached mid-download that then fails still ends the ordinary way', async () => {
     const audio = fakeAudio();
     audio.canPlayType = () => '';
