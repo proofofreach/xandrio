@@ -16,8 +16,11 @@ assert(!searchSource.includes('lastImportReviewResultsHtml') && !searchSource.in
   'successful imports have no review state or review actions');
 assert(!searchSource.includes('needsReview') && !searchSource.includes('validationWarnings'),
   'successful import navigation does not branch on internal diagnostics');
-assert(searchSource.includes("deps.openBook?.(data.bookId || data?.book?.id);"),
-  'successful uploads and downloads open the imported book immediately');
+assert(
+  searchSource.includes('await deps.openBook(bookId)') &&
+    !searchSource.includes("deps.navigateTo?.('library');\n  deps.openBook"),
+  'successful uploads and downloads open the imported book immediately'
+);
 
 assert(!indexSource.includes('PDF chapters need review') && !indexSource.includes('pdf-structure-review'),
   'the player has no PDF review warning');
