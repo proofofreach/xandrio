@@ -537,6 +537,57 @@ console.log('\n━━━ Work-first search grouping ━━━');
 })();
 
 (() => {
+  const plain = edition({
+    id: 'liars-poker-plain', source: 'annas',
+    title: "Liar's Poker", author: 'Michael Lewis', language: 'en',
+    openLibraryWorkKey: '/works/OL-LIARS-PLAIN',
+    openLibraryTitle: "Liar's Poker",
+    openLibraryAuthor: 'Michael Lewis',
+    metadataConfidence: { source: 'openlibrary', level: 'high' }
+  });
+  const subtitle = edition({
+    id: 'liars-poker-subtitle', source: 'zlibrary',
+    title: "Liar's Poker: Rising Through the Wreckage on Wall Street",
+    author: 'Michael Lewis', language: 'en',
+    openLibraryWorkKey: '/works/OL-LIARS-SUBTITLE',
+    openLibraryTitle: "Liar's Poker: Rising Through the Wreckage on Wall Street",
+    openLibraryAuthor: 'Michael Lewis',
+    metadataConfidence: { source: 'openlibrary', level: 'high' }
+  });
+  const seriesPrefix = edition({
+    id: 'liars-poker-series-prefix', source: 'internetarchive',
+    title: "[Liar's Poker 01] • Liar's Poker",
+    author: 'Michael Lewis', language: 'en'
+  });
+  const listings = [plain, subtitle, seriesPrefix];
+  const works = buildSearchWorks(listings, { compareEditions: compareEdition });
+  equal(works.length, 1, 'Plain title, official subtitle, and Calibre-style series-prefix listings resolve as one work despite conflicting Open Library keys');
+  equal(works[0]?.versionCount, 3, 'Every Liar\'s Poker provider version remains selectable on the grouped work');
+  equal(works[0]?.title, "Liar's Poker", 'The grouped Liar\'s Poker work uses the unsuffixed display title');
+  equal(
+    buildSearchWorks([...listings].reverse(), { compareEditions: compareEdition })[0]?.id,
+    works[0]?.id,
+    'Liar\'s Poker grouping is deterministic across provider response order'
+  );
+  equal(fallbackCompatibility(plain, subtitle).safe, true, 'Plain and official-subtitle Liar\'s Poker listings are safe automatic alternatives');
+  equal(fallbackCompatibility(plain, seriesPrefix).safe, true, 'Plain and series-prefix Liar\'s Poker listings are safe automatic alternatives');
+  equal(fallbackCompatibility(subtitle, seriesPrefix).safe, true, 'Official-subtitle and series-prefix Liar\'s Poker listings are safe automatic alternatives');
+  const shackOriginal = edition({ id: 'liars-poker-shack-original', title: 'The Shack', author: 'William P. Young' });
+  const shackPartTwo = edition({ id: 'liars-poker-shack-part-two', title: 'The Shack: Part 2', author: 'William P. Young' });
+  const shackGuide = edition({ id: 'liars-poker-shack-guide', title: 'The Shack: A Study Guide', author: 'William P. Young' });
+  equal(fallbackCompatibility(shackOriginal, shackPartTwo).safe, false, 'A numbered Part 2 subtitle remains an unsafe automatic alternative');
+  equal(fallbackCompatibility(shackOriginal, shackGuide).safe, false, 'A study-guide derivative remains an unsafe automatic alternative');
+  equal(
+    buildSearchWorks([
+      edition({ id: 'liars-poker-book-prefix-plain', title: "Liar's Poker", author: 'Michael Lewis' }),
+      edition({ id: 'liars-poker-book-prefix-calibre', title: "[Book 01] • Liar's Poker", author: 'Michael Lewis' })
+    ], { compareEditions: compareEdition }).length,
+    1,
+    'A Calibre [Book NN] shelf prefix is not a volume partition'
+  );
+})();
+
+(() => {
   const conflictingNames = buildSearchWorks([
     edition({ id: 'middle-james', title: 'Shared Name Work', author: 'William James Young' }),
     edition({ id: 'middle-paul', title: 'Shared Name Work', author: 'William Paul Young' })

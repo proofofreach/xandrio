@@ -10,6 +10,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Catalog writes now take a cross-process `<store>.lock` file, and metadata
+  backfill patches one book at a time, so a live server cannot lose library
+  updates to a stale backfill snapshot.
+- A failed book switch restores the previous chapter time and replaces the
+  failed book's history entry instead of restarting at 0:00 or leaving the
+  unopened book in Back.
+- Atomic artifact writes always remove their temporary files after a failed
+  rename, and XBook/chapter-cache temps are created mode `0600`.
+
 - A downloaded book now plays from the device whenever it is on the device.
   Local availability was previously only consulted while offline, so a fully
   downloaded, verified book streamed anyway whenever the phone had signal.

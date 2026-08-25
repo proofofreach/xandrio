@@ -1,21 +1,19 @@
 importScripts('/js/offline-range.js');
 
-const APP_RELEASE = '1.1.0';
-const CACHE_VERSION = 'xandrio-v160';
+const CACHE_VERSION = 'xandrio-v164';
 const OFFLINE_ROUTE_CONTRACT_VERSION = 1;
 const OFFLINE_AUDIO_CACHE = 'xandrio-offline-audio';
 const OFFLINE_TITLE_CACHE = 'xandrio-offline-titles';
 const OFFLINE_SCOPE_PARAM = 'xandrio-offline-scope';
-// Single source of truth for the versioned shell assets. The <link>/<script>
-// tags in index.html must carry the SAME ?v= values — update both together,
-// and bump CACHE_VERSION whenever any APP_SHELL entry changes (including the
-// un-versioned js/ modules below, which only invalidate via CACHE_VERSION).
+// Versioned shell assets are kept in lockstep with index.html by
+// scripts/bump-version.mjs. Bump CACHE_VERSION whenever any APP_SHELL entry
+// changes, including the un-versioned js/ modules below, which only
+// invalidate via CACHE_VERSION.
 const ASSET_VERSIONS = {
   '/style-v3.css': 108,
   '/js/ios-focus-zoom.js': 1,
   '/js/lifecycle.js': 1,
-  '/js/chunk-player.js': 23,
-  '/app.js': 122
+  '/app.js': 125
 };
 const versionedAsset = (path) => `${path}?v=${ASSET_VERSIONS[path]}`;
 const APP_SHELL = [
@@ -24,7 +22,6 @@ const APP_SHELL = [
   versionedAsset('/style-v3.css'),
   versionedAsset('/js/ios-focus-zoom.js'),
   versionedAsset('/js/lifecycle.js'),
-  versionedAsset('/js/chunk-player.js'),
   versionedAsset('/app.js'),
   '/js/offline-range.js',
   '/js/deployment-origin.js',

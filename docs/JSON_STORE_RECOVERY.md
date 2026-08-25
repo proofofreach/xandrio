@@ -25,8 +25,10 @@ bytes are malformed.
 
 ## Recovery drill
 
-Stop the application before restoring a store. The file lock is process-local,
-so the CLI and a running server must not write the same file concurrently.
+Stop the application before restoring a store so you inspect a stable file.
+`save`/`update` take an exclusive `<store>.lock` file that serializes a CLI
+and a running server. Restore still replaces the live file, so do not restore
+while the server is writing.
 
 List recovery copies and their validation status:
 

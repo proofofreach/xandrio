@@ -170,6 +170,126 @@ section('Format dispatch, metadata, and covers');
     assert(first[0].title === 'PDF chapter' && first[0].normalized && second[0].normalized && cachedCalls === 1,
       'regenerates version-24 chapter caches, then reuses the current extraction');
 
+    let generationCalls = 0;
+    const generationSource = path.join(dir, 'generation.pdf');
+    await fs.writeFile(generationSource, 'generation source');
+    const generationDocument = createBookDocument({
+      supportedFormats: new Set(['pdf']),
+      extractPdfChapters: async () => {
+        generationCalls++;
+        await new Promise(resolve => setTimeout(resolve, 10));
+        return [chapter('Generated once')];
+      },
+      log: { log() {}, error() {} }
+    });
+    const generated = await Promise.all(Array.from(
+      { length: 12 },
+      () => generationDocument.getChaptersCached(generationSource)
+    ));
+    assert(generationCalls === 1 && generated.every(chapters => chapters[0].title === 'Generated once'),
+      'deduplicates concurrent chapter cache generation by cache path');
+
+    const atomicSource = path.join(dir, 'atomic.pdf');
+    const atomicCache = path.join(dir, 'atomic.chapters.json');
+    await fs.writeFile(atomicSource, 'atomic source');
+    await fs.utimes(atomicSource, new Date(Date.now() - 60_000), new Date(Date.now() - 60_000));
+    const originalCache = JSON.stringify({
+      _cacheVersion: 28,
+      chapters: [chapter('Existing cache')]
+    });
+    await fs.writeFile(atomicCache, originalCache);
+
+    const writerCount = 8;
+    let writersStarted = 0;
+    let releaseWrites;
+    let signalWritersReady;
+    const writersReady = new Promise(resolve => {
+      signalWritersReady = resolve;
+    });
+    const writesReleased = new Promise(resolve => {
+      releaseWrites = resolve;
+    });
+    const delayedFileSystem = Object.create(fs);
+    delayedFileSystem.writeFile = async (filePath, data, options) => {
+      const isCacheWrite = filePath === atomicCache ||
+        path.basename(filePath).startsWith(`.${path.basename(atomicCache)}.`);
+      if (!isCacheWrite) return fs.writeFile(filePath, data, options);
+      const midpoint = Math.floor(data.length / 2);
+      await fs.writeFile(filePath, data.slice(0, midpoint), options);
+      writersStarted++;
+      if (writersStarted === writerCount) signalWritersReady();
+      await writesReleased;
+      await fs.appendFile(filePath, data.slice(midpoint));
+    };
+    const staleCacheIdentity = async filePath => {
+      const stat = await fs.stat(filePath);
+      return filePath === atomicCache
+        ? { mtimeMs: 0, size: stat.size }
+        : { mtimeMs: stat.mtimeMs, size: stat.size };
+    };
+    const writers = Array.from({ length: writerCount }, (_, index) => {
+      const writer = createBookDocument({
+        fs: delayedFileSystem,
+        supportedFormats: new Set(['pdf']),
+        getFileIdentity: staleCacheIdentity,
+        extractPdfChapters: async () => [chapter(`Writer ${index}`)],
+        log: { log() {}, error() {} }
+      });
+      return writer.getChaptersCached(atomicSource);
+    });
+    await writersReady;
+    let readerExtractions = 0;
+    const readerResults = await Promise.all(Array.from({ length: 24 }, async () => {
+      const reader = createBookDocument({
+        supportedFormats: new Set(['pdf']),
+        extractPdfChapters: async () => {
+          readerExtractions++;
+          return [chapter('Unexpected reader extraction')];
+        },
+        log: { log() {}, error() {} }
+      });
+      return reader.getChaptersCached(atomicSource);
+    }));
+    releaseWrites();
+    await Promise.all(writers);
+    const finalCache = JSON.parse(await fs.readFile(atomicCache, 'utf8'));
+    assert(
+      readerExtractions === 0 &&
+      readerResults.every(chapters => chapters[0].title === 'Existing cache') &&
+      /^Writer \d+$/.test(finalCache.chapters[0].title),
+      'keeps concurrent readers from observing partial chapter-cache JSON');
+
+    const interruptedSource = path.join(dir, 'interrupted.pdf');
+    const interruptedCache = path.join(dir, 'interrupted.chapters.json');
+    await fs.writeFile(interruptedSource, 'interrupted source');
+    await fs.utimes(interruptedSource, new Date(Date.now() - 60_000), new Date(Date.now() - 60_000));
+    await fs.writeFile(interruptedCache, originalCache);
+    const interruptedFileSystem = Object.create(fs);
+    interruptedFileSystem.writeFile = async (filePath, data, options) => {
+      const isCacheWrite = filePath === interruptedCache ||
+        path.basename(filePath).startsWith(`.${path.basename(interruptedCache)}.`);
+      if (!isCacheWrite) return fs.writeFile(filePath, data, options);
+      await fs.writeFile(filePath, data.slice(0, Math.floor(data.length / 2)), options);
+      throw new Error('simulated interrupted cache write');
+    };
+    const interruptedDocument = createBookDocument({
+      fs: interruptedFileSystem,
+      supportedFormats: new Set(['pdf']),
+      getFileIdentity: async filePath => {
+        const stat = await fs.stat(filePath);
+        return filePath === interruptedCache
+          ? { mtimeMs: 0, size: stat.size }
+          : { mtimeMs: stat.mtimeMs, size: stat.size };
+      },
+      extractPdfChapters: async () => [chapter('Interrupted write result')],
+      log: { log() {}, error() {} }
+    });
+    await interruptedDocument.getChaptersCached(interruptedSource);
+    assert(
+      await fs.readFile(interruptedCache, 'utf8') === originalCache &&
+      (await fs.readdir(dir)).every(name => !name.startsWith(`.${path.basename(interruptedCache)}.`)),
+      'preserves the prior chapter cache when a cache write is interrupted');
+
     const validation = await document.validateBook(source);
     assert(validation.valid && validation.validationOptions.format === 'pdf' &&
       validation.validationOptions.fileSize === 12 * 1024,

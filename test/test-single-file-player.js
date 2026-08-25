@@ -253,6 +253,50 @@ function fakeAudio() {
     await load;
   });
 
+  await test('play refuses an in-flight load until the new source is ready', async () => {
+    const audio = fakeAudio();
+    const { player } = makePlayer(audio);
+    const load = player.loadChapter('book1', 1);
+    await new Promise(resolve => setImmediate(resolve));
+
+    assert.strictEqual(player.isPreparingSource(), true, 'a load in flight is preparing');
+    assert.strictEqual(
+      player.ownsReadySource('book1', 1),
+      false,
+      'the requested chapter is not playable before media is ready'
+    );
+    await assert.rejects(
+      player.play(),
+      error => error?.code === 'SOURCE_NOT_READY',
+      'play() must not start the previous source during a chapter load'
+    );
+    assert.strictEqual(audio.playCalls, 0);
+
+    audio.emit('loadedmetadata');
+    await load;
+    assert.strictEqual(player.isPreparingSource(), false);
+    assert.strictEqual(player.ownsReadySource('book1', 1), true);
+    assert.strictEqual(player.ownsReadySource('book1', 0), false);
+
+    const play = player.play();
+    audio.emit('playing');
+    audio.currentTime = 1;
+    audio.emit('timeupdate');
+    await play;
+    assert.strictEqual(audio.playCalls, 1);
+  });
+
+  await test('a ready continuous source still owns later chapters in its range', async () => {
+    const audio = fakeAudio();
+    const { player } = makePlayer(audio, { getChapterCount: () => 4 });
+    const load = player.loadChapter('book1', 0);
+    audio.emit('loadedmetadata');
+    await load;
+    assert.strictEqual(player.ownsReadySource('book1', 0), true);
+    assert.strictEqual(player.ownsReadySource('book1', 2), true);
+    assert.strictEqual(player.ownsReadySource('other', 0), false);
+  });
+
   await test('continuous first listening needs only the original play call', async () => {
     const audio = fakeAudio();
     const { player } = makePlayer(audio);
@@ -653,6 +697,15 @@ function fakeAudio() {
       reason: 'continuous-limit',
       endChapterIndex: 1
     }]);
+    assert.strictEqual(
+      player.ownsReadySource('book1', 1),
+      false,
+      'an ended chapter-limit stream is not a ready source'
+    );
+    await assert.rejects(
+      player.play(),
+      error => error?.code === 'SOURCE_NOT_READY'
+    );
   });
 
   await test('offline playback keeps the per-chapter standard audio source', async () => {
@@ -1315,6 +1368,32 @@ function fakeAudio() {
       loadsBefore,
       'a rewind-originated seek must never reload a nonseekable stream'
     );
+  });
+
+  await test('a failed continuous relocation reports onError at the requested offset', async () => {
+    const audio = fakeAudio();
+    const errors = [];
+    const { player } = makePlayer(audio, {
+      getEstimatedDuration: () => 100,
+      onError: error => errors.push(error)
+    });
+    const load = player.loadChapter('book1', 0);
+    audio.emit('loadedmetadata');
+    await load;
+    audio.buffered = { length: 1, start() { return 0; }, end() { return 2; } };
+
+    const seek = player.seek(18);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.strictEqual(player.isPreparingSource(), true);
+    audio.error = { message: 'reload failed' };
+    audio.emit('error');
+    await assert.rejects(seek);
+    assert.strictEqual(player.isPreparingSource(), false);
+    assert.strictEqual(player.ownsReadySource('book1', 0), false);
+    assert.strictEqual(errors.length, 1);
+    assert.strictEqual(errors[0].code, 'MEDIA_RELOCATE_FAILED');
+    assert.strictEqual(errors[0].chapterTime, 18);
+    assert.strictEqual(errors[0].recoverable, true);
   });
 
   // --- Rate-limit classification -------------------------------------------

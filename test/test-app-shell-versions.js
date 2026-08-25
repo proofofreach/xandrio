@@ -57,8 +57,14 @@ for (const [assetPath, version] of assetVersions) {
 
 assert(
   indexSource.indexOf('/js/lifecycle.js') !== -1 &&
-    indexSource.indexOf('/js/lifecycle.js') < indexSource.indexOf('/js/chunk-player.js'),
-  'index.html loads lifecycle helpers before the classic chunk player'
+    indexSource.indexOf('/js/lifecycle.js') < indexSource.indexOf('app.js'),
+  'index.html loads lifecycle helpers before the app module'
+);
+assert(
+  !indexSource.includes('/js/chunk-player.js') &&
+    !swSource.includes('/js/chunk-player.js') &&
+    !/new ChunkPlayer\b/.test(appSource),
+  'the live PWA shell does not ship or construct ChunkPlayer'
 );
 
 assert(
@@ -251,8 +257,8 @@ for (const [, referencedPath] of indexSource.matchAll(/(?:href|src)="\/?([^"?]+)
 // Every ES module app.js can reach statically must be precached. A module
 // missing here is invisible online (the network serves it) and only breaks on
 // a cold offline boot, where the import fails and the app never starts.
-// chunk-player.js is exempt: index.html loads it as a classic script tag, so
-// it is not part of app.js's module graph.
+// Classic scripts referenced from index.html are not walked here; they must
+// still appear in APP_SHELL if the page loads them.
 function moduleGraphFrom(entryFile) {
   const reached = new Set();
   const patterns = [

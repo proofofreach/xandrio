@@ -877,9 +877,16 @@ async function finishSuccessfulImport(data, options = {}) {
   downloadError.style.display = 'none';
   await loadLibrary();
   searchResults.innerHTML = '';
-  deps.navigateTo?.('library');
-  deps.openBook?.(data.bookId || data?.book?.id);
   downloadProgress?.stop?.();
+  const bookId = data.bookId || data?.book?.id;
+  if (bookId && typeof deps.openBook === 'function') {
+    // Do not send the router to library first. That starts a view transition
+    // whose apply() can paint library after openBook has already shown the
+    // player, leaving hash #/player with the library view active.
+    await deps.openBook(bookId);
+    return;
+  }
+  deps.navigateTo?.('library');
 }
 
 function startDownloadProgress(result) {

@@ -91,6 +91,15 @@ assert(
     /automaticRecoveryAttempts >= MAX_AUTOMATIC_RECOVERY_ATTEMPTS/.test(recoveryBody),
   'automatic recovery is capped at two attempts before handing over to the user'
 );
+assert(
+  recoveryBody.indexOf('!navigator.onLine') !== -1 &&
+    recoveryBody.indexOf('!navigator.onLine') < recoveryBody.indexOf('automaticRecoveryAttempts += 1'),
+  'offline waits do not spend an automatic recovery attempt'
+);
+assert(
+  /function recoverIdleUnreadyPlayback\(/.test(appSource),
+  'an idle unready Play has a prepare-before-Resume owner'
+);
 
 // The guard must stay held for the whole attempt. Releasing it at the top of
 // retry() — as the original did — let a second error start a parallel recovery

@@ -73,6 +73,8 @@ const ONLINE_LOCAL_FIRST_ENABLED = true;
 
 let automaticRecoveryAttempts = 0;
 let automaticRecoveryTimer = null;
+let waitingForOnline = false;
+let rateLimitedUntil = 0;
 // Recovery ownership. Every attempt captures the token that was current when it
 // started; a newer attempt, a chapter change or a book change replaces it, and
 // the older attempt then abandons instead of committing a stale source. Without
@@ -123,6 +125,7 @@ let shortcutOverlayController = null;
 let serviceWorkerReadiness = null;
 let serviceWorkerBootWindowOpen = true;
 let blockedWorkerOnlineRetry = null;
+let offlineUnavailableOnlineRetry = createOnlineRetryOwner(window);
 const foregroundPrioritySignals = new Map();
 const OFFLINE_WORKER_RELOAD_KEY = 'xandrio_offline_worker_reload';
 const SERVICE_WORKER_BOOT_DEADLINE_MS = 6000;
@@ -492,6 +495,10 @@ function recoverySourceTuple(snapshot, chapterIndex) {
 // Runs inside the tap. Nothing may be awaited before play().
 function resumeFromPreparedSource() {
   if (!chunkPlayer) return Promise.resolve();
+  if (!playbackEngineOwnsReadySource()) {
+    recoverIdleUnreadyPlayback();
+    return Promise.resolve();
+  }
   applySmartRewindForResume();
   const started = Promise.resolve(chunkPlayer.play());
   setResumePromptVisible(false);
@@ -525,6 +532,7 @@ function stopPendingAutomaticRecovery() {
 // the automatic-to-manual handoff deliberately does neither.
 function cancelPlaybackRecovery() {
   stopPendingAutomaticRecovery();
+  waitingForOnline = false;
   manualRecoveryInFlight = false;
   manualRecoveryToken = null;
   automaticRecoveryAttempts = 0;
@@ -593,8 +601,25 @@ function scheduleAutomaticPlaybackRecovery(error, snapshot) {
     const wait = Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0
       ? ` Try again in ${Math.ceil(retryAfterSeconds)}s.`
       : '';
+    if (Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0) {
+      rateLimitedUntil = Date.now() + retryAfterSeconds * 1000;
+    }
     setPlaybackReliabilityState('resume', 'Too many playback attempts');
     showToast(`Too many playback sessions started.${wait}`, 'error');
+    return true;
+  }
+
+  if (!navigator.onLine) {
+    if (waitingForOnline) return true;
+    waitingForOnline = true;
+    setPlaybackReliabilityState('resume', 'Waiting for connection');
+    window.addEventListener('online', () => {
+      waitingForOnline = false;
+      if (recoveryToken.cancelled) return;
+      if (!scheduleAutomaticPlaybackRecovery(error, lineageSnapshot)) {
+        offerManualPlaybackRecovery(error, lineageSnapshot);
+      }
+    }, { once: true });
     return true;
   }
 
@@ -613,16 +638,6 @@ function scheduleAutomaticPlaybackRecovery(error, snapshot) {
     let followUpError = null;
     try {
       if (token.cancelled) return;
-      if (!navigator.onLine) {
-        setPlaybackReliabilityState('resume', 'Waiting for connection');
-        window.addEventListener('online', () => {
-          if (token.cancelled) return;
-          if (!scheduleAutomaticPlaybackRecovery(error, lineageSnapshot)) {
-            offerManualPlaybackRecovery(error, lineageSnapshot);
-          }
-        }, { once: true });
-        return;
-      }
       recordPlaybackEvent({
         type: 'automatic-recovery',
         reason: error?.code || 'playback-error',
@@ -683,6 +698,7 @@ function handleChunkError(error) {
     // A stream that went dead mid-playback. Listed explicitly so a downloaded
     // chapter that stalls recovers the same way a continuous one does.
     || error?.code === 'MEDIA_STALLED'
+    || error?.code === 'MEDIA_RELOCATE_FAILED'
     // A rate limit is about the account, not the transport: it must be reported
     // even when the engine that failed had not reached continuous playback.
     || error?.status === 429
@@ -1497,6 +1513,34 @@ function closeTransientSheets() {
   clearSheetStack();
 }
 
+// Best-effort recovery after a failed open: put the previously playing book
+// back in the player without touching browser history. Re-fetches its data so
+// the player shows real state; playback stays paused (the user explicitly
+// tried to switch books) but the session is intact and resumable.
+async function restorePreviousSession(previous) {
+  const data = await apiGet(`/api/book/${encodeURIComponent(previous.bookId)}`);
+  // A newer open may have started while this fetch was in flight. The
+  // snapshot's token is the open that FAILED; if it no longer owns the
+  // player, restoration must discard itself entirely.
+  if (previous.token !== openBookToken) return false;
+  if (!data?.book || !Array.isArray(data.chapters)) return false;
+  currentBook = data.book;
+  chapters = data.chapters;
+  currentChapter = Math.max(0, Math.min(chapters.length - 1, previous.chapterIndex || 0));
+  currentBookFinished = Boolean(previous.position?.finished);
+  currentBookPlaybackSettings = previous.playbackSettings || {};
+  loadPlaybackSpeed(currentBookPlaybackSettings.playbackSpeed || 1);
+  // Replace the failed book's hash instead of pushing, so Back does not keep
+  // the book that never opened.
+  syncPlayerHash(currentBook.id, { replace: true });
+  chapterSelect.value = currentChapter;
+  bookTitle.textContent = currentBook.title || '';
+  updatePlaybackUI(false);
+  playbackSession.setBook(currentBook, { chapterIndex: currentChapter, finished: currentBookFinished });
+  await loadRestoredChapter(currentChapter, previous.position);
+  return true;
+}
+
 async function prioritizeForegroundBook(bookId = currentBook?.id) {
   if (!bookId || navigator.onLine === false) return false;
   const signaledAt = Date.now();
@@ -1554,22 +1598,18 @@ async function clearDeletedBookFromPlayer(bookId) {
 // Player Functions
 let openBookToken = 0;
 let openingBookId = null;
+// Snapshot of the outgoing session, filled at commit time so the catch block
+// can restore what the user was doing if a late open failure strands them.
+let previousSession = null;
 async function openBook(bookId) {
   const token = ++openBookToken;
+  offlineUnavailableOnlineRetry.clear();
   openingBookId = String(bookId);
-  // Retire chapter selection/transport work owned by the book being left.
-  // A later book response also checks `token` before touching shared state.
-  loadChapterToken++;
-  if (currentBook?.id && String(currentBook.id) !== String(bookId)) {
-    try { chunkPlayer?.pause?.(); } catch {}
-    updatePlaybackUI(false);
-    checkpointPlayback();
-  }
-  // Keep the address bar/history in sync no matter who called us (router,
-  // library tap, post-download/upload flow).
-  syncPlayerHash(bookId);
-  void prioritizeForegroundBook(bookId);
   try {
+    // Fire-and-forget hint: mutates no player state, so it is safe to send
+    // before the open is known to succeed. The server drops the preference
+    // if this book never becomes active.
+    void prioritizeForegroundBook(bookId);
     let data;
     let usedOfflineFallback = false;
     try {
@@ -1587,11 +1627,48 @@ async function openBook(bookId) {
     }
 
     if (token !== openBookToken) return false;
-    const nextBook = data.book;
-    const nextChapters = data.chapters;
+    const nextBook = data?.book;
+    const nextChapters = data?.chapters;
+    if (!nextBook || typeof nextBook !== 'object' || nextBook.id == null || !Array.isArray(nextChapters)) {
+      throw new Error('Invalid book data');
+    }
     const nextPlaybackSettings = await getBookPlaybackSettings(bookId);
     if (token !== openBookToken) return false;
 
+    // Snapshot the outgoing session so any failure AFTER this point (chapter
+    // load, engine selection, transition) can restore what the user was
+    // doing instead of stranding them on a broken book. Stored on the module
+    // slot ONLY so the catch block can reach it; each invocation overwrites
+    const liveTime = Number(chunkPlayer?.getCurrentTime?.());
+    const checkpoint = currentBook ? getLocalPlaybackCheckpoint(String(currentBook.id)) : null;
+    const offset = Number.isFinite(liveTime) && liveTime > 0
+      ? liveTime
+      : Number(checkpoint?.timestamp ?? checkpoint?.currentTime ?? checkpoint?.chunkTime) || 0;
+    previousSession = currentBook ? {
+      token,
+      bookId: String(currentBook.id),
+      chapterIndex: currentChapter,
+      position: {
+        chapterIndex: currentChapter,
+        currentTime: offset,
+        chunkTime: offset,
+        timestamp: offset,
+        finished: Boolean(currentBookFinished)
+      },
+      wasPlaying: Boolean(chunkPlayer?.isPlaying),
+      playbackSettings: currentBookPlaybackSettings
+    } : null;
+    // Do not disturb the active session until the target can be opened. From
+    // here, this request owns the player, route, and chapter-selection work.
+    loadChapterToken++;
+    if (currentBook?.id && String(currentBook.id) !== String(bookId)) {
+      try { chunkPlayer?.pause?.(); } catch {}
+      updatePlaybackUI(false);
+      checkpointPlayback();
+    }
+    // Keep the address bar/history in sync no matter who called us (router,
+    // library tap, post-download/upload flow).
+    syncPlayerHash(bookId);
     currentBook = nextBook;
     chapters = nextChapters;
     void refreshGuideState(bookId);
@@ -1726,13 +1803,13 @@ async function openBook(bookId) {
     // Load saved playback speed
     loadPlaybackSpeed(currentBookPlaybackSettings.playbackSpeed);
     
-    // Restore sleep timer if active
     restoreSleepTimer();
 
     const chapterLoad = await loadRestoredChapter(chapterToLoad, restorePosition);
     if (token !== openBookToken || currentBook?.id !== nextBook.id) return false;
     if (chapterLoad?.loaded !== true) {
       updatePlaybackUI(false);
+      if (previousSession?.token === token) previousSession = null;
       return true;
     }
     checkpointPlayback();
@@ -1740,12 +1817,26 @@ async function openBook(bookId) {
     if (reconcileBackward) {
       await savePosition({ allowBackward: true, force: true });
     }
-    
+
+    if (previousSession?.token === token) previousSession = null;
     return true;
   } catch (err) {
     if (token !== openBookToken) return false;
     console.error('Failed to open book:', err);
     showToast("Couldn't open book", 'error');
+    const snapshot = previousSession?.token === token ? previousSession : null;
+    previousSession = previousSession && previousSession.token !== token ? previousSession : null;
+    if (snapshot && snapshot.token === token) {
+      // Restore the interrupted session: reload the previous book's player
+      // state without re-entering openBook (which would rewrite history).
+      // Awaited and token-guarded so a slow restore can never overwrite a
+      // newer open that starts while it runs.
+      try {
+        await restorePreviousSession(snapshot);
+      } catch (restoreError) {
+        console.error('Failed to restore previous playback session:', restoreError);
+      }
+    }
     return false;
   } finally {
     if (token === openBookToken) openingBookId = null;
@@ -1780,11 +1871,36 @@ function clearBlockedWorkerOnlineRetry() {
   blockedWorkerOnlineRetry = null;
 }
 
+function createOnlineRetryOwner(eventTarget) {
+  let listener = null;
+  let key = null;
+
+  return {
+    clear() {
+      if (listener) eventTarget.removeEventListener('online', listener);
+      listener = null;
+      key = null;
+    },
+    register({ bookId, chapterIndex, onRetry }) {
+      this.clear();
+      key = { bookId, chapterIndex };
+      listener = () => {
+        const target = key;
+        listener = null;
+        key = null;
+        onRetry(target);
+      };
+      eventTarget.addEventListener('online', listener, { once: true });
+    }
+  };
+}
+
 async function loadChapter(index, options = {}) {
   if (!Number.isInteger(index) || index < 0 || index >= chapters.length) {
     return { loaded: false, reason: 'invalid-chapter' };
   }
   clearBlockedWorkerOnlineRetry();
+  offlineUnavailableOnlineRetry.clear();
   if (!['automatic-recovery', 'manual-recovery'].includes(options.reason)) {
     clearPlaybackRecoveryTimers();
     automaticRecoveryAttempts = 0;
@@ -1924,11 +2040,16 @@ async function loadChapter(index, options = {}) {
       detail: 'This book isn’t downloaded. It will start when you’re back online.'
     });
     updatePlaybackUI(false);
-    const resumeWhenOnline = () => {
-      currentBookOfflineFallback = false;
-      if (currentBook?.id && currentChapter === index) loadChapter(index);
-    };
-    window.addEventListener('online', resumeWhenOnline, { once: true });
+    offlineUnavailableOnlineRetry.register({
+      bookId: currentBook?.id || '',
+      chapterIndex: index,
+      onRetry: ({ bookId, chapterIndex }) => {
+        currentBookOfflineFallback = false;
+        if (currentBook?.id === bookId && currentChapter === chapterIndex) {
+          void loadChapter(chapterIndex);
+        }
+      }
+    });
     return { loaded: false, reason: 'offline-unavailable' };
   }
 
@@ -2130,6 +2251,52 @@ function playbackEngineOwnsSelectedBook() {
   );
 }
 
+function playbackEngineOwnsReadySource() {
+  if (!playbackEngineOwnsSelectedBook()) return false;
+  if (typeof chunkPlayer.ownsReadySource !== 'function') return true;
+  const selectedBookId = openingBookId || currentBook?.id;
+  return chunkPlayer.ownsReadySource(selectedBookId, currentChapter);
+}
+
+function isPlaybackSourcePreparing() {
+  return Boolean(
+    chunkPlayer?.isPreparingSource?.()
+    || automaticRecoveryInFlight
+    || manualRecoveryInFlight
+    || waitingForOnline
+  );
+}
+
+function recoverIdleUnreadyPlayback() {
+  if (!currentBook || !chunkPlayer) return;
+  if (isPlaybackSourcePreparing()) return;
+  if (Date.now() < rateLimitedUntil) {
+    const wait = Math.ceil((rateLimitedUntil - Date.now()) / 1000);
+    setPlaybackReliabilityState('resume', 'Too many playback attempts');
+    showToast(
+      wait > 0
+        ? `Too many playback sessions started. Try again in ${wait}s.`
+        : 'Too many playback sessions started.',
+      'error'
+    );
+    return;
+  }
+  const snapshot = retainRecoverySnapshot({
+    bookId: currentBook.id,
+    chapterIndex: currentChapter,
+    startOffsetSeconds: Math.max(0, Number(chunkPlayer.getCurrentTime?.()) || 0),
+    servedTier: chunkPlayer.servedTier || null,
+    endChapterIndex: Number.isInteger(chunkPlayer.endChapterIndex)
+      ? chunkPlayer.endChapterIndex
+      : null
+  });
+  if (!snapshot) return;
+  offerManualPlaybackRecovery(
+    Object.assign(new Error('Playback source is not ready'), { code: 'SOURCE_NOT_READY' }),
+    snapshot
+  );
+}
+
 async function togglePlayPause(forcePlay = false) {
   forcePlay = forcePlay === true;
   if (!currentBook || !chunkPlayer) return;
@@ -2139,16 +2306,21 @@ async function togglePlayPause(forcePlay = false) {
       // local-source checks are still pending. Until the media engine has been
       // retargeted, its persistent audio element still belongs to the outgoing
       // book. Never let a tap (or lock-screen command) resume that stale source.
-      if (!playbackEngineOwnsSelectedBook()) {
+      if (!playbackEngineOwnsReadySource()) {
         try { chunkPlayer.pause?.(); } catch {}
+        const reason = playbackEngineOwnsSelectedBook() ? 'source-not-ready' : 'book-switch';
         recordPlaybackEvent({
           type: 'stale-play-blocked',
-          reason: 'book-switch',
+          reason,
           chapterIndex: currentChapter,
           sourceKind: chunkPlayer.backend || playbackBackend || 'unknown'
         });
-        setPlaybackReliabilityState('active', 'Loading selected book');
         updatePlaybackUI(false);
+        if (reason === 'book-switch') {
+          setPlaybackReliabilityState('active', 'Loading selected book');
+          return;
+        }
+        recoverIdleUnreadyPlayback();
         return;
       }
       // Nothing may be awaited between here and play(): iOS revokes the user
@@ -2166,6 +2338,10 @@ async function togglePlayPause(forcePlay = false) {
     scheduleServerPositionSave();
   } catch (err) {
     updatePlaybackUI(false);
+    if (err?.code === 'SOURCE_NOT_READY') {
+      recoverIdleUnreadyPlayback();
+      return;
+    }
     if (needsReliablePlayback() && (err.name === 'NotAllowedError' || err.name === 'AbortError')) {
       console.error('Playback error:', err);
       setResumePromptVisible(true);
@@ -2291,7 +2467,7 @@ function isNativeSingleFileReady() {
     audioPlayer &&
     audioPlayer.src &&
     chunkPlayer?.supportsNativeMediaSession &&
-    playbackEngineOwnsSelectedBook()
+    playbackEngineOwnsReadySource()
   );
 }
 
@@ -2356,10 +2532,14 @@ function setupMediaSessionHandlers() {
     seekto: async (details) => {
       if (!chunkPlayer || typeof details.seekTime !== 'number') return;
       invalidatePlaybackRecoveryForUserSeek();
-      await chunkPlayer.seek(details.seekTime);
-      checkpointPlayback();
-      savePosition({ allowBackward: true });
-      updateMediaSessionPosition();
+      try {
+        await chunkPlayer.seek(details.seekTime);
+        checkpointPlayback();
+        savePosition({ allowBackward: true });
+        updateMediaSessionPosition();
+      } catch (error) {
+        handleChunkError(error);
+      }
     }
   };
   Object.entries(handlers).forEach(([action, handler]) => {
@@ -2395,12 +2575,15 @@ function setupLifecycleHandlers() {
 }
 
 async function skip(seconds) {
-  if (chunkPlayer) {
-    invalidatePlaybackRecoveryForUserSeek();
+  if (!chunkPlayer) return;
+  invalidatePlaybackRecoveryForUserSeek();
+  try {
     await chunkPlayer.skip(seconds);
     checkpointPlayback();
     savePosition({ allowBackward: seconds < 0 });
     updateMediaSessionPosition();
+  } catch (error) {
+    handleChunkError(error);
   }
 }
 
@@ -2421,6 +2604,30 @@ async function handleAudioEnd(detail = {}) {
       streamTime: audioPlayer?.currentTime
     });
     expireSleepTimer('chapter');
+    const nextChapter = currentChapter + 1;
+    if (nextChapter < chapters.length) {
+      currentChapter = nextChapter;
+      playbackSession.setBook(currentBook, {
+        chapterIndex: nextChapter,
+        finished: false
+      });
+      if (chapterSelect) chapterSelect.value = String(nextChapter);
+      syncPlaybackProgressScope();
+      updateChapterTrigger();
+      renderChapterList();
+      syncMiniPlayerInfo();
+      updateMediaSessionMetadata();
+      updateMediaSessionPosition();
+      updateBookProgress();
+      checkpointPlayback({ force: true });
+      scheduleServerPositionSave(0);
+    } else {
+      setCurrentBookFinished(true);
+      checkpointPlayback({ force: true, finished: true });
+      await savePosition({ force: true, finished: true });
+      updateBookProgress();
+    }
+    updatePlaybackUI(false);
     return;
   }
   if (isSleepTimerChapterTarget(currentBook?.id, currentChapter)) {

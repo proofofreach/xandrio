@@ -134,13 +134,17 @@ export function navigateTo(view, bookId = null, { replace = false } = {}) {
 // (library tap, post-download, post-upload). This keeps the address bar and
 // history in sync without re-triggering the router for a book that is already
 // being opened.
-export function syncPlayerHash(bookId) {
+export function syncPlayerHash(bookId, { replace = false } = {}) {
   const hash = `#/player/${encodeURIComponent(bookId)}`;
   if (window.location.hash === hash) {
     lastRenderedKey = `player:${bookId}`;
     return;
   }
   lastRenderedKey = `player:${bookId}`; // set first so the hashchange no-ops
+  if (replace) {
+    window.history.replaceState(null, '', window.location.pathname + window.location.search + hash);
+    return;
+  }
   window.location.hash = hash;
 }
 

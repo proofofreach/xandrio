@@ -20,6 +20,22 @@ function json(body, status = 200, headers = {}) {
 function bytes(value, headers = {}) {
   return new Response(new ReadableStream({ start(controller) { controller.enqueue(Buffer.from(value)); controller.close(); } }), { status: 200, headers: { 'content-type': 'application/epub+zip', ...headers } });
 }
+function deferredBytes(headers = {}) {
+  let controller;
+  const requested = new Promise(resolve => {
+    controller = { resolve, value: null };
+  });
+  const body = new ReadableStream({ start(streamController) {
+    controller.value = streamController;
+    controller.resolve();
+  }});
+  return {
+    response: new Response(body, { status: 200, headers: { 'content-type': 'application/epub+zip', ...headers } }),
+    requested,
+    finish(value) { controller.value.enqueue(Buffer.from(value)); controller.value.close(); }
+  };
+}
+function nextTick() { return new Promise(resolve => setImmediate(resolve)); }
 function queuedFetch(...responses) {
   const calls = [];
   const fetchImpl = async (url, options = {}) => {
@@ -36,6 +52,21 @@ async function tempClient(fetchImpl, options = {}) {
   return { directory, authFile: path.join(directory, 'auth.json'), client: createZLibraryClient({ fetchImpl, lookupImpl: async () => [{ address: '8.8.8.8', family: 4 }], authFile: path.join(directory, 'auth.json'), baseUrl: 'https://z-library.test', fallbackBaseUrls: [], requestTimeoutMs: 100, downloadTimeoutMs: 100, maxDownloadBytes: 100, maxJsonBytes: 4096, ...options }) };
 }
 async function writesSession(authFile) { await fs.writeFile(authFile, JSON.stringify({ version: 2, userId: '7', userKey: 'token', baseUrl: 'https://z-library.test', verifiedAt: '2026-01-01T00:00:00.000Z' })); }
+async function trackDownloadFileHandle(run) {
+  const open = fs.open;
+  const handles = [];
+  fs.open = async (...args) => {
+    const handle = await open(...args);
+    handles.push(handle);
+    return handle;
+  };
+  try {
+    await run();
+    return handles;
+  } finally {
+    fs.open = open;
+  }
+}
 
 (async () => {
   console.log('\n━━━ Z-Library client ━━━');
@@ -90,6 +121,53 @@ async function writesSession(authFile) { await fs.writeFile(authFile, JSON.strin
     assert.deepEqual(Object.keys(saved).sort(), ['baseUrl', 'userId', 'userKey', 'verifiedAt', 'version']);
     assert.equal((await fs.stat(authFile)).mode & 0o777, 0o600);
     await fs.rm(directory, { recursive: true, force: true });
+  });
+  await test('disconnect invalidates an in-flight connect before it can persist a session', async () => {
+    let resolveProfile;
+    const profile = new Promise(resolve => { resolveProfile = resolve; });
+    const mock = queuedFetch(
+      json({ success: true, response: { user_id: '7', user_key: 'token' } }),
+      () => profile
+    );
+    const { client, authFile, directory } = await tempClient(mock.fetchImpl);
+    const connecting = client.connect({ email: 'reader@example.test', password: 'secret' });
+    await nextTick();
+    await client.disconnect();
+    resolveProfile(json({ success: true, user: { downloads_today: 0, downloads_limit: 10 } }));
+    assert.equal((await connecting).state, 'disconnected');
+    assert.equal(client.hasStoredSession(), false);
+    await assert.rejects(() => fs.access(authFile));
+    await fs.rm(directory, { recursive: true, force: true });
+  });
+  await test('disconnect invalidates a connect whose credential publication is already in progress', async () => {
+    const rename = fs.rename;
+    let publicationReached;
+    const publicationStarted = new Promise(resolve => { publicationReached = resolve; });
+    let releasePublication;
+    const release = new Promise(resolve => { releasePublication = resolve; });
+    fs.rename = async (...args) => {
+      publicationReached();
+      await release;
+      return rename(...args);
+    };
+    const mock = queuedFetch(
+      json({ success: true, response: { user_id: '7', user_key: 'token' } }),
+      json({ success: true, user: { downloads_today: 0, downloads_limit: 10 } })
+    );
+    const { client, authFile, directory } = await tempClient(mock.fetchImpl);
+    try {
+      const connecting = client.connect({ email: 'reader@example.test', password: 'secret' });
+      await publicationStarted;
+      const disconnecting = client.disconnect();
+      releasePublication();
+      await disconnecting;
+      assert.equal((await connecting).state, 'disconnected');
+      assert.equal(client.hasStoredSession(), false);
+      await assert.rejects(() => fs.access(authFile));
+    } finally {
+      fs.rename = rename;
+      await fs.rm(directory, { recursive: true, force: true });
+    }
   });
 
   await test('connect accepts the current EAPI user token shape', async () => {
@@ -529,6 +607,93 @@ async function writesSession(authFile) { await fs.writeFile(authFile, JSON.strin
     assert.equal(mock.calls[2].url, 'https://cdn.example.test/book.epub');
     assert.equal(mock.calls[2].options.headers.Cookie, undefined);
     await assert.rejects(() => fs.access(`${destination}.part`));
+    await fs.rm(directory, { recursive: true, force: true });
+  });
+  await test('download closes its FileHandle exactly once on success and stream failure', async () => {
+    const success = queuedFetch(
+      json({ success: true, user: { downloads_today: 1, downloads_limit: 10 } }),
+      json({ success: true, file: { downloadLink: 'https://cdn.example.test/book.epub' } }),
+      bytes('epub-bytes', { 'content-length': '10' })
+    );
+    const successClient = await tempClient(success.fetchImpl);
+    await writesSession(successClient.authFile);
+    const [successHandle] = await trackDownloadFileHandle(() =>
+      successClient.client.download({ zlibId: '1', hash: 'h' }, path.join(successClient.directory, 'book.epub'))
+    );
+    assert.equal(successHandle.fd, -1);
+    await fs.rm(successClient.directory, { recursive: true, force: true });
+
+    const failure = queuedFetch(
+      json({ success: true, user: { downloads_today: 1, downloads_limit: 10 } }),
+      json({ success: true, file: { downloadLink: 'https://cdn.example.test/book.epub' } }),
+      bytes('epub-bytes', { 'content-length': '10' })
+    );
+    const failureClient = await tempClient(failure.fetchImpl);
+    await writesSession(failureClient.authFile);
+    const rename = fs.rename;
+    fs.rename = async () => {
+      const error = new Error('rename failed');
+      error.code = 'EIO';
+      throw error;
+    };
+    try {
+      const [failureHandle] = await trackDownloadFileHandle(() =>
+        assert.rejects(
+          () => failureClient.client.download({ zlibId: '1', hash: 'h' }, path.join(failureClient.directory, 'book.epub')),
+          error => error.code === 'ZLIB_DOWNLOAD_INVALID'
+        )
+      );
+      assert.equal(failureHandle.fd, -1);
+    } finally {
+      fs.rename = rename;
+      await fs.rm(failureClient.directory, { recursive: true, force: true });
+    }
+  });
+  await test('concurrent downloads to one destination use isolated temporary files', async () => {
+    const slow = deferredBytes({ 'content-length': '10' });
+    const fetchImpl = async url => {
+      const value = String(url);
+      if (value.endsWith('/eapi/user/profile')) return json({ success: 1, user: { downloads_today: 1, downloads_limit: 10 } });
+      if (value.includes('/eapi/book/a/')) return json({ success: 1, file: { downloadLink: 'https://cdn.example.test/a.epub' } });
+      if (value.includes('/eapi/book/b/')) return json({ success: 1, file: { downloadLink: 'https://cdn.example.test/b.epub' } });
+      if (value.endsWith('/a.epub')) return slow.response;
+      if (value.endsWith('/b.epub')) return bytes('same-bytes', { 'content-length': '10' });
+      throw new Error(`unexpected fetch ${value}`);
+    };
+    const { client, authFile, directory } = await tempClient(fetchImpl);
+    await writesSession(authFile);
+    const destination = path.join(directory, 'book.epub');
+    const first = client.download({ zlibId: 'a', hash: 'h' }, destination);
+    await slow.requested;
+    await nextTick();
+    const second = client.download({ zlibId: 'b', hash: 'h' }, destination);
+    slow.finish('same-bytes');
+    await Promise.all([first, second]);
+    assert.equal(await fs.readFile(destination, 'utf8'), 'same-bytes');
+    await fs.rm(directory, { recursive: true, force: true });
+  });
+
+  await test('a failed concurrent download removes only its own temporary file', async () => {
+    const slow = deferredBytes({ 'content-length': '10' });
+    const fetchImpl = async url => {
+      const value = String(url);
+      if (value.endsWith('/eapi/user/profile')) return json({ success: 1, user: { downloads_today: 1, downloads_limit: 10 } });
+      if (value.includes('/eapi/book/a/')) return json({ success: 1, file: { downloadLink: 'https://cdn.example.test/a.epub' } });
+      if (value.includes('/eapi/book/b/')) return json({ success: 1, file: { downloadLink: 'https://cdn.example.test/b.epub' } });
+      if (value.endsWith('/a.epub')) return slow.response;
+      if (value.endsWith('/b.epub')) return bytes('<html>broken</html>');
+      throw new Error(`unexpected fetch ${value}`);
+    };
+    const { client, authFile, directory } = await tempClient(fetchImpl);
+    await writesSession(authFile);
+    const destination = path.join(directory, 'book.epub');
+    const first = client.download({ zlibId: 'a', hash: 'h' }, destination);
+    await slow.requested;
+    await nextTick();
+    await assert.rejects(() => client.download({ zlibId: 'b', hash: 'h' }, destination), error => error.code === 'ZLIB_DOWNLOAD_INVALID');
+    slow.finish('same-bytes');
+    await first;
+    assert.equal(await fs.readFile(destination, 'utf8'), 'same-bytes');
     await fs.rm(directory, { recursive: true, force: true });
   });
 

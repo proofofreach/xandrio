@@ -35,7 +35,6 @@ const umbrelReadme = readFileSync(resolve(root, 'alexandrio-xandrio/README.md'),
 const rootCompose = readFileSync(resolve(root, 'docker-compose.yml'), 'utf8');
 const localEngineCompose = readFileSync(resolve(root, 'docker-compose.local-engines.yml'), 'utf8');
 const changelog = readFileSync(resolve(root, 'docs/CHANGELOG.md'), 'utf8');
-const serviceWorker = readFileSync(resolve(root, 'public/sw.js'), 'utf8');
 const webManifest = readJson('public/manifest.webmanifest');
 
 if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(expectedVersion)) {
@@ -64,9 +63,6 @@ if (!localEngineCompose.includes(`XANDRIO_VERSION:-${expectedVersion}`)) {
 }
 if (!new RegExp(`^## \\[${expectedVersion.replace(/\./g, '\\.') }\\]`, 'm').test(changelog) || !/^## \[Unreleased\]/m.test(changelog)) {
   fail('changelog must contain [Unreleased] and the package release version');
-}
-if (!serviceWorker.includes(`const APP_RELEASE = '${expectedVersion}';`)) {
-  fail('service-worker application release does not match package.json');
 }
 if (webManifest.version !== expectedVersion) {
   fail('web manifest version does not match package.json');

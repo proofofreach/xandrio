@@ -78,8 +78,8 @@ function makeParser(config = {}) {
       if (typeof value === 'string') return { html: value, css: [] };
       return value;
     },
-    destroy: () => {
-      if (typeof config.onDestroy === 'function') config.onDestroy();
+    destroy: async () => {
+      if (typeof config.onDestroy === 'function') await config.onDestroy();
     }
   };
 }
@@ -470,6 +470,41 @@ section('Kindle Extraction');
   }
 
   {
+    const events = [];
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'xandrio-kindle-cover-destroy-'));
+    const coverSource = path.join(dir, 'source-cover.jpg');
+    const coverOutput = path.join(dir, 'out-cover.jpg');
+    await fs.writeFile(coverSource, jpegFixture());
+    const fakeFs = {
+      mkdir: async () => {},
+      readFile: (...args) => fs.readFile(...args),
+      writeFile: (...args) => fs.writeFile(...args),
+      rm: async () => {
+        events.push('rm');
+      }
+    };
+    const factories = parserFactories({
+      mobi: goodKindleConfig({
+        coverPath: coverSource,
+        onDestroy: async () => {
+          events.push('destroy-start');
+          await new Promise(resolve => setTimeout(resolve, 20));
+          events.push('destroy-end');
+        }
+      }),
+      kf8: new Error('not KF8')
+    });
+    await extractKindleCover('/tmp/book.mobi', 'mobi', coverOutput, {
+      resourceSaveDir: path.join(dir, 'resources'),
+      fs: fakeFs,
+      parserFactories: factories
+    });
+    await fs.rm(dir, { recursive: true, force: true });
+    assert(events.join('|') === 'destroy-start|destroy-end|rm',
+      'awaits Kindle cover parser destroy before removing the resource directory');
+  }
+
+  {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'xandrio-kindle-invalid-cover-'));
     const coverSource = path.join(dir, 'source-cover.bin');
     const coverOutput = path.join(dir, 'out-cover.jpg');
@@ -489,6 +524,47 @@ section('Kindle Extraction');
     }
     await fs.rm(dir, { recursive: true, force: true });
     assert(!ok && !outputExists, 'rejects unsupported Kindle cover bytes before compact-source deletion');
+  }
+
+  {
+    const events = [];
+    let finishRemoval;
+    let signalRemovalStarted;
+    const removalStarted = new Promise(resolve => {
+      signalRemovalStarted = resolve;
+    });
+    const resourceRemoval = new Promise(resolve => {
+      finishRemoval = resolve;
+    });
+    const fakeFs = {
+      mkdtemp: async () => '/tmp/xandrio-kindle-deferred-cleanup',
+      rm: async () => {
+        events.push('resource removal started');
+        signalRemovalStarted();
+        await resourceRemoval;
+        events.push('resource removal finished');
+      }
+    };
+    const metadataPromise = extractKindleMetadata('/tmp/book.mobi', {
+      format: 'mobi',
+      fs: fakeFs,
+      parserFactories: parserFactories({
+        mobi: goodKindleConfig(),
+        kf8: new Error('not a KF8 file')
+      })
+    });
+    await removalStarted;
+    let metadataResolved = false;
+    metadataPromise.then(() => {
+      metadataResolved = true;
+      events.push('success became available');
+    });
+    await Promise.resolve();
+    assert(!metadataResolved, 'does not make Kindle success available before temporary resource removal');
+    finishRemoval();
+    await metadataPromise;
+    assert(events.join('|') === 'resource removal started|resource removal finished|success became available',
+      'waits for temporary Kindle resource removal before reporting success');
   }
 
   console.log(`\nKindle extraction tests: ${passed} passed, ${failed} failed`);
