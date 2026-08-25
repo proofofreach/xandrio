@@ -900,10 +900,13 @@ function fakeAudio() {
     assert.deepStrictEqual(fetched, []);
   });
 
-  await test('a boundary reached mid-download abandons the pre-warm fetch', async () => {
+  await test('a boundary reached mid-download completes the pre-warm and then advances', async () => {
     const audio = fakeAudio();
     audio.canPlayType = () => '';
     let aborted = false;
+    let finishFetch;
+    const advances = [];
+    const chapterEnds = [];
     const { player } = makePlayer(audio, {
       isIOSLike: () => true,
       getChapterCount: () => 3,
@@ -913,7 +916,14 @@ function fakeAudio() {
           aborted = true;
           reject(Object.assign(new Error('aborted'), { name: 'AbortError' }));
         });
-      })
+        finishFetch = () => resolve({
+          ok: true,
+          status: 200,
+          async blob() { return new Blob(['audio']); }
+        });
+      }),
+      onChapterAdvance: detail => advances.push(detail),
+      onChapterEnd: detail => chapterEnds.push(detail ?? null)
     });
 
     const load = player.loadChapter('book1', 0);
@@ -929,8 +939,162 @@ function fakeAudio() {
 
     audio.ended = true;
     audio.emit('ended');
+    assert.strictEqual(aborted, false);
+    assert.strictEqual(player.chapterIndex, 0);
+    assert.strictEqual(player._isPlaying, true);
+    assert.strictEqual(audio.autoplay, true);
+    assert.deepStrictEqual(advances, []);
+    assert.deepStrictEqual(chapterEnds, []);
+
+    finishFetch();
     await new Promise(resolve => setImmediate(resolve));
+    await new Promise(resolve => setImmediate(resolve));
+
+    assert.strictEqual(aborted, false);
+    assert.match(audio.src, /^blob:/);
+    assert.strictEqual(player.chapterIndex, 1);
+    assert.deepStrictEqual(advances, [{
+      previousChapterIndex: 0,
+      chapterIndex: 1,
+      chapterTime: 0
+    }]);
+    assert.deepStrictEqual(chapterEnds, []);
+    player.dispose();
+  });
+
+  await test('a late pre-warm keeps autoplay when play is rejected without a gesture', async () => {
+    const audio = fakeAudio();
+    audio.canPlayType = () => '';
+    let finishFetch;
+    const advances = [];
+    const playbackChanges = [];
+    const { player } = makePlayer(audio, {
+      isIOSLike: () => true,
+      getChapterCount: () => 3,
+      resolveNextChapterUrl: async () => null,
+      fetch: (_url, options = {}) => new Promise(resolve => {
+        finishFetch = () => resolve({
+          ok: true,
+          status: 200,
+          async blob() { return new Blob(['audio']); }
+        });
+      }),
+      onChapterAdvance: detail => advances.push(detail),
+      onPlaybackChange: (playing, detail) => playbackChanges.push([playing, detail?.reason])
+    });
+
+    const load = player.loadChapter('book1', 0);
+    await new Promise(resolve => setImmediate(resolve));
+    audio.emit('loadedmetadata');
+    await load;
+    const play = player.play();
+    audio.emit('playing');
+    audio.currentTime = 1;
+    audio.emit('timeupdate');
+    await play;
+    await new Promise(resolve => setImmediate(resolve));
+
+    audio.play = async () => {
+      audio.playCalls += 1;
+      const error = new Error('not allowed');
+      error.name = 'NotAllowedError';
+      throw error;
+    };
+    audio.ended = true;
+    audio.emit('ended');
+    finishFetch();
+    await new Promise(resolve => setImmediate(resolve));
+    await new Promise(resolve => setImmediate(resolve));
+    await new Promise(resolve => setImmediate(resolve));
+
+    assert.match(audio.src, /^blob:/);
+    assert.strictEqual(player.chapterIndex, 1);
+    assert.strictEqual(audio.autoplay, true);
+    assert.strictEqual(player._isPlaying, true);
+    assert.strictEqual(advances.length, 1);
+    assert.deepStrictEqual(
+      playbackChanges.filter(change => change[1] === 'chapter-advance'),
+      []
+    );
+    player.dispose();
+  });
+
+  await test('a boundary reached mid-download that then fails still ends the ordinary way', async () => {
+    const audio = fakeAudio();
+    audio.canPlayType = () => '';
+    let finishFetch;
+    const advances = [];
+    const chapterEnds = [];
+    const { player } = makePlayer(audio, {
+      isIOSLike: () => true,
+      getChapterCount: () => 3,
+      resolveNextChapterUrl: async () => null,
+      fetch: (_url, options = {}) => new Promise((resolve, reject) => {
+        finishFetch = () => reject(Object.assign(new Error('unavailable'), { name: 'TypeError' }));
+      }),
+      onChapterAdvance: detail => advances.push(detail),
+      onChapterEnd: detail => chapterEnds.push(detail ?? null)
+    });
+
+    const load = player.loadChapter('book1', 0);
+    await new Promise(resolve => setImmediate(resolve));
+    audio.emit('loadedmetadata');
+    await load;
+    const play = player.play();
+    audio.emit('playing');
+    audio.currentTime = 1;
+    audio.emit('timeupdate');
+    await play;
+    await new Promise(resolve => setImmediate(resolve));
+
+    audio.ended = true;
+    audio.emit('ended');
+    assert.strictEqual(player.chapterIndex, 0);
+    assert.deepStrictEqual(chapterEnds, []);
+
+    finishFetch();
+    await new Promise(resolve => setImmediate(resolve));
+    await new Promise(resolve => setImmediate(resolve));
+
+    assert.strictEqual(player.chapterIndex, 0);
+    assert.deepStrictEqual(advances, []);
+    assert.strictEqual(chapterEnds.length, 1);
+    player.dispose();
+  });
+
+  await test('a sleep timer armed after pre-warm starts still stops at the boundary', async () => {
+    const audio = fakeAudio();
+    let stopAtCurrentChapter = false;
+    let aborted = false;
+    const { player, advances, chapterEnds } = downloadedPlayer(audio, {
+      getContinuousEndChapter: () => (stopAtCurrentChapter ? 0 : null),
+      fetch: (_url, options = {}) => new Promise((resolve, reject) => {
+        options.signal?.addEventListener('abort', () => {
+          aborted = true;
+          reject(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+        });
+      })
+    });
+
+    const load = player.loadChapter('book1', 0);
+    audio.emit('loadedmetadata');
+    await load;
+    const play = player.play();
+    audio.emit('playing');
+    audio.currentTime = 1;
+    audio.emit('timeupdate');
+    await play;
+    await new Promise(resolve => setImmediate(resolve));
+    stopAtCurrentChapter = true;
+
+    audio.ended = true;
+    audio.emit('ended');
+    await new Promise(resolve => setImmediate(resolve));
+
     assert.strictEqual(aborted, true);
+    assert.deepStrictEqual(advances, []);
+    assert.strictEqual(chapterEnds.length, 1);
+    player.dispose();
   });
 
   await test('a sleep timer that stops at this chapter neither pre-warms nor advances', async () => {

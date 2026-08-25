@@ -185,5 +185,20 @@ assert(
   );
 }
 
+{
+  const body = functionBody('loadChapter');
+  assert(body.length > 0, 'loadChapter is present in app.js');
+  assert(
+    !appSource.includes('ONLINE_LOCAL_FIRST_ENABLED'),
+    'the online local-first soak flag is gone'
+  );
+  assert(
+    /options\.bypassLocalSource/.test(body) &&
+      /await localChapterSource\(currentBook\.id, index\)/.test(body) &&
+      !/offlineMode\s*\?/.test(body.split('await localChapterSource')[0].slice(-200)),
+    'loadChapter always consults the local chapter source unless explicitly bypassed'
+  );
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);
