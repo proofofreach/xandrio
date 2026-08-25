@@ -198,6 +198,10 @@ assert(
       !/offlineMode\s*\?/.test(body.split('await localChapterSource')[0].slice(-200)),
     'loadChapter always consults the local chapter source unless explicitly bypassed'
   );
+  assert(
+    body.includes("chunkPlayer.pause('source-change')"),
+    'loadChapter pauses as a source change so native autoplay fallback stays armed'
+  );
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

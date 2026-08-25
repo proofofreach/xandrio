@@ -1908,7 +1908,7 @@ async function loadChapter(index, options = {}) {
     chapterIndex: index,
     online: navigator.onLine
   });
-  if (chunkPlayer) chunkPlayer.pause();
+  if (chunkPlayer) chunkPlayer.pause('source-change');
   updatePlaybackUI(false);
   checkpointPlayback();
 
