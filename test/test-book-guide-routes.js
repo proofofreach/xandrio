@@ -36,6 +36,7 @@ async function run() {
   const providerStatusRateLimit = (_req, _res, next) => next();
   const providerLoginRateLimit = (_req, _res, next) => next();
   const guideGenerateRateLimit = (_req, _res, next) => next();
+  const guideDailyRateLimit = (_req, _res, next) => next();
   const guideReadRateLimit = (_req, _res, next) => next();
   const calls = [];
   const service = {
@@ -78,6 +79,7 @@ async function run() {
     providerStatusRateLimit,
     providerLoginRateLimit,
     guideGenerateRateLimit,
+    guideDailyRateLimit,
     guideReadRateLimit,
     isSafeBookId: value => /^book_/.test(value),
     log: { error() {} }
@@ -113,6 +115,15 @@ async function run() {
       route.method !== 'get' || route.path === '/api/book-guides/config'
     );
     assert(protectedRoutes.every(route => route.handlers[0] === requireAdmin));
+  });
+
+  await test('applies both global hourly and daily spend budgets to generation', () => {
+    const route = app.find(item => item.method === 'post' && item.path === '/api/book/:bookId/guide');
+    assert.deepStrictEqual(route.handlers.slice(0, 3), [
+      requireAdmin,
+      guideDailyRateLimit,
+      guideGenerateRateLimit
+    ]);
   });
 
   await test('starts generation from the persisted title tag rather than request assertions', async () => {

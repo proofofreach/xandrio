@@ -2476,15 +2476,16 @@ section('21. Error responses and bounded caches');
     assert(quiesced.every(call => call.fallback === 0), 'pronunciation invalidation clears unknown historical variants from chunk zero');
   })());
 
-  // deletedBookIds is bounded: oldest inserted ids are evicted beyond the cap
-  const { rememberDeletedBookId, deletedBookIds, MAX_DELETED_BOOK_IDS } = serverTestHooks;
+  // Deletion guards are retired only by a deliberate re-import of the same id;
+  // unrelated deletion volume cannot evict a still-live generation guard.
+  const { rememberDeletedBookId, deletedBookIds } = serverTestHooks;
   deletedBookIds.clear();
-  for (let i = 0; i < MAX_DELETED_BOOK_IDS + 25; i++) {
+  for (let i = 0; i < 225; i++) {
     rememberDeletedBookId(`deleted-book-${i}`);
   }
-  assertEqual(deletedBookIds.size, MAX_DELETED_BOOK_IDS, 'deletedBookIds is capped at MAX_DELETED_BOOK_IDS');
-  assert(!deletedBookIds.has('deleted-book-0'), 'deletedBookIds evicts the oldest-inserted id');
-  assert(deletedBookIds.has(`deleted-book-${MAX_DELETED_BOOK_IDS + 24}`), 'deletedBookIds retains the most recent id');
+  assertEqual(deletedBookIds.size, 225, 'deletedBookIds retains every active deletion guard');
+  assert(deletedBookIds.has('deleted-book-0'), 'unrelated deletes do not evict the oldest guard');
+  assert(deletedBookIds.has('deleted-book-224'), 'the newest guard is retained');
   deletedBookIds.clear();
 }
 

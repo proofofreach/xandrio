@@ -191,6 +191,7 @@ async function harness({ initialSourceText = EVIDENCE.join(' '), segmentChars, m
   let category = 'unknown';
   let sourceText = initialSourceText;
   let chapterStructureKey = 'structure-1';
+  let chapterReads = 0;
   const narrationLifecycle = [];
   const service = createBookGuideService({
     loadBook: async bookId => bookId === 'book_1'
@@ -203,7 +204,11 @@ async function harness({ initialSourceText = EVIDENCE.join(' '), segmentChars, m
           studyGuideCategorySetAt: category === 'nonfiction' ? '2026-08-13T11:00:00.000Z' : null
         }
       : null,
-    getChapters: async () => [{ title: 'Chapter One', type: 'chapter', text: sourceText, estimatedDuration: 300 }],
+    getChapters: async () => {
+      chapterReads += 1;
+      return [{ title: 'Chapter One', type: 'chapter', text: sourceText, estimatedDuration: 300 }];
+    },
+    getSourceVersion: async () => `${chapterStructureKey}:${sourceText}`,
     store,
     journal,
     provider,
@@ -235,6 +240,7 @@ async function harness({ initialSourceText = EVIDENCE.join(' '), segmentChars, m
     setLanguage(value) { language = value; },
     setCategory(value) { category = value; },
     setChapterStructureKey(value) { chapterStructureKey = value; },
+    chapterReads: () => chapterReads,
     setSourceText(value) { sourceText = value; }
   };
 }
@@ -260,6 +266,13 @@ async function run() {
         elapsedSeconds: null,
         etaSeconds: null
       });
+    });
+
+    await test('reuses a versioned source snapshot across repeated guide reads', async () => {
+      const before = h.chapterReads();
+      await h.service.get('book_1');
+      await h.service.get('book_1');
+      assert.strictEqual(h.chapterReads() - before, 1);
     });
 
     await test('reports disabled configuration explicitly', async () => {
