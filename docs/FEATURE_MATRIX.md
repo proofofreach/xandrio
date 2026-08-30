@@ -30,7 +30,6 @@ This matrix records the v1.1.0 release surface. Release preparation preserves ev
 | Packaging | Native Node.js 24 | Supported | CI test and audio-verification jobs |
 | Packaging | Docker and Docker Compose | Supported | Build-context, health, persistence, and release workflow checks |
 | Packaging | Optional Kokoro and Chatterbox containers | Supported, source-built | Pinned Python manifests; private service ports; first-run model egress; release build/import/scan gate |
-| Packaging | Umbrel digest-pinned bundle | Supported | Renderer and image-verification workflows |
 | Release | amd64 and arm64 OCI image, SBOM, signing, scan, checksums | Implemented but unpublished | Signed-tag release workflow; owner-controlled approval gate |
 
 The local test baseline on 2026-07-13 is 1,593 passing tests across 55 suites on Node 24, with Edge, Kokoro, and Chatterbox calibration fixtures passing. Live provider availability and provider terms are external conditions; mocked tests cannot guarantee them. The public release remains blocked by `docs/RELEASE_APPROVALS.md`, the historical secret scan, and `docs/ASSET_PROVENANCE.md`.

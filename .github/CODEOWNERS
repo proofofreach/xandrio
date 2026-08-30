@@ -5,7 +5,6 @@
 /.github/workflows/ @ProofOfReach
 /Dockerfile @ProofOfReach
 /alexandrio-xandrio/ @ProofOfReach
-/docs/UMBREL.md @ProofOfReach
 
 # Security and operator data
 /server.js @ProofOfReach

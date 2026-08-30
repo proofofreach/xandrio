@@ -1,5 +1,7 @@
-# Codebase Cleanup Report
+# Codebase Cleanup Report — Historical
 Date: 2026-02-05
+
+Retained as decision history only. The `_archive/` directory and the files listed below no longer exist in the repository.
 
 ## Summary
 - **68 files** moved to `_archive/`

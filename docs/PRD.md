@@ -27,7 +27,7 @@ On first use, the operator acknowledges the instance boundary and legal-use resp
 
 ## Non-functional requirements
 
-- Support private local, LAN, Tailscale/private-tunnel, reverse-proxy, Docker, and Umbrel deployments.
+- Support private local, LAN, Tailscale/private-tunnel, reverse-proxy, and Docker deployments.
 - Keep operator data in documented persistent storage and document backup, restore, retention, and complete deletion.
 - Make every outbound destination and its disablement method discoverable.
 - Treat Edge as an unofficial consumer-endpoint integration, disclose its outbound narration-text flow, and preserve local alternatives.

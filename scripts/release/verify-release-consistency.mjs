@@ -2,7 +2,7 @@
 /**
  * Reject a release when the source-controlled version declarations drift.
  * Image digests are deliberately supplied only after the multi-architecture
- * candidate has been tested; see render-umbrel-release.mjs.
+ * candidate has been tested.
  */
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -29,9 +29,6 @@ const packageJson = readJson('package.json');
 const packageLock = readJson('package-lock.json');
 const expectedVersion = packageJson.version;
 const expectedTag = `v${expectedVersion}`;
-const umbrel = readFileSync(resolve(root, 'alexandrio-xandrio/umbrel-app.yml'), 'utf8');
-const compose = readFileSync(resolve(root, 'alexandrio-xandrio/docker-compose.yml'), 'utf8');
-const umbrelReadme = readFileSync(resolve(root, 'alexandrio-xandrio/README.md'), 'utf8');
 const rootCompose = readFileSync(resolve(root, 'docker-compose.yml'), 'utf8');
 const localEngineCompose = readFileSync(resolve(root, 'docker-compose.local-engines.yml'), 'utf8');
 const changelog = readFileSync(resolve(root, 'docs/CHANGELOG.md'), 'utf8');
@@ -42,18 +39,6 @@ if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(expectedVersion)) {
 }
 if (packageLock.version !== expectedVersion || packageLock.packages?.['']?.version !== expectedVersion) {
   fail('package-lock.json root version does not match package.json');
-}
-if (!new RegExp(`^version: ["']${expectedVersion}["']$`, 'm').test(umbrel)) {
-  fail('alexandrio-xandrio/umbrel-app.yml version does not match package.json');
-}
-if (!compose.includes(`XANDRIO_IMAGE_TAG:-${expectedVersion}`)) {
-  fail('Umbrel Compose template default image tag does not match package.json');
-}
-if (!compose.includes('XANDRIO_IMAGE_DIGEST:?Set the tested multi-architecture image digest')) {
-  fail('Umbrel Compose template must require a tested image digest');
-}
-if (!umbrelReadme.includes(`--tag v${expectedVersion}`) || umbrelReadme.includes('alexandrio:1.0.0')) {
-  fail('Umbrel release instructions do not match package.json');
 }
 if (!rootCompose.includes(`XANDRIO_VERSION:-${expectedVersion}`)) {
   fail('root Docker Compose default version does not match package.json');
