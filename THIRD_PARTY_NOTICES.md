@@ -320,8 +320,8 @@ This file is generated from the locked installed Node dependency tree by `npm ru
 | pdfjs-dist | 6.2.108 | Apache-2.0 | https://github.com/mozilla/pdf.js.git |
 | picomatch | 2.3.2 | MIT | micromatch/picomatch |
 | picomatch | 4.0.5 | MIT | micromatch/picomatch |
-| playwright | 1.62.1 | Apache-2.0 | https://github.com/microsoft/playwright.git |
-| playwright-core | 1.62.1 | Apache-2.0 | https://github.com/microsoft/playwright.git |
+| playwright | 1.61.1 | Apache-2.0 | https://github.com/microsoft/playwright.git |
+| playwright-core | 1.61.1 | Apache-2.0 | https://github.com/microsoft/playwright.git |
 | playwright-extra | 4.3.6 | MIT | berstend/puppeteer-extra |
 | prebuild-install | 7.1.3 | MIT | https://github.com/prebuild/prebuild-install.git |
 | proc-log | 5.0.0 | ISC | https://github.com/npm/proc-log.git |
