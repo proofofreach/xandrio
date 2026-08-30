@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Removed
+
+- Umbrel packaging: the app-store manifest, digest-pinned bundle renderer,
+  image-verification workflow, and Umbrel documentation. Native, Docker, and
+  Docker Compose remain the supported packaging paths.
+
 ### Fixed
 
 - Catalog writes now take a cross-process `<store>.lock` file, and metadata
