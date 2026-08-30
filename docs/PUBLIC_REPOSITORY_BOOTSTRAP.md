@@ -19,8 +19,8 @@ Use a public repository name that is distinct from the legacy private remote.
 legacy repository and immediately reuse `ProofOfReach/alexandrio`: existing
 private clones still point at that path and could accidentally push the secret-
 bearing history into the new public repository. After the owner chooses the
-public name, update package metadata, documentation, workflow image names, and
-Umbrel references together before creating the release tag.
+public name, update package metadata, documentation, and workflow image names
+together before creating the release tag.
 
 ## Required GitHub controls
 

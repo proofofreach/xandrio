@@ -1,12 +1,13 @@
 # Xandrio Open-Source Release Plan
 
 Status: Implemented; external release approvals remain blocked
+Note: Umbrel packaging was retired on 2026-08-29. Umbrel items below are historical and no longer part of the release definition.
 Prepared: 2026-07-12
 Target: First public source and self-hosted distribution release
 
 ## 1. Objective
 
-Release Xandrio as an MIT-licensed, self-hosted personal reading server that users operate on their own hardware and under their own applicable law. Publish the source repository, container image, and Umbrel package with enough security, provenance, documentation, and release automation for an unfamiliar operator to install and maintain it.
+Release Xandrio as an MIT-licensed, self-hosted personal reading server that users operate on their own hardware and under their own applicable law. Publish the source repository and container image with enough security, provenance, documentation, and release automation for an unfamiliar operator to install and maintain it.
 
 The release preserves all existing functionality. This includes every current acquisition provider, file format, TTS engine, voice feature, playback feature, offline feature, and sync feature.
 
@@ -30,7 +31,6 @@ The release is complete only when all of these artifacts refer to the same teste
 - Public GitHub source repository.
 - Signed Git tag and GitHub release with release notes and checksums.
 - Public multi-architecture GHCR image for `linux/amd64` and `linux/arm64`.
-- Digest-pinned Umbrel manifest that installs anonymously.
 - Native Node.js installation instructions.
 - Docker and Docker Compose installation instructions.
 - Security, privacy/data-flow, legal-use, contribution, and support documentation.
@@ -96,7 +96,7 @@ Should the public release use `v1.0.0`, or should it advance because a `1.0.0` i
 
 #### Answer
 
-Resolved. The first public candidate is `v1.1.0`; release consistency checks enforce that version across package and Umbrel declarations.
+Resolved. The first public candidate is `v1.1.0`; release consistency checks enforce that version across package, Compose, changelog, and web-manifest declarations.
 
 ### #4: Are all bundled code and assets redistributable?
 
@@ -333,7 +333,7 @@ Tasks:
 
 - Rewrite the README opening to state that Xandrio is a self-hosted personal reading server.
 - Explain that the operator, not the project, hosts the server and controls its library and providers.
-- Provide separate quick starts for native Node, Docker Compose, Umbrel, and private remote access through Tailscale or another reverse proxy.
+- Provide separate quick starts for native Node, Docker Compose, and private remote access through Tailscale or another reverse proxy.
 - Correct current documentation drift, including:
   - clone directory and repository URL;
   - optional versus required provider credentials;
@@ -407,7 +407,7 @@ Tasks:
 - Test Edge, Kokoro, Chatterbox, custom voice, engine outage/recovery, voice changes, and cache invalidation.
 - Test playback, seeking, chapter transitions, speed, sleep timer, bookmarks, pronunciations, stats, sync/pairing, offline download/delete, and complete book deletion.
 - Test clean install and upgrade on `linux/amd64` and `linux/arm64`.
-- Test localhost, LAN, Tailscale/reverse proxy, and Umbrel access modes.
+- Test localhost, LAN, and Tailscale/reverse proxy access modes.
 - Verify that disabling or leaving a provider unconfigured does not break upload or other providers.
 - Run full-history secret scan, dependency audit, SBOM generation, container scan, licence check, and build-context inspection.
 - Produce a release-candidate report with every gate result, accepted risk, owner, and review date.
@@ -498,7 +498,7 @@ The shortest responsible path to publication is:
 6. Align versions and make the image workflow reproducible.
 7. Rewrite installation, security, legal-use, and data-flow documentation.
 8. Run the complete release-candidate matrix on both architectures.
-9. Publish one tested commit and image digest across GitHub, GHCR, and Umbrel.
+9. Publish one tested commit and image digest across GitHub and GHCR.
 
 ## 9. Release approval checklist
 

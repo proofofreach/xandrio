@@ -315,6 +315,7 @@ const CONCURRENCY_LIMITS = Object.freeze({
   search: positiveInteger(process.env.XANDRIO_CONCURRENCY_SEARCH, 4),
   upload: positiveInteger(process.env.XANDRIO_CONCURRENCY_UPLOAD, 2),
   metadata: positiveInteger(process.env.XANDRIO_CONCURRENCY_METADATA, 2),
+  cover: positiveInteger(process.env.XANDRIO_CONCURRENCY_COVER, 2),
   tts: positiveInteger(process.env.XANDRIO_CONCURRENCY_TTS, 8),
   voice: positiveInteger(process.env.XANDRIO_CONCURRENCY_VOICE, 1),
   download: positiveInteger(process.env.XANDRIO_CONCURRENCY_DOWNLOAD, 2)
@@ -456,17 +457,12 @@ const searchCoverService = createSearchCoverService({
 });
 const deletedBookIds = new Set();
 const bookMutationLocks = createBookMutationLocks();
-const MAX_DELETED_BOOK_IDS = 200;
 
-// Record a deleted book id, evicting the oldest-inserted entries beyond the cap.
-// A Set iterates in insertion order, so the first value is always the oldest.
+// A deletion guard is retired only when the same id is deliberately imported
+// again. Count-based eviction lets a burst of unrelated deletes resurrect old
+// generation intents while they are still capable of writing artifacts.
 function rememberDeletedBookId(bookId) {
   deletedBookIds.add(bookId);
-  while (deletedBookIds.size > MAX_DELETED_BOOK_IDS) {
-    const oldest = deletedBookIds.values().next().value;
-    if (oldest === undefined) break;
-    deletedBookIds.delete(oldest);
-  }
 }
 
 const bookArtifactCleaner = createBookArtifactCleaner({
@@ -474,10 +470,9 @@ const bookArtifactCleaner = createBookArtifactCleaner({
   fs,
   invalidateChapterCache,
   isBookDeleted: bookId => deletedBookIds.has(bookId),
-  // The in-memory tombstone is capped and is cleared by only some import
-  // paths, so a deferred sweep can fire against a book that has since been
-  // re-imported and delete its fresh artifacts. These two re-check the
-  // authoritative catalog under the same per-book lock the importer uses.
+  // Re-check the authoritative catalog under the same per-book lock used by
+  // imports, then retire the in-memory guard only after the final sweep has
+  // settled.
   bookStillExists: async bookId => {
     try {
       const books = await loadJSON(BOOKS_FILE, {});
@@ -489,7 +484,8 @@ const bookArtifactCleaner = createBookArtifactCleaner({
       return true;
     }
   },
-  withSweepLock: (bookId, task) => bookMutationLocks.withBookMutationLock(bookId, task)
+  withSweepLock: (bookId, task) => bookMutationLocks.withBookMutationLock(bookId, task),
+  onSweepsComplete: bookId => deletedBookIds.delete(bookId)
 });
 
 // Unified 500 response: log the full error server-side, return a generic public
@@ -2493,6 +2489,7 @@ const bookGuideProvider = usePrivateCodexGuides ? createCodexBookGuideProvider({
 const bookGuideService = createBookGuideService({
   loadBook: async bookId => (await loadJSON(BOOKS_FILE, {}))[bookId] || null,
   getChapters: bookPath => getChaptersCached(bookPath),
+  getSourceVersion: book => getFileIdentity(book.path),
   store: bookGuideStore,
   journal: bookGuideJournal,
   provider: bookGuideProvider,
@@ -2702,6 +2699,13 @@ function updateJSON(filePath, mutator, defaultValue = {}) {
   return jsonStore.update(filePath, mutator, defaultValue);
 }
 const downloadImportGate = new ConcurrencyGate(CONCURRENCY_LIMITS.download, { name: 'download' });
+const coverRefreshGate = new ConcurrencyGate(CONCURRENCY_LIMITS.cover, { name: 'cover-refresh' });
+const coverRefreshRateLimit = createRateLimitMiddleware({
+  windowMs: 60_000,
+  max: 12,
+  groups: [{ name: 'cover-refresh', max: 12, match: () => true }]
+});
+const coverRefreshJobs = new Map();
 
 function isSafeBookId(value) {
   return requestGuardIsSafeBookId(value);
@@ -3288,7 +3292,12 @@ registerCalibreRoutes(app, {
   loadBooks: () => loadJSON(BOOKS_FILE, {}),
   updateBooks: mutator => updateJSON(BOOKS_FILE, mutator),
   importBook: command => bookImporter.import(command),
-  withBookMutationLock: (bookId, task) => bookMutationLocks.withBookMutationLock(bookId, task),
+  withBookMutationLock: (bookId, task) => bookMutationLocks.withBookMutationLock(bookId, async () => {
+    // Calibre ids are deterministic, so a legitimate re-import is the
+    // lifecycle event that retires the prior deletion guard.
+    deletedBookIds.delete(bookId);
+    return task();
+  }),
   normalizeDescription: cleanBookDescription,
   normalizePublishedDate: value => publishedYearFromMetadata(value),
   persistCover: async (bookId, uploadedPath) => {
@@ -3527,6 +3536,7 @@ const bookMetadataRefreshService = createBookMetadataRefreshService({
 });
 
 
+
 // Playback, chapter audio, and chunk delivery — see lib/routes/playback-routes.js.
 // Registered here so the chunk routes keep their position relative to the
 // voice-cache and premium-prep routes below.
@@ -3734,6 +3744,9 @@ registerLibraryBookRoutes(app, {
   removeFileIfExists,
   ensureBookCover,
   persistCanonicalCoverPath,
+  coverRefreshGate,
+  coverRefreshRateLimit,
+  coverRefreshJobs,
   sendServerError
 });
 
@@ -3768,6 +3781,18 @@ registerPlaybackRoutes(app, {
   },
   offlineReadinessNotifications,
   prioritizeForegroundBook,
+  canPrioritizeForegroundBook: async (req, bookId) => {
+    const books = await loadJSON(BOOKS_FILE, {});
+    if (!books[bookId]) return false;
+    if (req.user?.role !== 'member') return true;
+    const userId = positionUserId(req);
+    const [shelvesStore, positionsStore] = await Promise.all([
+      loadJSON(SHELVES_FILE, {}),
+      loadJSON(POSITIONS_FILE, {})
+    ]);
+    return shelves.shelfForUser(shelvesStore, userId).includes(bookId) ||
+      Object.hasOwn(positionsForUser(positionsStore, userId), bookId);
+  },
   // The session id must match the one the position-save route builds, or the
   // look-ahead session this creates can never be retired: that route keys on
   // positionUserId(req) (which falls back to 'default'), so the 'legacy'
@@ -4555,7 +4580,6 @@ module.exports.__test = {
   xbookStore,
   rememberDeletedBookId,
   deletedBookIds,
-  MAX_DELETED_BOOK_IDS,
   concurrencyLimits: CONCURRENCY_LIMITS,
   getAnnasConfig,
   annasBrowserSearchPermitted,

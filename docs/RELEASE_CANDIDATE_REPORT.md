@@ -24,8 +24,7 @@ insufficient: each gate needs its own result and evidence.
 | Restart persistence | Pending | Fixture checksum and run log | Packaging owner | Pending |
 | Upgrade/rollback or FIRST-01 backup/restore | Pending | Matrix row DATA-02 or FIRST-01 evidence | Release owner | Pending |
 | Exact-digest security scan, provenance, signature, anonymous pull | Pending | Scan, attestation, signature, and pull URLs | Security owner | Pending |
-| Digest-pinned Umbrel bundle | Pending | Rendered artifact checksum | Umbrel maintainer | Pending |
-| Safari/iOS, LAN, remote route, and Umbrel manual checks | Pending | Matrix rows IOS-01, LAN-01, NET-01, UMB-01 | QA and deployment owners | Pending |
+| Safari/iOS, LAN, and remote route manual checks | Pending | Matrix rows IOS-01, LAN-01, NET-01 | QA and deployment owners | Pending |
 | Formats, engines, and live-provider checks | Pending | Matrix rows FMT-01 through PROV-02 | Import, TTS, and provider owners | Pending |
 | Open risks and accepted risks | Pending | `ACCEPTED_RISKS.md` review reference | Project owner | Pending |
 

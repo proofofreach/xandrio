@@ -16,9 +16,9 @@ jobs:
     if: github.event.repository.private == false || !contains(github.event.head_commit.message, '[skip private ci]')
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - uses: github/codeql-action/init@24ea975727876cf496b1eb0c5b36e96e01600b51 # v4.37.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: github/codeql-action/init@99df26d4f13ea111d4ec1a7dddef6063f76b97e9 # v4.37.0
         with:
           languages: javascript-typescript
           build-mode: none
-      - uses: github/codeql-action/analyze@24ea975727876cf496b1eb0c5b36e96e01600b51 # v4.37.0
+      - uses: github/codeql-action/analyze@99df26d4f13ea111d4ec1a7dddef6063f76b97e9 # v4.37.0

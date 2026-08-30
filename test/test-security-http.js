@@ -25,6 +25,7 @@ process.env.XANDRIO_CONCURRENCY_SEARCH = '2';
 process.env.XANDRIO_CONCURRENCY_DOWNLOAD = '1';
 process.env.XANDRIO_CONCURRENCY_UPLOAD = '1';
 process.env.XANDRIO_CONCURRENCY_METADATA = '1';
+process.env.XANDRIO_CONCURRENCY_COVER = '1';
 process.env.XANDRIO_CONCURRENCY_TTS = '2';
 process.env.XANDRIO_CONCURRENCY_VOICE = '1';
 
@@ -172,7 +173,7 @@ async function main() {
 
     test('documented concurrency environment controls are active', () => {
       assert.deepStrictEqual(serverTestHooks.concurrencyLimits, {
-        auth: 3, search: 2, download: 1, upload: 1, metadata: 1, tts: 2, voice: 1
+        auth: 3, search: 2, download: 1, upload: 1, metadata: 1, cover: 1, tts: 2, voice: 1
       });
     });
 
@@ -216,6 +217,40 @@ async function main() {
     const uploadLeftovers = await waitForUploadCleanup();
     test('an interrupted multipart upload leaves no temporary file', () => {
       assert.deepStrictEqual(uploadLeftovers, []);
+    });
+
+    for (const account of [
+      { username: 'coveradmin', password: 'password123', role: 'admin' },
+      { username: 'covermember', password: 'password123', role: 'member' }
+    ]) {
+      const created = await request(server, {
+        method: 'POST',
+        path: '/api/accounts',
+        headers: {
+          Authorization: 'Bearer security-test-token',
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(account)
+      });
+      test(`creates ${account.role} account for cover authority check`, () => assert.strictEqual(created.status, 200));
+    }
+    const memberLogin = await request(server, {
+      method: 'POST',
+      path: '/api/auth/login',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Forwarded-Proto': 'https'
+      },
+      body: JSON.stringify({ username: 'covermember', password: 'password123' })
+    });
+    const memberCookie = (memberLogin.headers['set-cookie']?.[0] || '').split(';', 1)[0];
+    const forcedCover = await request(server, {
+      path: '/api/cover/valid-book?force=1',
+      headers: { Cookie: memberCookie }
+    });
+    test('member accounts cannot force provider and ffmpeg cover refresh work', () => {
+      assert.strictEqual(memberLogin.status, 200);
+      assert.strictEqual(forcedCover.status, 403);
     });
   } finally {
     await new Promise(resolve => server.close(resolve));

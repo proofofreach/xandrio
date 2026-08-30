@@ -29,7 +29,7 @@ that can reach the port is trusted.
 | Localhost | One host account and local browser | Other local accounts, malicious files, provider responses | Bind to loopback, protect the host account and data directory, keep parsers updated |
 | Trusted LAN | Every device able to reach port 8181 | Untrusted guest/IoT clients reading the library or exhausting work queues | Prefer `XANDRIO_TOKEN`; otherwise isolate the LAN and do not expose the port beyond it |
 | Tailscale/private tunnel | Tailnet identity and ACLs plus Xandrio | Over-broad ACLs, shared devices, incorrect Serve configuration | Bind upstream privately, require tailnet identity/ACLs, use HTTPS, test from an unauthorized identity |
-| Umbrel/reverse proxy | Proxy, TLS boundary, origin forwarding, and Xandrio session | Public exposure, spoofed proxy headers, split PWA storage across hostnames, wrong CORS origin, anonymous image/package access | Set `XANDRIO_TOKEN`, TLS, exact `CORS_ORIGIN`, one `XANDRIO_CANONICAL_ORIGIN`, and the minimum `XANDRIO_TRUST_PROXY`; test cookie and Range playback through the proxy |
+| Reverse proxy | Proxy, TLS boundary, origin forwarding, and Xandrio session | Public exposure, spoofed proxy headers, split PWA storage across hostnames, wrong CORS origin, anonymous image/package access | Set `XANDRIO_TOKEN`, TLS, exact `CORS_ORIGIN`, one `XANDRIO_CANONICAL_ORIGIN`, and the minimum `XANDRIO_TRUST_PROXY`; test cookie and Range playback through the proxy |
 
 ## Principal abuse cases and mitigations
 
@@ -46,7 +46,7 @@ that can reach the port is trusted.
 | Readiness notification disclosure or subscription theft | Web Push is opt-in and its payload is encrypted for the subscribed browser, but the prepared title can appear on a lock screen. Protect `.env` and `data/push-subscriptions.json` as secrets: a subscription endpoint is a capability URL, and the VAPID private key authenticates the instance to push services. Expired endpoints are removed after push services return 404/410; valid endpoints otherwise remain until unsubscribed or removed by the operator. |
 | Voice misuse | Upload requires explicit authority/consent confirmation; references stay on the instance. Confirmation is a product control, not proof of consent. |
 | Copyright or provider-terms misuse | Unverified sources are disabled until per-instance acknowledgement and enablement; results and imports retain rights-status/provenance labels. Xandrio does not decide worldwide legality. |
-| Supply-chain replacement | Locked dependencies, pinned CI actions/base image, SBOMs, CodeQL/dependency review, image scanning, OIDC signing, and digest-only Umbrel promotion. |
+| Supply-chain replacement | Locked dependencies, pinned CI actions/base image, SBOMs, CodeQL/dependency review, image scanning, OIDC signing, and digest-only image promotion. |
 
 ## Operator verification
 

@@ -279,7 +279,7 @@ async function main() {
     await assert.rejects(fsp.access(`${target}.backups`), error => error.code === 'ENOENT');
   });
 
-  await test('critical stores validate and retain only the configured number of backups', async () => {
+  await test('critical stores retain newest backups plus a generational recovery floor', async () => {
     const target = file('critical.json');
     const store = jsonStore.createCriticalStore({
       filePath: target,
@@ -297,14 +297,26 @@ async function main() {
 
     const candidates = await store.listRecoveryCandidates();
     const backups = candidates.filter(candidate => candidate.kind === 'backup');
-    assert.strictEqual(backups.length, 2);
+    assert.strictEqual(backups.length, 3);
     assert(backups.every(candidate => candidate.valid));
     const versions = [];
     for (const backup of backups) {
       versions.push(JSON.parse(await fsp.readFile(backup.path, 'utf8')).version);
     }
-    assert.deepStrictEqual(versions.sort(), [2, 3]);
+    assert.deepStrictEqual(versions.sort(), [1, 2, 3]);
     assert.deepStrictEqual(await store.load(), { version: 4 });
+  });
+
+  await test('rapid writes cannot flush the oldest backup in the current hour', () => {
+    const hour = 2_000_000_000_000;
+    const backups = [
+      { path: 'newest', mtimeMs: hour + 4000 },
+      { path: 'newer', mtimeMs: hour + 3000 },
+      { path: 'older', mtimeMs: hour + 2000 },
+      { path: 'floor', mtimeMs: hour + 1000 }
+    ];
+    const retained = jsonStore.retainedBackupPaths(backups, 2, hour + 5000);
+    assert.deepStrictEqual([...retained].sort(), ['floor', 'newer', 'newest']);
   });
 
   await test('critical updates refuse corrupt current state after quarantining it', async () => {

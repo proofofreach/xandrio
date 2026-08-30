@@ -62,15 +62,6 @@ let pendingServerPositionTimer = null;
 const restoredPlaybackEventLedger = loadPlaybackEventLedger();
 let playbackEventLedger = restoredPlaybackEventLedger.slice();
 let persistedPlaybackEventLedger = restoredPlaybackEventLedger.slice();
-// Rollout control for playing a downloaded chapter from this device while the
-// network is up. A build-time constant on purpose: the deployment guard is a
-// local origin/HTTPS computation, not a server-driven config channel, and this
-// change did not warrant inventing one. Set to false and release to fall back
-// to streaming while online; offline playback is unaffected either way, and the
-// service worker's cache-only contract for scoped URLs is permanent and needs
-// no revert. Removing this flag once the rollout has soaked is expected.
-const ONLINE_LOCAL_FIRST_ENABLED = true;
-
 let automaticRecoveryAttempts = 0;
 let automaticRecoveryTimer = null;
 let waitingForOnline = false;
@@ -1917,7 +1908,7 @@ async function loadChapter(index, options = {}) {
     chapterIndex: index,
     online: navigator.onLine
   });
-  if (chunkPlayer) chunkPlayer.pause();
+  if (chunkPlayer) chunkPlayer.pause('source-change');
   updatePlaybackUI(false);
   checkpointPlayback();
 
@@ -1968,9 +1959,7 @@ async function loadChapter(index, options = {}) {
   const offlineMode = !navigator.onLine || currentBookOfflineFallback;
   const local = options.bypassLocalSource
     ? { available: false, reason: 'explicit-stream' }
-    : ONLINE_LOCAL_FIRST_ENABLED || offlineMode
-    ? await localChapterSource(currentBook.id, index)
-    : { available: false };
+    : await localChapterSource(currentBook.id, index);
   if (token !== loadChapterToken) return { loaded: false, reason: 'stale' };
   const offlineChapterAvailable = local.available;
   recordPlaybackEvent({

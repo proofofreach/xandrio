@@ -57,8 +57,16 @@ const TIMELINE_HIDDEN_POLL_RATIO = 5;
 // use the network, so the next chapter is fetched then and handed to the
 // element as an object URL, which needs neither network nor service worker at
 // the boundary. The lead has to cover a whole chapter download on a slow
-// connection; the fetch is cancelled implicitly by a chapter change.
+// connection. If `ended` still beats the fetch, the in-flight next chapter is
+// kept and swapped in when the blob is ready — aborting it left lock-screen
+// listening with no source. An explicit load or dispose still cancels it.
 const CHAPTER_PREWARM_LEAD_SECONDS = 45;
+// After `ended`, wait this long for an in-flight next-chapter blob before
+// giving up and taking the ordinary ended path.
+const CHAPTER_BOUNDARY_PREWARM_TIMEOUT_MS = 30000;
+// After a late swap whose play() was NotAllowedError, wait this long for
+// native `playing` (autoplay) before reporting a recoverable failure.
+const CHAPTER_ADVANCE_PLAY_WATCHDOG_MS = 10000;
 const { DisposableScope, LifecycleCancelledError, waitForMediaEvents } = globalThis.XandrioLifecycle || {};
 
 export class SingleFileChapterPlayer {
@@ -89,6 +97,12 @@ export class SingleFileChapterPlayer {
     this.prewarmLeadSeconds = Number(options.prewarmLeadSeconds) > 0
       ? Number(options.prewarmLeadSeconds)
       : CHAPTER_PREWARM_LEAD_SECONDS;
+    this.boundaryPrewarmTimeoutMs = Number(options.boundaryPrewarmTimeoutMs) > 0
+      ? Number(options.boundaryPrewarmTimeoutMs)
+      : CHAPTER_BOUNDARY_PREWARM_TIMEOUT_MS;
+    this.chapterAdvancePlayWatchdogMs = Number(options.chapterAdvancePlayWatchdogMs) > 0
+      ? Number(options.chapterAdvancePlayWatchdogMs)
+      : CHAPTER_ADVANCE_PLAY_WATCHDOG_MS;
     this.fetch = options.fetch || globalThis.fetch?.bind(globalThis) || null;
     this.preferStandardAudio = Boolean(options.preferStandardAudio);
     this.preparePlaybackRunway = options.preparePlaybackRunway !== false;
@@ -165,6 +179,10 @@ export class SingleFileChapterPlayer {
     this._prewarm = null;
     this._prewarmInFlight = null;
     this._prewarmController = null;
+    this._prewarmOp = null;
+    this._awaitingBoundaryPrewarm = false;
+    this._boundaryPrewarmTimeout = null;
+    this._chapterAdvancePlayWatchdog = null;
     // A chapter that has no local source, or whose fetch failed. Remembered
     // because `timeupdate` fires several times a second: without it every one
     // of them would re-run the cache lookup for a chapter that is not there.
@@ -240,7 +258,7 @@ export class SingleFileChapterPlayer {
     // An explicit load supersedes whatever was pre-warmed for the chapter that
     // would have followed the one being left behind.
     this._releasePrewarm();
-    this.pause();
+    this.pause('source-change');
     const requestedOffset = Number(options.startOffsetSeconds);
     const startOffsetSeconds = Number.isFinite(requestedOffset) && requestedOffset > 0
       ? requestedOffset
@@ -993,6 +1011,8 @@ export class SingleFileChapterPlayer {
   }
 
   _releasePrewarm() {
+    this._awaitingBoundaryPrewarm = false;
+    this._clearBoundaryPrewarmTimeout();
     this._abortPrewarm();
     if (this._prewarm?.objectUrl) this._revokeObjectUrl(this._prewarm.objectUrl);
     this._prewarm = null;
@@ -1002,13 +1022,90 @@ export class SingleFileChapterPlayer {
   /**
    * Stop a pre-warm that is still downloading.
    *
-   * A streamed chapter can be tens of megabytes; once the boundary has been
-   * reached without it, the ordinary load is the one that needs the bandwidth.
+   * Abort only when the next chapter is no longer wanted: an explicit load, a
+   * dispose, or a sleep timer that stops at this chapter. Reaching `ended`
+   * while the next chapter is still downloading is not that — the lock screen
+   * cannot start a replacement load, so the in-flight blob is the handoff.
    */
   _abortPrewarm() {
     this._prewarmController?.abort();
+    this._prewarmOp = null;
     this._prewarmController = null;
     this._prewarmInFlight = null;
+  }
+
+  _clearBoundaryPrewarmTimeout() {
+    this._boundaryPrewarmTimeout?.();
+    this._boundaryPrewarmTimeout = null;
+  }
+
+  _clearChapterAdvancePlayWatchdog() {
+    this._chapterAdvancePlayWatchdog?.();
+    this._chapterAdvancePlayWatchdog = null;
+  }
+
+  _armBoundaryPrewarmTimeout() {
+    this._clearBoundaryPrewarmTimeout();
+    if (!this._eventScope || this.boundaryPrewarmTimeoutMs <= 0) return;
+    const generation = this._generation;
+    this._boundaryPrewarmTimeout = this._eventScope.timeout(
+      () => {
+        if (generation !== this._generation) return;
+        if (!this._awaitingBoundaryPrewarm) return;
+        this._abortPrewarm();
+        this._finishEndedWithoutPrewarm();
+      },
+      this.boundaryPrewarmTimeoutMs,
+      this.clock
+    );
+  }
+
+  _armChapterAdvancePlayWatchdog(chapterIndex) {
+    this._clearChapterAdvancePlayWatchdog();
+    if (!this._eventScope || this.chapterAdvancePlayWatchdogMs <= 0) return;
+    const generation = this._generation;
+    this._chapterAdvancePlayWatchdog = this._eventScope.timeout(
+      () => {
+        if (generation !== this._generation) return;
+        if (!this.audio.paused && !this.audio.ended) return;
+        this.audio.autoplay = false;
+        this._isPlaying = false;
+        const error = new Error('Chapter did not start after the boundary');
+        error.code = 'CHAPTER_ADVANCE_NOT_ALLOWED';
+        error.recoverable = true;
+        error.chapterIndex = chapterIndex;
+        this._emitDiagnostic('chapter-advance-failed', {
+          chapterIndex,
+          reason: 'play-deferred-timeout'
+        });
+        this.onPlaybackChange?.(false, { reason: 'chapter-advance', error });
+        this.onError?.(error);
+      },
+      this.chapterAdvancePlayWatchdogMs,
+      this.clock
+    );
+  }
+
+  /** True when `ended` should wait for the next-chapter fetch already in flight. */
+  _shouldAwaitBoundaryPrewarm() {
+    if (this.isContinuous || !this._isPlaying) return false;
+    if (this._stopsAtCurrentChapter()) return false;
+    const nextChapterIndex = this.chapterIndex + 1;
+    if (nextChapterIndex >= this._chapterCount()) return false;
+    return this._prewarmInFlight === nextChapterIndex;
+  }
+
+  /**
+   * The next chapter finished downloading after `ended`. Swap it in if it is
+   * still the chapter that should play; otherwise take the ordinary ended path.
+   */
+  _completeBoundaryPrewarm(generation) {
+    if (generation !== this._generation) return;
+    if (!this._awaitingBoundaryPrewarm) return;
+    this._awaitingBoundaryPrewarm = false;
+    this._clearBoundaryPrewarmTimeout();
+    if (this._advanceToPrewarmedChapter()) return;
+    this._finishEndedWithoutPrewarm();
   }
 
   _revokeObjectUrl(objectUrl) {
@@ -1048,6 +1145,7 @@ export class SingleFileChapterPlayer {
     const controller = typeof globalThis.AbortController === 'function'
       ? new globalThis.AbortController()
       : null;
+    this._prewarmOp = { generation, chapterIndex, controller };
     this._prewarmController = controller;
     this._prewarmInFlight = chapterIndex;
     try {
@@ -1067,11 +1165,12 @@ export class SingleFileChapterPlayer {
       }
       const blob = await response.blob();
       if (superseded() || controller?.signal.aborted) return;
-      this._releasePrewarm();
+      if (this._prewarm?.objectUrl) this._revokeObjectUrl(this._prewarm.objectUrl);
       this._prewarm = {
         chapterIndex,
         objectUrl: globalThis.URL.createObjectURL(blob)
       };
+      this._prewarmDeclined = null;
       this._emitDiagnostic('chapter-prewarmed', {
         chapterIndex,
         sourceKind: 'chapter'
@@ -1087,8 +1186,12 @@ export class SingleFileChapterPlayer {
         reason: error?.code || error?.name || 'prewarm-failed'
       });
     } finally {
-      if (this._prewarmController === controller) this._prewarmController = null;
-      if (this._prewarmInFlight === chapterIndex) this._prewarmInFlight = null;
+      if (this._prewarmOp?.controller === controller) {
+        this._prewarmOp = null;
+        this._prewarmController = null;
+        this._prewarmInFlight = null;
+      }
+      this._completeBoundaryPrewarm(generation);
     }
   }
 
@@ -1134,8 +1237,18 @@ export class SingleFileChapterPlayer {
     this.audio.load();
     const started = Promise.resolve(this.audio.play());
     started.catch(error => {
-      // Whether the element starts on its own is now out of this call's hands;
-      // leaving the attribute set would autostart the next ordinary load.
+      // A backgrounded page often rejects play() after `ended`. That is why
+      // autoplay is armed: the element may still start once the blob is
+      // decodable. Disarming on NotAllowedError cancelled that handoff.
+      // Native `playing` or pause()/loadChapter() clear the attribute later.
+      if (error?.name === 'NotAllowedError') {
+        this._emitDiagnostic('chapter-advance-play-deferred', {
+          chapterIndex: nextChapterIndex,
+          reason: error.name
+        });
+        this._armChapterAdvancePlayWatchdog(nextChapterIndex);
+        return;
+      }
       this.audio.autoplay = false;
       this._emitDiagnostic('chapter-advance-failed', {
         chapterIndex: nextChapterIndex,
@@ -1162,11 +1275,31 @@ export class SingleFileChapterPlayer {
     // Gapless first: the swap has to happen before anything reports a pause,
     // or the media session state flickers on the lock screen.
     if (this._advanceToPrewarmedChapter()) return;
-    // The boundary arrived first. Whatever is still downloading has lost its
-    // purpose and would only compete with the load that has to happen now.
+    if (this._shouldAwaitBoundaryPrewarm()) {
+      // The blob is not ready yet, but aborting the fetch would leave a locked
+      // phone with no source and no way to start a new load. Keep the media
+      // session alive and autoplay armed inside this event so the swap can
+      // start when the object URL lands.
+      this._awaitingBoundaryPrewarm = true;
+      this._playReason = 'chapter-advance';
+      this.audio.autoplay = true;
+      this._armBoundaryPrewarmTimeout();
+      this._emitDiagnostic('chapter-advance-waiting', {
+        chapterIndex: this.chapterIndex + 1
+      });
+      return;
+    }
+    this._finishEndedWithoutPrewarm();
+  }
+
+  _finishEndedWithoutPrewarm() {
+    this._awaitingBoundaryPrewarm = false;
+    this._clearBoundaryPrewarmTimeout();
+    this._clearChapterAdvancePlayWatchdog();
     this._abortPrewarm();
     this._isPlaying = false;
     this._stopStallWatchdog();
+    this.audio.autoplay = false;
     if (this.isContinuous) {
       this._syncContinuousChapter(Number(this.audio.currentTime) || 0);
       if (Number.isInteger(this.endChapterIndex)) {
@@ -1210,6 +1343,7 @@ export class SingleFileChapterPlayer {
   }
 
   _handleNativePlay(event) {
+    this._clearChapterAdvancePlayWatchdog();
     this.audio.autoplay = false;
     const wasPlaying = this._isPlaying;
     const reason = this._playReason || 'external';
@@ -1234,6 +1368,12 @@ export class SingleFileChapterPlayer {
   }
 
   async play() {
+    if (this._awaitingBoundaryPrewarm) {
+      if (this._advanceToPrewarmedChapter()) return;
+      this._isPlaying = true;
+      this.audio.autoplay = true;
+      return;
+    }
     if (this._isLoading || !this._readySource) {
       const error = new Error('Playback source is not ready');
       error.code = 'SOURCE_NOT_READY';
@@ -1285,6 +1425,7 @@ export class SingleFileChapterPlayer {
   pause(reason = 'app') {
     this._isPlaying = false;
     this._pauseReason = reason;
+    if (reason !== 'source-change') this.audio.autoplay = false;
     this.audio.pause();
   }
   get isPlaying() { return this._isPlaying && !this.audio.paused; }
@@ -1502,6 +1643,7 @@ export class SingleFileChapterPlayer {
     this._isLoading = false;
     this._invalidateReadySource();
     this._cancelRunwayPreparation();
+    this._releasePrewarm();
     this.pause();
     this._detach();
   }

@@ -13,7 +13,7 @@ const root = resolve(rootArgument ? rootArgument.slice('--root='.length) : resol
 const ignore = readFileSync(resolve(root, '.dockerignore'), 'utf8');
 const requiredRules = [
   '.git', '.env', '.env.*', '.npmrc', 'data', 'cache', 'logs',
-  'alexandrio-xandrio/data', 'tts-benchmark-samples', 'Test Books',
+  'tts-benchmark-samples', 'Test Books',
   'node_modules', 'kokoro-venv', 'chatterbox-venv', 'mlx-venv', '*-venv',
   '.claude', '.codex', '.clawpatch', '.playwright-cli', 'output',
   'nanobanana-output', '*.pem', '*.key',
@@ -130,7 +130,6 @@ try {
 }
 const operatorData = tracked.filter(file => {
   if (file === '.env.template') return false; // reviewed configuration template, not a credential file
-  if (file.startsWith('alexandrio-xandrio/data/')) return false; // covered by its explicit Docker deny rule
   if (file.startsWith('tts-benchmark-samples/')) return false; // calibration fixtures are separately release-gated
   return /(^|\/)(data|cache|logs|screenshots|test-results)\//.test(file) ||
     /(^|\/)\.env(?:\.|$)/.test(file) ||

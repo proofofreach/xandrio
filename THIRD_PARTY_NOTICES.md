@@ -7,7 +7,7 @@ This file is generated from the locked installed Node dependency tree by `npm ru
 | Package | Version | Declared licence | Source |
 | --- | --- | --- | --- |
 | @cyclonedx/cyclonedx-library | 10.1.0 | Apache-2.0 | https://github.com/CycloneDX/cyclonedx-javascript-library.git |
-| @cyclonedx/cyclonedx-npm | 6.0.0 | Apache-2.0 | https://github.com/CycloneDX/cyclonedx-node-npm.git |
+| @cyclonedx/cyclonedx-npm | 6.0.1 | Apache-2.0 | https://github.com/CycloneDX/cyclonedx-node-npm.git |
 | @esbuild/aix-ppc64 | 0.28.2 | MIT | https://www.npmjs.com/package/@esbuild/aix-ppc64 |
 | @esbuild/android-arm | 0.28.2 | MIT | https://www.npmjs.com/package/@esbuild/android-arm |
 | @esbuild/android-arm64 | 0.28.2 | MIT | https://www.npmjs.com/package/@esbuild/android-arm64 |
@@ -44,16 +44,28 @@ This file is generated from the locked installed Node dependency tree by `npm ru
 | @loopyc/runtime | 0.8.0 | MIT | https://github.com/MaTriXy/Monkey.D.Loopy.git |
 | @loopyc/verify | 0.8.0 | MIT | https://github.com/MaTriXy/Monkey.D.Loopy.git |
 | @napi-rs/canvas | 0.1.80 | MIT | https://github.com/Brooooooklyn/canvas.git |
+| @napi-rs/canvas | 1.0.8 | MIT | https://github.com/Brooooooklyn/canvas.git |
 | @napi-rs/canvas-android-arm64 | 0.1.80 | MIT | https://www.npmjs.com/package/@napi-rs/canvas-android-arm64 |
+| @napi-rs/canvas-android-arm64 | 1.0.8 | MIT | https://www.npmjs.com/package/@napi-rs/canvas-android-arm64 |
 | @napi-rs/canvas-darwin-arm64 | 0.1.80 | MIT | https://www.npmjs.com/package/@napi-rs/canvas-darwin-arm64 |
+| @napi-rs/canvas-darwin-arm64 | 1.0.8 | MIT | https://www.npmjs.com/package/@napi-rs/canvas-darwin-arm64 |
 | @napi-rs/canvas-darwin-x64 | 0.1.80 | MIT | https://www.npmjs.com/package/@napi-rs/canvas-darwin-x64 |
+| @napi-rs/canvas-darwin-x64 | 1.0.8 | MIT | https://www.npmjs.com/package/@napi-rs/canvas-darwin-x64 |
 | @napi-rs/canvas-linux-arm-gnueabihf | 0.1.80 | MIT | https://www.npmjs.com/package/@napi-rs/canvas-linux-arm-gnueabihf |
+| @napi-rs/canvas-linux-arm-gnueabihf | 1.0.8 | MIT | https://www.npmjs.com/package/@napi-rs/canvas-linux-arm-gnueabihf |
 | @napi-rs/canvas-linux-arm64-gnu | 0.1.80 | MIT | https://www.npmjs.com/package/@napi-rs/canvas-linux-arm64-gnu |
+| @napi-rs/canvas-linux-arm64-gnu | 1.0.8 | MIT | https://www.npmjs.com/package/@napi-rs/canvas-linux-arm64-gnu |
 | @napi-rs/canvas-linux-arm64-musl | 0.1.80 | MIT | https://www.npmjs.com/package/@napi-rs/canvas-linux-arm64-musl |
+| @napi-rs/canvas-linux-arm64-musl | 1.0.8 | MIT | https://www.npmjs.com/package/@napi-rs/canvas-linux-arm64-musl |
 | @napi-rs/canvas-linux-riscv64-gnu | 0.1.80 | MIT | https://www.npmjs.com/package/@napi-rs/canvas-linux-riscv64-gnu |
+| @napi-rs/canvas-linux-riscv64-gnu | 1.0.8 | MIT | https://www.npmjs.com/package/@napi-rs/canvas-linux-riscv64-gnu |
 | @napi-rs/canvas-linux-x64-gnu | 0.1.80 | MIT | https://www.npmjs.com/package/@napi-rs/canvas-linux-x64-gnu |
+| @napi-rs/canvas-linux-x64-gnu | 1.0.8 | MIT | https://www.npmjs.com/package/@napi-rs/canvas-linux-x64-gnu |
 | @napi-rs/canvas-linux-x64-musl | 0.1.80 | MIT | https://www.npmjs.com/package/@napi-rs/canvas-linux-x64-musl |
+| @napi-rs/canvas-linux-x64-musl | 1.0.8 | MIT | https://www.npmjs.com/package/@napi-rs/canvas-linux-x64-musl |
+| @napi-rs/canvas-win32-arm64-msvc | 1.0.8 | MIT | https://www.npmjs.com/package/@napi-rs/canvas-win32-arm64-msvc |
 | @napi-rs/canvas-win32-x64-msvc | 0.1.80 | MIT | https://www.npmjs.com/package/@napi-rs/canvas-win32-x64-msvc |
+| @napi-rs/canvas-win32-x64-msvc | 1.0.8 | MIT | https://www.npmjs.com/package/@napi-rs/canvas-win32-x64-msvc |
 | @nodable/entities | 3.0.0 | MIT | https://github.com/nodable/val-parsers.git |
 | @npmcli/agent | 3.0.0 | ISC | https://github.com/npm/agent.git |
 | @npmcli/fs | 4.0.0 | ISC | https://github.com/npm/fs.git |
@@ -83,7 +95,7 @@ This file is generated from the locked installed Node dependency tree by `npm ru
 | arr-union | 3.1.0 | MIT | jonschlinkert/arr-union |
 | asn1.js | 5.4.1 | MIT | git@github.com:indutny/asn1.js |
 | asynckit | 0.4.0 | MIT | https://github.com/alexindigo/asynckit.git |
-| axios | 1.18.1 | MIT | https://github.com/axios/axios.git |
+| axios | 1.19.0 | MIT | https://github.com/axios/axios.git |
 | balanced-match | 1.0.2 | MIT | git://github.com/juliangruber/balanced-match.git |
 | base64-js | 1.5.1 | MIT | git://github.com/beatgammit/base64-js.git |
 | binary-extensions | 2.3.0 | MIT | sindresorhus/binary-extensions |
@@ -154,7 +166,7 @@ This file is generated from the locked installed Node dependency tree by `npm ru
 | expand-template | 2.0.3 | (MIT OR WTFPL) | https://github.com/ralphtheninja/expand-template.git |
 | exponential-backoff | 3.1.3 | Apache-2.0 | https://github.com/coveooss/exponential-backoff.git |
 | express | 5.2.1 | MIT | expressjs/express |
-| express-rate-limit | 8.6.0 | MIT | https://github.com/express-rate-limit/express-rate-limit.git |
+| express-rate-limit | 8.6.2 | MIT | https://github.com/express-rate-limit/express-rate-limit.git |
 | extend | 3.0.2 | MIT | https://github.com/justmoon/node-extend.git |
 | fast-deep-equal | 3.1.3 | MIT | https://github.com/epoberezkin/fast-deep-equal.git |
 | fast-uri | 3.1.5 | BSD-3-Clause | https://github.com/fastify/fast-uri.git |
@@ -305,6 +317,7 @@ This file is generated from the locked installed Node dependency tree by `npm ru
 | path-to-regexp | 8.4.2 | MIT | https://github.com/pillarjs/path-to-regexp.git |
 | pdf-parse | 2.4.5 | Apache-2.0 | https://github.com/mehmet-kozan/pdf-parse.git |
 | pdfjs-dist | 5.4.296 | Apache-2.0 | https://github.com/mozilla/pdf.js.git |
+| pdfjs-dist | 6.2.108 | Apache-2.0 | https://github.com/mozilla/pdf.js.git |
 | picomatch | 2.3.2 | MIT | micromatch/picomatch |
 | picomatch | 4.0.5 | MIT | micromatch/picomatch |
 | playwright | 1.61.1 | Apache-2.0 | https://github.com/microsoft/playwright.git |
@@ -433,7 +446,7 @@ This file is generated from the locked installed Node dependency tree by `npm ru
 | Component | Source / licence status |
 | --- | --- |
 | Inter font (`public/fonts/inter-latin.woff2`) | Google Fonts Inter v20 Latin variable subset, SIL Open Font License 1.1. Exact source and hash are in `public/fonts/README.md`; the required notice is bundled in `public/fonts/OFL.txt`. |
-| Application and Umbrel icons | Project-owned Xandrio artwork; the project owner approved public distribution, including Umbrel-specific use, on 2026-07-15. |
+| Application icons | Project-owned Xandrio artwork; the project owner approved public distribution on 2026-07-15. |
 | Embedded TTS comparison pages | The project owner approved public distribution of the embedded comparison assets on 2026-07-15. |
 | Kokoro 0.9.4 and Misaki 0.9.4 | Apache-2.0. Pinned in python/requirements-kokoro.txt; model-card and model-weight terms must be reviewed before shipping weights. Xandrio does not bundle model weights. |
 | PyTorch 2.13.0 and torchaudio 2.11.0 | BSD-3-Clause (PyTorch); pinned in the hash-checked Linux locks. |

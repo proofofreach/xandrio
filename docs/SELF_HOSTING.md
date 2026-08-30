@@ -177,10 +177,6 @@ at one, benchmark on the target Mac, and increase chunk size only when latency
 and memory pressure remain acceptable. Do not disable the MPS high-watermark
 limit; doing so can exhaust system-wide unified memory.
 
-## Umbrel
-
-The Umbrel package runs the published image behind Umbrel's app proxy and persists `/app/data` and `/app/cache` in the app data directory. A one-shot service initializes fresh host-path ownership before the non-root web service starts. It uses Edge by default and does not auto-start local engines. See [UMBREL.md](UMBREL.md) for image and digest publication requirements.
-
 ## Private remote access
 
 Tailscale is the simplest remote mode: bind Xandrio to localhost, use Tailscale Serve or a private reverse proxy, and require Tailscale identity/access controls. Do not treat `0.0.0.0` as private. For another reverse proxy, terminate TLS there, restrict the upstream to the proxy, configure the documented origin/authentication settings, and test library and audio access from an unauthorized client.
