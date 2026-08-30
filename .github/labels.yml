@@ -21,7 +21,7 @@ labels:
     description: Narration engine, voice, or audio behavior
   - name: packaging
     color: 0e8a16
-    description: Docker, Compose, image, or Umbrel work
+    description: Docker, Compose, or image work
   - name: release
     color: fbca04
     description: Release evidence, promotion, or versioning

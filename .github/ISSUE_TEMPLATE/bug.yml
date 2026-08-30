@@ -10,7 +10,7 @@ body:
     id: version
     attributes:
       label: Version and deployment mode
-      placeholder: "vX.Y.Z; native, Docker, Umbrel, or Tailscale/reverse proxy"
+      placeholder: "vX.Y.Z; native, Docker, or Tailscale/reverse proxy"
     validations:
       required: true
   - type: textarea

@@ -10,7 +10,7 @@ Existing Calibre users can install the Xandrio desktop plugin from **Settings â†
 
 ## Start here
 
-Choose an installation mode in [docs/SELF_HOSTING.md](docs/SELF_HOSTING.md): native Node.js, Docker/Docker Compose, Umbrel, or a private remote path such as Tailscale. The short native path is:
+Choose an installation mode in [docs/SELF_HOSTING.md](docs/SELF_HOSTING.md): native Node.js, Docker/Docker Compose, or a private remote path such as Tailscale. The short native path is:
 
 ```bash
 git clone https://github.com/ProofOfReach/alexandrio.git xandrio
@@ -89,7 +89,6 @@ Multiple people can share one instance: create username/password accounts with `
 - [Experimental Book Guides](docs/BOOK_GUIDES.md)
 - [Calibre integration](docs/CALIBRE.md)
 - [API reference](docs/API.md)
-- [Umbrel packaging](docs/UMBREL.md)
 - [Contributing](CONTRIBUTING.md)
 
 ## Contributing and governance

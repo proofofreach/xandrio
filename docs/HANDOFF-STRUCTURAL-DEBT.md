@@ -1,4 +1,6 @@
-# Handoff Plan B — Structural Debt (app.js extraction + docs)
+# Handoff Plan B — Structural Debt (app.js extraction + docs) — Historical
+
+This July 2026 handoff is complete and is retained only as decision history. Line numbers and asset versions below are stale; do not execute its task list. The extraction landed in `public/js/views/*`, `public/js/features/*`, and `public/js/ui/*`; current state is in `docs/ARCHITECTURE.md` and `docs/IMPROVEMENT_ROADMAP.md`.
 
 *Written 2026-07-02. Companion plan: `docs/HANDOFF-HIDDEN-FEATURES.md` (run one or the other, not interleaved).*
 
