@@ -93,7 +93,7 @@ class MockQueue extends EventEmitter {
   failJob(jobId, error) {
     const job = this.jobs.find(j => j.id === jobId);
     if (job) job.status = 'error';
-    this.emit('error', { jobId, error });
+    this.emit('job-error', { jobId, error });
   }
 
   /** Simulate progress/generating */
