@@ -47,6 +47,7 @@ const tests = [
   'test-chunked-tts.js',
   'test-audio-quality.js',
   'test-engine-status.js',
+  'test-voice-clone-conflict.js',
   'test-operator-diagnostics.js',
   'test-voice-authority.js',
   'test-csrf.js',

@@ -488,25 +488,11 @@ const bookArtifactCleaner = createBookArtifactCleaner({
   onSweepsComplete: bookId => deletedBookIds.delete(bookId)
 });
 
-// Unified 500 response: log the full error server-side, return a generic public
-// message with no raw err.message so internal details are not leaked to clients.
-function sendServerError(res, err, publicMessage = 'Something went wrong') {
-  // A response whose socket is already gone means the client disconnected —
-  // it seeked, navigated away or locked the phone mid-stream. That is normal
-  // client behaviour, not a server fault: logging it at error level buries real
-  // failures in noise, and writing to the dead socket only produces a second,
-  // more confusing error. Check this before logging, and before writing.
-  if (res.destroyed || res.writableEnded) return;
-  console.error(`${publicMessage}:`, err);
-  // Routes that stream (audio, covers) may fail after the response has begun.
-  // Writing a JSON body then would throw ERR_HTTP_HEADERS_SENT on top of the
-  // original error; all we can still do is cut the connection.
-  if (res.headersSent) {
-    res.destroy?.();
-    return;
-  }
-  res.status(500).json({ error: publicMessage });
-}
+// Unified 500 response lives in lib/http-error.js so route modules without
+// dependency injection share the exact same semantics (dead-response guards,
+// server-side logging, no err.message leak). Kept under the same local name
+// so the DI wiring and __test exports below are untouched.
+const { sendServerError } = require('./lib/http-error');
 
 // Anna's Archive config — read from file, fallback to hardcoded defaults
 // An unusable baseUrl must not cost the operator their configured key. The
@@ -2707,9 +2693,9 @@ const coverRefreshRateLimit = createRateLimitMiddleware({
 });
 const coverRefreshJobs = new Map();
 
-function isSafeBookId(value) {
-  return requestGuardIsSafeBookId(value);
-}
+// Single book-id validator lives in lib/request-guards.js and is imported
+// as requestGuardIsSafeBookId (line 27); the local delegating wrapper was
+// removed so there is exactly one definition.
 
 function sanitizeFileStem(value, fallback = 'book') {
   // Bound the input before the regexes and split the anchored trims so no
@@ -2736,7 +2722,7 @@ function sanitizeDownloadFilename(filename, fallbackStem = 'book', bookId = '') 
     throw new Error(`Unsupported book format: ${path.extname(base) || 'unknown'}`);
   }
   const stem = sanitizeFileStem(base, sanitizeFileStem(fallbackStem));
-  const prefix = isSafeBookId(bookId) ? `${bookId}_` : '';
+  const prefix = requestGuardIsSafeBookId(bookId) ? `${bookId}_` : '';
   return `${prefix}${stem}.${ext}`;
 }
 
@@ -2950,7 +2936,7 @@ function downloadImportCommand(body, { download = searchProviders.download.bind(
       response: { error: 'Hash and filename required' }
     });
   }
-  if (!isSafeBookId(hash)) {
+  if (!requestGuardIsSafeBookId(hash)) {
     throw new BookImportError('Invalid book identifier', { response: { error: 'Invalid book identifier' } });
   }
   const safeFilename = sanitizeDownloadFilename(filename, title || hash, hash);
@@ -3004,7 +2990,7 @@ function downloadImportCommand(body, { download = searchProviders.download.bind(
       sourceProvenance: sourceProvenanceFromSelection(alternative),
       gutenbergId: alternative.gutenbergId,
       shouldTry: selectedIdentity => Boolean(
-        alternative.hash && alternative.format && isSafeBookId(alternative.hash) &&
+        alternative.hash && alternative.format && requestGuardIsSafeBookId(alternative.hash) &&
         SUPPORTED_BOOK_FORMATS.has(String(alternative.format).toLowerCase()) &&
         isAcceptableFallbackMatch(alternative, expected, selectedIdentity)
       ),
@@ -3379,7 +3365,7 @@ function canonicalBookCoverPath(bookId) {
 
 async function publicBookRecordWithCoverArtifact(book, access = fs.access) {
   const pub = publicBookRecord(book);
-  if (!pub || pub.hasCover || !isSafeBookId(book?.id)) return pub;
+  if (!pub || pub.hasCover || !requestGuardIsSafeBookId(book?.id)) return pub;
   try {
     await access(canonicalBookCoverPath(book.id));
     pub.hasCover = true;
@@ -4509,7 +4495,7 @@ async function validateEPUB(epubPath) {
 app.post('/api/validate/:bookId', async (req, res) => {
   try {
     const { bookId } = req.params;
-    if (!isSafeBookId(bookId)) {
+    if (!requestGuardIsSafeBookId(bookId)) {
       return res.status(400).json({ error: 'Invalid book identifier' });
     }
     const books = await loadJSON(BOOKS_FILE, {});
