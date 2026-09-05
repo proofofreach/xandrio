@@ -5871,3 +5871,16 @@ body.login-gate-open { overflow: hidden; }
   #voice-list .voice-section-title,
   #voice-list .clone-voice-form { grid-column: 1 / -1; }
 }
+
+/* Import status stays available while the reader moves between views. */
+.import-activity { width: calc(100% - 32px); margin: 16px auto; max-width: 1200px; }
+.import-activity[hidden] { display: none; }
+.import-activity-card { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 16px; margin-bottom: 8px; border: 1px solid var(--border-color, #343434); border-radius: 12px; background: var(--bg-secondary, #151719); }
+.import-activity-card > div:first-child { min-width: 0; }
+.import-activity-card strong { overflow-wrap: anywhere; }
+.import-activity-card p { margin: 5px 0 0; font-size: 14px; }
+.import-activity-card [data-import-detail] { color: var(--text-secondary, #aaa); }
+.import-activity-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.import-activity-actions button { min-height: 44px; white-space: nowrap; }
+.import-activity-card:focus-visible { outline: 2px solid var(--accent, #e5b12d); outline-offset: 3px; }
+@media (max-width: 600px) { .import-activity-card { align-items: flex-start; flex-direction: column; } }

@@ -1,6 +1,7 @@
-import { API_BASE, apiGet, apiSend } from '../api.js';
+import { API_BASE, apiGet, apiSend, syncHeaders } from '../api.js';
 import { formatApiDetails, escapeHTML, safeAttr, encodeState, decodeState } from '../util/format.js';
 import { loadLibrary } from './library.js';
+import { beginImport, initImportActivity } from '../features/import-activity.js';
 import { onActivate } from '../ui/keys.js';
 import { trapFocus } from '../ui/focus-trap.js';
 import { getDefaultSearchSources } from '../client-settings.js';
@@ -14,10 +15,6 @@ let languageFilter = null;
 let uploadBtn = null;
 let dropZone = null;
 let fileInput = null;
-let uploadProgress = null;
-let uploadFilename = null;
-let uploadStatus = null;
-let uploadProgressFill = null;
 let sourceControls = null;
 let sourceReset = null;
 let sourceMessage = null;
@@ -32,7 +29,6 @@ let filterCount = null;
 let resultsCount = null;
 let searchSort = null;
 let searchSortWrap = null;
-let lastSearchAlternatives = [];
 let lastSearchWorks = [];
 let lastSearchIntent = null;
 let lastSearchCorrection = null;
@@ -125,6 +121,16 @@ function renderSearchState({ icon, title, message, retry }) {
   }
 }
 
+function renderSearchActionState({ icon, title, message, action, actionLabel }) {
+  searchResults.innerHTML = `
+    <div class="empty-state-modern">
+      <div class="empty-icon">${icon}</div>
+      <h3>${escapeHTML(title)}</h3>
+      <p>${escapeHTML(message)}</p>
+      <button class="btn-primary" data-search-action="${safeAttr(action)}">${escapeHTML(actionLabel)}</button>
+    </div>`;
+}
+
 function isMobileSearchLayout() {
   return window.matchMedia(MOBILE_SEARCH_MEDIA).matches;
 }
@@ -208,6 +214,14 @@ function updateSearchUrl() {
   replaceUrl(url);
 }
 
+// A changed query or search filter describes a different request. Remove the
+// old response immediately so the URL, controls, and visible results never
+// claim to be the same search.
+function invalidateSubmittedSearch() {
+  clearRenderedSearchResults();
+  if (downloadError) downloadError.style.display = 'none';
+}
+
 function clearSearchUrl() {
   const url = new URL(window.location.href);
   for (const key of SEARCH_URL_PARAMS) url.searchParams.delete(key);
@@ -256,7 +270,6 @@ function hydrateSearchWorkspaceFromUrl() {
 function clearRenderedSearchResults() {
   searchRequestVersion += 1;
   searchInProgress = false;
-  lastSearchAlternatives = [];
   lastSearchWorks = [];
   lastSearchIntent = null;
   lastSearchCorrection = null;
@@ -341,12 +354,21 @@ function buildResultCard(work, eagerCover = false) {
         <summary class="edition-count">${editions.length} versions · ${sources.length} ${sources.length === 1 ? 'source' : 'sources'}</summary>
         <ul class="edition-list" aria-label="Available versions of ${safeAttr(work.title || result.title || 'this work')}">
           ${editions.map((edition, index) => {
-            const heading = [index === 0 ? 'Recommended' : '', String(edition.format || 'Book').toUpperCase(), versionQualifier(edition)].filter(Boolean).join(' · ');
-            const label = [edition._year || edition.publisher, getSourceLabel(edition.source), edition.size].filter(Boolean).join(' · ');
-            const accessibleVersion = [heading, label || `version ${index + 1}`].filter(Boolean).join(', ');
+            const editionTitle = String(edition.title || work.title || result.title || 'Untitled');
+            const publication = [edition.publisher, edition._year].filter(Boolean).join(', ');
+            const metadata = [
+              index === 0 ? 'Recommended' : `Version ${index + 1}`,
+              edition.format ? String(edition.format).toUpperCase() : '',
+              edition.language || '',
+              publication,
+              edition.source ? getSourceLabel(edition.source) : '',
+              edition.size || '',
+              versionQualifier(edition)
+            ].filter(Boolean);
+            const accessibleVersion = [editionTitle, ...metadata].join(', ');
             return `<li>
               <button type="button" class="edition-option${index === 0 ? ' is-default' : ''}" data-edition-choice="${index}" data-work-id="${safeAttr(work.id)}" aria-label="Add ${safeAttr(work.title || result.title || 'book')} to library, ${safeAttr(accessibleVersion)}">
-                <span class="edition-option-copy"><strong>${escapeHTML(heading)}</strong><span>${escapeHTML(label || 'Available version')}</span></span>
+                <span class="edition-option-copy"><strong>${escapeHTML(editionTitle)}</strong><span>${escapeHTML(metadata.join(' · ') || 'Available version')}</span></span>
                 <span class="edition-choice-icon" aria-hidden="true">${ADD_TO_LIBRARY_ICON}</span>
               </button>
             </li>`;
@@ -580,11 +602,12 @@ function renderSourceFailure(sourceIds) {
   const source = SEARCH_SOURCES.find(item => item.id === failure.id);
   const label = sourceIssueLabel(failure.status);
   const sourceLabel = failure.status.label || source?.label || 'Selected source';
-  renderSearchState({
+  renderSearchActionState({
     icon: ERROR_ICON,
     title: `${sourceLabel}: ${label}`,
-    message: 'Reconnect it or choose another source, then try again.',
-    retry: true
+    message: 'Choose another available source, then try again.',
+    action: 'filters',
+    actionLabel: 'Review filters'
   });
   return true;
 }
@@ -652,6 +675,20 @@ function resetSourceShelf() {
   renderSourceShelf();
 }
 
+function normalizeSelectedSources() {
+  const requested = [...selectedSources];
+  if (!requested.length) {
+    selectedSources = new Set(effectiveDefaultSources());
+    return false;
+  }
+  const available = configuredSourceIds(requested);
+  if (available.length === requested.length && available.length) return false;
+
+  selectedSources = new Set(available.length ? available : effectiveDefaultSources());
+  sourceSelectionMessage = 'Some requested sources are unavailable here. Available sources were selected instead.';
+  return true;
+}
+
 async function loadSearchSources() {
   try {
     const data = await apiGet('/api/search/sources');
@@ -660,9 +697,16 @@ async function loadSearchSources() {
     console.warn('Search source availability unavailable:', err);
   }
   searchSourcesReady = true;
-  if (!selectedSources.size) selectedSources = new Set(effectiveDefaultSources());
+  const normalized = normalizeSelectedSources();
+  if (normalized) invalidateSubmittedSearch();
   renderSourceShelf();
   updateSearchUrl();
+}
+
+function searchErrorNeedsSettings(err) {
+  const code = String(err?.code || err?.errorCode || '').toUpperCase();
+  const message = String(err?.message || '').toUpperCase();
+  return err?.status === 403 || code === 'NO_ENABLED_SOURCES' || /POLICY|ACKNOWLEDG|CONFIG|OPERATOR|SOURCE.*DISABLED/.test(`${code} ${message}`);
 }
 
 async function searchBooks() {
@@ -683,9 +727,7 @@ async function searchBooks() {
   searchResults.innerHTML = skeletonResultsHTML();
   if (resultsCount) resultsCount.hidden = true;
   if (searchSortWrap) searchSortWrap.hidden = true;
-  sourceSelectionMessage = '';
   latestSourceStatus = {};
-  lastSearchAlternatives = [];
   lastSearchWorks = [];
   lastSearchIntent = null;
   lastSearchCorrection = null;
@@ -766,7 +808,17 @@ async function searchBooks() {
     if (requestVersion !== searchRequestVersion) return;
     console.error('Search failed:', err);
     latestSourceStatus = Object.fromEntries(sources.map(id => [id, { id, ok: false, error: err.message }]));
-    renderSearchState({ icon: ERROR_ICON, title: 'Search failed', message: 'Check your connection and try again.', retry: true });
+    if (searchErrorNeedsSettings(err)) {
+      renderSearchActionState({
+        icon: ERROR_ICON,
+        title: 'This source needs attention',
+        message: err.message || 'Review this instance’s source policy or source configuration.',
+        action: 'settings',
+        actionLabel: 'Open settings'
+      });
+    } else {
+      renderSearchState({ icon: ERROR_ICON, title: 'Search failed', message: 'Check your connection and try again.', retry: true });
+    }
   } finally {
     if (requestVersion === searchRequestVersion) {
       searchInProgress = false;
@@ -785,9 +837,7 @@ function downloadBookFromEncodedResult(encodedResult) {
 }
 
 function renderDownloadRetryButtons(alternatives) {
-  const retryOptions = Array.isArray(alternatives) && alternatives.length > 0
-    ? alternatives
-    : lastSearchAlternatives.slice(0, 4);
+  const retryOptions = Array.isArray(alternatives) ? alternatives : [];
   const buttons = retryOptions
     .filter(alt => alt && alt.hash)
     .slice(0, 4)
@@ -809,267 +859,39 @@ function focusDownloadError() {
   errorBox.focus({ preventScroll: true });
 }
 
-const DOWNLOAD_STEPS = [
-  'Preparing source',
-  'Downloading file',
-  'Checking file format',
-  'Reading book metadata',
-  'Validating chapters',
-  'Finding cover',
-  'Adding to library'
-];
-
-function formatElapsedTime(ms) {
-  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  return minutes > 0 ? `${minutes}m ${seconds.toString().padStart(2, '0')}s` : `${seconds}s`;
-}
-
-function estimatedDownloadStep(elapsedMs) {
-  if (elapsedMs < 1200) return 1;
-  if (elapsedMs < 5000) return 2;
-  if (elapsedMs < 9000) return 3;
-  if (elapsedMs < 14000) return 4;
-  if (elapsedMs < 24000) return 5;
-  return 6;
-}
-
-const DOWNLOAD_STEP_CHECK_ICON = `<svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M5 10.5l3 3 7-7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
-
-function downloadStepListHTML(currentStep) {
-  const items = DOWNLOAD_STEPS.map((label, i) => {
-    const stepNum = i + 1;
-    const state = stepNum < currentStep ? 'is-done' : stepNum === currentStep ? 'is-current' : 'is-pending';
-    const marker = state === 'is-done' ? DOWNLOAD_STEP_CHECK_ICON : '';
-    return `
-      <li class="download-step ${state}">
-        <span class="download-step-marker">${marker}</span>
-        <span class="download-step-label">${escapeHTML(label)}</span>
-      </li>
-    `;
-  }).join('');
-  return `<ol class="download-step-list">${items}</ol>`;
-}
-
-function downloadProgressView(result, state) {
-  const totalSteps = DOWNLOAD_STEPS.length;
-  const step = Math.max(1, Math.min(state.step || 1, totalSteps));
-  const label = state.label || DOWNLOAD_STEPS[step - 1];
-  const sourceLabel = getSourceLabel(result.source || 'annas');
-  const retryCount = lastSearchAlternatives.filter(a => a.hash !== result.hash).length;
-  return {
-    totalSteps,
-    step,
-    label,
-    sourceLabel,
-    elapsedLabel: `Elapsed ${formatElapsedTime(state.elapsedMs || 0)}`,
-    detail: state.detail || '',
-    retryLabel: retryCount > 0 && step >= 5
-      ? `May try up to ${retryCount} alternative ${retryCount === 1 ? 'version' : 'versions'}`
-      : '',
-    fillWidth: `${Math.round((step / totalSteps) * 100)}%`
-  };
-}
-
-function renderDownloadProgress(result, state) {
-  const view = downloadProgressView(result, state);
-
-  return `
-    <div class="download-progress-panel" role="status" aria-live="polite" aria-atomic="false" aria-label="Book import progress" tabindex="-1" data-progress-step="${view.step}">
-      <div class="download-progress-header">
-        <div>
-          <p class="download-progress-eyebrow">Adding book</p>
-          <h3>${escapeHTML(view.label)}</h3>
-        </div>
-        <span class="download-progress-count">Step ${view.step} of ${view.totalSteps}</span>
-      </div>
-      <div class="download-progress-track" aria-hidden="true">
-        <div class="download-progress-fill" style="width:${view.fillWidth}"></div>
-      </div>
-      ${downloadStepListHTML(view.step)}
-      <div class="download-progress-meta">
-        <span data-progress-source>${escapeHTML(view.sourceLabel)}</span>
-        <span data-progress-elapsed aria-hidden="true">${escapeHTML(view.elapsedLabel)}</span>
-        <span data-progress-detail${view.detail ? '' : ' hidden'}>${escapeHTML(view.detail)}</span>
-        <span data-progress-retry${view.retryLabel ? '' : ' hidden'}>${escapeHTML(view.retryLabel)}</span>
-      </div>
-    </div>
-  `;
-}
-
-function updateDownloadProgress(panel, result, state) {
-  const view = downloadProgressView(result, state);
-  const label = panel.querySelector('.download-progress-header h3');
-  const count = panel.querySelector('.download-progress-count');
-  const fill = panel.querySelector('.download-progress-fill');
-  const source = panel.querySelector('[data-progress-source]');
-  const elapsed = panel.querySelector('[data-progress-elapsed]');
-  const detail = panel.querySelector('[data-progress-detail]');
-  const retry = panel.querySelector('[data-progress-retry]');
-
-  if (label && label.textContent !== view.label) label.textContent = view.label;
-  const countLabel = `Step ${view.step} of ${view.totalSteps}`;
-  if (count && count.textContent !== countLabel) count.textContent = countLabel;
-  if (fill && fill.style.width !== view.fillWidth) fill.style.width = view.fillWidth;
-  if (source && source.textContent !== view.sourceLabel) source.textContent = view.sourceLabel;
-  if (elapsed && elapsed.textContent !== view.elapsedLabel) elapsed.textContent = view.elapsedLabel;
-  if (detail) {
-    if (detail.textContent !== view.detail) detail.textContent = view.detail;
-    const detailHidden = !view.detail;
-    if (detail.hidden !== detailHidden) detail.hidden = detailHidden;
-  }
-  if (retry) {
-    if (retry.textContent !== view.retryLabel) retry.textContent = view.retryLabel;
-    const retryHidden = !view.retryLabel;
-    if (retry.hidden !== retryHidden) retry.hidden = retryHidden;
-  }
-  if (panel.dataset.progressStep !== String(view.step)) {
-    panel.querySelector('.download-step-list')?.remove();
-    panel.querySelector('.download-progress-meta')?.insertAdjacentHTML('beforebegin', downloadStepListHTML(view.step));
-    panel.dataset.progressStep = String(view.step);
-  }
-}
-
 async function finishSuccessfulImport(data, options = {}) {
   const { downloadProgress = null } = options;
-  downloadProgress?.complete?.('Adding to library');
+  const shouldOpen = downloadProgress?.shouldOpen() ?? isSearchRoute();
+  downloadProgress?.complete(data);
   downloadError.style.display = 'none';
-  await loadLibrary();
-  searchResults.innerHTML = '';
-  downloadProgress?.stop?.();
+  await loadLibrary().catch(error => console.warn('Library refresh after import failed:', error));
   const bookId = data.bookId || data?.book?.id;
-  if (bookId && typeof deps.openBook === 'function') {
-    // Do not send the router to library first. That starts a view transition
-    // whose apply() can paint library after openBook has already shown the
-    // player, leaving hash #/player with the library view active.
-    await deps.openBook(bookId);
-    return;
+  if (shouldOpen && (downloadProgress?.shouldOpen() ?? isSearchRoute()) && bookId && typeof deps.openBook === 'function') {
+    await deps.openBook(bookId).catch(error => console.warn('Opening imported book failed:', error));
   }
-  deps.navigateTo?.('library');
 }
 
 function startDownloadProgress(result) {
-  const startedAt = Date.now();
-  let stopped = false;
-  let progressPanel = null;
-  // Time-based estimates only run until the server reports a real step;
-  // after that the interval tick just refreshes the elapsed time, so the
-  // checklist can't flip between the guess and the reported step.
-  let serverDriven = false;
-  let current = { step: 1, label: DOWNLOAD_STEPS[0], detail: '' };
-
-  const render = (override = {}) => {
-    if (stopped) return;
-    const elapsedMs = Date.now() - startedAt;
-    if (override.step) {
-      serverDriven = true;
-      // Equal steps still update the label (e.g. retry attempt counts);
-      // lower steps from late or replayed events never move it backward.
-      if (override.step >= current.step) {
-        current = {
-          step: override.step,
-          label: override.label || DOWNLOAD_STEPS[override.step - 1],
-          detail: override.detail || ''
-        };
-      }
-    } else if (!serverDriven) {
-      const estimated = estimatedDownloadStep(elapsedMs);
-      if (estimated > current.step) {
-        current = { step: estimated, label: DOWNLOAD_STEPS[estimated - 1], detail: '' };
-      }
-    }
-    const state = { ...current, elapsedMs };
-    if (!progressPanel?.isConnected) {
-      searchResults.innerHTML = renderDownloadProgress(result, state);
-      progressPanel = searchResults.querySelector('.download-progress-panel');
-      progressPanel?.focus({ preventScroll: true });
-    } else {
-      updateDownloadProgress(progressPanel, result, state);
-    }
-  };
-
-  render();
-  const interval = window.setInterval(render, 1000);
-  return {
-    complete(label = 'Adding to library') {
-      if (stopped) return;
-      render({ step: DOWNLOAD_STEPS.length, label });
-    },
-    render,
-    stop() {
-      stopped = true;
-      window.clearInterval(interval);
-    }
-  };
+  return beginImport(result);
 }
 
 async function waitForImportJob(jobId, result, downloadProgress) {
-  const applyStatus = (status) => {
-    if (!status) return;
-    if (status.step) {
-      downloadProgress.render?.({
-        step: status.step,
-        label: status.label || DOWNLOAD_STEPS[status.step - 1],
-        detail: status.detail || ''
-      });
+  downloadProgress.attach(jobId);
+  while (true) {
+    let status;
+    try {
+      status = await apiGet(`/api/download/${encodeURIComponent(jobId)}/status`);
+    } catch (error) {
+      if (error.status === 404 || error.status === 401 || error.status === 403) throw error;
+      downloadProgress.render({ detail: 'Connection interrupted. Reconnecting to check progress…' });
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      continue;
     }
-  };
-
-  const poll = async () => {
-    while (true) {
-      const status = await apiGet(`/api/download/${encodeURIComponent(jobId)}/status`);
-      applyStatus(status);
-      if (status.status === 'complete') return status.result;
-      if (status.status === 'failed') throw status.error || { error: 'Download failed' };
-      await new Promise(resolve => setTimeout(resolve, 1200));
-    }
-  };
-
-  if (!window.EventSource) return poll();
-
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    const events = new EventSource(`${API_BASE}/api/download/${encodeURIComponent(jobId)}/events`);
-    const fallbackTimer = window.setTimeout(() => {
-      if (settled) return;
-      events.close();
-      poll().then(resolve, reject);
-    }, 5000);
-
-    const finish = (fn, value) => {
-      if (settled) return;
-      settled = true;
-      window.clearTimeout(fallbackTimer);
-      events.close();
-      fn(value);
-    };
-    const connected = () => window.clearTimeout(fallbackTimer);
-
-    events.addEventListener('snapshot', (event) => {
-      connected();
-      applyStatus(JSON.parse(event.data));
-    });
-    events.addEventListener('progress', (event) => {
-      connected();
-      applyStatus(JSON.parse(event.data));
-    });
-    events.addEventListener('complete', (event) => {
-      connected();
-      const payload = JSON.parse(event.data);
-      finish(resolve, payload.result);
-    });
-    events.addEventListener('failed', (event) => {
-      connected();
-      const payload = JSON.parse(event.data);
-      finish(reject, payload.error || { error: 'Download failed' });
-    });
-    events.onerror = () => {
-      if (settled) return;
-      events.close();
-      poll().then(value => finish(resolve, value), error => finish(reject, error));
-    };
-  });
+    downloadProgress.render(status);
+    if (status.status === 'complete') return status.result;
+    if (status.status === 'failed') throw status.error || { error: 'Download failed' };
+    await new Promise(resolve => setTimeout(resolve, 1200));
+  }
 }
 
 function isZLibraryConnectionRequired(error, result) {
@@ -1078,7 +900,7 @@ function isZLibraryConnectionRequired(error, result) {
   return /connect z-library|source requires configuration/i.test(String(error?.error || error?.message || ''));
 }
 
-function renderZLibraryConnectionRequired(error, previousResultsHtml) {
+function renderZLibraryConnectionRequired(error) {
   downloadError.innerHTML = `
     <div class="error-box">
       <h3>Connect Z-Library to download</h3>
@@ -1088,14 +910,12 @@ function renderZLibraryConnectionRequired(error, previousResultsHtml) {
     </div>
   `;
   downloadError.style.display = 'block';
-  searchResults.innerHTML = previousResultsHtml || '';
-  focusDownloadError();
+  if (isSearchRoute()) focusDownloadError();
 }
 
 async function downloadBook(result) {
-  const workAlternatives = editionAlternativesByHash.get(result?.hash);
-  if (workAlternatives) lastSearchAlternatives = workAlternatives;
-  const previousResultsHtml = searchResults.innerHTML;
+  downloadError.style.display = 'none';
+  const alternatives = editionAlternativesByHash.get(result?.hash) || [];
   const downloadProgress = startDownloadProgress(result);
 
   try {
@@ -1103,7 +923,7 @@ async function downloadBook(result) {
 
     const response = await fetch(`${API_BASE}/api/download`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: syncHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({
         hash: result.hash,
         filename,
@@ -1126,7 +946,7 @@ async function downloadBook(result) {
         downloadUrl: result.downloadUrl || null,
         description: result.description || null,
         filePath: result.filePath || null,
-        alternatives: lastSearchAlternatives.filter(a => a.hash !== result.hash).map(a => ({
+        alternatives: alternatives.filter(a => a.hash !== result.hash).map(a => ({
           hash: a.hash,
           title: a.title,
           author: a.author,
@@ -1160,9 +980,9 @@ async function downloadBook(result) {
     }
 
     if (response.status === 429 || data.code === 'ZLIB_DAILY_LIMIT' || data.code === 'ZLIB_RATE_LIMITED') {
-      downloadProgress.stop();
+      downloadProgress.fail(data);
       // Zlibrary daily limit reached — find Anna's alternative for same book
-      const annasAlt = lastSearchAlternatives.find(a =>
+      const annasAlt = alternatives.find(a =>
         a.source === 'annas' && a.format === 'EPUB'
       );
 
@@ -1179,24 +999,25 @@ async function downloadBook(result) {
         </div>
       `;
       downloadError.style.display = 'block';
-      searchResults.innerHTML = previousResultsHtml || searchResults.innerHTML;
-      focusDownloadError();
+
+      if (isSearchRoute()) focusDownloadError();
       return;
     }
 
     if (isZLibraryConnectionRequired(data, result)) {
-      downloadProgress.stop();
-      renderZLibraryConnectionRequired(data, previousResultsHtml);
+      downloadProgress.fail(data);
+      renderZLibraryConnectionRequired(data);
       return;
     }
 
     if (data.success) {
-      await finishSuccessfulImport(data, { previousResultsHtml, downloadProgress });
+      await finishSuccessfulImport(data, { downloadProgress });
     } else if (data.error) {
-      downloadProgress.stop();
+      downloadProgress.fail(data);
       // Validation failed - show error but keep search results visible
+      if (data.existingBookId) return;
       const errorMsg = formatApiDetails(data.details, data.error);
-      const retryButtons = renderDownloadRetryButtons(data.retryAlternatives);
+      const retryButtons = renderDownloadRetryButtons(data.retryAlternatives || alternatives);
 
       downloadError.innerHTML = `
         <div class="error-box">
@@ -1207,18 +1028,19 @@ async function downloadBook(result) {
         </div>
       `;
       downloadError.style.display = 'block';
-      searchResults.innerHTML = previousResultsHtml || '';
-      focusDownloadError();
+
+      if (isSearchRoute()) focusDownloadError();
     }
   } catch (err) {
-    downloadProgress.stop();
+    downloadProgress.fail(err);
     console.error('Download failed:', err);
     if (isZLibraryConnectionRequired(err, result)) {
-      renderZLibraryConnectionRequired(err, previousResultsHtml);
+      renderZLibraryConnectionRequired(err);
       return;
     }
+    if (err.existingBookId) return;
     const errorMsg = formatApiDetails(err.details, err.error || err.message || 'Download failed');
-    const retryButtons = renderDownloadRetryButtons(err.retryAlternatives);
+    const retryButtons = renderDownloadRetryButtons(err.retryAlternatives || alternatives);
     downloadError.innerHTML = `
       <div class="error-box">
         <h3>Warning: Download Failed</h3>
@@ -1228,8 +1050,8 @@ async function downloadBook(result) {
       </div>
     `;
     downloadError.style.display = 'block';
-    searchResults.innerHTML = previousResultsHtml || '';
-    focusDownloadError();
+
+    if (isSearchRoute()) focusDownloadError();
   }
 }
 
@@ -1251,75 +1073,47 @@ function getSourceLabel(source) {
 // Upload handler
 async function uploadBookFile(file) {
   if (!file) return;
-
-  // Show upload UI
-  uploadProgress.style.display = 'block';
-  uploadFilename.textContent = file.name;
-  uploadStatus.textContent = 'Uploading...';
-  uploadProgressFill.style.width = '0%';
-
+  const progress = beginImport({ title: file.name });
+  progress.render({ label: 'Uploading file…', detail: 'Transferring file to your library.' });
   const formData = new FormData();
   formData.append('epub', file);
-
   try {
-    const response = await fetch(`${API_BASE}/api/upload`, {
-      method: 'POST',
-      body: formData
-    });
-
-    const data = await response.json();
-
-    if (data.success) {
-      uploadStatus.textContent = 'Success! Adding to library...';
-      uploadProgressFill.style.width = '100%';
-
-      // Clear download error if any
-      if (downloadError) {
-        downloadError.style.display = 'none';
+    const data = await new Promise((resolve, reject) => {
+      const request = new XMLHttpRequest();
+      request.open('POST', `${API_BASE}/api/upload`);
+      for (const [key, value] of Object.entries(syncHeaders({ Prefer: 'respond-async' }))) {
+        request.setRequestHeader(key, value);
       }
-
-      await finishSuccessfulImport(data);
-
-      // Hide upload progress after delay
-      setTimeout(() => {
-        uploadProgress.style.display = 'none';
-        if (fileInput) fileInput.value = ''; // Reset file input
-      }, 2000);
-    } else if (data.error) {
-      // Validation failed
-      const errorMsg = formatApiDetails(data.details, data.error);
-
-      uploadStatus.textContent = 'Upload failed';
-      uploadProgress.style.display = 'none';
-
-      // Show error
-      downloadError.innerHTML = `
-        <div class="error-box">
-          <h3>Warning: Upload Failed</h3>
-          <p><strong>Issue:</strong> ${escapeHTML(errorMsg)}</p>
-          <p class="error-suggestion">${escapeHTML(data.suggestion || 'Please try a different supported book file.')}</p>
-        </div>
-      `;
+      request.upload.onprogress = event => {
+        if (event.lengthComputable) progress.render({
+          label: 'Uploading file…',
+          detail: `${Math.round(event.loaded / event.total * 100)}% transferred`
+        });
+      };
+      request.upload.onload = () => progress.render({ label: 'Processing book…', detail: 'File transferred. Waiting for processing status.' });
+      request.onerror = () => reject(new Error('Connection interrupted while uploading. Try the file again.'));
+      request.onabort = () => reject(new Error('Upload cancelled.'));
+      request.onload = () => {
+        try {
+          const payload = JSON.parse(request.responseText);
+          if (request.status >= 200 && request.status < 300) resolve(payload);
+          else reject(Object.assign(new Error(payload.error || 'Upload failed'), payload));
+        } catch (error) { reject(error); }
+      };
+      request.send(formData);
+    });
+    const imported = data.jobId ? await waitForImportJob(data.jobId, { title: file.name }, progress) : data;
+    if (!imported.success) throw imported;
+    await finishSuccessfulImport(imported, { downloadProgress: progress });
+  } catch (error) {
+    progress.fail(error);
+    if (!error.existingBookId) {
+      downloadError.innerHTML = `<div class="error-box"><h3>Could not add book</h3><p>${escapeHTML(formatApiDetails(error.details, error.error || error.message || 'Upload failed'))}</p><p>${escapeHTML(error.suggestion || 'Try a different supported book file.')}</p></div>`;
       downloadError.style.display = 'block';
-      focusDownloadError();
-
-      if (fileInput) fileInput.value = ''; // Reset file input
+      if (isSearchRoute()) focusDownloadError();
     }
-  } catch (err) {
-    console.error('Upload failed:', err);
-    uploadStatus.textContent = 'Upload failed';
-    uploadProgress.style.display = 'none';
-
-    downloadError.innerHTML = `
-      <div class="error-box">
-        <h3>Warning: Upload Failed</h3>
-        <p>An unexpected error occurred. Please try again.</p>
-      </div>
-    `;
-    downloadError.style.display = 'block';
-    focusDownloadError();
-
-    if (fileInput) fileInput.value = ''; // Reset file input
+  } finally {
+    if (fileInput) fileInput.value = '';
   }
 }
 
@@ -1370,6 +1164,7 @@ function handleDropZoneDrop(event) {
 
 export function initSearch(options = {}) {
   deps = options;
+  initImportActivity({ openBook: deps.openBook, loadLibrary });
   searchInput = document.getElementById('search-input');
   searchBtn = document.getElementById('search-btn');
   searchResults = document.getElementById('search-results');
@@ -1378,10 +1173,6 @@ export function initSearch(options = {}) {
   uploadBtn = document.getElementById('upload-btn');
   dropZone = document.getElementById('book-drop-zone');
   fileInput = document.getElementById('file-input');
-  uploadProgress = document.getElementById('upload-progress');
-  uploadFilename = document.querySelector('.upload-filename');
-  uploadStatus = document.querySelector('.upload-status');
-  uploadProgressFill = document.querySelector('.upload-progress-fill');
   sourceControls = document.getElementById('search-source-controls');
   sourceReset = document.getElementById('search-source-reset');
   sourceMessage = document.getElementById('search-source-message');
@@ -1411,6 +1202,7 @@ export function initSearch(options = {}) {
   });
   searchInput?.addEventListener('input', () => {
     syncSearchClearButton();
+    invalidateSubmittedSearch();
     updateSearchUrl();
   });
   searchClearBtn?.addEventListener('click', () => {
@@ -1444,6 +1236,7 @@ export function initSearch(options = {}) {
   });
   languageFilter?.addEventListener('change', () => {
     updateFilterSummary();
+    invalidateSubmittedSearch();
     updateSearchUrl();
   });
   searchSort?.addEventListener('change', () => {
@@ -1466,11 +1259,13 @@ export function initSearch(options = {}) {
     }
     sourceSelectionMessage = '';
     latestSourceStatus = {};
+    invalidateSubmittedSearch();
     renderSourceShelf();
     updateSearchUrl();
   });
   sourceReset?.addEventListener('click', () => {
     resetSourceShelf();
+    invalidateSubmittedSearch();
     updateSearchUrl();
   });
   document.addEventListener('xandrio:viewchange', (e) => {
@@ -1501,6 +1296,13 @@ export function initSearch(options = {}) {
     if (loadMore && searchResults?.contains(loadMore)) {
       e.preventDefault();
       appendSearchResultBatch();
+      return;
+    }
+
+    const searchAction = e.target.closest('[data-search-action]');
+    if (searchAction && searchResults?.contains(searchAction)) {
+      if (searchAction.dataset.searchAction === 'settings') deps.navigateTo?.('settings');
+      if (searchAction.dataset.searchAction === 'filters') setFilterPanelExpanded(true);
       return;
     }
 

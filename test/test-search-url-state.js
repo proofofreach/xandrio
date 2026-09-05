@@ -86,8 +86,8 @@ async function main() {
       await assertSearchWorkspace(page, SEARCH_A);
       passed++;
 
-      await page.locator('#search-input').fill(SEARCH_B.query);
       await page.locator('#search-sort').selectOption(SEARCH_B.sort);
+      await page.locator('#search-input').fill(SEARCH_B.query);
       await page.locator('#search-btn').click();
       await assertSearchWorkspace(page, SEARCH_B);
       passed++;

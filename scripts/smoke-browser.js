@@ -1185,7 +1185,7 @@ async function verifySearchWorkspace(page, fixtureState) {
         throw new Error('Book import progress panel was recreated during an elapsed-time update');
       }
     }
-    await page.waitForSelector('article[data-work-id="work-hemingway"]');
+    await page.waitForFunction(() => document.querySelector('#download-error .error-box') === document.activeElement);
     if (fixtureState.downloadRequests.length !== requestsBefore + 1 ||
         fixtureState.downloadRequests.at(-1)?.hash !== 'search-hemingway') {
       throw new Error(`Cover ${activation} did not add exactly the recommended version: ${JSON.stringify(fixtureState.downloadRequests)}`);
