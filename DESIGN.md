@@ -35,3 +35,11 @@ Xandrio is a quiet product/tool interface: dense enough for repeated use, but vi
 - No `backdrop-filter`; prefer solid surfaces and cover-derived ambient art.
 - No emoji UI icons.
 - Do not move engine code into view modules. Engine state stays in `app.js` and is passed to views through getters/functions.
+
+## Composition
+
+- The player uses one alignment for chapter, narration status, timeline, and transport. Chapter navigation has one visible entry point. Book completion is a text summary; the selected timeline remains the seek control.
+- Playback preparation and recovery stay in one status area between chapter and timeline on every viewport.
+- Continue Listening uses horizontal resume cards. Shelf rows place offline actions beside the book metadata, with full-size touch targets. Open menus must escape the list paint boundary.
+- Settings are grouped by Listening, Voices, Library & Sources, and Server & Account. Voice creation is an explicit disclosure, separate from choosing a narrator.
+- Composition refinements live in composition.css and library-composition.css, both versioned in the offline app shell.

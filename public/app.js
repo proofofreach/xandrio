@@ -17,7 +17,7 @@ import { initSearch } from './js/views/search.js';
 import { initSettings } from './js/views/settings.js';
 import { initStats } from './js/views/stats.js';
 import { initBookGuide, openBookGuide, refreshGuideState } from './js/views/book-guide.js';
-import { initSleepTimer, restoreSleepTimer, isSleepTimerChapterTarget, expireSleepTimer, closeSleepTimerModal } from './js/views/sleep-timer.js';
+import { initSleepTimer, restoreSleepTimer, isSleepTimerChapterTarget, expireSleepTimer, closeSleepTimerModal, checkAutomaticSleepTimer } from './js/views/sleep-timer.js';
 import { loadVoices, refreshVoicePrepPanel, closeVoiceSheetDirect } from './js/views/voices.js';
 import { initPlaybackSpeed, getCurrentPlaybackSpeed, closeSpeedSheet, loadPlaybackSpeed, applyPlaybackSpeed, applySkipIntervalLabels, stepPlaybackSpeed } from './js/views/playback-speed.js';
 import { readJSON, writeJSON, readText } from './js/util/storage.js';
@@ -791,6 +791,7 @@ function makePlaybackCallbacks() {
     onPlaybackChange: (isPlaying, detail = {}) => {
       updatePlaybackUI(isPlaying);
       if (isPlaying) {
+        checkAutomaticSleepTimer();
         if (detail.reason === 'external') playbackPausedByUser = false;
         setResumePromptVisible(false);
         markPlaybackStableSoon();
@@ -974,6 +975,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   initListeningQueue({ openBook });
   initSearch({ openBook, navigateTo });
   initSleepTimer({
+    pausePlayback: pausePlaybackForUser,
     getCurrentBook: () => currentBook,
     getCurrentChapter: () => currentChapter,
     getChunkPlayer: () => chunkPlayer,
@@ -1463,7 +1465,6 @@ function setupEventListeners() {
   });
 
   document.getElementById('utility-timer-btn')?.addEventListener('click', () => timerBtnInline?.click());
-  document.getElementById('utility-chapters-btn')?.addEventListener('click', openChapterSheet);
   document.getElementById('utility-bookmark-btn')?.addEventListener('click', () => {
     if (currentBook) addBookmarkAtCurrentPosition();
   });
@@ -2871,3 +2872,13 @@ function openShortcutOverlay() {
 function closeShortcutOverlay() {
   shortcutOverlayController?.dismiss();
 }
+
+// Group navigation leaves the application route unchanged.
+(document.querySelectorAll?.("[data-settings-group]") || []).forEach(button => {
+  button.addEventListener("click", () => {
+    const section = document.getElementById(button.dataset.settingsGroup);
+    const heading = section?.querySelector("h3");
+    section?.scrollIntoView({ block: "start", behavior: "instant" });
+    if (heading) { heading.tabIndex = -1; heading.focus({ preventScroll: true }); }
+  });
+});

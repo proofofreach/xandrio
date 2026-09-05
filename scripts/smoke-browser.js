@@ -786,7 +786,7 @@ async function verifyPronunciations(page, fixtureState) {
   await page.waitForFunction(() => document.getElementById('chapter-trigger-title')?.textContent.includes('Chapter One'));
   await page.waitForFunction(() => document.getElementById('audio-loading')?.style.display === 'none');
   await page.setViewportSize({ width: 390, height: 844 });
-  for (const selector of ['#utility-timer-btn', '#utility-chapters-btn', '#utility-bookmark-btn', '#utility-speed-btn']) {
+  for (const selector of ['#utility-timer-btn', '#chapter-sheet-btn', '#utility-bookmark-btn', '#utility-speed-btn']) {
     if (!await page.isVisible(selector)) throw new Error(`Mobile playback tool is not visible: ${selector}`);
   }
   if (!await page.isVisible('#pronunciation-repair-btn')) {
@@ -913,12 +913,15 @@ async function verifyLibraryActions(page) {
     const styles = getComputedStyle(trigger);
     const bounds = trigger.getBoundingClientRect();
     return {
-      backgroundColor: styles.backgroundColor,
+      visibility: styles.visibility,
+      opacity: Number(styles.opacity),
+      color: styles.color,
       width: bounds.width,
       height: bounds.height
     };
   });
-  if (overflowTrigger.backgroundColor === 'rgba(0, 0, 0, 0)' ||
+  if (overflowTrigger.visibility !== 'visible' || overflowTrigger.opacity === 0 ||
+      overflowTrigger.color === 'rgba(0, 0, 0, 0)' ||
       overflowTrigger.width < 44 || overflowTrigger.height < 44) {
     throw new Error(`Library overflow trigger is not persistently visible: ${JSON.stringify(overflowTrigger)}`);
   }
