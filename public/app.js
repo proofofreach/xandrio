@@ -17,7 +17,7 @@ import { initSearch } from './js/views/search.js';
 import { initSettings } from './js/views/settings.js';
 import { initStats } from './js/views/stats.js';
 import { initBookGuide, openBookGuide, refreshGuideState } from './js/views/book-guide.js';
-import { initSleepTimer, restoreSleepTimer, isSleepTimerChapterTarget, expireSleepTimer, closeSleepTimerModal } from './js/views/sleep-timer.js';
+import { initSleepTimer, restoreSleepTimer, isSleepTimerChapterTarget, expireSleepTimer, closeSleepTimerModal, checkAutomaticSleepTimer } from './js/views/sleep-timer.js';
 import { loadVoices, refreshVoicePrepPanel, closeVoiceSheetDirect } from './js/views/voices.js';
 import { initPlaybackSpeed, getCurrentPlaybackSpeed, closeSpeedSheet, loadPlaybackSpeed, applyPlaybackSpeed, applySkipIntervalLabels, stepPlaybackSpeed } from './js/views/playback-speed.js';
 import { readJSON, writeJSON, readText } from './js/util/storage.js';
@@ -791,6 +791,7 @@ function makePlaybackCallbacks() {
     onPlaybackChange: (isPlaying, detail = {}) => {
       updatePlaybackUI(isPlaying);
       if (isPlaying) {
+        checkAutomaticSleepTimer();
         if (detail.reason === 'external') playbackPausedByUser = false;
         setResumePromptVisible(false);
         markPlaybackStableSoon();
@@ -974,6 +975,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   initListeningQueue({ openBook });
   initSearch({ openBook, navigateTo });
   initSleepTimer({
+    pausePlayback: pausePlaybackForUser,
     getCurrentBook: () => currentBook,
     getCurrentChapter: () => currentChapter,
     getChunkPlayer: () => chunkPlayer,
