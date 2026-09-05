@@ -153,6 +153,7 @@ const tests = [
   'test-lifecycle.js',
   'test-sleep-timer-lifecycle.js',
   'test-player-controls.js',
+  'test-ui-composition.js',
   'test-search-url-state.js',
   'test-search-context-regressions.js',
   'test-import-activity-browser.js',

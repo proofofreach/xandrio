@@ -1463,7 +1463,6 @@ function setupEventListeners() {
   });
 
   document.getElementById('utility-timer-btn')?.addEventListener('click', () => timerBtnInline?.click());
-  document.getElementById('utility-chapters-btn')?.addEventListener('click', openChapterSheet);
   document.getElementById('utility-bookmark-btn')?.addEventListener('click', () => {
     if (currentBook) addBookmarkAtCurrentPosition();
   });
@@ -2871,3 +2870,13 @@ function openShortcutOverlay() {
 function closeShortcutOverlay() {
   shortcutOverlayController?.dismiss();
 }
+
+// Group navigation leaves the application route unchanged.
+(document.querySelectorAll?.("[data-settings-group]") || []).forEach(button => {
+  button.addEventListener("click", () => {
+    const section = document.getElementById(button.dataset.settingsGroup);
+    const heading = section?.querySelector("h3");
+    section?.scrollIntoView({ block: "start", behavior: "instant" });
+    if (heading) { heading.tabIndex = -1; heading.focus({ preventScroll: true }); }
+  });
+});

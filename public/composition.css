@@ -1,0 +1,74 @@
+/* A shared rhythm for listening, choosing books, and configuring the library. */
+.player-control-column { min-width: 0; }
+.player-control-column > .player-secondary,
+.player-control-column > .player-status-area,
+.player-control-column > .player-progress,
+.player-control-column > .player-book-progress,
+.player-control-column > .player-controls { width: 100%; max-width: none; margin-inline: 0; }
+.player-chapter-trigger { width: 100%; max-width: none; border: 0; border-radius: 0; border-bottom: 1px solid var(--border); background: transparent; padding: 12px 0; text-align: left; }
+.player-chapter-trigger-title { font-size: 15px; font-weight: 500; }
+.player-status-area { display: grid; gap: 8px; margin: 8px 0 16px; }
+.player-status-area > .player-voice-status { width: 100%; max-width: none; margin: 0; padding: 8px 0; min-height: 44px; border: 0; border-radius: 0; text-align: left; }
+.player-status-area > :is(.hq-voice-prep,.playback-reliability,.playback-resume-prompt,.audio-loading) { width: 100%; max-width: none; margin: 0; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); box-sizing: border-box; }
+.player-status-area > [hidden] { display: none; }
+.player-progress-scope { width: auto; max-width: none; margin: 0 0 8px auto; padding: 0; border: 0; border-radius: 0; background: transparent; justify-content: flex-end; }
+.player-progress-scope-btn { min-width: 70px; min-height: 44px; padding: 8px 12px; border-radius: 6px; font-size: 12px; }
+.player-progress-context { display: none; }
+.player-book-progress { margin: 0; }
+.player-book-progress-label { text-transform: none; font-weight: 400; letter-spacing: 0; }
+.player-book-progress-track[hidden] { display: none; }
+.player-book-progress-meta { padding: 0; font-size: 12px; }
+.player-controls { display: flex; justify-content: center; gap: clamp(16px,4vw,32px); padding: 20px 0; }
+.player-details { background: transparent; border: 0; border-top: 1px solid var(--border); border-radius: 0; }
+.library-header #stats-btn,
+.library-header #settings-btn { background: transparent; border-color: transparent; color: var(--text-secondary); }
+.library-header :is(#stats-btn,#settings-btn):hover { background: var(--surface-hover); color: var(--text); }
+.settings-index { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 28px; }
+.settings-index button { min-height: 44px; padding: 8px 12px; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font: inherit; }
+.settings-index button:hover { background: var(--surface-hover); }
+.settings-group { margin-bottom: 32px; scroll-margin-top: 20px; }
+.settings-group > h3 { font-size: 18px; margin: 0 0 12px; }
+.settings-group .settings-section { border: 0; border-bottom: 1px solid var(--border); border-radius: 0; background: transparent; margin: 0; }
+.settings-group .settings-section-header { min-height: 52px; padding-inline: 0; }
+.settings-group .settings-section-body { padding-inline: 0; }
+#voice-list .voice-create { display: block; grid-column: 1 / -1; margin: 12px 0 20px; border-bottom: 1px solid var(--border); }
+.voice-create > summary { min-height: 44px; padding: 12px 0; box-sizing: border-box; cursor: pointer; color: var(--text); font-weight: 600; }
+.voice-create .clone-voice-form { margin: 0 0 16px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); }
+.voice-create .clone-voice-badge { display: none; }
+.upload-section .book-drop-zone { min-height: 0; padding: 16px; flex-direction: row; gap: 12px; text-align: left; border-style: solid; background: transparent; }
+.upload-section .book-drop-icon { display: none; }
+.upload-section .book-drop-copy { min-width: 0; flex: 1; }
+.upload-section .book-drop-copy h3 { font-size: 14px; margin: 0 0 4px; }
+.upload-section .book-drop-copy p { font-size: 12px; margin: 0; }
+.upload-section #upload-btn { white-space: nowrap; }
+@media (min-width: 760px) {
+ .player-main { align-items: start; }
+ .player-control-column { align-self: center; }
+}
+@media (max-width: 759px) {
+ .player-cover-wrap { max-height: 230px; width: min(230px,60vw); }
+ .player-cover { max-height: 230px; object-fit: contain; }
+ .player-book-info { margin-block: 12px 4px; }
+ .player-book-title { font-size: 22px; }
+ .player-secondary { order: 3; }
+ .player-status-area { order: 4; margin: 0 0 8px; width: 100%; }
+ .player-progress { order: 5; }
+ .player-book-progress { order: 6; }
+ .player-controls { order: 7; padding-block: 16px; }
+ .player-utility-row { order: 8; }
+ .player-status-area > .player-voice-status { font-size: 12px; }
+ .player-utility-row { padding-inline: 0; }
+ .header-actions { gap: 4px; }
+ .upload-section .book-drop-zone { flex-wrap: wrap; }
+}
+/* Keep the same inset and compact scope control when columns flatten on phones. */
+.player-progress-scope { display: flex; }
+.player-progress-scope-btn { flex: 0 0 auto; }
+@media (max-width: 759px) {
+ .player-cover-wrap { align-self: center; margin-inline: auto; padding-inline: 0; align-items: center; }
+ .player-status-area { width: auto !important; margin-inline: 24px !important; }
+ .player-status-area > .player-voice-status { grid-template-columns: minmax(0,1fr) auto; gap: 4px 8px; }
+ .player-voice-status-label { display: none; }
+ .player-status-area .player-voice-status-cache { grid-column: auto; font-weight: 400; }
+}
+.player-time-row { grid-template-columns: minmax(0,1fr) minmax(0,1fr); }

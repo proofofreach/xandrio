@@ -1,0 +1,221 @@
+/* Library composition: compact, cover-led rows with quiet full-size controls. */
+
+#library-view .library-header {
+  margin-bottom: 8px;
+}
+
+#library-view .header-actions {
+  gap: 2px;
+}
+
+#library-view .header-actions > .btn-icon {
+  border-color: transparent;
+  background: transparent;
+}
+
+#library-view .header-actions > .btn-icon:hover,
+#library-view .header-actions > .btn-icon:focus-visible {
+  border-color: transparent;
+  background: var(--surface-hover);
+}
+
+#library-view .library-tabs {
+  margin-top: 0;
+}
+
+#library-view .library-controls {
+  margin-bottom: 8px;
+}
+
+#library-view #sort-select {
+  border-color: transparent;
+  background: var(--surface-inset);
+}
+
+#library-view #view-toggle-btn {
+  border-color: transparent;
+  background: transparent;
+}
+
+#library-view .book-list:not(.grid-view) {
+  gap: 6px;
+}
+
+#library-view .book-list:not(.grid-view) .book-item-inner {
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 6px;
+  min-height: 68px;
+  padding: 6px 8px;
+}
+
+#library-view .book-list:not(.grid-view) .book-card-open {
+  gap: 10px;
+  min-height: 56px;
+}
+
+#library-view .book-list:not(.grid-view) .book-cover-wrap {
+  width: 40px;
+  height: 60px;
+  border-radius: 4px;
+  box-shadow: 0 1px 5px oklch(4% 0.01 255 / 0.42);
+}
+
+#library-view .book-list:not(.grid-view) .book-title {
+  margin-bottom: 1px;
+  -webkit-line-clamp: 1;
+}
+
+#library-view .book-list:not(.grid-view) .book-listening-meta {
+  margin-top: 1px;
+}
+
+#library-view .book-list:not(.grid-view) .book-local-control {
+  grid-column: auto;
+  justify-content: flex-end;
+  max-width: 170px;
+  margin-left: 0;
+  text-align: right;
+}
+
+#library-view .book-list:not(.grid-view) .book-local-state {
+  justify-content: flex-end;
+  min-height: var(--touch-min);
+  padding-inline: 8px;
+  white-space: nowrap;
+}
+
+#library-view .book-list:not(.grid-view) span.book-local-state {
+  min-height: var(--touch-min);
+}
+
+#library-view .book-list:not(.grid-view) .book-overflow-trigger {
+  border-color: transparent;
+  background: transparent;
+}
+
+#library-view .book-list:not(.grid-view) .book-progress {
+  grid-column: 1 / -1;
+}
+
+#library-view .continue-rail {
+  margin-bottom: 12px;
+}
+
+#library-view .rail-heading {
+  margin-bottom: 6px;
+}
+
+#library-view .rail-track {
+  gap: 8px;
+}
+
+#library-view .rail-card {
+  position: relative;
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr);
+  grid-template-rows: auto auto 1fr;
+  column-gap: 10px;
+  row-gap: 0;
+  width: min(320px, calc(100vw - var(--view-pad-left) - var(--view-pad-right) - 18px));
+  min-height: 72px;
+  padding: 6px 44px 6px 6px;
+  border: 1px solid var(--border);
+  background: var(--surface-raised);
+}
+
+#library-view .rail-card:hover,
+#library-view .rail-card:focus-visible {
+  background: var(--surface-hover);
+  transform: none;
+}
+
+#library-view .rail-cover-wrap {
+  grid-row: 1 / 4;
+  width: 44px;
+  height: 66px;
+  aspect-ratio: auto;
+  border-radius: 4px;
+  box-shadow: 0 1px 5px oklch(4% 0.01 255 / 0.42);
+}
+
+#library-view .rail-dismiss {
+  top: 2px;
+  right: 2px;
+  background: transparent;
+}
+
+#library-view .rail-title {
+  grid-column: 2;
+  margin: 2px 0 0;
+  font-size: 14px;
+}
+
+#library-view .rail-meta {
+  grid-column: 2;
+  margin-top: 2px;
+}
+
+#library-view .rail-play-action {
+  display: inline-flex;
+  align-items: center;
+  grid-column: 2;
+  width: fit-content;
+  min-height: 24px;
+  align-self: end;
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+#library-view .rail-play-glyph {
+  left: 10px;
+  bottom: 8px;
+  width: 24px;
+  height: 24px;
+}
+
+@media (max-width: 560px) {
+  #library-view .book-list:not(.grid-view) .book-local-control {
+    max-width: 44px;
+  }
+
+  #library-view .book-list:not(.grid-view) .book-local-state span {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+
+  #library-view .book-list:not(.grid-view) .book-local-state svg {
+    width: 19px;
+    height: 19px;
+  }
+}
+
+@media (min-width: 1200px) {
+  #library-view .library-workspace,
+  #library-view .library-workspace:has(.library-context-rail > :not([hidden])) {
+    display: block;
+  }
+
+  #library-view .library-context-rail,
+  #library-view .library-workspace:has(.library-context-rail > :not([hidden])) > .library-primary {
+    grid-column: auto;
+  }
+
+  #library-view .library-context-rail .rail-track {
+    display: flex;
+    overflow-x: auto;
+  }
+
+  #library-view .library-context-rail .rail-card {
+    width: 320px;
+  }
+}
+
+/* An open menu may extend past the last compact row's paint boundary. */
+#library-view .book-list:has(.menu-open) {
+  content-visibility: visible;
+}
