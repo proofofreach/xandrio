@@ -152,6 +152,7 @@ const tests = [
   'test-book-open-commit.js',
   'test-lifecycle.js',
   'test-sleep-timer-lifecycle.js',
+  'test-auto-sleep-schedule.js',
   'test-player-controls.js',
   'test-ui-composition.js',
   'test-search-url-state.js',

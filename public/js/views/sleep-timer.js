@@ -1,3 +1,4 @@
+import { normalizeAutoSleepSchedule, autoSleepWindowKey } from '../auto-sleep-schedule.mjs';
 import { showToast } from '../ui/toast.js';
 import { registerSheet } from '../ui/sheets.js';
 import { readJSON, writeJSON, readText, writeText, removeStorage } from '../util/storage.js';
@@ -18,6 +19,62 @@ let cancelTimerBtn = null;
 let extendTimerBtn = null;
 let timerModalController = null;
 let initScope = null;
+const AUTO_SLEEP_KEY = 'xandrio_auto_sleep_schedule';
+const AUTO_SLEEP_SKIP_KEY = 'xandrio_auto_sleep_skip';
+let autoSleepSchedule = normalizeAutoSleepSchedule(readJSON(AUTO_SLEEP_KEY, {}));
+let stopAutoSleepWatch = null;
+let autoSleepSkipKey = readText(AUTO_SLEEP_SKIP_KEY, '');
+
+export function checkAutomaticSleepTimer(now = new Date()) {
+  const windowKey = autoSleepWindowKey(autoSleepSchedule, now);
+  if (!windowKey || sleepTimerMode || !deps.getCurrentBook?.() || !deps.getChunkPlayer?.()?.isPlaying) return;
+  if (autoSleepSkipKey === windowKey || readText(AUTO_SLEEP_SKIP_KEY, '') === windowKey) return;
+  if (autoSleepSchedule.mode === 'chapter') setSleepTimerToChapterEnd();
+  else {
+    setSleepTimer(autoSleepSchedule.minutes);
+    showToast(`Automatic sleep timer · ${autoSleepSchedule.minutes} minutes`);
+  }
+}
+
+function initAutomaticSleepSettings() {
+  const enabled = document.getElementById('auto-sleep-enabled');
+  const start = document.getElementById('auto-sleep-start');
+  const end = document.getElementById('auto-sleep-end');
+  const duration = document.getElementById('auto-sleep-duration');
+  const status = document.getElementById('auto-sleep-status');
+  if (!enabled || !start || !end || !duration) return;
+  autoSleepSchedule = normalizeAutoSleepSchedule(readJSON(AUTO_SLEEP_KEY, {}));
+  const render = () => {
+    enabled.checked = autoSleepSchedule.enabled;
+    start.value = autoSleepSchedule.start;
+    end.value = autoSleepSchedule.end;
+    duration.value = autoSleepSchedule.mode === 'chapter' ? 'chapter' : String(autoSleepSchedule.minutes);
+    start.disabled = end.disabled = duration.disabled = !autoSleepSchedule.enabled;
+  };
+  const watch = () => {
+    stopAutoSleepWatch?.();
+    stopAutoSleepWatch = autoSleepSchedule.enabled ? initScope.interval(() => checkAutomaticSleepTimer(), 15000) : null;
+  };
+  const save = () => {
+    if (enabled.checked && (!start.value || !end.value || start.value === end.value)) {
+      if (status) status.textContent = 'Choose different start and end times.';
+      return;
+    }
+    autoSleepSchedule = normalizeAutoSleepSchedule({ enabled: enabled.checked, start: start.value, end: end.value,
+      mode: duration.value === 'chapter' ? 'chapter' : 'time', minutes: Number(duration.value) });
+    const saved = writeJSON(AUTO_SLEEP_KEY, autoSleepSchedule);
+    autoSleepSkipKey = '';
+    removeStorage(AUTO_SLEEP_SKIP_KEY);
+    render();
+    watch();
+    if (status) status.textContent = saved ? 'Saved on this device.' : 'Storage is unavailable. This change will last until you reload.';
+    checkAutomaticSleepTimer();
+  };
+  render();
+  watch();
+  [enabled, start, end, duration].forEach(input => initScope.listen(input, 'change', save));
+  initScope.listen(document, 'visibilitychange', () => checkAutomaticSleepTimer());
+}
 
 function notifyChapterTargetChange(reason) {
   if (typeof deps.onChapterTargetChange !== 'function') return;
@@ -68,6 +125,7 @@ export function initSleepTimer(options = {}) {
     });
   });
   initScope.listen(extendTimerBtn, 'click', () => extendSleepTimer(5));
+  initAutomaticSleepSettings();
 }
 
 export function closeSleepTimerModal() {
@@ -83,7 +141,7 @@ export function isSleepTimerChapterTarget(bookId, chapterIndex) {
 
 // Sleep Timer
 function setSleepTimer(minutes) {
-  clearSleepTimer();
+  clearSleepTimer('replace');
   sleepTimerMode = 'time';
   sleepTimerChapterTarget = null;
 
@@ -150,6 +208,13 @@ function clearSleepTimerHandles() {
 }
 
 export function clearSleepTimer(reason = 'cancelled', notify = true) {
+  if (reason === 'cancelled' && autoSleepSchedule.enabled) {
+    const key = autoSleepWindowKey(autoSleepSchedule, new Date());
+    if (key) {
+      autoSleepSkipKey = key;
+      writeText(AUTO_SLEEP_SKIP_KEY, key);
+    }
+  }
   const clearedChapterTarget = sleepTimerMode === 'chapter' && sleepTimerChapterTarget;
   clearSleepTimerHandles();
 
@@ -240,13 +305,12 @@ function extendSleepTimer(minutes) {
 }
 
 export function expireSleepTimer(reason = 'time') {
-  // Fade to silence
-  if (deps.getChunkPlayer()) {
-    deps.getChunkPlayer().setVolume(0);
-    setTimeout(() => {
-      deps.getChunkPlayer().pause();
-      deps.getChunkPlayer().setVolume(1.0); // Reset volume for next play
-    }, 100);
+  const player = deps.getChunkPlayer();
+  if (player) {
+    // Expiry must cancel recovery as well as pause the media element.
+    if (deps.pausePlayback) deps.pausePlayback();
+    else player.pause();
+    player.setVolume(1.0);
   }
 
   deps.updatePlaybackUI(false);

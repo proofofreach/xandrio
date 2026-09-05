@@ -12,6 +12,25 @@ const { startScenarioEnvironment } = require('./fixtures/scenarios/lib/environme
       try {
         const page = await context.newPage();
         await page.goto(`${environment.origin}/#/settings`);
+        await page.locator('#settings-group-0 details.settings-section > summary').click();
+        const automatic = page.locator('#auto-sleep-enabled');
+        assert.equal(await automatic.isChecked(), false);
+        assert.equal(await page.locator('#auto-sleep-start').isDisabled(), true);
+        await automatic.check();
+        await page.locator('#auto-sleep-start').fill('22:30');
+        await page.locator('#auto-sleep-end').fill('07:30');
+        await page.locator('#auto-sleep-duration').selectOption('45');
+        assert.deepEqual(await page.evaluate(() => JSON.parse(localStorage.getItem('xandrio_auto_sleep_schedule'))),
+          { enabled: true, start: '22:30', end: '07:30', minutes: 45, mode: 'time' });
+        assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+        if (process.env.AUTO_SLEEP_SHOTS) await page.screenshot({ path: `${process.env.AUTO_SLEEP_SHOTS}/settings-${width}.png`, fullPage: true });
+        await page.reload();
+        await page.locator('#settings-group-0 details.settings-section > summary').click();
+        assert.equal(await automatic.isChecked(), true);
+        assert.equal(await page.locator('#auto-sleep-start').inputValue(), '22:30');
+        assert.equal(await page.locator('#auto-sleep-duration').inputValue(), '45');
+        await automatic.uncheck();
+        passed++;
         await page.locator('[data-settings-group="settings-group-1"]').click();
         assert.equal(new URL(page.url()).hash, '#/settings');
         assert.equal(await page.evaluate(() => document.activeElement.id), 'settings-group-title-1');

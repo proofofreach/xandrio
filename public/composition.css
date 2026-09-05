@@ -72,3 +72,13 @@
  .player-status-area .player-voice-status-cache { grid-column: auto; font-weight: 400; }
 }
 .player-time-row { grid-template-columns: minmax(0,1fr) minmax(0,1fr); }
+
+.auto-sleep-settings { border: 0; border-bottom: 1px solid var(--border); padding: 12px 0 20px; margin: 0 0 16px; min-width: 0; }
+.auto-sleep-settings legend { font-weight: 600; }
+.auto-sleep-enable { display: flex; align-items: center; gap: 10px; min-height: 44px; }
+.auto-sleep-enable input { width: 20px; height: 20px; accent-color: var(--accent); }
+.auto-sleep-fields { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 12px; margin: 12px 0; }
+.auto-sleep-fields label { display: grid; gap: 6px; font-size: 13px; min-width: 0; }
+.auto-sleep-fields label:last-child { grid-column: 1 / -1; }
+.auto-sleep-fields input, .auto-sleep-fields select { min-width: 0; width: 100%; min-height: 44px; box-sizing: border-box; background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 8px; font: inherit; }
+.auto-sleep-fields :disabled { opacity: .55; }
