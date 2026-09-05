@@ -24,7 +24,7 @@ import { readJSON, writeJSON, readText } from './js/util/storage.js';
 import { createPlaybackSession, restorePlaybackPosition } from './js/playback-session.js';
 import { navigateChapterSelection, positionMatchesChapterStructure, shouldAllowBackwardReconciliation } from './js/chapter-navigation.mjs';
 import { SingleFileChapterPlayer } from './js/single-file-chapter-player.js';
-import { initPlayerUI, paintChapterTimes, paintScrubPreview, toggleTimeDisplayMode, syncTimeDisplayModeFromClientSettings, getPlaybackProgressScope, getBookSeekTarget, syncPlaybackProgressScope, setPlaybackReliabilityState, setResumePromptVisible, handleChunkWaiting, handleChunkPreparing, setChunkOverlayState, displayChapterTitle, updateChapterTrigger, updateBookProgress, updatePlayerAmbient, renderChapterList, openChapterSheet, closeChapterSheet, dismissChapterSheet, showAudioLoading, hideAudioLoading, updateMiniPlayer, syncMiniPlayerInfo, syncMiniPlayerIcon } from './js/views/player-ui.js';
+import { initPlayerUI, refreshPlaybackTimes, setPlaybackBuffering, paintChapterTimes, paintScrubPreview, toggleTimeDisplayMode, syncTimeDisplayModeFromClientSettings, getPlaybackProgressScope, getBookSeekTarget, syncPlaybackProgressScope, setPlaybackReliabilityState, setResumePromptVisible, handleChunkWaiting, handleChunkPreparing, setChunkOverlayState, displayChapterTitle, updateChapterTrigger, updateBookProgress, updatePlayerAmbient, renderChapterList, openChapterSheet, closeChapterSheet, dismissChapterSheet, showAudioLoading, hideAudioLoading, updateMiniPlayer, syncMiniPlayerInfo, syncMiniPlayerIcon } from './js/views/player-ui.js';
 import { findPreferredStartChapterIndex } from './js/util/chapter-labels.mjs';
 import { applyRewindForResume, createSmartRewindController } from './js/smart-rewind.mjs';
 import { initListeningQueue, loadListeningQueue, addToListeningQueue, advanceListeningQueue, getBookPlaybackSettings, saveBookPlaybackSettings } from './js/features/listening-queue.js';
@@ -676,6 +676,7 @@ function scheduleAutomaticPlaybackRecovery(error, snapshot) {
 
 
 function handleChunkError(error) {
+  setPlaybackBuffering(false);
   console.error('Chunk playback error:', error);
   if (error && (error.name === 'NotAllowedError' || error.name === 'AbortError')) {
     hideAudioLoading();
@@ -765,6 +766,7 @@ function makePlaybackCallbacks() {
     onError: handleChunkError,
     onReady: handleChunkReady,
     onWaiting: handleChunkWaiting,
+    onBufferingChange: setPlaybackBuffering,
     onPreparing: handleChunkPreparing,
     onPlaybackChange: (isPlaying, detail = {}) => {
       updatePlaybackUI(isPlaying);
@@ -960,7 +962,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     isSmartRewindEnabled,
     isRollingOfflineEnabled,
     saveBookPlaybackSettings: saveCurrentBookPlaybackSettings,
-    onSpeedChange: () => updateMediaSessionPosition()
+    onSpeedChange: () => {
+      updateMediaSessionPosition();
+      refreshPlaybackTimes();
+    }
   });
   initSettings({
     getCurrentBook: () => currentBook,

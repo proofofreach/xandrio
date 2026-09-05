@@ -53,6 +53,7 @@ function element() {
   });
 
   const values = new Map();
+  global.__sleepSheetOpens = 0;
   global.__sleepTimerValues = values;
   const timerButton = element();
   const closeButton = element();
@@ -92,7 +93,7 @@ function element() {
     Function(lifecycleSource)();
     const source = fs.readFileSync(path.join(__dirname, '..', 'public', 'js', 'views', 'sleep-timer.js'), 'utf8')
       .replace("import { showToast } from '../ui/toast.js';", 'const showToast = () => {};')
-      .replace("import { registerSheet } from '../ui/sheets.js';", 'const registerSheet = () => ({ open() {}, close() {}, dismiss() {} });')
+      .replace("import { registerSheet } from '../ui/sheets.js';", 'const registerSheet = () => ({ open() { globalThis.__sleepSheetOpens++; }, close() {}, dismiss() {} });')
       .replace("import { readJSON, writeJSON, readText, writeText, removeStorage } from '../util/storage.js';", `
         const readJSON = (key, fallback) => globalThis.__sleepTimerValues.has(key) ? JSON.parse(globalThis.__sleepTimerValues.get(key)) : fallback;
         const writeJSON = (key, value) => globalThis.__sleepTimerValues.set(key, JSON.stringify(value));
@@ -163,12 +164,33 @@ function element() {
       restoreSleepTimer();
       assert.strictEqual(timers.size, 2);
     });
+
+    await test('an armed timer can be reopened, extended, and explicitly cancelled', () => {
+      clearSleepTimer();
+      timerButton.emit('click');
+      assert.strictEqual(cancelButton.hidden, true);
+      assert.strictEqual(extendButton.hidden, true);
+      option.emit('click');
+      const originalEnd = Number(values.get('xandrio_sleep_timer_end'));
+      const opens = global.__sleepSheetOpens;
+      timerButton.emit('click');
+      assert.strictEqual(global.__sleepSheetOpens, opens + 1);
+      assert.strictEqual(Number(values.get('xandrio_sleep_timer_end')), originalEnd);
+      assert.strictEqual(cancelButton.hidden, false);
+      assert.strictEqual(extendButton.hidden, false);
+      extendButton.emit('click');
+      assert(Math.abs(Number(values.get('xandrio_sleep_timer_end')) - originalEnd - 300000) < 100);
+      cancelButton.emit('click');
+      assert.strictEqual(values.has('xandrio_sleep_timer_end'), false);
+      assert.strictEqual(cancelButton.hidden, true);
+    });
   } finally {
     global.setTimeout = originalTimeout;
     global.clearTimeout = originalClearTimeout;
     global.setInterval = originalInterval;
     global.clearInterval = originalClearInterval;
     delete global.__sleepTimerValues;
+    delete global.__sleepSheetOpens;
   }
 
   console.log(`\n${passed} passed, ${failed} failed`);

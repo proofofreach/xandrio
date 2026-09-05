@@ -48,8 +48,10 @@ let latestSourceStatus = {};
 let sourceSelectionMessage = '';
 let searchInProgress = false;
 let searchRequestVersion = 0;
+let searchSourcesReady = false;
 const SEARCH_COVER_RETRY_DELAY_MS = 3000;
 const MOBILE_SEARCH_MEDIA = '(max-width: 759px)';
+const SEARCH_URL_PARAMS = ['q', 'language', 'sources', 'sort'];
 
 const SOURCE_GROUPS = [
   { id: 'open', label: 'Public domain' },
@@ -174,11 +176,81 @@ function syncSearchClearButton() {
   if (searchClearBtn) searchClearBtn.hidden = !searchInput?.value;
 }
 
-function updateSearchUrl(query = '') {
+function isSearchRoute() {
+  return /^#\/search(?:[/?#]|$)/.test(window.location.hash);
+}
+
+function selectedSourceIds() {
+  return configuredSourceIds(
+    SEARCH_SOURCES.filter(source => selectedSources.has(source.id)).map(source => source.id)
+  );
+}
+
+function replaceUrl(url) {
+  const next = `${url.pathname}${url.search}${url.hash}`;
+  const current = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+  if (next !== current) window.history.replaceState(window.history.state, '', next);
+}
+
+function updateSearchUrl() {
+  if (!isSearchRoute()) return;
   const url = new URL(window.location.href);
+  const query = searchInput?.value.trim() || '';
+  const language = languageFilter?.value || 'en';
+  const sources = selectedSourceIds();
+  const sort = searchSort?.value || 'relevance';
   if (query) url.searchParams.set('q', query);
   else url.searchParams.delete('q');
-  window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`);
+  url.searchParams.set('language', language);
+  if (sources.length) url.searchParams.set('sources', sources.join(','));
+  else url.searchParams.delete('sources');
+  url.searchParams.set('sort', sort);
+  replaceUrl(url);
+}
+
+function clearSearchUrl() {
+  const url = new URL(window.location.href);
+  for (const key of SEARCH_URL_PARAMS) url.searchParams.delete(key);
+  replaceUrl(url);
+}
+
+function hasSearchUrlState() {
+  const params = new URL(window.location.href).searchParams;
+  return SEARCH_URL_PARAMS.some(key => params.has(key));
+}
+
+function searchWorkspaceKey() {
+  return JSON.stringify({
+    query: searchInput?.value.trim() || '',
+    language: languageFilter?.value || 'en',
+    sources: selectedSourceIds(),
+    sort: searchSort?.value || 'relevance'
+  });
+}
+
+function hydrateSearchWorkspaceFromUrl() {
+  if (!isSearchRoute()) return '';
+  const url = new URL(window.location.href);
+  const query = url.searchParams.get('q')?.trim() || '';
+  const language = url.searchParams.get('language');
+  const sort = url.searchParams.get('sort');
+  const sources = url.searchParams.get('sources');
+
+  if (searchInput) searchInput.value = query;
+  if (language && languageFilter && [...languageFilter.options].some(option => option.value === language)) {
+    languageFilter.value = language;
+  }
+  if (sort && searchSort && [...searchSort.options].some(option => option.value === sort)) {
+    searchSort.value = sort;
+  }
+  if (sources !== null) {
+    selectedSources = new Set(
+      sources.split(',').filter(id => SEARCH_SOURCES.some(source => source.id === id))
+    );
+  }
+  syncSearchClearButton();
+  updateFilterSummary();
+  return query;
 }
 
 function clearRenderedSearchResults() {
@@ -580,20 +652,6 @@ function resetSourceShelf() {
   renderSourceShelf();
 }
 
-function resetSearchWorkspace() {
-  clearRenderedSearchResults();
-  if (searchInput) searchInput.value = '';
-  updateSearchUrl('');
-  if (searchSort) searchSort.value = 'relevance';
-  if (downloadError) {
-    downloadError.innerHTML = '';
-    downloadError.style.display = 'none';
-  }
-  syncSearchClearButton();
-  setFilterPanelExpanded(false, { moveFocus: false });
-  resetSourceShelf();
-}
-
 async function loadSearchSources() {
   try {
     const data = await apiGet('/api/search/sources');
@@ -601,7 +659,10 @@ async function loadSearchSources() {
   } catch (err) {
     console.warn('Search source availability unavailable:', err);
   }
-  resetSourceShelf();
+  searchSourcesReady = true;
+  if (!selectedSources.size) selectedSources = new Set(effectiveDefaultSources());
+  renderSourceShelf();
+  updateSearchUrl();
 }
 
 async function searchBooks() {
@@ -698,8 +759,7 @@ async function searchBooks() {
         ));
       }
     }
-    updateSearchUrl(query);
-    if (searchSort) searchSort.value = 'relevance';
+    updateSearchUrl();
     renderSearchResults();
     if (isMobileSearchLayout()) setFilterPanelExpanded(false);
   } catch (err) {
@@ -1337,18 +1397,26 @@ export function initSearch(options = {}) {
   searchSortWrap = document.getElementById('search-sort-wrap');
 
   setFilterPanelExpanded(false, { moveFocus: false });
+  const initialUrlQuery = hydrateSearchWorkspaceFromUrl();
 
-  loadSearchSources();
+  loadSearchSources().then(() => {
+    if (initialUrlQuery && isSearchRoute() && searchInput?.value.trim() === initialUrlQuery) {
+      searchBooks();
+    }
+  });
 
   searchBtn?.addEventListener('click', searchBooks);
   searchInput?.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') searchBooks();
   });
-  searchInput?.addEventListener('input', syncSearchClearButton);
+  searchInput?.addEventListener('input', () => {
+    syncSearchClearButton();
+    updateSearchUrl();
+  });
   searchClearBtn?.addEventListener('click', () => {
     if (searchInput) searchInput.value = '';
     clearRenderedSearchResults();
-    updateSearchUrl('');
+    updateSearchUrl();
     if (downloadError) downloadError.style.display = 'none';
     syncSearchClearButton();
     setFilterPanelExpanded(false, { moveFocus: false });
@@ -1374,8 +1442,14 @@ export function initSearch(options = {}) {
   mobileSearchMedia.addEventListener?.('change', () => {
     setFilterPanelExpanded(false, { moveFocus: false });
   });
-  languageFilter?.addEventListener('change', updateFilterSummary);
-  searchSort?.addEventListener('change', renderSearchResults);
+  languageFilter?.addEventListener('change', () => {
+    updateFilterSummary();
+    updateSearchUrl();
+  });
+  searchSort?.addEventListener('change', () => {
+    renderSearchResults();
+    updateSearchUrl();
+  });
   sourceControls?.addEventListener('click', (e) => {
     const button = e.target.closest('[data-search-source]');
     if (!button || button.disabled || searchInProgress) return;
@@ -1393,14 +1467,33 @@ export function initSearch(options = {}) {
     sourceSelectionMessage = '';
     latestSourceStatus = {};
     renderSourceShelf();
+    updateSearchUrl();
   });
-  sourceReset?.addEventListener('click', resetSourceShelf);
+  sourceReset?.addEventListener('click', () => {
+    resetSourceShelf();
+    updateSearchUrl();
+  });
   document.addEventListener('xandrio:viewchange', (e) => {
-    if (e.detail.view === 'search') resetSearchWorkspace();
-    else setFilterPanelExpanded(false);
+    if (e.detail.view === 'search') {
+      const previousWorkspace = searchWorkspaceKey();
+      const query = hasSearchUrlState() ? hydrateSearchWorkspaceFromUrl() : '';
+      const changed = previousWorkspace !== searchWorkspaceKey();
+      if (changed) {
+        renderSourceShelf();
+        if (query && searchSourcesReady) searchBooks();
+        else if (!query) clearRenderedSearchResults();
+      }
+      updateSearchUrl();
+    } else {
+      setFilterPanelExpanded(false);
+      clearSearchUrl();
+    }
   });
   document.addEventListener('xandrio:client-settings', (e) => {
-    if (e.detail.key === 'defaultSearchSources' || e.detail.key === '*') resetSourceShelf();
+    if (e.detail.key === 'defaultSearchSources' || e.detail.key === '*') {
+      resetSourceShelf();
+      updateSearchUrl();
+    }
   });
   document.addEventListener('xandrio:search-sources-changed', loadSearchSources);
   document.addEventListener('click', (e) => {

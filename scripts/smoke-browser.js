@@ -892,22 +892,22 @@ async function verifyLibraryActions(page) {
       await page.evaluate(() => localStorage.getItem('xandrio_library_tab')) !== null) {
     throw new Error('Library scope preference is not isolated to the signed-in account');
   }
-  if (await page.locator('.book-card-tools > [data-download-book]').count() !== 0) {
-    throw new Error('Library card still exposes Download outside its overflow menu');
+  if (await page.locator('[data-offline-status] [data-download-book]').count() === 0) {
+    throw new Error('Library card has no direct download action');
   }
   if (await page.locator('.shelf-toggle, .queue-toggle, .library-offline-badge').count() !== 0) {
     throw new Error('Library card still renders the old action-pill cluster');
   }
-  const hiddenGridStatus = await page.locator('[data-offline-status]').first().evaluate(element => {
+  const gridStatus = await page.locator('[data-offline-status]').first().evaluate(element => {
     const list = element.closest('.book-list');
     list.classList.add('grid-view');
     const bounds = element.getBoundingClientRect();
     const display = getComputedStyle(element).display;
     list.classList.remove('grid-view');
-    return { display, width: bounds.width, height: bounds.height };
+    return { display, width: bounds.width, height: bounds.height, text: element.textContent.trim() };
   });
-  if (hiddenGridStatus.display !== 'none' || hiddenGridStatus.width !== 0 || hiddenGridStatus.height !== 0) {
-    throw new Error(`Undownloaded grid card exposes an empty local-status control: ${JSON.stringify(hiddenGridStatus)}`);
+  if (gridStatus.display === 'none' || gridStatus.width < 44 || gridStatus.height < 44 || !gridStatus.text.includes('Download')) {
+    throw new Error(`Undownloaded grid card has no visible download action: ${JSON.stringify(gridStatus)}`);
   }
   const overflowTrigger = await page.locator('[data-book-menu-toggle]').evaluate(trigger => {
     const styles = getComputedStyle(trigger);
@@ -1546,8 +1546,9 @@ async function verifyRealServiceWorkerOffline(browser) {
     );
     await page.click('[data-library-tab="downloaded"]');
     await page.waitForSelector('[data-book-id="smoke-offline"]:not(.hidden)');
-    if (await page.locator('[data-offline-status="smoke-offline"]:visible').count() !== 0) {
-      throw new Error('Completed download still renders a persistent card status');
+    const downloadedStatus = page.locator('[data-offline-status="smoke-offline"]:visible');
+    if (await downloadedStatus.count() !== 1 || !(await downloadedStatus.innerText()).includes('Downloaded')) {
+      throw new Error('Completed download does not render its verified card status');
     }
     await page.click('[data-book-menu-toggle]');
     if (!await page.getByRole('menuitem', { name: 'Remove download', exact: true }).isVisible()) {

@@ -26,6 +26,7 @@ const RAIL_PLAY_GLYPH = `
     <path d="M9.5 7.5v9l7-4.5-7-4.5z" class="rail-play-tri"></path>
   </svg>
 `;
+const OFFLINE_DOWNLOAD_GLYPH = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M12 3v12m0 0l-4-4m4 4l4-4M5 21h14"/></svg>';
 
 const LIBRARY_TAB_KEY = 'xandrio_library_tab';
 
@@ -121,9 +122,40 @@ function progressMetaLine(progress) {
 }
 
 function offlineStateContents(bookId) {
-  // Offline state belongs in the overflow menu and Audio Activity. Keeping
-  // the card itself quiet avoids turning local/device state into another pill.
-  return '';
+  const status = offlineStatusForBook(bookId);
+  const cached = Math.max(0, Number(status.cachedChapters) || 0);
+  const total = Math.max(0, Number(status.totalChapters) || 0);
+  const progress = total > 0 ? `${cached}/${total}` : '';
+  const withProgress = label => progress ? `${label} ${progress}` : label;
+  const state = (label, title = status.label) => `
+    <span class="book-local-state" title="${safeAttr(title)}" aria-label="${safeAttr(title)}">
+      ${OFFLINE_DOWNLOAD_GLYPH}<span>${escapeHTML(label)}</span>
+    </span>`;
+  const action = (label, title = status.label) => `
+    <button type="button" class="book-local-state" data-download-book="${safeAttr(bookId)}"
+            title="${safeAttr(title)}" aria-label="${safeAttr(`${label}. ${title}`)}">
+      ${OFFLINE_DOWNLOAD_GLYPH}<span>${escapeHTML(label)}</span>
+    </button>`;
+
+  if (pendingBookDownloads.has(String(bookId))) return state('Checking audio…');
+  if (status.downloaded) return state('Downloaded');
+  switch (status.kind) {
+    case 'ready-to-prepare': return action('Download');
+    case 'prepared': return action('Download');
+    case 'preparation-paused': return action('Resume');
+    case 'preparation-error': return action('Retry');
+    case 'preparation-capacity': return action('Try again');
+    case 'partial-download': return action(progress ? `Partial ${progress} · Continue` : 'Partial · Continue');
+    case 'repair-needed': return action('Incomplete · Retry');
+    case 'partial': return action(progress ? `Cached ${progress} · Download full copy` : 'Cached chapters · Download full copy');
+    case 'preparing': return state(withProgress('Preparing'));
+    case 'preparation-waiting': return state('Waiting for audio');
+    case 'downloading': return state(withProgress('Downloading'));
+    case 'verifying': return state('Verifying');
+    case 'download-offline': return state('Connect to download');
+    case 'download-unavailable': return state('Downloads unavailable');
+    default: return state(status.label);
+  }
 }
 
 function offlineStatusHTML(bookId) {
@@ -131,8 +163,8 @@ function offlineStatusHTML(bookId) {
   const contents = offlineStateContents(bookId);
   return `
     <span class="book-local-control book-local-control--${safeAttr(status.kind)}"
-          data-offline-status="${safeAttr(bookId)}"${contents ? '' : ' hidden'}>
-      <span class="book-local-state">${contents}</span>
+          data-offline-status="${safeAttr(bookId)}">
+      ${contents}
     </span>`;
 }
 
@@ -245,9 +277,9 @@ function renderBookCard(book, position, onShelf = false) {
           </span>
         </button>
         <div class="book-card-tools">
-          ${offlineStatusHTML(id)}
           ${bookMenuHTML(book, onShelf)}
         </div>
+        ${offlineStatusHTML(id)}
         ${progressBar}
       </div>
       <button class="delete-btn-reveal" tabindex="-1" aria-hidden="true" data-delete-book-id="${safeAttr(id)}" data-delete-book-title="${safeAttr(title)}" data-delete-book-author="${safeAttr(author)}" aria-label="Delete ${safeAttr(title)}">
@@ -427,7 +459,7 @@ function refreshOfflineIndicators() {
     if (card) card.dataset.downloaded = isAvailableOnDevice(status) ? '1' : '0';
     element.className = `book-local-control book-local-control--${status.kind}`;
     element.hidden = !contents;
-    element.innerHTML = `<span class="book-local-state">${contents}</span>`;
+    element.innerHTML = contents;
   });
   document.querySelectorAll('[data-offline-menu-action]').forEach(element => {
     const hadFocus = element.contains(document.activeElement);
@@ -448,6 +480,27 @@ function syncLibraryTabs() {
     ?.setAttribute('aria-labelledby', `library-tab-${currentTab}`);
   const deviceHint = document.getElementById('downloaded-device-hint');
   if (deviceHint) deviceHint.hidden = currentTab !== 'downloaded';
+}
+
+function filterEmptyStateHTML() {
+  return `
+    <div class="empty-state-modern" data-library-filter-empty role="status" aria-live="polite">
+      <h3>No matching books</h3>
+      <p>Try another title or author.</p>
+      <button class="btn-secondary" type="button" data-clear-library-filter>Clear filter</button>
+    </div>`;
+}
+
+function updateFilterEmptyState(query, visibleCount) {
+  const libraryList = document.getElementById('library-list');
+  if (!libraryList) return;
+  let emptyState = libraryList.querySelector('[data-library-filter-empty]');
+  const shouldShow = Boolean(query) && visibleCount === 0;
+  if (shouldShow && !emptyState) {
+    libraryList.insertAdjacentHTML('beforeend', filterEmptyStateHTML());
+    emptyState = libraryList.querySelector('[data-library-filter-empty]');
+  }
+  if (emptyState) emptyState.hidden = !shouldShow;
 }
 
 // A card is visible when it matches the search query AND the active tab
@@ -471,6 +524,7 @@ function filterLibrary() {
   if (emptyShelfHint) emptyShelfHint.hidden = !(currentTab === 'shelf' && visibleCount === 0 && !query);
   const emptyDownloadedHint = document.getElementById('downloaded-empty-hint');
   if (emptyDownloadedHint) emptyDownloadedHint.hidden = !(currentTab === 'downloaded' && visibleCount === 0 && !query);
+  updateFilterEmptyState(query, visibleCount);
 }
 
 function setLibraryTab(tab) {
@@ -847,6 +901,16 @@ export function initLibrary(options = {}) {
     if (emptyAddBtn) {
       e.preventDefault();
       document.getElementById('add-book-btn')?.click();
+      return;
+    }
+    const clearFilterBtn = e.target.closest('[data-clear-library-filter]');
+    if (clearFilterBtn) {
+      e.preventDefault();
+      if (librarySearch) {
+        librarySearch.value = '';
+        librarySearch.focus();
+      }
+      filterLibrary();
       return;
     }
     const menuTrigger = e.target.closest('[data-book-menu-toggle]');

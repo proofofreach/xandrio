@@ -427,6 +427,7 @@ function fakeAudio() {
       hideAudioLoading() {},
       setChunkOverlayState(...args) { appImports.overlays.push(args); },
       setPlaybackReliabilityState(...args) { appImports.reliabilityStates.push(args); },
+      setPlaybackBuffering() {},
       setResumePromptVisible(visible) { appImports.resumePromptStates.push(visible); },
       showToast(...args) { appImports.toasts.push(args); },
       syncMiniPlayerIcon() {},
