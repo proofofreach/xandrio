@@ -1294,6 +1294,16 @@ async function removeFileIfExists(filePath) {
   }
 }
 
+async function removeUploadedFile(filePath) {
+  if (typeof filePath !== 'string') return false;
+  const filename = path.basename(filePath);
+  if (!/^upload_[a-f0-9-]{36}\.(?:epub|mobi|prc|azw|azw3|pdf)$/i.test(filename)) return false;
+  const uploadPath = path.join(CACHE_DIR, filename);
+  if (path.resolve(filePath) !== path.resolve(uploadPath)) return false;
+  await removeFileIfExists(uploadPath);
+  return true;
+}
+
 async function getFileSize(filePath) {
   const stats = await fs.stat(filePath);
   return stats.size;
@@ -3286,7 +3296,7 @@ async function handleUploadImport(req, res) {
   const respondsAsync = /(?:^|,)\s*respond-async\s*(?:,|$)/i.test(req.get('Prefer') || '');
   const releaseImportPermit = downloadImportGate.tryAcquire();
   if (!releaseImportPermit) {
-    await removeFileIfExists(req.file.path).catch(() => {});
+    await removeUploadedFile(req.file.path).catch(() => {});
     res.setHeader('Retry-After', '1');
     return res.status(503).json({
       error: 'Book imports are busy. Try again shortly.',
@@ -3305,7 +3315,7 @@ async function handleUploadImport(req, res) {
         emitImportJob(job, 'complete', { result: payload });
       } catch (error) {
         console.error(`Background upload import job ${job.id} failed:`, error);
-        await removeFileIfExists(req.file.path).catch(() => {});
+        await removeUploadedFile(req.file.path).catch(() => {});
         job.status = 'failed';
         job.error = error?.existingBookId
           ? uploadRouteErrorResponse(error)
@@ -3321,7 +3331,7 @@ async function handleUploadImport(req, res) {
     return res.json(await importUpload());
   } catch (error) {
     console.error('Upload error:', error);
-    await removeFileIfExists(req.file.path).catch(() => {});
+    await removeUploadedFile(req.file.path).catch(() => {});
     if (error instanceof BookImportError && error.response) {
       return res.status(error.statusCode).json(error.existingBookId ? uploadRouteErrorResponse(error) : error.response);
     }
