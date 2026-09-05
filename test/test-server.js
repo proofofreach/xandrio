@@ -1960,11 +1960,11 @@ pendingAsyncTests.push((async () => {
 
   progress(5, 'Trying alternative edition 1 of 2');
   progress(3, 'Checking alternative file format');
-  const clamped = serverTestHooks.importJobSnapshot(job);
-  assertEqual(clamped.step, 5, 'Import job step never moves backward when earlier steps are re-emitted');
-  assertEqual(clamped.detail, 'Checking alternative file format', 'Clamped progress still reports the latest activity detail');
+  const retrying = serverTestHooks.importJobSnapshot(job);
+  assertEqual(retrying.step, 3, 'Import job step returns to the actual retry stage');
+  assertEqual(retrying.detail, 'Checking alternative file format', 'Retry progress reports the latest activity detail');
   const lastEvent = job.events[job.events.length - 1];
-  assertEqual(lastEvent.data.step, 5, 'Stored progress events carry the clamped step for SSE replay');
+  assertEqual(lastEvent.data.step, 3, 'Stored progress events carry the retry stage for SSE replay');
 
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xandrio-epub-'));
   const epubDir = path.join(tempRoot, 'epub');
@@ -2379,6 +2379,7 @@ section('21. Error responses and bounded caches');
   const duplicateUploadError = serverTestHooks.uploadRouteErrorResponse({ statusCode: 400, existingBookId: 'abc123' });
   assertEqual(duplicateUploadError.error, 'Book already exists in library', 'upload route preserves the expected duplicate-book response');
   assertEqual(duplicateUploadError.existingBookId, 'abc123', 'upload route preserves the duplicate book identifier');
+  assertEqual(duplicateUploadError.suggestion, 'Open book', 'upload route provides the duplicate-book recovery action');
 
   assertEqual(serverTestHooks.uploadRouteErrorResponse({ code: 'PDF_OCR_REQUIRED' }).error, 'PDF requires OCR', 'upload route preserves safe OCR guidance');
   assertEqual(serverTestHooks.uploadRouteErrorResponse({ code: 'KINDLE_DRM_PROTECTED' }).error, 'Kindle file is DRM-protected', 'upload route preserves safe DRM guidance');

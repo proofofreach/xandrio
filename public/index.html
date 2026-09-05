@@ -11,7 +11,7 @@
   <title>Xandrio - Audiobook Library</title>
   <link rel="preload" href="/fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin>
   <!-- ?v= values must match ASSET_VERSIONS in sw.js (single source of truth) -->
-  <link rel="stylesheet" href="style-v3.css?v=108">
+  <link rel="stylesheet" href="style-v3.css?v=110">
   <script src="/js/ios-focus-zoom.js?v=1" defer></script>
   <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=2">
 </head>
@@ -41,6 +41,7 @@
   </div>
 
   <div id="app">
+    <section id="import-activity" class="import-activity" aria-label="Book imports" hidden></section>
     <!-- Library View -->
     <div id="library-view" class="view active">
       <header class="library-header">
@@ -937,12 +938,13 @@
               <button type="button" class="player-progress-scope-btn active" data-progress-scope="chapter" aria-pressed="true">Chapter</button>
               <button type="button" class="player-progress-scope-btn" data-progress-scope="book" aria-pressed="false">Book</button>
             </div>
-            <input type="range" id="progress-slider" class="player-progress-slider" min="0" max="100" value="0" aria-label="Playback progress" />
+            <input type="range" id="progress-slider" class="player-progress-slider" min="0" max="100" step="any" value="0" aria-label="Playback progress" aria-valuetext="0:00 of 0:00" />
             <div class="player-time-row">
               <span id="chapter-progress-current">0:00</span>
               <span id="player-progress-context" class="player-progress-context">Chapter 1</span>
               <span id="chapter-progress-total" role="button" tabindex="0" aria-label="Toggle chapter time display">0:00</span>
             </div>
+            <p id="playback-buffering" class="player-buffering" role="status" hidden>Buffering…</p>
           </div>
 
           <!-- Book-level progress -->
@@ -1265,6 +1267,6 @@
   </div>
 
   <script src="/js/lifecycle.js?v=1"></script>
-  <script type="module" src="app.js?v=127"></script>
+  <script type="module" src="app.js?v=129"></script>
 </body>
 </html>

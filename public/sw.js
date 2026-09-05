@@ -1,6 +1,6 @@
 importScripts('/js/offline-range.js');
 
-const CACHE_VERSION = 'xandrio-v166';
+const CACHE_VERSION = 'xandrio-v168';
 const OFFLINE_ROUTE_CONTRACT_VERSION = 1;
 const OFFLINE_AUDIO_CACHE = 'xandrio-offline-audio';
 const OFFLINE_TITLE_CACHE = 'xandrio-offline-titles';
@@ -10,10 +10,10 @@ const OFFLINE_SCOPE_PARAM = 'xandrio-offline-scope';
 // changes, including the un-versioned js/ modules below, which only
 // invalidate via CACHE_VERSION.
 const ASSET_VERSIONS = {
-  '/style-v3.css': 108,
+  '/style-v3.css': 110,
   '/js/ios-focus-zoom.js': 1,
   '/js/lifecycle.js': 1,
-  '/app.js': 127
+  '/app.js': 129
 };
 const versionedAsset = (path) => `${path}?v=${ASSET_VERSIONS[path]}`;
 const APP_SHELL = [
@@ -58,6 +58,7 @@ const APP_SHELL = [
   '/js/features/listening-queue.js',
   '/js/features/pronunciations.js',
   '/js/features/queue-status.js',
+  '/js/features/import-activity.js',
   '/js/features/sharing.js',
   '/fonts/inter-latin.woff2',
   '/manifest.webmanifest',

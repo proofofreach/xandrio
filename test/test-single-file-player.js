@@ -2076,6 +2076,42 @@ function fakeAudio() {
     assert.strictEqual(harness.errors[0].chapterTime, 137.5, 'recovery resumes where it died');
   });
 
+  await test('buffering feedback follows audible starvation without restarting media', async () => {
+    const audio = fakeAudio();
+    const states = [];
+    const { player } = makePlayer(audio, { onBufferingChange: state => states.push(state) });
+    const load = player.loadChapter('book1', 0);
+    audio.emit('loadedmetadata');
+    await load;
+    audio.emit('waiting');
+    assert.deepStrictEqual(states, [], 'paused or loading audio must not claim buffering');
+    audio.paused = false;
+    audio.emit('playing');
+    const loadCalls = audio.loadCalls;
+    audio.emit('stalled');
+    assert.deepStrictEqual(states, [], 'a stalled download with buffered audio is not audible starvation');
+    audio.emit('waiting');
+    audio.emit('waiting');
+    assert.deepStrictEqual(states, [true], 'show buffering once before the recovery timeout');
+    audio.emit('timeupdate');
+    assert.deepStrictEqual(states, [true], 'a frozen timeupdate does not clear buffering');
+    audio.currentTime += 1;
+    audio.emit('timeupdate');
+    assert.deepStrictEqual(states, [true, false]);
+    audio.emit('waiting');
+    audio.emit('playing');
+    assert.deepStrictEqual(states, [true, false, true, false]);
+    audio.emit('waiting');
+    player.pause();
+    assert.strictEqual(states.at(-1), false);
+    assert.strictEqual(audio.loadCalls, loadCalls, 'feedback must not restart the source');
+    audio.paused = false;
+    audio.emit('playing');
+    audio.emit('waiting');
+    player.dispose();
+    assert.strictEqual(states.at(-1), false, 'disposing clears the previous session status');
+  });
+
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);
 })().catch(error => {

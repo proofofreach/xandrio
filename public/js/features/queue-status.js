@@ -29,13 +29,14 @@ let currentServerStatus = { active: 0, queued: 0, books: [] };
 let currentDownloads = [];
 let currentPreparations = [];
 let lastBookCount = 0;
+let lastFailedBookCount = 0;
 let activityStructureKey = '';
 
 function normalizedBooks(status) {
   if (!Array.isArray(status?.books)) return [];
   return status.books.filter(book =>
     book && typeof book.id === 'string' &&
-    (Number(book.active || 0) > 0 || Number(book.queued || 0) > 0)
+    (Number(book.active || 0) > 0 || Number(book.queued || 0) > 0 || book.failed === true)
   );
 }
 
@@ -137,6 +138,9 @@ function activityStateLabel(book) {
   if (book.kind === 'preparation') {
     return `Preparing audio · ${book.readyChapters}/${book.totalChapters}`;
   }
+  if (book.failed) {
+    return book.error ? `Audio preparation failed · ${book.error}` : 'Audio preparation failed';
+  }
   return chapterSummary(book);
 }
 
@@ -148,7 +152,10 @@ function activityStructureFor(books) {
     author: book.author || '',
     hasCover: Boolean(book.hasCover),
     coverPath: book.coverPath || '',
-    coverUrl: book.coverUrl || ''
+    coverUrl: book.coverUrl || '',
+    failed: book.failed === true,
+    error: book.error || '',
+    retryChapterIndex: Number.isInteger(book.retryChapterIndex) ? book.retryChapterIndex : null
   })));
 }
 
@@ -218,11 +225,14 @@ function renderActivityDetails(status = currentStatus) {
   const books = normalizedBooks(status);
   const downloadingBooks = books.filter(book => book.kind === 'download').length;
   const offlinePreparingBooks = books.filter(book => book.kind === 'preparation').length;
+  const failedBooks = books.filter(book => book.failed).length;
   const preparingBooks = books.length - downloadingBooks - offlinePreparingBooks;
   const activeBooks = books.filter(book => Number(book.active || 0) > 0).length;
   const waitingBooks = books.length - activeBooks;
 
-  if (downloadingBooks > 0 && preparingBooks + offlinePreparingBooks > 0) {
+  if (failedBooks > 0 && books.length === failedBooks) {
+    activitySummaryEl.textContent = `${failedBooks} ${failedBooks === 1 ? 'book needs' : 'books need'} audio retry.`;
+  } else if (downloadingBooks > 0 && preparingBooks + offlinePreparingBooks > 0) {
     activitySummaryEl.textContent = `${downloadingBooks} downloading, ${preparingBooks + offlinePreparingBooks} preparing audio.`;
   } else if (downloadingBooks > 0) {
     activitySummaryEl.textContent = `${downloadingBooks} ${downloadingBooks === 1 ? 'book is' : 'books are'} downloading.`;
@@ -244,6 +254,7 @@ function renderActivityDetails(status = currentStatus) {
     const active = Number(book.active || 0) > 0;
     const isDownload = book.kind === 'download';
     const isPreparation = book.kind === 'preparation';
+    const canRetry = book.failed && Number.isInteger(book.retryChapterIndex) && book.retryChapterIndex >= 0;
     const reorderControl = isReorderable(book)
       ? reorderControlHTML(book, reorderable.indexOf(book), reorderable.length)
       : '';
@@ -270,6 +281,11 @@ function renderActivityDetails(status = currentStatus) {
           ${isDownload || isPreparation ? `
             <button type="button" class="audio-activity-cancel"
                     data-cancel-offline-book="${escapeHTML(book.id)}">Cancel</button>
+          ` : ''}
+          ${canRetry ? `
+            <button type="button" class="audio-activity-retry"
+                    data-retry-audio-book="${escapeHTML(book.id)}"
+                    data-retry-audio-chapter="${book.retryChapterIndex}">Retry audio preparation</button>
           ` : ''}
         </div>
         ${reorderControl}
@@ -317,11 +333,27 @@ async function moveQueueBook(bookId, direction) {
   }
 }
 
-function announceBookCount(bookCount) {
-  if (!activityAnnouncementEl || bookCount === lastBookCount) return;
-  if (lastBookCount === 0 && bookCount > 0) {
+async function retryFailedAudio(bookId, chapterIndex) {
+  try {
+    await apiSend('POST',
+      `/api/chunks/${encodeURIComponent(bookId)}/${chapterIndex}/prepare-chapter-audio`,
+      { purpose: 'import-warmup' }
+    );
+    await pollQueueStatus();
+  } catch (error) {
+    showToast(error?.message || 'Could not retry audio preparation', 'error');
+  }
+}
+
+function announceBookCount(bookCount, failedBookCount) {
+  if (!activityAnnouncementEl) return;
+  if (failedBookCount > 0 && failedBookCount !== lastFailedBookCount) {
+    activityAnnouncementEl.textContent = `Audio preparation failed for ${failedBookCount} ${failedBookCount === 1 ? 'book' : 'books'}.`;
+  } else if (bookCount === lastBookCount) {
+    return;
+  } else if (lastBookCount === 0 && bookCount > 0) {
     activityAnnouncementEl.textContent = `Audio preparation started for ${bookCount} ${bookCount === 1 ? 'book' : 'books'}.`;
-  } else if (lastBookCount > 0 && bookCount === 0) {
+  } else if (lastBookCount > 0 && bookCount === 0 && failedBookCount === 0) {
     activityAnnouncementEl.textContent = 'Audio preparation complete.';
   }
 }
@@ -339,9 +371,11 @@ function renderQueueStatus(status) {
   const activeBooks = books.filter(book => Number(book.active || 0) > 0).length;
   const downloadingBooks = books.filter(book => book.kind === 'download').length;
   const localPreparationBooks = books.filter(book => book.kind === 'preparation').length;
+  const failedBooks = books.filter(book => book.failed).length;
 
-  announceBookCount(bookCount);
+  announceBookCount(bookCount, failedBooks);
   lastBookCount = bookCount;
+  lastFailedBookCount = failedBooks;
   currentStatus = {
     active: Number(currentServerStatus.active || 0) + downloadingBooks + localPreparationBooks,
     queued: Number(currentServerStatus.queued || 0),
@@ -356,6 +390,8 @@ function renderQueueStatus(status) {
 
   const label = downloadingBooks > 0
     ? `${bookCount} ${bookCount === 1 ? 'book has' : 'books have'} active audio activity`
+    : failedBooks > 0 && failedBooks === bookCount
+    ? `${bookCount} ${bookCount === 1 ? 'book needs' : 'books need'} audio retry`
     : activeBooks > 0
     ? `${bookCount} ${bookCount === 1 ? 'book is' : 'books are'} preparing audio`
     : `${bookCount} ${bookCount === 1 ? 'book is' : 'books are'} waiting to prepare`;
@@ -375,9 +411,20 @@ async function pollQueueStatus(scope = pollScope) {
     const status = await apiGet('/api/queue/status');
     if (scope !== pollScope || scope?.closed) return;
     renderQueueStatus(status);
+    queueStatusEl?.removeAttribute?.('data-stale');
   } catch {
     if (scope !== pollScope || scope?.closed) return;
-    renderQueueStatus({ active: 0, queued: 0, books: [] });
+    // A failed poll says nothing about the work that was already visible. In
+    // particular, replacing it with an empty queue falsely announces success
+    // and closes the detail sheet while preparation may still be running.
+    if (queueStatusEl && !queueStatusEl.hidden) {
+      queueStatusEl.setAttribute('data-stale', 'true');
+      queueStatusEl.setAttribute('aria-label', 'Audio preparation status unavailable. Reconnecting.');
+      queueStatusEl.title = 'Audio preparation status unavailable. Reconnecting.';
+      if (activitySheetEl?.classList.contains('active') && activitySummaryEl) {
+        activitySummaryEl.textContent = 'Connection interrupted. Showing the last known audio preparation status.';
+      }
+    }
   }
 }
 
@@ -445,6 +492,13 @@ export function initQueueStatus(options = {}) {
     const moveDirection = moveButton?.dataset?.moveDirection;
     if (moveBookId && moveDirection && !moveButton.disabled) {
       void moveQueueBook(moveBookId, moveDirection);
+      return;
+    }
+    const retryButton = event.target.closest?.('[data-retry-audio-book]');
+    const retryBookId = retryButton?.dataset?.retryAudioBook;
+    const retryChapterIndex = Number(retryButton?.dataset?.retryAudioChapter);
+    if (retryBookId && Number.isInteger(retryChapterIndex) && retryChapterIndex >= 0 && !retryButton.disabled) {
+      void retryFailedAudio(retryBookId, retryChapterIndex);
       return;
     }
     const button = event.target.closest?.('[data-cancel-offline-book]');

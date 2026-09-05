@@ -78,6 +78,9 @@ export class SingleFileChapterPlayer {
     this.onError = options.onError || null;
     this.onReady = options.onReady || null;
     this.onWaiting = options.onWaiting || null;
+    this.onBufferingChange = options.onBufferingChange || null;
+    this._buffering = false;
+    this._bufferingTime = 0;
     this.onPreparing = options.onPreparing || null;
     this.onPlaybackChange = options.onPlaybackChange || null;
     this.onChapterTransition = options.onChapterTransition || null;
@@ -882,6 +885,16 @@ export class SingleFileChapterPlayer {
 
   _handleMediaState(event) {
     this._emitDiagnostic(event?.type || 'media-state');
+    if (event?.type === 'waiting' && this.isPlaying && !this._isLoading) {
+      this._setBuffering(true);
+    }
+  }
+
+  _setBuffering(buffering) {
+    if (this._buffering === buffering) return;
+    this._buffering = buffering;
+    this._bufferingTime = Number(this.audio.currentTime) || 0;
+    this.onBufferingChange?.(buffering);
   }
 
   /** End of the last buffered range, or 0 when nothing is buffered. */
@@ -948,6 +961,9 @@ export class SingleFileChapterPlayer {
   }
 
   _handleTimeUpdate() {
+    if (this._buffering && Math.abs((Number(this.audio.currentTime) || 0) - this._bufferingTime) > PROGRESS_EPSILON_SECONDS) {
+      this._setBuffering(false);
+    }
     this._syncContinuousChapter();
     this._maybePrewarmNextChapter();
     const now = Date.now();
@@ -1272,6 +1288,7 @@ export class SingleFileChapterPlayer {
   }
 
   _handleEnded() {
+    this._setBuffering(false);
     // Gapless first: the swap has to happen before anything reports a pause,
     // or the media session state flickers on the lock screen.
     if (this._advanceToPrewarmedChapter()) return;
@@ -1335,6 +1352,7 @@ export class SingleFileChapterPlayer {
   }
 
   _handleError() {
+    this._setBuffering(false);
     this._emitDiagnostic('error', {
       errorCode: Number(this.audio.error?.code) || 0
     });
@@ -1343,6 +1361,7 @@ export class SingleFileChapterPlayer {
   }
 
   _handleNativePlay(event) {
+    if (event?.type === 'playing') this._setBuffering(false);
     this._clearChapterAdvancePlayWatchdog();
     this.audio.autoplay = false;
     const wasPlaying = this._isPlaying;
@@ -1358,6 +1377,7 @@ export class SingleFileChapterPlayer {
   }
 
   _handleNativePause() {
+    this._setBuffering(false);
     if (this.audio.ended) return;
     this._isPlaying = false;
     this._stopStallWatchdog();
@@ -1423,6 +1443,7 @@ export class SingleFileChapterPlayer {
   }
 
   pause(reason = 'app') {
+    this._setBuffering(false);
     this._isPlaying = false;
     this._pauseReason = reason;
     if (reason !== 'source-change') this.audio.autoplay = false;

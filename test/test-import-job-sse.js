@@ -42,13 +42,60 @@ function openEventStream(base, jobId) {
   });
 }
 
+function getJson(base, pathname, headers = {}) {
+  return new Promise((resolve, reject) => {
+    const request = http.get(`${base}${pathname}`, { headers }, response => {
+      const chunks = [];
+      response.on('data', chunk => chunks.push(chunk));
+      response.once('end', () => resolve({
+        statusCode: response.statusCode,
+        body: JSON.parse(chunks.join('') || '{}')
+      }));
+    });
+    request.once('error', reject);
+  });
+}
+
 (async () => {
   const server = await startServer();
   const base = `http://127.0.0.1:${server.address().port}`;
   const runningJob = createImportJob();
   const terminalJob = createImportJob();
+  const privateJob = createImportJob({ ownerId: 'reader-a', title: 'Private book.epub', source: 'upload' });
   let runningSubscriber;
   try {
+    const upload = new FormData();
+    upload.append('epub', new Blob(['not an EPUB archive']), 'invalid-import.epub');
+    const uploadResponse = await fetch(`${base}/api/upload`, {
+      method: 'POST', headers: { Prefer: 'respond-async' }, body: upload
+    });
+    const uploadJob = await uploadResponse.json();
+    check(uploadResponse.status === 202 && uploadJob.jobId,
+      'async upload returns a trackable job before reporting extraction failure');
+    let uploadStatus;
+    for (let attempt = 0; attempt < 100; attempt++) {
+      uploadStatus = await (await fetch(`${base}/api/download/${uploadJob.jobId}/status`)).json();
+      if (uploadStatus.status === 'failed') break;
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    check(uploadStatus.status === 'failed' && uploadStatus.error,
+      'async extraction failure remains available in the shared import status API');
+    const importList = await getJson(base, '/api/imports', { 'x-xandrio-user-id': 'reader-a' });
+    check(importList.statusCode === 200 && importList.body.jobs.length === 1,
+      'the import list returns only the current user\'s jobs');
+    check(importList.body.jobs[0].title === 'Private book.epub' && importList.body.jobs[0].source === 'upload',
+      'import snapshots retain reload metadata');
+
+    const deniedStatus = await getJson(base, `/api/download/${privateJob.id}/status`);
+    check(deniedStatus.statusCode === 404,
+      'another user cannot read a job status');
+
+    const retry = createImportJob();
+    emitImportJob(retry, 'progress', { step: 5, label: 'Validating chapters' });
+    emitImportJob(retry, 'progress', { step: 3, label: 'Checking alternative file format' });
+    check(retry.step === 3 && retry.label === 'Checking alternative file format',
+      'retry progress returns to the actual attempt stage');
+
     runningSubscriber = await openEventStream(base, runningJob.id);
     check(runningJob.subscribers.size === 1,
       'a running import job keeps its SSE subscriber connected');

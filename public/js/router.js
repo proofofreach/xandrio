@@ -186,7 +186,10 @@ export function initRouter(options) {
     }
     const closeFn = sheetStack.pop();
     if (closeFn) closeFn();
-    // If this pop also crossed a hash boundary, hashchange fires and routes.
+    // History entries can differ in query parameters as well as their hash.
+    // Those traversals do not always emit hashchange; route() deduplicates
+    // the event when both fire.
+    void route();
   });
 
   if (!window.location.hash) {

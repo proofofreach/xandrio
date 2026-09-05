@@ -1810,6 +1810,7 @@ const IMPORT_JOB_SUBSCRIBER_LIMIT = 10;
 const IMPORT_JOB_TTL_MS = 30 * 60 * 1000;
 const IMPORT_JOB_TERMINAL_GRACE_MS = Number(process.env.IMPORT_JOB_TERMINAL_GRACE_MS) || 30 * 1000;
 const IMPORT_JOB_TERMINAL_STATUSES = new Set(['complete', 'completed', 'failed', 'error']);
+
 function closeImportJobSubscribers(job) {
   for (const subscriber of job.subscribers) {
     clearInterval(subscriber.heartbeat);
@@ -1854,10 +1855,13 @@ const IMPORT_STEPS = [
   'Adding to library'
 ];
 
-function createImportJob() {
+function createImportJob({ ownerId = 'default', title = '', source = '' } = {}) {
   const jobId = crypto.randomBytes(12).toString('hex');
   const job = {
     id: jobId,
+    ownerId: String(ownerId || 'default'),
+    title: String(title || ''),
+    source: String(source || ''),
     status: 'running',
     step: 1,
     totalSteps: IMPORT_STEPS.length,
@@ -1880,6 +1884,8 @@ function createImportJob() {
 function importJobSnapshot(job) {
   return {
     jobId: job.id,
+    title: job.title,
+    source: job.source,
     status: job.status,
     step: job.step,
     totalSteps: job.totalSteps,
@@ -1895,10 +1901,8 @@ function importJobSnapshot(job) {
 function emitImportJob(job, event, payload = {}) {
   job.updatedAt = new Date().toISOString();
   if (payload.step) {
-    // Alternative-edition retries re-emit earlier pipeline steps (5 -> 3 -> 5);
-    // the job's public step only moves forward so the client checklist never
-    // bounces backward. Labels still describe the actual current activity.
-    payload = { ...payload, step: Math.max(job.step, payload.step) };
+    // A fallback is a new import attempt. Report its actual stage so a reload
+    // or reconnect does not show a stale later stage with a retry label.
     job.step = payload.step;
   }
   if (payload.label) job.label = payload.label;
@@ -2601,10 +2605,11 @@ function bookUploadErrorResponse(err) {
 }
 
 function uploadRouteErrorResponse(err) {
-  if (err?.statusCode === 400 && err?.existingBookId) {
+  if (err?.existingBookId) {
     return {
       error: 'Book already exists in library',
-      existingBookId: String(err.existingBookId)
+      existingBookId: String(err.existingBookId),
+      suggestion: 'Open book'
     };
   }
   if (err?.code === 'LIMIT_FILE_SIZE') return bookUploadErrorResponse(err);
@@ -3089,6 +3094,14 @@ async function addBookToShelf(userId, bookId) {
 }
 
 function downloadImportFailureResponse(error, body) {
+  if (error?.existingBookId) {
+    return {
+      ...(error.response || {}),
+      error: error.response?.error || 'Book already exists in library',
+      existingBookId: String(error.existingBookId),
+      suggestion: 'Open book'
+    };
+  }
   if (error instanceof BookImportError && error.response) {
     if (error.response.retryAlternatives) {
       return {
@@ -3159,11 +3172,15 @@ app.post('/api/download', async (req, res) => {
       code: 'CONCURRENCY_LIMIT'
     });
   }
-  const job = createImportJob();
+  const importUserId = positionUserId(req);
+  const job = createImportJob({
+    ownerId: importUserId,
+    title: req.body?.title || req.body?.filename,
+    source: req.body?.source || 'annas'
+  });
   const progress = progressForImportJob(job);
   progress(1, 'Queued import');
 
-  const importUserId = positionUserId(req);
   setImmediate(async () => {
     try {
       const result = await importDownloadedBook(req.body, progress, { addedBy: importUserId });
@@ -3192,13 +3209,17 @@ app.post('/api/download', async (req, res) => {
 
 app.get('/api/download/:jobId/status', (req, res) => {
   const job = importJobs.get(req.params.jobId);
-  if (!job) return res.status(404).json({ error: 'Import job not found' });
+  if (!job || job.ownerId !== positionUserId(req)) {
+    return res.status(404).json({ error: 'Import job not found' });
+  }
   res.json(importJobSnapshot(job));
 });
 
 app.get('/api/download/:jobId/events', (req, res) => {
   const job = importJobs.get(req.params.jobId);
-  if (!job) return res.status(404).json({ error: 'Job not found' });
+  if (!job || job.ownerId !== positionUserId(req)) {
+    return res.status(404).json({ error: 'Job not found' });
+  }
   if (job.subscribers.size >= IMPORT_JOB_SUBSCRIBER_LIMIT) {
     return res.status(429).json({ error: 'Too many event subscribers' });
   }
@@ -3227,14 +3248,23 @@ app.get('/api/download/:jobId/events', (req, res) => {
   });
 });
 
+app.get('/api/imports', (req, res) => {
+  const ownerId = positionUserId(req);
+  const jobs = [...importJobs.values()]
+    .filter(job => job.ownerId === ownerId)
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+    .map(importJobSnapshot);
+  res.json({ jobs });
+});
+
 async function handleUploadImport(req, res) {
   if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
   const originalName = req.file.originalname;
   const bookId = crypto.randomUUID();
   const uploadUserId = positionUserId(req);
-  try {
-    const result = await bookMutationLocks.withBookMutationLock(bookId, async () => {
-      const imported = await bookImporter.import({
+  const importUpload = async (progress = () => {}) => {
+    const imported = await bookMutationLocks.withBookMutationLock(bookId, async () => {
+      const result = await bookImporter.import({
         kind: 'upload',
         id: bookId,
         originalName,
@@ -3242,26 +3272,65 @@ async function handleUploadImport(req, res) {
         selected: { language: 'en' },
         downloadSource: 'upload',
         addedBy: uploadUserId
-      });
-      if (imported?.bookId) await addBookToShelf(uploadUserId, imported.bookId);
-      return imported;
+      }, progress);
+      if (result?.bookId) await addBookToShelf(uploadUserId, result.bookId);
+      return result;
     });
-    return res.json({
+    return {
       success: true,
-      bookId: result.bookId,
-      book: publicBookRecord(result.book),
-      validation: result.validation
+      bookId: imported.bookId,
+      book: publicBookRecord(imported.book),
+      validation: imported.validation
+    };
+  };
+  const respondsAsync = /(?:^|,)\s*respond-async\s*(?:,|$)/i.test(req.get('Prefer') || '');
+  const releaseImportPermit = downloadImportGate.tryAcquire();
+  if (!releaseImportPermit) {
+    await removeFileIfExists(req.file.path).catch(() => {});
+    res.setHeader('Retry-After', '1');
+    return res.status(503).json({
+      error: 'Book imports are busy. Try again shortly.',
+      code: 'CONCURRENCY_LIMIT'
     });
+  }
+  if (respondsAsync) {
+    const job = createImportJob({ ownerId: uploadUserId, title: originalName, source: 'upload' });
+    const progress = progressForImportJob(job);
+    progress(1, 'Queued import');
+    setImmediate(async () => {
+      try {
+        const payload = await importUpload(progress);
+        job.status = 'complete';
+        job.result = payload;
+        emitImportJob(job, 'complete', { result: payload });
+      } catch (error) {
+        console.error(`Background upload import job ${job.id} failed:`, error);
+        await removeFileIfExists(req.file.path).catch(() => {});
+        job.status = 'failed';
+        job.error = error?.existingBookId
+          ? uploadRouteErrorResponse(error)
+          : (error instanceof BookImportError && error.response ? error.response : uploadRouteErrorResponse(error));
+        emitImportJob(job, 'failed', { error: job.error });
+      } finally {
+        releaseImportPermit();
+      }
+    });
+    return res.status(202).json({ jobId: job.id });
+  }
+  try {
+    return res.json(await importUpload());
   } catch (error) {
     console.error('Upload error:', error);
     await removeFileIfExists(req.file.path).catch(() => {});
     if (error instanceof BookImportError && error.response) {
-      return res.status(error.statusCode).json(error.response);
+      return res.status(error.statusCode).json(error.existingBookId ? uploadRouteErrorResponse(error) : error.response);
     }
     if (error.statusCode === 400 || error.code === 'LIMIT_FILE_SIZE') {
       return res.status(400).json(uploadRouteErrorResponse(error));
     }
     return sendServerError(res, error, 'Upload failed');
+  } finally {
+    releaseImportPermit();
   }
 }
 
@@ -3779,6 +3848,7 @@ registerPlaybackRoutes(app, {
     return shelves.shelfForUser(shelvesStore, userId).includes(bookId) ||
       Object.hasOwn(positionsForUser(positionsStore, userId), bookId);
   },
+  retryImportWarmup: ({ bookId }) => retryImportedBookAudio(bookId),
   // The session id must match the one the position-save route builds, or the
   // look-ahead session this creates can never be retired: that route keys on
   // positionUserId(req) (which falls back to 'default'), so the 'legacy'
@@ -3857,7 +3927,8 @@ registerAudioPrepRoutes(app, {
   getChunkSizeForVoice,
   getTTSVariantKeyForVoice,
   getTtsOutputFormatForVoice,
-  sendServerError
+  sendServerError,
+  findPreferredAudioStartChapterIndex
 });
 registerSyncPositionRoutes(app, {
   booksFile: BOOKS_FILE,
@@ -3945,6 +4016,30 @@ async function warmImportedBookAudio(bookId, bookPath) {
     bookPath,
     language: book.language || 'en',
     voice: getActiveVoice()
+  });
+}
+
+async function retryImportedBookAudio(bookId) {
+  const books = await loadJSON(BOOKS_FILE, {});
+  const book = books[bookId];
+  if (!book || deletedBookIds.has(bookId)) {
+    const error = new Error('Book not found');
+    error.statusCode = 404;
+    throw error;
+  }
+  await updateJSON(BOOKS_FILE, current => {
+    const record = current[bookId];
+    if (!record || deletedBookIds.has(bookId)) return jsonStore.SKIP_SAVE;
+    record.audioGenerationState = 'generating';
+    record.audioGeneratedChapters = 0;
+    delete record.audioGenerationTotal;
+    delete record.audioGenerationError;
+    record.audioGenerationUpdatedAt = new Date().toISOString();
+  });
+  setImmediate(() => {
+    warmImportedBookAudio(bookId, book.path).catch(error => {
+      console.error(`Import audio retry failed for ${bookId}:`, error);
+    });
   });
 }
 

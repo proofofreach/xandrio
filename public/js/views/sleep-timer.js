@@ -47,17 +47,14 @@ export function initSleepTimer(options = {}) {
   extendTimerBtn = document.getElementById('extend-timer-btn');
   timerModalController = registerSheet(timerModal);
 
-  const openTimerModal = () => timerModalController?.open();
+  const openTimerModal = () => {
+    updateTimerExtendButtonVisibility();
+    timerModalController?.open();
+  };
   const dismissTimerModal = () => timerModalController?.dismiss();
 
-  initScope.listen(timerBtnInline, 'click', () => {
-    if (sleepTimer || sleepTimerMode === 'chapter') clearSleepTimer();
-    else openTimerModal();
-  });
-  initScope.add(onActivate(timerBtnInline, () => {
-    if (sleepTimer || sleepTimerMode === 'chapter') clearSleepTimer();
-    else openTimerModal();
-  }));
+  initScope.listen(timerBtnInline, 'click', openTimerModal);
+  initScope.add(onActivate(timerBtnInline, openTimerModal));
   initScope.listen(closeTimerModalBtn, 'click', dismissTimerModal);
   initScope.listen(cancelTimerBtn, 'click', () => {
     clearSleepTimer();
@@ -231,8 +228,8 @@ function updateTimerDisplay() {
 }
 
 function updateTimerExtendButtonVisibility() {
-  if (!extendTimerBtn) return;
-  extendTimerBtn.hidden = !(sleepTimerMode === 'time' && sleepTimerEndTime);
+  if (extendTimerBtn) extendTimerBtn.hidden = !(sleepTimerMode === 'time' && sleepTimerEndTime);
+  if (cancelTimerBtn) cancelTimerBtn.hidden = !sleepTimerMode;
 }
 
 function extendSleepTimer(minutes) {
