@@ -59,6 +59,7 @@ const tests = [
   'test-bookmarks-routes.js',
   'test-client-offline-identity.js',
   'test-smart-rewind.js',
+  'test-smart-rewind-sync.js',
   'test-resume-activation.js',
   'test-rolling-offline.js',
   'test-listening-queue.js',
