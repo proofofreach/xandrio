@@ -12,7 +12,8 @@ async function main() {
       try {
         const page = await context.newPage();
         await page.goto(`${environment.origin}/#/player/scn-meridian`, { waitUntil: 'domcontentloaded' });
-        await page.waitForFunction(() => Number(document.getElementById('progress-slider')?.dataset.duration) > 0);
+        await page.waitForFunction(() => Number(document.getElementById('progress-slider')?.dataset.duration) > 0
+          && document.getElementById('audio-loading')?.style.display === 'none');
         const timer = page.locator(viewport.width < 760 ? '#utility-timer-btn' : '#timer-btn-inline');
         await timer.click();
         assert.equal(await page.locator('#cancel-timer-btn').isVisible(), false);
@@ -47,13 +48,17 @@ async function main() {
         await page.locator('.speed-preset[data-speed="2"]').click();
         await page.locator('#close-speed-sheet-btn').click();
         await page.waitForFunction(() => !document.getElementById('speed-sheet').classList.contains('active'));
-        await page.evaluate(async () => {
+        const chapterTimes = await page.evaluate(async () => {
           const view = await import('/js/views/player-ui.js');
           localStorage.setItem('xandrio_time_display', 'remaining');
           view.paintChapterTimes({ currentTime: 120, totalTime: 3600, progressPercent: 120 / 36 });
+          return {
+            remaining: document.getElementById('chapter-progress-total').textContent,
+            accessible: document.getElementById('progress-slider').getAttribute('aria-valuetext')
+          };
         });
-        assert.equal(await page.locator('#chapter-progress-total').innerText(), '-29:00 left');
-        assert.match(await slider.getAttribute('aria-valuetext'), /2:00 of 60:00.*29:00 listening time left at 2x/);
+        assert.equal(chapterTimes.remaining, '-29:00 left');
+        assert.match(chapterTimes.accessible, /2:00 of 60:00.*29:00 listening time left at 2x/);
         await page.locator('[data-progress-scope="book"]').click();
         const bookTimes = await page.evaluate(() => ({ duration: Number(document.getElementById('progress-slider').dataset.duration), value: Number(document.getElementById('progress-slider').value), text: document.getElementById('chapter-progress-total').textContent }));
         const expectedRemaining = Math.max(0, bookTimes.duration * (1 - bookTimes.value / 100)) / 2;
