@@ -170,6 +170,7 @@ const tests = [
   'test-offline-cache.js',
   'test-audio-streaming.js',
   'test-progressive-audio-stream.js',
+  'test-audio-child-lifecycle.js',
   'test-chapter-navigation.js',
   'test-chapter-utils.js',
   'test-chapter-structure.js',
