@@ -11,6 +11,7 @@
  */
 
 const assert = require('assert');
+const crypto = require('crypto');
 const express = require('express');
 const fs = require('fs');
 const fsp = fs.promises;
@@ -37,13 +38,19 @@ async function test(name, fn) {
 (async () => {
   const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'audio-stream-test-'));
   const audioPath = path.join(dir, 'chapter.mp3');
-  await fsp.writeFile(audioPath, Buffer.alloc(64 * 1024, 7));
+  const fixture = Buffer.alloc(64 * 1024, 7);
+  await fsp.writeFile(audioPath, fixture);
+  const artifactId = 'sha256-' + crypto.createHash('sha256').update(fixture).digest('hex');
+  const identity = { artifactId, contentHash: artifactId, etag: '"' + artifactId + '"', size: fixture.length };
 
   // Route that streams a real file, plus one that streams a file whose
   // descriptor fails on first read — standing in for a mid-stream disk error.
   const app = express();
   app.get('/ok', async (req, res, next) => {
     try { await serveAudioFile(req, res, audioPath); } catch (err) { next(err); }
+  });
+  app.get('/identified', async (req, res, next) => {
+    try { await serveAudioFile(req, res, audioPath, { identity }); } catch (err) { next(err); }
   });
   app.get('/broken', async (req, res, next) => {
     try { await serveAudioFile(req, res, path.join(dir, 'chapter.mp3')); } catch (err) { next(err); }
@@ -83,6 +90,49 @@ async function test(name, fn) {
     assert.strictEqual(response.status, 206);
     assert.strictEqual(response.headers.get('content-range'), `bytes 0-1023/${64 * 1024}`);
     assert.strictEqual((await response.arrayBuffer()).byteLength, 1024);
+  });
+
+  await test('serves a precomputed whole-artifact identity without request-time hashing', async () => {
+    const response = await fetch(`${base}/identified`);
+    assert.strictEqual(response.status, 200);
+    assert.strictEqual(response.headers.get('etag'), identity.etag);
+    assert.strictEqual(response.headers.get('x-xandrio-artifact-sha256'), artifactId);
+    assert.strictEqual(response.headers.get('x-xandrio-content-sha256'), artifactId);
+    assert.strictEqual((await response.arrayBuffer()).byteLength, fixture.length);
+  });
+
+  await test('range responses carry whole-artifact identity and the exact range length', async () => {
+    const response = await fetch(`${base}/identified`, {
+      headers: { Range: 'bytes=1024-2047', 'If-Range': identity.etag }
+    });
+    assert.strictEqual(response.status, 206);
+    assert.strictEqual(response.headers.get('content-length'), '1024');
+    assert.strictEqual(response.headers.get('content-range'), 'bytes 1024-2047/' + fixture.length);
+    assert.strictEqual(response.headers.get('etag'), identity.etag);
+    assert.strictEqual(response.headers.get('x-xandrio-artifact-sha256'), artifactId);
+    assert.strictEqual(response.headers.get('x-xandrio-content-sha256'), null);
+    assert.strictEqual((await response.arrayBuffer()).byteLength, 1024);
+  });
+
+  await test('an If-Range mismatch returns the full current artifact', async () => {
+    const response = await fetch(`${base}/identified`, {
+      headers: { Range: 'bytes=0-1', 'If-Range': '"sha256-' + '0'.repeat(64) + '"' }
+    });
+    assert.strictEqual(response.status, 200);
+    assert.strictEqual(response.headers.get('content-length'), String(fixture.length));
+    assert.strictEqual(response.headers.get('x-xandrio-content-sha256'), artifactId);
+    assert.strictEqual((await response.arrayBuffer()).byteLength, fixture.length);
+  });
+
+  await test('an unsatisfiable range returns the opened file size and identity', async () => {
+    const response = await fetch(`${base}/identified`, {
+      headers: { Range: 'bytes=' + fixture.length + '-' }
+    });
+    assert.strictEqual(response.status, 416);
+    assert.strictEqual(response.headers.get('content-range'), 'bytes */' + fixture.length);
+    assert.strictEqual(response.headers.get('etag'), identity.etag);
+    assert.strictEqual(response.headers.get('x-xandrio-artifact-sha256'), artifactId);
+    assert.strictEqual((await response.arrayBuffer()).byteLength, 0);
   });
 
   await test('a client aborting mid-stream does not raise an unhandled error', async () => {

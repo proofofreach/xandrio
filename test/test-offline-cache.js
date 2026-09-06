@@ -350,8 +350,8 @@ function installBrowser({
   let source = fs.readFileSync(path.join(__dirname, '..', 'public', 'js', 'features', 'offline.js'), 'utf8');
   source = source
     .replace(
-      "import { API_BASE, apiSend, canClaimLegacyOfflineStorage, getOfflineStorageScopeId } from '../api.js';",
-      "const API_BASE = window.location.origin; const apiSend = (...args) => globalThis.__offlineApiSend(...args); const canClaimLegacyOfflineStorage = () => globalThis.__canClaimLegacy !== false; const getOfflineStorageScopeId = () => globalThis.__offlineScope || 'default';"
+      /^import \{[^\n]+\} from '\.\.\/api\.js';$/m,
+      "const API_BASE = window.location.origin; const apiSend = (...args) => globalThis.__offlineApiSend(...args); const canClaimLegacyOfflineStorage = () => globalThis.__canClaimLegacy !== false; const getOfflineStorageScopeId = () => globalThis.__offlineScope || 'default'; const syncHeaders = () => ({});"
     )
     .replace("import { escapeHTML, formatDuration, relativeTime } from '../util/format.js';", "const escapeHTML = value => String(value); const relativeTime = () => ''; const formatDuration = () => '';")
     .replace("import { readJSON, writeJSON } from '../util/storage.js';", "const readJSON = (key, fallback = null) => { try { const value = localStorage.getItem(key); return value == null ? fallback : JSON.parse(value); } catch { return fallback; } }; const writeJSON = (key, value) => { try { localStorage.setItem(key, JSON.stringify(value)); return true; } catch { return false; } };")
@@ -360,7 +360,9 @@ function installBrowser({
     .replace(
       "import { planRollingOfflineWindow } from './rolling-offline.mjs';",
       "const planRollingOfflineWindow = ({ currentChapter, chapterCount, cachedChapters = [] }) => { const first = Math.max(0, currentChapter - 1); const last = Math.min(chapterCount - 1, currentChapter + 2); const retain = Array.from({ length: Math.max(0, last - first + 1) }, (_, index) => first + index); const cached = new Set(cachedChapters); const kept = new Set(retain); return { retain, prepare: retain.filter(index => !cached.has(index)), evict: [...cached].filter(index => !kept.has(index)).sort((a, b) => a - b) }; };"
-    );
+    )
+    .replace("import('./offline-device.mjs')", 'globalThis.__offlineDeviceModule()')
+    .replace('function publishDeviceSnapshot(', 'export function publishDeviceSnapshot(');
   const moduleUrl = `data:text/javascript;base64,${Buffer.from(source).toString('base64')}`;
   const offline = await import(moduleUrl);
   const book = { id: 'book-1', title: 'A Book' };
@@ -385,6 +387,32 @@ function installBrowser({
     delete global.caches;
     delete global.window.caches;
     assert.strictEqual(offline.offlineDownloadsSupported(), false);
+  });
+
+  await test('keeps legacy writer state live after IndexedDB snapshot hydration', async () => {
+    const cache = makeCache();
+    const pending = {
+      bookId: book.id,
+      title: book.title,
+      manifestVersion: 3,
+      mode: 'full',
+      state: 'preparing',
+      chapterEntries: [null, null]
+    };
+    installBrowser({ book, chapters, cache, manifest: { [book.id]: pending } });
+    assert.strictEqual(offline.getOfflineManifest()[book.id].state, 'preparing');
+
+    offline.publishDeviceSnapshot({
+      [book.id]: { ...pending, state: 'ready' }
+    }, 'default');
+    assert.strictEqual(offline.getOfflineManifest()[book.id].state, 'preparing');
+
+    const ready = { ...pending, state: 'ready', chapterEntries: [{ size: 1 }, { size: 1 }] };
+    localStorage.setItem('xandrio_offline_books:default', JSON.stringify({ [book.id]: ready }));
+    assert.strictEqual(offline.getOfflineManifest()[book.id].state, 'ready');
+
+    localStorage.removeItem('xandrio_offline_books:default');
+    assert.strictEqual(offline.getOfflineManifest()[book.id], undefined);
   });
 
   await test('offers one device-neutral offline action before server status is known', async () => {
@@ -2887,6 +2915,72 @@ function installBrowser({
       /migrateLegacyOfflineCaches\(\)[\s\S]*?reprobeVerifyingDownloads\(\)/.test(initBody),
       'the re-probe also runs once cache migration has completed'
     );
+  });
+
+  await test('worker certification wakes a hydrated block coordinator and throttles only streamed media', async () => {
+    const cache = makeCache();
+    const controller = {
+      scriptURL: `https://reader.test/sw.js?v=${SW_CACHE_VERSION}`,
+      postMessage() {}
+    };
+    const env = installBrowser({ book, chapters, cache, serviceWorkerController: controller });
+    const calls = { wake: [], playback: [], transitions: 0, hydrates: 0 };
+    const device = {
+      hydrate: async () => { calls.hydrates++; return {}; },
+      transitionScope: async () => { calls.transitions++; },
+      wake: options => calls.wake.push(options),
+      setPlaybackActive: value => calls.playback.push(value),
+      writerEnabled: () => true,
+      writerCapable: () => false,
+      snapshot: () => ({})
+    };
+    global.__offlineDeviceModule = async () => ({
+      createOfflineDeviceCoordinator: () => device
+    });
+    global.indexedDB = {};
+    class FakeMediaElement {
+      constructor(src) {
+        this.src = src;
+        this.currentSrc = src;
+      }
+    }
+    global.HTMLMediaElement = FakeMediaElement;
+    try {
+      await offline.prepareOfflineStorage();
+      offline.initOffline(env.init);
+      assert(calls.hydrates > 0, 'the coordinator hydrates before certification recovery');
+
+      controller.postMessage = (message, ports) => {
+        if (message.type === 'XANDRIO_OFFLINE_CONTRACT_QUERY') {
+          ports[0].postMessage({ contractVersion: 2, workerVersion: SW_CACHE_VERSION });
+        }
+      };
+      const certified = await offline.certifyOfflineWorkerController({ controller, timeoutMs: 100 });
+      assert.strictEqual(certified.contractVersion, 2);
+      assert.deepStrictEqual(calls.wake.at(-1), { workerCertified: true });
+
+      document.dispatchEvent({
+        type: 'play',
+        target: new FakeMediaElement('https://reader.test/api/audio/book-1/0')
+      });
+      document.dispatchEvent({
+        type: 'play',
+        target: new FakeMediaElement('https://reader.test/__xandrio_offline__/audio/default/sha256-a')
+      });
+      document.dispatchEvent({
+        type: 'play',
+        target: new FakeMediaElement('https://reader.test/api/audio/book-1/0?xandrio-offline-scope=default')
+      });
+      document.dispatchEvent({
+        type: 'pause',
+        target: new FakeMediaElement('https://reader.test/api/audio/book-1/0')
+      });
+      assert.deepStrictEqual(calls.playback.slice(-4), [true, false, false, false]);
+    } finally {
+      delete global.indexedDB;
+      delete global.HTMLMediaElement;
+      delete global.__offlineDeviceModule;
+    }
   });
 
   console.log(`\n${passed} passed, ${failed} failed`);

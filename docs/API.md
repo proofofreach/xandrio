@@ -31,6 +31,8 @@ The examples below omit authorization headers for readability.
 | GET | [/api/offline/deletions](#get-apiofflinedeletions) | Reconcile device-local downloads with server deletions |
 | GET | [/api/offline/preparation/:bookId](#get-apiofflinepreparationbookid) | Get full-title audio preparation progress |
 | POST | [/api/offline/preparation/:bookId](#post-apiofflinepreparationbookid) | Start durable full-title audio preparation |
+| GET | `/api/offline/preparation/:bookId/manifest` | Read immutable chapter transfer descriptors |
+| POST | `/api/offline/preparation/:bookId/window` | Prepare up to four chapters for this device |
 | DELETE | [/api/offline/preparation/:bookId](#delete-apiofflinepreparationbookid) | Release this device's full-title preparation claim |
 | GET | `/api/offline/audio/:bookId/:chapterIndex` | Transfer a prepared 48 kbps offline chapter |
 | GET | `/api/offline/notifications` | Get Web Push readiness-notification configuration |
@@ -98,6 +100,8 @@ Regenerated from `server.js` and `lib/routes/*.js` on 2026-07-28.
 | POST | `/api/chunks/:bookId/:chapterIndex/prepare-chapter-audio` |
 | GET | `/api/offline/preparation/:bookId` |
 | POST | `/api/offline/preparation/:bookId` |
+| GET | `/api/offline/preparation/:bookId/manifest` |
+| POST | `/api/offline/preparation/:bookId/window` |
 | DELETE | `/api/offline/preparation/:bookId` |
 | GET | `/api/offline/audio/:bookId/:chapterIndex` |
 | GET | `/api/offline/notifications` |
@@ -772,11 +776,59 @@ Return server preparation progress independently of any device-local download:
 `state` is `not-requested`, `waiting`, `preparing`, `paused`, `ready`, or `error`.
 `waiting` is a runtime projection and is never persisted; it means the durable
 intent is accepted but has not yet entered its bounded worker. A
-client must wait for `ready` before starting the separate device transfer.
-`bytesTotal` is populated only at that point and is the exact compact-package
-size. Preparation may generate missing narration, then creates one 48 kbps MP3
-derivative per non-empty chapter. The browser does not poll or start chapter
-generation during device transfer.
+client can transfer individual ready chapters from the manifest while later
+chapters are still preparing. `bytesTotal` is populated when all chapters are
+ready and is the exact compact-package size. Preparation may generate missing
+narration, then creates one 48 kbps mono, 24 kHz MP3 derivative per nonempty
+chapter. Device progress is separate from this server progress.
+
+## GET /api/offline/preparation/:bookId/manifest
+
+Read a schema-version-1 transfer manifest. This GET does not generate narration,
+transcode audio, or hash complete audio files. It supports `If-None-Match` and
+returns `304` for an unchanged descriptor revision.
+
+The response includes `bookId`, `revision`, `sourceRevision`,
+`packageVariantKey`, `state`, `totalChapters`, `bytesPrepared`, `bytesTotal`, and
+an ordered `chapters` array. `revision` changes with descriptor state;
+`sourceRevision` identifies the text, narration variant, and ordered expected
+narration recipes independently of preparation progress. Chapter states are
+`empty`, `pending`, `ready`, or `error`.
+A ready chapter includes:
+
+```json
+{
+  "index": 0,
+  "state": "ready",
+  "artifactId": "sha256-<64 lowercase hexadecimal characters>",
+  "contentHash": "sha256-<same whole-file digest>",
+  "etag": "\"sha256-<same whole-file digest>\"",
+  "size": 1234567,
+  "blockSize": 1048576,
+  "blockHashes": ["sha256-<first block digest>", "sha256-<last block digest>"],
+  "variantKey": "<package variant>",
+  "provenance": "legacy-unverified",
+  "url": "/api/offline/audio/book-123/0?variant=<encoded variant>&artifact=<artifactId>"
+}
+```
+
+Hashes are calculated during preparation and published with the validated
+artifact. `provenance` is `verified` only for proven narration generation;
+`legacy-unverified` audio can still have verified transport hashes.
+
+## POST /api/offline/preparation/:bookId/window
+
+Request only the device's current rolling window:
+
+```json
+{ "chapterIndexes": [3, 4, 5, 6] }
+```
+
+At most four valid chapter indexes are accepted. The response is `202` with
+`state` and `chapterIndexes`. Send the normal `X-Xandrio-Device-Id` sync header
+to keep device claims separate. Replacing this window does not cancel a
+separately owned full-title preparation claim. Read the manifest to transfer
+each chapter as it becomes ready.
 
 ## DELETE /api/offline/preparation/:bookId
 
@@ -790,11 +842,10 @@ This does not delete already generated server audio or any device-local copy.
 ## GET /api/offline/audio/:bookId/:chapterIndex
 
 Serve one already-prepared 48 kbps MP3 derivative. The PWA supplies the
-`variant` query parameter returned as `packageVariantKey` by the preparation
-status, pinning every resumed chapter transfer to the same package. The route
-returns `409` until that derivative exists and never starts narration
-generation or transcoding. The PWA calls it only after the full-title
-preparation state is `ready`.
+`variant` and `artifact` query parameters from a ready manifest descriptor,
+pinning resumed transfers to the exact artifact. The route returns `409` if
+the requested artifact is unavailable or no longer current. It never starts
+narration generation or transcoding. Other chapters may still be preparing.
 
 ## Offline readiness notifications
 
@@ -810,19 +861,32 @@ and readiness polling continue to work without it.
 
 ### Offline audio transfer headers
 
-For a full, same-origin offline-package response, the PWA sends
-`X-Xandrio-Offline-Download: 1`. The server then returns the normal
-`Content-Length` plus:
+Prepared audio responses use stored artifact identity:
 
 ```http
+ETag: "sha256-<64 lowercase hexadecimal characters>"
+X-Xandrio-Artifact-SHA256: sha256-<64 lowercase hexadecimal characters>
 X-Xandrio-Content-SHA256: sha256-<64 lowercase hexadecimal characters>
 ```
 
-The server hashes and streams the same opened file. The PWA uses this identity
-to stream the response directly into Cache Storage without retaining and
-hashing a second browser copy. Normal playback and range responses do not
-request this work. Clients without the response header fall back to browser-side
-verification for compatibility with an older server.
+`X-Xandrio-Artifact-SHA256` identifies the complete artifact on both full and
+range responses. `X-Xandrio-Content-SHA256` appears only on a full `200` response;
+it must not be interpreted as the hash of a `206` range body. GET requests do
+not calculate these hashes. Normal playback without a prepared identity keeps
+its existing streaming behavior.
+
+The block writer requests aligned missing ranges with `Range` and the strong
+ETag in `If-Range`. Matching requests return `206` with exact `Content-Range`
+and `Content-Length`. An `If-Range` mismatch returns the full current body as
+`200`; the block writer refreshes its descriptor instead of appending it.
+An unsatisfiable range returns `416` with `Content-Range: bytes */<size>`.
+
+The service-worker-only path
+`/__xandrio_offline__/audio/:scope/:artifactId` serves verified IndexedDB blocks
+with offline contract version 2. It has no network fallback; the server returns
+`404` for that path. The worker distinguishes known local misses (`504`) from
+indeterminate storage failures (`503`). Legacy Cache Storage downloads retain
+their existing reader and URL contract.
 
 ---
 

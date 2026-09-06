@@ -1089,6 +1089,93 @@ async function test(name, fn) {
     await coordinator.waitForIdle('shared-remove');
   });
 
+  await test('cancellation fences a request still awaiting its first title load', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'offline-request-fence-'));
+    const journal = new GenerationJournal(path.join(dir, 'generation-state.json'));
+    const load = deferred();
+    let prepared = 0;
+    const coordinator = createOfflinePreparationCoordinator({
+      stateStore: journal,
+      getBookChapters: async () => load.promise,
+      chapterStatus: async () => ({ ready: false }),
+      prepareChapter: async () => { prepared += 1; }
+    });
+
+    const requesting = coordinator.request('fenced-book', { ownerId: 'device-a' });
+    const cancelling = coordinator.cancel('fenced-book', { ownerId: 'device-a', remove: true });
+    load.resolve({ book: { id: 'fenced-book' }, chapters: [{}] });
+    await assert.rejects(requesting, error => error.name === 'AbortError');
+    assert.strictEqual((await cancelling).state, 'removed');
+    await coordinator.waitForIdle('fenced-book');
+    assert.strictEqual(await journal.getOfflinePreparation('fenced-book'), null);
+    assert.strictEqual(prepared, 0);
+  });
+
+  await test('cancelling one pending owner preserves a concurrent owner request', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'offline-request-owners-'));
+    const journal = new GenerationJournal(path.join(dir, 'generation-state.json'));
+    const load = deferred();
+    let ready = false;
+    const coordinator = createOfflinePreparationCoordinator({
+      stateStore: journal,
+      getBookChapters: async bookId => {
+        await load.promise;
+        return { book: { id: bookId }, chapters: [{}] };
+      },
+      chapterStatus: async () => ({ ready, size: ready ? 10 : 0 }),
+      prepareChapter: async () => { ready = true; }
+    });
+
+    const first = coordinator.request('shared-pending', { ownerId: 'device-a' });
+    const second = coordinator.request('shared-pending', { ownerId: 'device-b' });
+    const cancelled = coordinator.cancel('shared-pending', { ownerId: 'device-a', remove: true });
+    load.resolve();
+    await assert.rejects(first, error => error.name === 'AbortError');
+    await second;
+    assert.strictEqual((await cancelled).state, 'preparing');
+    await coordinator.waitForIdle('shared-pending');
+    assert.deepStrictEqual((await journal.getOfflinePreparation('shared-pending')).owners, ['device-b']);
+  });
+
+  await test('a replacement request survives cancellation after the retired record was written', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'offline-request-replacement-'));
+    const journal = new GenerationJournal(path.join(dir, 'generation-state.json'));
+    const written = deferred();
+    const releaseWrite = deferred();
+    const put = journal.putOfflinePreparation.bind(journal);
+    let blockFirstWrite = true;
+    journal.putOfflinePreparation = async record => {
+      await put(record);
+      if (blockFirstWrite) {
+        blockFirstWrite = false;
+        written.resolve();
+        await releaseWrite.promise;
+      }
+    };
+    let ready = false;
+    const coordinator = createOfflinePreparationCoordinator({
+      stateStore: journal,
+      getBookChapters: async bookId => ({ book: { id: bookId }, chapters: [{}] }),
+      chapterStatus: async () => ({ ready, size: ready ? 10 : 0 }),
+      prepareChapter: async () => { ready = true; }
+    });
+
+    const retired = coordinator.request('replacement-book', { ownerId: 'device' });
+    await written.promise;
+    const cancel = coordinator.cancel('replacement-book', { ownerId: 'device', remove: true });
+    const replacement = coordinator.request('replacement-book', { ownerId: 'device' });
+    releaseWrite.resolve();
+
+    await assert.rejects(retired, error => error.name === 'AbortError');
+    await replacement;
+    assert.strictEqual((await cancel).state, 'preparing');
+    await coordinator.waitForIdle('replacement-book');
+    const record = await journal.getOfflinePreparation('replacement-book');
+    assert(record);
+    assert.deepStrictEqual(record.owners, ['device']);
+    assert.strictEqual(record.state, 'ready');
+  });
+
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);
 })();
