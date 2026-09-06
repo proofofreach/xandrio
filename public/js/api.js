@@ -22,18 +22,61 @@ const OFFLINE_ACCOUNT_SCOPE_KEY = 'xandrio_offline_account_scope';
 const LOCAL_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 let currentUser = null;
 let authenticationRequired = null;
+let offlineScopeTransition = Promise.resolve();
+
+export function waitForOfflineScopeTransition() {
+  return offlineScopeTransition;
+}
 
 export function getCurrentUser() {
   return currentUser;
 }
 
-export function setCurrentUser(user) {
-  currentUser = user && user.id ? user : null;
-  if (currentUser && LOCAL_ID_PATTERN.test(String(currentUser.id))) {
-    // Retain the last authenticated account so an installed PWA can find
-    // that account's downloads when /api/auth/status is unreachable offline.
-    localStorage.setItem(OFFLINE_ACCOUNT_SCOPE_KEY, String(currentUser.id));
+export function setCurrentUser(user, { clearRememberedOfflineScope = false } = {}) {
+  const previousScope = getOfflineStorageScopeId();
+  const nextUser = user && user.id ? user : null;
+  const remembered = clearRememberedOfflineScope
+    ? ''
+    : localStorage.getItem(OFFLINE_ACCOUNT_SCOPE_KEY);
+  const nextScope = nextUser && LOCAL_ID_PATTERN.test(String(nextUser.id))
+    ? String(nextUser.id)
+    : remembered && LOCAL_ID_PATTERN.test(remembered)
+      ? remembered
+      : getCurrentUserId();
+  // Listeners synchronously abort in-flight writers before this module makes
+  // the new account active. Their durable old/new scope fences then run in
+  // IndexedDB without exposing the incoming account to the old writer.
+  const waits = [];
+  if (previousScope !== nextScope && typeof globalThis.dispatchEvent === 'function') {
+    globalThis.dispatchEvent(new CustomEvent('xandrio:authscopechange', {
+      detail: {
+        fromScope: previousScope,
+        toScope: nextScope,
+        waitUntil(promise) { waits.push(Promise.resolve(promise)); }
+      }
+    }));
   }
+  const applyIdentity = () => {
+    currentUser = nextUser;
+    if (clearRememberedOfflineScope) localStorage.removeItem(OFFLINE_ACCOUNT_SCOPE_KEY);
+    if (currentUser && LOCAL_ID_PATTERN.test(String(currentUser.id))) {
+      // Retain the last authenticated account so an installed PWA can find
+      // that account's downloads when /api/auth/status is unreachable offline.
+      localStorage.setItem(OFFLINE_ACCOUNT_SCOPE_KEY, String(currentUser.id));
+    }
+  };
+  if (waits.length === 0) {
+    applyIdentity();
+    offlineScopeTransition = Promise.resolve();
+    return offlineScopeTransition;
+  }
+  // Keep the old identity active until every storage listener has fenced its
+  // old scope. Callers await this before they hydrate or issue account work.
+  offlineScopeTransition = offlineScopeTransition
+    .catch(() => undefined)
+    .then(() => Promise.all(waits))
+    .then(applyIdentity);
+  return offlineScopeTransition;
 }
 
 export async function fetchAuthStatus() {
@@ -41,7 +84,10 @@ export async function fetchAuthStatus() {
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
   const status = await response.json();
   authenticationRequired = Boolean(status.authenticationRequired);
-  setCurrentUser(status.user);
+  setCurrentUser(status.user, {
+    clearRememberedOfflineScope: status.authenticationRequired && !status.authenticated
+  });
+  await waitForOfflineScopeTransition();
   if (status.authenticationRequired && !status.authenticated) {
     localStorage.removeItem(OFFLINE_ACCOUNT_SCOPE_KEY);
   } else if (!status.authenticationRequired && !status.user) {
@@ -82,6 +128,7 @@ export async function login(username, password) {
   if (!response.ok) throw new Error(data.error || 'Sign-in failed');
   authenticationRequired = true;
   setCurrentUser(data.user);
+  await waitForOfflineScopeTransition();
   resetUnauthorizedSignal();
   return data.user || null;
 }
@@ -104,8 +151,8 @@ export async function logout() {
   try {
     await __originalFetch(`${API_BASE}/api/auth/logout`, { method: 'POST', credentials: 'same-origin' });
   } finally {
-    setCurrentUser(null);
-    localStorage.removeItem(OFFLINE_ACCOUNT_SCOPE_KEY);
+    setCurrentUser(null, { clearRememberedOfflineScope: true });
+    await waitForOfflineScopeTransition();
   }
 }
 

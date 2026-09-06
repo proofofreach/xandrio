@@ -100,14 +100,31 @@ async function test(name, callback) {
       'abc_ch0_concat_clean.txt',
       'abc_ch0.texthash',
       'abc_tts0123456789_ch0.mp3',
+      'abc_tts0123456789_ch0.mp3.narration-artifact.json',
+      'abc_tts0123456789_ch0.mp3.narration-artifact.json.1234.cafe.tmp',
       'abc_tts0123456789_ch0_chunk1.mp3',
-      'abc_offline_0123456789abcdef_ch0.mp3'
+      'abc_tts0123456789_ch0_chunk1.mp3.narration-artifact.json.1234.cafe.tmp',
+      'abc_offline_0123456789abcdef_ch0.mp3',
+      'abc_offline_0123456789abcdef_ch0.mp3.part',
+      'abc_offline_0123456789abcdef_ch0.mp3.1234.cafe.part.mp3',
+      'abc_offline_0123456789abcdef_ch0.mp3.offline-integrity.json',
+      'abc_offline_0123456789abcdef_ch0.mp3.offline-integrity.json.1234.cafe.tmp',
+      'abc_offline_0123456789abcdef_ch0_sha256-' + 'a'.repeat(64) + '.mp3',
+      'abc_offline_0123456789abcdef_ch0_sha256-' + 'a'.repeat(64) + '.mp3.1234.cafe.tmp',
+      'abc_narration_artifacts_v1'
     ];
     for (const filename of owned) {
       assert.equal(isManagedArtifactName('abc', filename), true, filename);
     }
     assert.equal(isManagedArtifactName('abc', 'abcdef.epub'), false);
     assert.equal(isManagedArtifactName('abc', 'unrelated.epub'), false);
+    assert.equal(
+      isManagedArtifactName(
+        'abc',
+        'abc_2_offline_0123456789abcdef_ch0_sha256-' + 'a'.repeat(64) + '.mp3'
+      ),
+      false
+    );
     assert.equal(isManagedArtifactName('', 'abc.epub'), false);
   });
 
