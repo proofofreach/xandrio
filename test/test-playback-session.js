@@ -398,6 +398,7 @@ function fakeAudio() {
         rewindSeconds: 0,
         targetSeconds: null
       }),
+      checkAutomaticSleepTimer: () => {},
       expireSleepTimer: reason => appImports.sleepExpiries.push(reason),
       isSleepTimerChapterTarget: () => appImports.sleepTarget,
       displayChapterTitle: () => 'Chapter',

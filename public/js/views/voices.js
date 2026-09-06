@@ -344,8 +344,8 @@ function renderCloneVoicePanel() {
     ? '10-30 s of clean, single-speaker audio'
     : 'Narrate any book in a voice you love — upload a 10-30 s sample and it becomes a narrator.';
   return `
-    <div class="voice-section">
-      <div class="voice-section-title">Chatterbox</div>
+    <details class="voice-section voice-create">
+      <summary>Create voice</summary>
       <form class="clone-voice-form${hasCustomVoices ? '' : ' clone-voice-form--cta'}">
         <div class="clone-voice-copy">
           ${hasCustomVoices ? '' : '<span class="clone-voice-badge"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M12 3v18M8.5 7.5A3.5 3.5 0 0 1 12 4a3.5 3.5 0 0 1 3.5 3.5v5A3.5 3.5 0 0 1 12 16a3.5 3.5 0 0 1-3.5-3.5v-5Z"/><path stroke-linecap="round" d="M5.5 12.5A6.5 6.5 0 0 0 12 19a6.5 6.5 0 0 0 6.5-6.5"/></svg><span>Voice cloning</span></span>'}
@@ -364,7 +364,7 @@ function renderCloneVoicePanel() {
           <span class="clone-voice-status" aria-live="polite"></span>
         </div>
       </form>
-    </div>
+    </details>
   `;
 }
 
