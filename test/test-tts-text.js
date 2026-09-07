@@ -1,5 +1,5 @@
 const assert = require('node:assert/strict');
-const { prepareTtsText } = require('../lib/tts-text');
+const { prepareTtsText, splitOversizedText, planNarration } = require('../lib/tts-text');
 
 let passed = 0;
 let failed = 0;
@@ -49,6 +49,43 @@ test('expands currency amounts before narration reaches a TTS engine', () => {
     prepareTtsText('Other amounts were £1.01, €2.50, and ¥3,000.'),
     'Other amounts were one pound and one penny, two euros and fifty cents, and three thousand yen.'
   );
+});
+
+test('narrates prose years using year phrasing', () => {
+  for (const [year, words] of [['1986', 'nineteen eighty-six'], ['1981', 'nineteen eighty-one'], ['1906', 'nineteen oh six'], ['1900', 'nineteen hundred'], ['2006', 'two thousand six'], ['2026', 'twenty twenty-six']]) {
+    assert.equal(prepareTtsText(`It was early in ${year}.`), `It was early in ${words}.`);
+    assert.equal(prepareTtsText(year), words);
+  }
+  assert.equal(prepareTtsText('From 1981 to 1986, and during the summer of 1986.'),
+    'From nineteen eighty-one to nineteen eighty-six, and during the summer of nineteen eighty-six.');
+});
+
+test('keeps year substitutions out of source partitioning but applies them to narration chunks', () => {
+  const source = 'It was early in 1986. '.repeat(20).trim();
+  const sourceParts = splitOversizedText(source, 100);
+  assert.equal(sourceParts.join(' '), source);
+  const plan = planNarration(source, { maxChars: 100 });
+  assert.ok(plan.chunks.every(chunk => !chunk.text.includes('1986')));
+  assert.ok(plan.text.includes('nineteen eighty-six'));
+});
+
+test('preserves quantities and identifiers that resemble years', () => {
+  const text = 'We sold 1986 bonds, paid $1986, and filed invoice 1986, ISBN 9781986123456, and code A1986. Values 1986.50 and 1,986 remain quantities.';
+  assert.equal(prepareTtsText(text), 'We sold 1986 bonds, paid one thousand nine hundred eighty-six dollars, and filed invoice 1986, ISBN 9781986123456, and code A1986. Values 1986.50 and one thousand nine hundred eighty-six remain quantities.');
+});
+
+test('narrates large currency amounts and written scales in the right order', () => {
+  assert.equal(prepareTtsText('$31,000,000; $31 million; 31 million; $3.1 million; £2 billion; €1 trillion.'),
+    'thirty-one million dollars; thirty-one million dollars; thirty-one million; three point one million dollars; two billion pounds; one trillion euros.');
+  assert.equal(prepareTtsText('$31,000,000.50 and $31000000.'),
+    'thirty-one million dollars and fifty cents and thirty-one million dollars.');
+});
+
+test('handles the numeric forms in the opening of Liars Poker chapter one', () => {
+  const text = 'Early in 1986. The $40 million sale in 1981. He paid himself $3. 1 million in 1986.';
+  const expected = 'Early in nineteen eighty-six. The forty million dollars sale in nineteen eighty-one. He paid himself three point one million dollars in nineteen eighty-six.';
+  assert.equal(prepareTtsText(text), expected);
+  assert.equal(prepareTtsText(expected), expected);
 });
 
 test('expands large cardinal numbers before narration reaches a TTS engine', () => {
