@@ -1,5 +1,5 @@
 const assert = require('node:assert/strict');
-const { prepareTtsText } = require('../lib/tts-text');
+const { prepareTtsText, splitOversizedText, planNarration } = require('../lib/tts-text');
 
 let passed = 0;
 let failed = 0;
@@ -58,6 +58,15 @@ test('narrates prose years using year phrasing', () => {
   }
   assert.equal(prepareTtsText('From 1981 to 1986, and during the summer of 1986.'),
     'From nineteen eighty-one to nineteen eighty-six, and during the summer of nineteen eighty-six.');
+});
+
+test('keeps year substitutions out of source partitioning but applies them to narration chunks', () => {
+  const source = 'It was early in 1986. '.repeat(20).trim();
+  const sourceParts = splitOversizedText(source, 100);
+  assert.equal(sourceParts.join(' '), source);
+  const plan = planNarration(source, { maxChars: 100 });
+  assert.ok(plan.chunks.every(chunk => !chunk.text.includes('1986')));
+  assert.ok(plan.text.includes('nineteen eighty-six'));
 });
 
 test('preserves quantities and identifiers that resemble years', () => {
