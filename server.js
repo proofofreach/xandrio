@@ -54,7 +54,9 @@ const {
 } = require('./lib/audio-generation-intent');
 const GenerationScheduler = require('./lib/generation-scheduler');
 const GenerationJournal = require('./lib/generation-journal');
-const { createPronunciationService, createCacheInvalidator } = require('./lib/pronunciation-repair');
+const { createPronunciationService, createCacheInvalidator, effectiveRules } = require('./lib/pronunciation-repair');
+const { createOfflineReadyPackages, sourceTextRevision } = require('./lib/offline-ready-packages');
+const { registerOfflineRecoveryRoutes } = require('./lib/routes/offline-recovery-routes');
 const { registerPronunciationRoutes } = require('./lib/routes/pronunciation-routes');
 const { createXBookStore } = require('./lib/xbook-store');
 const { createBookDocument } = require('./lib/book-document');
@@ -3670,6 +3672,7 @@ async function getOfflineBookChapters(bookId) {
 }
 
 const offlineAudioPackage = createOfflineAudioPackage({ cacheDir: CACHE_DIR });
+const offlineReadyPackages = createOfflineReadyPackages({ cacheDir: CACHE_DIR, audioPackage: offlineAudioPackage });
 const offlineReadinessNotifications = createOfflineReadinessNotifications({
   filePath: path.join(DATA_DIR, 'push-subscriptions.json'),
   webPush,
@@ -3690,11 +3693,44 @@ function offlinePreparationIdentity() {
   };
 }
 
+async function offlinePackageInput(bookId, identity = offlinePreparationIdentity()) {
+  const target = await getOfflineBookChapters(bookId);
+  const rules = effectiveRules(await loadJSON(PRONUNCIATIONS_FILE, {}), bookId);
+  return { bookId, ...target, rules, identity };
+}
+
+async function resolveOfflinePreparationIdentity({ bookId }) {
+  return offlineReadyPackages.select(await offlinePackageInput(bookId));
+}
+
+async function rememberReadyOfflinePackage({ record, signal, beforePublish }) {
+  if (record.retainedPackageRevision) return;
+  // This hook belongs to the tracked preparation worker. Book deletion aborts
+  // and awaits that worker before removing its managed files.
+  const current = await generationJournal.getOfflinePreparation(record.bookId);
+  if (current?.requestId !== record.requestId) return;
+  const input = await offlinePackageInput(record.bookId, pinnedOfflinePreparationIdentity(record));
+  if (sourceTextRevision(input, input.rules) !== record.sourceTextRevision) {
+    throw new Error('Offline narration input changed before retention');
+  }
+  return offlineReadyPackages.remember({ ...input, signal, beforePublish: async () => {
+    await beforePublish();
+    const latest = await offlinePackageInput(record.bookId, input.identity);
+    if (sourceTextRevision(latest, latest.rules) !== record.sourceTextRevision) {
+      throw new Error('Offline narration input changed before retention');
+    }
+  } });
+}
+
 function pinnedOfflinePreparationIdentity(request = {}) {
   if (!request.sourceVariantKey || !request.sourceVoice) return offlinePreparationIdentity();
   return {
     sourceVoice: request.sourceVoice,
     sourceVariantKey: request.sourceVariantKey,
+    sourceTextRevision: request.sourceTextRevision || '',
+    retainedPackageRevision: request.retainedPackageRevision || '',
+    retainedArtifacts: request.retainedArtifacts || null,
+    retained: Boolean(request.retainedPackageRevision),
     sourceChunkSize: Math.max(
       1,
       Number(request.sourceChunkSize) || getChunkSizeForVoice(request.sourceVoice)
@@ -3903,7 +3939,7 @@ async function inspectOfflineChapterAudio(bookId, chapterIndex, request = {}) {
           bitrateKbps: OFFLINE_AUDIO_BITRATE_KBPS
         }
     : activeIdentity;
-  const recipe = identity.sourceVoice
+  const recipe = identity.sourceVoice && !identity.retained
     ? await offlineSourceRecipe(bookId, chapterIndex, identity)
     : null;
   const packaged = await offlineAudioPackage.inspectChapter({
@@ -3912,11 +3948,14 @@ async function inspectOfflineChapterAudio(bookId, chapterIndex, request = {}) {
     sourceVariantKey: identity.sourceVariantKey,
     sourceFingerprint: recipe?.sourceFingerprint
   });
-  const expectedRecipeFingerprint = recipe?.sourceFingerprint || '';
+  const expectedRecipeFingerprint = recipe?.sourceFingerprint || packaged.associatedRecipeFingerprint || '';
+  if (identity.retained && packaged.artifactId !== identity.retainedArtifacts?.[chapterIndex]) {
+    return { ...packaged, ready: false, size: 0, url: null, expectedRecipeFingerprint };
+  }
   if (packaged.ready && packaged.artifactId) {
     return { ...packaged, expectedRecipeFingerprint };
   }
-  if (!identity.sourceVoice) return { ...packaged, expectedRecipeFingerprint };
+  if (!identity.sourceVoice || identity.retained) return { ...packaged, expectedRecipeFingerprint };
   const source = await inspectChapterAudio(bookId, chapterIndex, {
     tier: 'active',
     tts: offlineSourceWorker(identity)
@@ -3934,8 +3973,19 @@ async function inspectOfflineChapterAudio(bookId, chapterIndex, request = {}) {
 
 async function prepareOfflineChapterAudio(request) {
   const identity = pinnedOfflinePreparationIdentity(request);
+  const existing = await offlineAudioPackage.inspectChapter({ bookId: request.bookId,
+    chapterIndex: request.chapterIndex, sourceVariantKey: identity.sourceVariantKey });
+  if (identity.retained) {
+    if (!existing.ready || existing.artifactId !== identity.retainedArtifacts?.[request.chapterIndex]) {
+      throw new Error('Retained offline audio is no longer available');
+    }
+    return existing;
+  }
   const recipe = await offlineSourceRecipe(request.bookId, request.chapterIndex, identity, request.signal);
-  const sourcePath = await ensureChapterAudioPrepared(request.bookId, request.chapterIndex, {
+  // Legacy compact audio can outlive its stitched source. Validate and retain
+  // those exact bytes before asking the TTS pipeline to create anything.
+  const hasLegacyPackage = !existing.ready && existing.legacySize > 0;
+  const sourcePath = hasLegacyPackage ? null : await ensureChapterAudioPrepared(request.bookId, request.chapterIndex, {
     priority: request.priority,
     origin: request.origin,
     requestId: request.requestId,
@@ -3944,7 +3994,7 @@ async function prepareOfflineChapterAudio(request) {
     tts: offlineSourceWorker(identity),
     voice: identity.sourceVoice
   });
-  const sourceIdentity = recipe
+  const sourceIdentity = recipe && !hasLegacyPackage
     ? await resolveStitchedOfflineSource(sourcePath, recipe, request.signal)
     : null;
   return offlineAudioPackage.ensureChapter({
@@ -3981,7 +4031,7 @@ async function prepareOfflineChapterAudio(request) {
 const offlinePreparationCoordinator = createOfflinePreparationCoordinator({
   stateStore: generationJournal,
   getBookChapters: getOfflineBookChapters,
-  preparationIdentity: offlinePreparationIdentity,
+  preparationIdentity: resolveOfflinePreparationIdentity,
   // Offline preparation owns a bounded active-variant pipeline. Inspect it
   // directly so progress checks cannot trigger the separate full-book premium
   // preparation feature.
@@ -3994,14 +4044,14 @@ const offlinePreparationCoordinator = createOfflinePreparationCoordinator({
   prepareChapter: prepareOfflineChapterAudio,
   cancelRequest: requestId => ttsQueue.cancelWhere({ requestId }),
   discardRequest: requestId => generationJournal.removeChaptersForRequest(requestId),
-  onReady: ({ book, record, status }) => offlineReadinessNotifications.notifyOwners(
-    record.owners,
-    {
-      bookId: record.bookId,
-      title: book?.title || 'Your audiobook',
-      bytesTotal: status.bytesTotal
-    }
-  ),
+  beforeReadyCommit: rememberReadyOfflinePackage,
+  onReady: async event => {
+    await offlineReadinessNotifications.notifyOwners(event.record.owners, {
+      bookId: event.record.bookId,
+      title: event.book?.title || 'Your audiobook',
+      bytesTotal: event.status.bytesTotal
+    });
+  },
   onError: (error, request) => {
     console.warn(`Offline preparation failed for ${request.bookId}: ${error.message}`);
   }
@@ -4010,14 +4060,24 @@ const offlinePreparationCoordinator = createOfflinePreparationCoordinator({
 const getOfflineTransferManifest = createOfflineTransferManifest({
   getBookChapters: getOfflineBookChapters,
   chapterStatus: inspectOfflineChapterAudio,
-  preparationStatus: bookId => offlinePreparationCoordinator.status(bookId),
-  preparationIdentity: offlinePreparationIdentity
+  preparationStatus: (bookId, identity) => offlinePreparationCoordinator.status(bookId, identity),
+  preparationIdentity: resolveOfflinePreparationIdentity
 });
 const offlineWindowPreparation = createOfflineWindowPreparation({
   getBookChapters: getOfflineBookChapters,
   prepareChapter: prepareOfflineChapterAudio,
-  identity: offlinePreparationIdentity,
+  identity: resolveOfflinePreparationIdentity,
   onError: (error, { bookId }) => console.warn(`Offline window failed for ${bookId}: ${error.message}`)
+});
+
+const offlineRecovery = registerOfflineRecoveryRoutes(app, {
+  requireAdmin, bookMutationLocks, loadInput: offlinePackageInput,
+  audioPackage: offlineAudioPackage, readyPackages: offlineReadyPackages,
+  afterRecovery: async bookId => {
+    await offlinePreparationCoordinator.request(bookId);
+    await offlinePreparationCoordinator.waitForIdle(bookId);
+    return offlinePreparationCoordinator.status(bookId);
+  }
 });
 
 const chapterAudioReconciler = createChapterAudioReconciler({
@@ -4784,6 +4844,7 @@ const shutdownController = createGracefulShutdown({
       queue.active === 0 && queue.queued === 0 && bookGuideService.isIdle();
   },
   cleanup: async ({ drained }) => {
+    await offlineRecovery.close();
     if (!drained) console.warn('Shutdown drain deadline reached; durable generation state will recover on restart.');
     try {
       await searchCoverService.flush();
