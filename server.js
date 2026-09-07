@@ -38,6 +38,8 @@ const { createNarrationRuntime } = require('./lib/narration-runtime');
 const { createPlaybackOrchestrator } = require('./lib/playback-orchestrator');
 const { createPlaybackPrefetchCoordinator } = require('./lib/playback-prefetch');
 const { createOfflinePreparationCoordinator } = require('./lib/offline-preparation-coordinator');
+const { createOfflineTransferManifest } = require('./lib/offline-transfer-manifest');
+const { createOfflineWindowPreparation } = require('./lib/offline-window-preparation');
 const {
   OFFLINE_AUDIO_BITRATE_KBPS,
   createOfflineAudioPackage
@@ -52,7 +54,9 @@ const {
 } = require('./lib/audio-generation-intent');
 const GenerationScheduler = require('./lib/generation-scheduler');
 const GenerationJournal = require('./lib/generation-journal');
-const { createPronunciationService, createCacheInvalidator } = require('./lib/pronunciation-repair');
+const { createPronunciationService, createCacheInvalidator, effectiveRules } = require('./lib/pronunciation-repair');
+const { createOfflineReadyPackages, sourceTextRevision } = require('./lib/offline-ready-packages');
+const { registerOfflineRecoveryRoutes } = require('./lib/routes/offline-recovery-routes');
 const { registerPronunciationRoutes } = require('./lib/routes/pronunciation-routes');
 const { createXBookStore } = require('./lib/xbook-store');
 const { createBookDocument } = require('./lib/book-document');
@@ -1821,6 +1825,36 @@ const IMPORT_JOB_TTL_MS = 30 * 60 * 1000;
 const IMPORT_JOB_TERMINAL_GRACE_MS = Number(process.env.IMPORT_JOB_TERMINAL_GRACE_MS) || 30 * 1000;
 const IMPORT_JOB_TERMINAL_STATUSES = new Set(['complete', 'completed', 'failed', 'error']);
 
+function chapterPreparationAbortError(signal) {
+  if (signal?.reason?.name === 'AbortError') return signal.reason;
+  const error = new Error('Generation intent was retired', {
+    cause: signal?.reason instanceof Error ? signal.reason : undefined
+  });
+  error.name = 'AbortError';
+  return error;
+}
+
+function consumeChapterPreparation(record, signal, setup = async () => {}) {
+  if (signal?.aborted) return Promise.reject(chapterPreparationAbortError(signal));
+  const token = {};
+  record.consumers.add(token);
+  let removeAbort = () => {};
+  const aborted = new Promise((_, reject) => {
+    if (!signal) return;
+    const onAbort = () => reject(chapterPreparationAbortError(signal));
+    signal.addEventListener('abort', onAbort, { once: true });
+    removeAbort = () => signal.removeEventListener('abort', onAbort);
+  });
+  const result = Promise.resolve().then(setup).then(() => record.promise);
+  return Promise.race([result, aborted]).finally(() => {
+    removeAbort();
+    record.consumers.delete(token);
+    if (!record.settled && record.consumers.size === 0 && !record.controller.signal.aborted) {
+      record.controller.abort(chapterPreparationAbortError(signal));
+    }
+  });
+}
+
 function closeImportJobSubscribers(job) {
   for (const subscriber of job.subscribers) {
     clearInterval(subscriber.heartbeat);
@@ -1968,33 +2002,42 @@ async function ensureChapterAudioPrepared(bookId, chapterIndex, options = {}) {
   const key = `${bookId}:${chapterIndex}:${tts.variantKeyProvider()}`;
   if (jobs.has(key)) {
     throwIfAborted();
-    await tts.claimChapter?.(bookId, chapterIndex, {
-      origin: generationOrigin,
-      requestId: options.requestId || null,
-      sessionId: options.sessionId || null
-    }, priority, {
-      signal: options.signal,
-      chunkIndexes: playbackChunkIndexes
-    });
-    if (completeChapter || priority === 'download' || priority === 'lookahead') {
-      const existingManifest = tts.getChapterManifest(bookId, chapterIndex);
-      existingManifest?.chunks?.forEach((chunk, index) => {
-        if (chunk.status !== 'ready') {
-          tts.prioritizeChunk(bookId, chapterIndex, index, priority);
-        }
+    const record = jobs.get(key);
+    return consumeChapterPreparation(record, options.signal, async () => {
+      await tts.claimChapter?.(bookId, chapterIndex, {
+        origin: generationOrigin,
+        requestId: options.requestId || null,
+        sessionId: options.sessionId || null
+      }, priority, {
+        signal: options.signal,
+        chunkIndexes: playbackChunkIndexes
       });
-    }
-    return jobs.get(key);
+      if (completeChapter || priority === 'download' || priority === 'lookahead') {
+        const existingManifest = tts.getChapterManifest(bookId, chapterIndex);
+        existingManifest?.chunks?.forEach((chunk, index) => {
+          if (chunk.status !== 'ready') {
+            tts.prioritizeChunk(bookId, chapterIndex, index, priority);
+          }
+        });
+      }
+    });
   }
 
-  const job = (async () => {
+  const controller = new AbortController();
+  const record = { controller, consumers: new Set(), settled: false, promise: null };
+  jobs.set(key, record);
+  const jobSignal = controller.signal;
+  const throwIfJobAborted = () => {
+    if (jobSignal.aborted) throw chapterPreparationAbortError(jobSignal);
+  };
+  record.promise = (async () => {
     const books = await loadJSON(BOOKS_FILE, {});
-    throwIfAborted();
+    throwIfJobAborted();
     const book = books[bookId];
     if (!book) throw new Error('Book not found');
 
     const chapters = await getChaptersCached(book.path);
-    throwIfAborted();
+    throwIfJobAborted();
     const chapter = chapters[chapterIndex];
     if (!chapter) throw new Error('Chapter not found');
 
@@ -2019,16 +2062,16 @@ async function ensureChapterAudioPrepared(bookId, chapterIndex, options = {}) {
         requestId: options.requestId || null,
         sessionId: options.sessionId || null,
         chunkIndexes: playbackChunkIndexes,
-        signal: options.signal
+        signal: jobSignal
       });
     } else {
-      throwIfAborted();
+      throwIfJobAborted();
       await tts.claimChapter?.(bookId, chapterIndex, {
         origin: generationOrigin,
         requestId: options.requestId || null,
         sessionId: options.sessionId || null
       }, priority, {
-        signal: options.signal,
+        signal: jobSignal,
         chunkIndexes: playbackChunkIndexes
       });
       manifest.chunks.forEach((chunk, index) => {
@@ -2043,21 +2086,22 @@ async function ensureChapterAudioPrepared(bookId, chapterIndex, options = {}) {
       });
     }
 
-    await tts.waitForChapter(bookId, chapterIndex, { signal: options.signal });
-    throwIfAborted();
+    await tts.waitForChapter(bookId, chapterIndex, { signal: jobSignal });
+    throwIfJobAborted();
 
     const refreshed = tts.getChapterManifest(bookId, chapterIndex) || manifest;
     if (!refreshed.chunks.every(chunk => chunk.status === 'ready')) {
       throw new Error('Not all chunks are ready');
     }
 
-    return clean ? tts.concatenateChunksClean(bookId, chapterIndex) : tts.concatenateChunks(bookId, chapterIndex);
+    return clean
+      ? tts.concatenateChunksClean(bookId, chapterIndex)
+      : tts.concatenateChunks(bookId, chapterIndex, { signal: jobSignal });
   })().finally(() => {
-    jobs.delete(key);
+    record.settled = true;
+    if (jobs.get(key) === record) jobs.delete(key);
   });
-
-  jobs.set(key, job);
-  return job;
+  return consumeChapterPreparation(record, options.signal);
 }
 
 /**
@@ -3522,6 +3566,14 @@ const bookDeletionService = createBookDeletionService({
       offlinePreparationCoordinator.cancel(bookId, { remove: true }),
       bookGuideService.removeBook(bookId)
     ]);
+    await offlineWindowPreparation.cancelBook(bookId);
+    await offlineAudioPackage.cancelBook(bookId);
+    await Promise.all([
+      chunkedTTS.waitForIdle(bookId),
+      instantChunkedTTS.waitForIdle(bookId),
+      offlinePreparationCoordinator.waitForIdle(bookId),
+      offlineAudioPackage.waitForIdle(bookId)
+    ]);
     return cancelledJobs;
   },
   stopPremiumPrep: bookId => premiumPrep.stopBook(bookId),
@@ -3620,6 +3672,7 @@ async function getOfflineBookChapters(bookId) {
 }
 
 const offlineAudioPackage = createOfflineAudioPackage({ cacheDir: CACHE_DIR });
+const offlineReadyPackages = createOfflineReadyPackages({ cacheDir: CACHE_DIR, audioPackage: offlineAudioPackage });
 const offlineReadinessNotifications = createOfflineReadinessNotifications({
   filePath: path.join(DATA_DIR, 'push-subscriptions.json'),
   webPush,
@@ -3640,11 +3693,44 @@ function offlinePreparationIdentity() {
   };
 }
 
+async function offlinePackageInput(bookId, identity = offlinePreparationIdentity()) {
+  const target = await getOfflineBookChapters(bookId);
+  const rules = effectiveRules(await loadJSON(PRONUNCIATIONS_FILE, {}), bookId);
+  return { bookId, ...target, rules, identity };
+}
+
+async function resolveOfflinePreparationIdentity({ bookId }) {
+  return offlineReadyPackages.select(await offlinePackageInput(bookId));
+}
+
+async function rememberReadyOfflinePackage({ record, signal, beforePublish }) {
+  if (record.retainedPackageRevision) return;
+  // This hook belongs to the tracked preparation worker. Book deletion aborts
+  // and awaits that worker before removing its managed files.
+  const current = await generationJournal.getOfflinePreparation(record.bookId);
+  if (current?.requestId !== record.requestId) return;
+  const input = await offlinePackageInput(record.bookId, pinnedOfflinePreparationIdentity(record));
+  if (sourceTextRevision(input, input.rules) !== record.sourceTextRevision) {
+    throw new Error('Offline narration input changed before retention');
+  }
+  return offlineReadyPackages.remember({ ...input, signal, beforePublish: async () => {
+    await beforePublish();
+    const latest = await offlinePackageInput(record.bookId, input.identity);
+    if (sourceTextRevision(latest, latest.rules) !== record.sourceTextRevision) {
+      throw new Error('Offline narration input changed before retention');
+    }
+  } });
+}
+
 function pinnedOfflinePreparationIdentity(request = {}) {
   if (!request.sourceVariantKey || !request.sourceVoice) return offlinePreparationIdentity();
   return {
     sourceVoice: request.sourceVoice,
     sourceVariantKey: request.sourceVariantKey,
+    sourceTextRevision: request.sourceTextRevision || '',
+    retainedPackageRevision: request.retainedPackageRevision || '',
+    retainedArtifacts: request.retainedArtifacts || null,
+    retained: Boolean(request.retainedPackageRevision),
     sourceChunkSize: Math.max(
       1,
       Number(request.sourceChunkSize) || getChunkSizeForVoice(request.sourceVoice)
@@ -3662,21 +3748,214 @@ function offlineSourceWorker(identity) {
   });
 }
 
+function throwIfOfflinePreparationAborted(signal) {
+  if (!signal?.aborted) return;
+  const error = signal.reason instanceof Error
+    ? signal.reason
+    : new Error('Offline preparation cancelled');
+  error.name = 'AbortError';
+  throw error;
+}
+
+async function offlineSourceRecipe(bookId, chapterIndex, identity, signal = null) {
+  throwIfOfflinePreparationAborted(signal);
+  const { book, chapters } = await getOfflineBookChapters(bookId);
+  throwIfOfflinePreparationAborted(signal);
+  const chapter = chapters[chapterIndex];
+  if (!chapter || chapter.empty) return null;
+  const worker = offlineSourceWorker(identity);
+  const plan = await worker.chapterArtifactReusePlan?.(
+    bookId,
+    chapterIndex,
+    chapter.text,
+    book.language || 'en',
+    { voice: identity.sourceVoice }
+  );
+  throwIfOfflinePreparationAborted(signal);
+  const artifactFingerprints = (plan?.artifacts || []).map(item => item.fingerprint);
+  const digest = crypto.createHash('sha256').update(JSON.stringify([
+    2,
+    bookId,
+    chapterIndex,
+    identity.sourceVariantKey,
+    identity.sourceVoice,
+    identity.sourceChunkSize,
+    artifactFingerprints
+  ])).digest('hex');
+  return {
+    worker,
+    book,
+    chapter,
+    chapterIndex,
+    plan,
+    fingerprint: digest,
+    sourceFingerprint: `sha256-${digest}`
+  };
+}
+
+async function hashOfflineSourceFile(sourcePath, signal = null) {
+  const hash = crypto.createHash('sha256');
+  let bytes = 0;
+  const stream = fsSync.createReadStream(sourcePath);
+  const abort = () => stream.destroy(signal.reason instanceof Error
+    ? signal.reason
+    : Object.assign(new Error('Offline preparation cancelled'), { name: 'AbortError' }));
+  signal?.addEventListener?.('abort', abort, { once: true });
+  try {
+    throwIfOfflinePreparationAborted(signal);
+    for await (const chunk of stream) {
+      throwIfOfflinePreparationAborted(signal);
+      hash.update(chunk);
+      bytes += chunk.length;
+    }
+    throwIfOfflinePreparationAborted(signal);
+  } finally {
+    signal?.removeEventListener?.('abort', abort);
+  }
+  return { bytes, contentHash: `sha256-${hash.digest('hex')}` };
+}
+
+async function inspectOfflineSourceMarker(sourcePath, expectedFingerprint, signal = null) {
+  throwIfOfflinePreparationAborted(signal);
+  let stat;
+  try { stat = await fs.stat(sourcePath); } catch (error) {
+    if (error.code === 'ENOENT') return { provenance: 'missing' };
+    throw error;
+  }
+  throwIfOfflinePreparationAborted(signal);
+  if (stat.isFile?.() === false || stat.size <= 0) return { provenance: 'invalid' };
+  let marker;
+  try {
+    marker = JSON.parse(await fs.readFile(
+      `${sourcePath}.narration-artifact.json`,
+      signal ? { encoding: 'utf8', signal } : { encoding: 'utf8' }
+    ));
+  } catch (error) {
+    if (error.code === 'ENOENT') {
+      return { provenance: 'legacy-unverified', bytes: stat.size, contentHash: '' };
+    }
+    if (error instanceof SyntaxError) return { provenance: 'invalid' };
+    throw error;
+  }
+  throwIfOfflinePreparationAborted(signal);
+  if (marker?.version === 1) {
+    return { provenance: 'legacy-unverified', bytes: stat.size, contentHash: '' };
+  }
+  if (marker?.version !== 2) return { provenance: 'invalid' };
+  if (
+    marker.fingerprint !== expectedFingerprint || marker.bytes !== stat.size ||
+    marker.provenance !== 'verified' ||
+    !/^sha256-[a-f0-9]{64}$/.test(String(marker.contentHash || ''))
+  ) return { provenance: 'invalid' };
+  const actual = await hashOfflineSourceFile(sourcePath, signal);
+  if (actual.bytes !== stat.size || actual.contentHash !== marker.contentHash) {
+    return { provenance: 'invalid' };
+  }
+  return { ...actual, provenance: 'verified' };
+}
+
+async function inspectOfflineSourceChunks(recipe, signal = null) {
+  if (!recipe?.plan?.artifacts?.length) return 'legacy-unverified';
+  let provenance = 'verified';
+  for (const artifact of recipe.plan.artifacts) {
+    const identity = await inspectOfflineSourceMarker(artifact.outputPath, artifact.fingerprint, signal);
+    if (identity.provenance === 'invalid') return 'invalid';
+    if (identity.provenance !== 'verified') provenance = 'legacy-unverified';
+  }
+  return provenance;
+}
+
+async function inspectStitchedOfflineSource(sourcePath, recipe, signal = null) {
+  const identity = await inspectOfflineSourceMarker(sourcePath, recipe.fingerprint, signal);
+  return { ...identity, fingerprint: recipe.sourceFingerprint };
+}
+
+async function publishStitchedOfflineSourceMarker(sourcePath, recipe, signal = null) {
+  const { bytes, contentHash } = await hashOfflineSourceFile(sourcePath, signal);
+  if (bytes <= 0) throw new Error('Offline narration source is empty');
+  const marker = {
+    version: 2,
+    fingerprint: recipe.fingerprint,
+    bytes,
+    contentHash,
+    provenance: 'verified'
+  };
+  throwIfOfflinePreparationAborted(signal);
+  const markerPath = `${sourcePath}.narration-artifact.json`;
+  const tmpPath = `${markerPath}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.tmp`;
+  try {
+    await fs.writeFile(tmpPath, JSON.stringify(marker), { mode: 0o600, signal });
+    throwIfOfflinePreparationAborted(signal);
+    // No await separates the last cancellation check from publication.
+    fsSync.renameSync(tmpPath, markerPath);
+  } finally {
+    await fs.unlink(tmpPath).catch(() => {});
+  }
+  return {
+    fingerprint: recipe.sourceFingerprint,
+    bytes,
+    contentHash: marker.contentHash,
+    provenance: 'verified'
+  };
+}
+
+async function resolveStitchedOfflineSource(sourcePath, recipe, signal = null) {
+  let sourceIdentity = await inspectStitchedOfflineSource(sourcePath, recipe, signal);
+  // A verified stitched file is independent proof. Its source chunks can be
+  // reclaimed after concatenation without invalidating the preserved audio.
+  if (sourceIdentity.provenance === 'verified') return sourceIdentity;
+
+  const chunkProvenance = await inspectOfflineSourceChunks(recipe, signal);
+  if (chunkProvenance === 'verified') {
+    // Re-concatenation is local and bounded. It proves the stitched file was
+    // built from verified current chunks without re-running narration.
+    await recipe.worker.reconstructChapterManifest(
+      recipe.book.id,
+      recipe.chapterIndex,
+      recipe.chapter.text,
+      recipe.book.language || 'en'
+    );
+    throwIfOfflinePreparationAborted(signal);
+    await recipe.worker.concatenateChunks(recipe.book.id, recipe.chapterIndex, { signal });
+    throwIfOfflinePreparationAborted(signal);
+    return publishStitchedOfflineSourceMarker(sourcePath, recipe, signal);
+  }
+  if (sourceIdentity.provenance === 'invalid' || chunkProvenance === 'invalid') {
+    throw new Error('Offline narration source failed provenance verification');
+  }
+  // A preserved legacy stitched file stays packageable when its old chunk
+  // files no longer exist. Its provenance remains explicitly unverified.
+  return sourceIdentity;
+}
+
 async function inspectOfflineChapterAudio(bookId, chapterIndex, request = {}) {
+  const activeIdentity = pinnedOfflinePreparationIdentity(request);
   const identity = request.packageVariantKey && !request.sourceVoice
-    ? {
-        sourceVariantKey: offlineAudioPackage.sourceVariantKey(request.packageVariantKey),
-        packageVariantKey: request.packageVariantKey,
-        bitrateKbps: OFFLINE_AUDIO_BITRATE_KBPS
-      }
-    : pinnedOfflinePreparationIdentity(request);
+    ? activeIdentity.packageVariantKey === request.packageVariantKey
+      ? activeIdentity
+      : {
+          sourceVariantKey: offlineAudioPackage.sourceVariantKey(request.packageVariantKey),
+          packageVariantKey: request.packageVariantKey,
+          bitrateKbps: OFFLINE_AUDIO_BITRATE_KBPS
+        }
+    : activeIdentity;
+  const recipe = identity.sourceVoice && !identity.retained
+    ? await offlineSourceRecipe(bookId, chapterIndex, identity)
+    : null;
   const packaged = await offlineAudioPackage.inspectChapter({
     bookId,
     chapterIndex,
-    sourceVariantKey: identity.sourceVariantKey
+    sourceVariantKey: identity.sourceVariantKey,
+    sourceFingerprint: recipe?.sourceFingerprint
   });
-  if (packaged.ready) return packaged;
-  if (!identity.sourceVoice) return packaged;
+  const expectedRecipeFingerprint = recipe?.sourceFingerprint || packaged.associatedRecipeFingerprint || '';
+  if (identity.retained && packaged.artifactId !== identity.retainedArtifacts?.[chapterIndex]) {
+    return { ...packaged, ready: false, size: 0, url: null, expectedRecipeFingerprint };
+  }
+  if (packaged.ready && packaged.artifactId) {
+    return { ...packaged, expectedRecipeFingerprint };
+  }
+  if (!identity.sourceVoice || identity.retained) return { ...packaged, expectedRecipeFingerprint };
   const source = await inspectChapterAudio(bookId, chapterIndex, {
     tier: 'active',
     tts: offlineSourceWorker(identity)
@@ -3687,32 +3966,72 @@ async function inspectOfflineChapterAudio(bookId, chapterIndex, request = {}) {
     size: 0,
     url: null,
     variantKey: identity.packageVariantKey,
-    bitrateKbps: identity.bitrateKbps
+    bitrateKbps: identity.bitrateKbps,
+    expectedRecipeFingerprint
   };
 }
 
 async function prepareOfflineChapterAudio(request) {
   const identity = pinnedOfflinePreparationIdentity(request);
-  const sourcePath = await ensureChapterAudioPrepared(request.bookId, request.chapterIndex, {
+  const existing = await offlineAudioPackage.inspectChapter({ bookId: request.bookId,
+    chapterIndex: request.chapterIndex, sourceVariantKey: identity.sourceVariantKey });
+  if (identity.retained) {
+    if (!existing.ready || existing.artifactId !== identity.retainedArtifacts?.[request.chapterIndex]) {
+      throw new Error('Retained offline audio is no longer available');
+    }
+    return existing;
+  }
+  const recipe = await offlineSourceRecipe(request.bookId, request.chapterIndex, identity, request.signal);
+  // Legacy compact audio can outlive its stitched source. Validate and retain
+  // those exact bytes before asking the TTS pipeline to create anything.
+  const hasLegacyPackage = !existing.ready && existing.legacySize > 0;
+  const sourcePath = hasLegacyPackage ? null : await ensureChapterAudioPrepared(request.bookId, request.chapterIndex, {
     priority: request.priority,
     origin: request.origin,
     requestId: request.requestId,
+    signal: request.signal,
     tier: 'active',
     tts: offlineSourceWorker(identity),
     voice: identity.sourceVoice
   });
+  const sourceIdentity = recipe && !hasLegacyPackage
+    ? await resolveStitchedOfflineSource(sourcePath, recipe, request.signal)
+    : null;
   return offlineAudioPackage.ensureChapter({
     bookId: request.bookId,
     chapterIndex: request.chapterIndex,
     sourcePath,
-    sourceVariantKey: identity.sourceVariantKey
+    sourceVariantKey: identity.sourceVariantKey,
+    sourceFingerprint: recipe?.sourceFingerprint,
+    provenance: sourceIdentity?.provenance === 'verified' ? 'verified' : 'legacy-unverified',
+    signal: request.signal,
+    beforePublish: async () => {
+      if (request.signal?.aborted) throw Object.assign(new Error('Offline preparation cancelled'), { name: 'AbortError' });
+      const books = await loadJSON(BOOKS_FILE, {});
+      if (!books[request.bookId]) throw new Error('Book was deleted during offline preparation');
+      const currentRecipe = await offlineSourceRecipe(
+        request.bookId,
+        request.chapterIndex,
+        identity,
+        request.signal
+      );
+      if (recipe?.sourceFingerprint !== currentRecipe?.sourceFingerprint) {
+        throw Object.assign(new Error('Offline chapter source changed during preparation'), { name: 'AbortError' });
+      }
+      if (request.requestId && !request.requestId.startsWith('window-')) {
+        const current = await generationJournal.getOfflinePreparation(request.bookId);
+        if (current?.requestId !== request.requestId) {
+          throw Object.assign(new Error('Offline preparation was replaced'), { name: 'AbortError' });
+        }
+      }
+    }
   });
 }
 
 const offlinePreparationCoordinator = createOfflinePreparationCoordinator({
   stateStore: generationJournal,
   getBookChapters: getOfflineBookChapters,
-  preparationIdentity: offlinePreparationIdentity,
+  preparationIdentity: resolveOfflinePreparationIdentity,
   // Offline preparation owns a bounded active-variant pipeline. Inspect it
   // directly so progress checks cannot trigger the separate full-book premium
   // preparation feature.
@@ -3725,16 +4044,39 @@ const offlinePreparationCoordinator = createOfflinePreparationCoordinator({
   prepareChapter: prepareOfflineChapterAudio,
   cancelRequest: requestId => ttsQueue.cancelWhere({ requestId }),
   discardRequest: requestId => generationJournal.removeChaptersForRequest(requestId),
-  onReady: ({ book, record, status }) => offlineReadinessNotifications.notifyOwners(
-    record.owners,
-    {
-      bookId: record.bookId,
-      title: book?.title || 'Your audiobook',
-      bytesTotal: status.bytesTotal
-    }
-  ),
+  beforeReadyCommit: rememberReadyOfflinePackage,
+  onReady: async event => {
+    await offlineReadinessNotifications.notifyOwners(event.record.owners, {
+      bookId: event.record.bookId,
+      title: event.book?.title || 'Your audiobook',
+      bytesTotal: event.status.bytesTotal
+    });
+  },
   onError: (error, request) => {
     console.warn(`Offline preparation failed for ${request.bookId}: ${error.message}`);
+  }
+});
+
+const getOfflineTransferManifest = createOfflineTransferManifest({
+  getBookChapters: getOfflineBookChapters,
+  chapterStatus: inspectOfflineChapterAudio,
+  preparationStatus: (bookId, identity) => offlinePreparationCoordinator.status(bookId, identity),
+  preparationIdentity: resolveOfflinePreparationIdentity
+});
+const offlineWindowPreparation = createOfflineWindowPreparation({
+  getBookChapters: getOfflineBookChapters,
+  prepareChapter: prepareOfflineChapterAudio,
+  identity: resolveOfflinePreparationIdentity,
+  onError: (error, { bookId }) => console.warn(`Offline window failed for ${bookId}: ${error.message}`)
+});
+
+const offlineRecovery = registerOfflineRecoveryRoutes(app, {
+  requireAdmin, bookMutationLocks, loadInput: offlinePackageInput,
+  audioPackage: offlineAudioPackage, readyPackages: offlineReadyPackages,
+  afterRecovery: async bookId => {
+    await offlinePreparationCoordinator.request(bookId);
+    await offlinePreparationCoordinator.waitForIdle(bookId);
+    return offlinePreparationCoordinator.status(bookId);
   }
 });
 
@@ -3762,14 +4104,21 @@ chapterRebuildService = createChapterRebuildService({
   loadJSON,
   saveJSON,
   afterCommit: async ({ bookId, plan }) => {
+    chunkedTTS.cancelBook(bookId);
+    instantChunkedTTS.cancelBook(bookId);
     await Promise.all([
       premiumPrep.stopBook(bookId),
       playbackPrefetch.removeBook(bookId),
-      offlinePreparationCoordinator.cancel(bookId, { remove: true })
+      offlinePreparationCoordinator.cancel(bookId, { remove: true }),
+      offlineWindowPreparation.cancelBook(bookId),
+      offlineAudioPackage.cancelBook(bookId)
     ]);
     await Promise.all([
       premiumPrep.waitForIdle(bookId),
-      offlinePreparationCoordinator.waitForIdle(bookId)
+      chunkedTTS.waitForIdle(bookId),
+      instantChunkedTTS.waitForIdle(bookId),
+      offlinePreparationCoordinator.waitForIdle(bookId),
+      offlineAudioPackage.waitForIdle(bookId)
     ]);
     const books = await loadJSON(BOOKS_FILE, {});
     await chapterAudioReconciler.reconcile({
@@ -3844,6 +4193,8 @@ registerPlaybackRoutes(app, {
     }
     return inspectOfflineChapterAudio(bookId, chapterIndex, { packageVariantKey });
   },
+  getOfflineTransferManifest,
+  offlineWindowPreparation,
   offlineReadinessNotifications,
   prioritizeForegroundBook,
   canPrioritizeForegroundBook: async (req, bookId) => {
@@ -4493,6 +4844,7 @@ const shutdownController = createGracefulShutdown({
       queue.active === 0 && queue.queued === 0 && bookGuideService.isIdle();
   },
   cleanup: async ({ drained }) => {
+    await offlineRecovery.close();
     if (!drained) console.warn('Shutdown drain deadline reached; durable generation state will recover on restart.');
     try {
       await searchCoverService.flush();
@@ -4687,5 +5039,8 @@ module.exports.__test = {
   getChatterboxRefVersionSync,
   updateCustomVoiceRegistry,
   loadCustomVoiceRegistry,
-  refreshSettingsSnapshots
+  refreshSettingsSnapshots,
+  consumeChapterPreparation,
+  resolveStitchedOfflineSource,
+  inspectOfflineSourceMarker
 };

@@ -1,6 +1,9 @@
 const path = require('path');
 const fs = require('fs/promises');
 const http = require('http');
+const crypto = require('crypto');
+
+const OFFLINE_BLOCK_SIZE = 1024 * 1024;
 
 function deterministicWav() {
   const sampleRate = 24000;
@@ -35,6 +38,23 @@ function jsonResponse(res, body, status = 200) {
 async function startOfflineFixtureServer() {
   const publicRoot = path.join(__dirname, '..', '..', 'public');
   const audio = deterministicWav();
+  const audioHash = `sha256-${crypto.createHash('sha256').update(audio).digest('hex')}`;
+  const offlineSourceRevision = `sha256-${crypto.createHash('sha256').update('smoke-offline-source-v1').digest('hex')}`;
+  const offlineDescriptor = {
+    index: 0,
+    state: 'ready',
+    artifactId: audioHash,
+    contentHash: audioHash,
+    etag: `"${audioHash}"`,
+    size: audio.length,
+    blockSize: OFFLINE_BLOCK_SIZE,
+    blockHashes: [audioHash],
+    url: '/api/offline/audio/smoke-offline/0',
+    contentType: 'audio/wav',
+    variantKey: 'offline-fixture:offline-mp3-v1:br48k',
+    provenance: 'verified',
+    sourceFingerprint: offlineSourceRevision
+  };
   const book = {
     id: 'smoke-offline', title: 'Offline Smoke Book', author: 'Fixture Author',
     description: 'Exercises the real service worker cache.', language: 'en', chapterCount: 1,
@@ -96,6 +116,34 @@ async function startOfflineFixtureServer() {
         bitrateKbps: 48
       }, req.method === 'POST' ? 202 : 200);
     }
+    if (pathname === '/api/offline/preparation/smoke-offline/manifest' && req.method === 'GET') {
+      const ready = state.offlinePreparationRequested;
+      const revision = ready ? 'smoke-descriptor-ready-v1' : 'smoke-descriptor-pending-v1';
+      if (req.headers['if-none-match'] === `"${revision}"`) {
+        res.writeHead(304, { ETag: `"${revision}"` });
+        return res.end();
+      }
+      const body = {
+        schemaVersion: 1,
+        bookId: book.id,
+        revision,
+        sourceRevision: offlineSourceRevision,
+        packageVariantKey: 'offline-fixture:offline-mp3-v1:br48k',
+        state: ready ? 'ready' : 'preparing',
+        totalChapters: 1,
+        readyChapters: ready ? 1 : 0,
+        bytesPrepared: ready ? audio.length : 0,
+        bytesTotal: ready ? audio.length : null,
+        chapters: [ready ? offlineDescriptor : { index: 0, state: 'preparing' }]
+      };
+      const payload = Buffer.from(JSON.stringify(body));
+      res.writeHead(200, {
+        'Content-Type': 'application/json',
+        'Content-Length': payload.length,
+        ETag: `"${revision}"`
+      });
+      return res.end(payload);
+    }
     if (pathname === '/api/position/smoke-offline') return jsonResponse(res, { position: null });
     if (pathname === '/api/position') return jsonResponse(res, { success: true });
     if (pathname === '/api/bookmarks/smoke-offline') return jsonResponse(res, { bookmarks: [] });
@@ -134,8 +182,31 @@ async function startOfflineFixtureServer() {
       if (req.headers['x-xandrio-offline-download'] !== '1') {
         state.streamingPlaybackRequests.push(req.url);
       }
-      if (req.headers['x-xandrio-offline-download'] === '1') {
+      if (req.headers['x-xandrio-offline-download'] === '1' || (pathname.startsWith('/api/offline/audio/') && req.headers.range)) {
         await new Promise(resolve => setTimeout(resolve, 500));
+      }
+      if (pathname.startsWith('/api/offline/audio/') && req.headers.range) {
+        if (req.headers['if-range'] !== offlineDescriptor.etag) {
+          res.writeHead(409, { 'Cache-Control': 'no-store' });
+          return res.end();
+        }
+        const match = /^bytes=(\d+)-(\d+)$/.exec(req.headers.range);
+        if (!match) {
+          res.writeHead(416, { 'Content-Range': `bytes */${audio.length}` });
+          return res.end();
+        }
+        const start = Number(match[1]);
+        const end = Math.min(Number(match[2]), audio.length - 1);
+        const body = audio.subarray(start, end + 1);
+        res.writeHead(206, {
+          'Content-Type': 'audio/wav',
+          'Content-Length': body.length,
+          'Content-Range': `bytes ${start}-${end}/${audio.length}`,
+          'Accept-Ranges': 'bytes',
+          ETag: offlineDescriptor.etag,
+          'Cache-Control': 'no-store'
+        });
+        return res.end(body);
       }
       res.writeHead(200, {
         'Content-Type': 'audio/wav', 'Content-Length': audio.length,

@@ -24,7 +24,17 @@ const { writeFileAtomic } = require('../lib/write-file-atomic');
     const leftovers = (await fs.readdir(dir)).filter(name => name.endsWith('.tmp'));
     assert.deepStrictEqual(leftovers, [], `rename failure leaked temps: ${leftovers}`);
     assert.strictEqual(await fs.readFile(target, 'utf8'), '{"ok":true}');
-    console.log('3 passed, 0 failed');
+    let checkedStagedFile = false;
+    await assert.rejects(writeFileAtomic(target, '{"stale":true}', {
+      beforeRename: async () => {
+        checkedStagedFile = (await fs.readdir(dir)).some(name => name.endsWith('.tmp'));
+        throw new Error('publication was cancelled');
+      }
+    }), /publication was cancelled/);
+    assert(checkedStagedFile);
+    assert.strictEqual(await fs.readFile(target, 'utf8'), '{"ok":true}');
+    assert.deepStrictEqual((await fs.readdir(dir)).filter(name => name.endsWith('.tmp')), []);
+    console.log('4 passed, 0 failed');
   } finally {
     await fs.rm(dir, { recursive: true, force: true });
   }
