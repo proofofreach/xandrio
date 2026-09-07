@@ -45,7 +45,7 @@ async function main() {
     });
 
     await page.goto(`${environment.origin}/?q=normal&sources=opds#/search`, { waitUntil: 'domcontentloaded' });
-    await page.locator('#search-results .result-card').waitFor();
+    await page.locator('#search-results .result-card:not(.skeleton-result)').waitFor();
     assert.deepStrictEqual(await page.locator('[data-search-source][aria-pressed="true"]').evaluateAll(items => items.map(item => item.dataset.searchSource)), ['gutenberg']);
     assert.equal(new URL(page.url()).searchParams.get('sources'), 'gutenberg');
     assert.match(await page.locator('#search-source-message').textContent(), /unavailable here/i);
