@@ -1176,6 +1176,160 @@ async function test(name, fn) {
     assert.strictEqual(record.state, 'ready');
   });
 
+  await test('switching to a retained package aborts obsolete preparation without deleting rendered bytes', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'offline-retained-switch-'));
+    const journal = new GenerationJournal(path.join(dir, 'generation-state.json'));
+    const rendered = path.join(dir, 'already-rendered-chunk.mp3');
+    await fs.writeFile(rendered, 'keep these existing bytes');
+    let retained = false;
+    let started = false;
+    let aborted = false;
+    const cancelled = [];
+    const discarded = [];
+    const generated = [];
+    const coordinator = createOfflinePreparationCoordinator({
+      stateStore: journal,
+      getBookChapters: async bookId => ({ book: { id: bookId }, chapters: [{}, {}] }),
+      preparationIdentity: () => ({ packageVariantKey: retained ? 'prep8:offline' : 'prep11:offline',
+        sourceTextRevision: 'same-input', sourceVoice: 'voice-a' }),
+      chapterStatus: async request => ({ ready: request.packageVariantKey === 'prep8:offline', size: 100 }),
+      prepareChapter: async request => {
+        generated.push(request.packageVariantKey);
+        started = true;
+        await new Promise((resolve, reject) => request.signal.addEventListener('abort', () => {
+          aborted = true;
+          reject(Object.assign(new Error('retired'), { name: 'AbortError' }));
+        }, { once: true }));
+      },
+      cancelRequest: requestId => cancelled.push(requestId),
+      discardRequest: async requestId => discarded.push(requestId)
+    });
+    await coordinator.request('book');
+    await eventually(() => started);
+    const old = await journal.getOfflinePreparation('book');
+    retained = true;
+    await coordinator.request('book');
+    await coordinator.waitForIdle('book');
+    assert(aborted);
+    assert.deepStrictEqual(cancelled, [old.requestId]);
+    assert.deepStrictEqual(discarded, [old.requestId]);
+    assert.deepStrictEqual(generated, ['prep11:offline']);
+    assert.strictEqual(await fs.readFile(rendered, 'utf8'), 'keep these existing bytes');
+    assert.strictEqual((await coordinator.status('book')).state, 'ready');
+  });
+
+  await test('normal completion adopts its newly published catalog in the ready intent', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'offline-catalog-completion-'));
+    const journal = new GenerationJournal(path.join(dir, 'generation-state.json'));
+    let identity = { packageVariantKey: 'same-package', sourceTextRevision: 'same-text', retainedPackageRevision: '' };
+    let generated = 0;
+    let ready = false;
+    const coordinator = createOfflinePreparationCoordinator({
+      stateStore: journal,
+      getBookChapters: async bookId => ({ book: { id: bookId }, chapters: [{}] }),
+      preparationIdentity: () => identity,
+      chapterStatus: async () => ({ ready, size: 10 }),
+      prepareChapter: async () => { generated++; ready = true; },
+      beforeReadyCommit: async ({ beforePublish }) => {
+        await beforePublish();
+        identity = { ...identity, retainedPackageRevision: 'published-catalog' };
+        return identity;
+      }
+    });
+    await coordinator.request('book');
+    await coordinator.waitForIdle('book');
+    assert.strictEqual(generated, 1);
+    assert.strictEqual((await coordinator.status('book')).state, 'ready');
+    assert.strictEqual((await journal.getOfflinePreparation('book')).retainedPackageRevision, 'published-catalog');
+  });
+
+  await test('catalog appearance, removal, and replacement cancel a worker with the same package version', async () => {
+    for (const [initial, replacement] of [['', 'catalog-a'], ['catalog-a', ''], ['catalog-a', 'catalog-b']]) {
+      const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'offline-catalog-switch-'));
+      const journal = new GenerationJournal(path.join(dir, 'generation-state.json'));
+      let revision = initial;
+      let started = false;
+      let oldSignal;
+      const cancelled = [];
+      const coordinator = createOfflinePreparationCoordinator({
+        stateStore: journal,
+        getBookChapters: async bookId => ({ book: { id: bookId }, chapters: [{}] }),
+        preparationIdentity: () => ({ packageVariantKey: 'same-package', sourceTextRevision: 'same-text',
+          retainedPackageRevision: revision }),
+        chapterStatus: async request => ({ ready: request.retainedPackageRevision === replacement, size: 10 }),
+        prepareChapter: async request => {
+          started = true;
+          oldSignal = request.signal;
+          await new Promise((resolve, reject) => request.signal.addEventListener('abort', () => {
+            reject(Object.assign(new Error('retired'), { name: 'AbortError' }));
+          }, { once: true }));
+        },
+        cancelRequest: requestId => cancelled.push(requestId)
+      });
+      await coordinator.request('book');
+      await eventually(() => started);
+      const old = await journal.getOfflinePreparation('book');
+      revision = replacement;
+      await coordinator.request('book');
+      await coordinator.waitForIdle('book');
+      assert(oldSignal.aborted);
+      assert.deepStrictEqual(cancelled, [old.requestId]);
+      const current = await journal.getOfflinePreparation('book');
+      assert.notStrictEqual(current.requestId, old.requestId);
+      assert.strictEqual(current.retainedPackageRevision, replacement);
+      assert.strictEqual(current.state, 'ready');
+    }
+  });
+
+  await test('a narration input change during the last chapter restarts before publishing readiness', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'offline-input-fence-'));
+    const journal = new GenerationJournal(path.join(dir, 'generation-state.json'));
+    let revision = 'first-input';
+    const ready = new Set();
+    const published = [];
+    const coordinator = createOfflinePreparationCoordinator({
+      stateStore: journal,
+      getBookChapters: async bookId => ({ book: { id: bookId }, chapters: [{}] }),
+      preparationIdentity: () => ({ packageVariantKey: 'same-variant', sourceTextRevision: revision }),
+      chapterStatus: async request => ({ ready: ready.has(request.sourceTextRevision), size: 10 }),
+      prepareChapter: async request => { ready.add(request.sourceTextRevision); revision = 'second-input'; },
+      beforeReadyCommit: async ({ record, beforePublish }) => { await beforePublish(); published.push(record.sourceTextRevision); }
+    });
+    await coordinator.request('book');
+    await coordinator.waitForIdle('book');
+    assert.deepStrictEqual([...ready], ['first-input', 'second-input']);
+    assert.deepStrictEqual(published, ['second-input']);
+    assert.strictEqual((await journal.getOfflinePreparation('book')).sourceTextRevision, 'second-input');
+  });
+
+  await test('deletion waits for ready catalog publication and never publishes a ready intent afterwards', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'offline-ready-fence-'));
+    const journal = new GenerationJournal(path.join(dir, 'generation-state.json'));
+    const gate = deferred();
+    let publishing = false;
+    let notified = false;
+    const coordinator = createOfflinePreparationCoordinator({
+      stateStore: journal,
+      getBookChapters: async bookId => ({ book: { id: bookId }, chapters: [{}] }),
+      chapterStatus: async () => ({ ready: true, size: 10 }),
+      prepareChapter: async () => {},
+      beforeReadyCommit: async ({ beforePublish }) => { publishing = true; await gate.promise; await beforePublish(); },
+      onReady: async () => { notified = true; }
+    });
+    await coordinator.request('book');
+    await eventually(() => publishing);
+    assert.notStrictEqual((await journal.getOfflinePreparation('book')).state, 'ready');
+    await coordinator.cancel('book', { remove: true });
+    let idle = false;
+    const idlePromise = coordinator.waitForIdle('book').then(() => { idle = true; });
+    await new Promise(resolve => setTimeout(resolve, 10));
+    assert.strictEqual(idle, false);
+    gate.resolve();
+    await idlePromise;
+    assert.strictEqual(await journal.getOfflinePreparation('book'), null);
+    assert.strictEqual(notified, false);
+  });
+
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);
 })();
