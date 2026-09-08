@@ -80,6 +80,15 @@ const { createOfflineAudioPackage, sourceVariantKey: sourceKeyForPackage } = req
     assert.equal(status.state, 'ready');
     assert.equal(manifest.state, 'ready', JSON.stringify(manifest));
     assert.equal(manifest.packageVariantKey, status.packageVariantKey);
+    const repeated = await Promise.all(Array.from({ length: 3 }, async () => {
+      const response = await fetch(`${origin}/api/offline/preparation/${book.id}`, { method: 'POST', headers });
+      assert.equal(response.status, 202);
+      return response.json();
+    }));
+    for (const item of repeated) {
+      assert.equal(item.state, 'ready');
+      assert.equal(item.bytesTotal, originalBytes.length * 2);
+    }
     assert.equal(manifest.chapters[0].artifactId, originalHash);
     assert.equal(manifest.chapters[0].provenance, 'legacy-unverified');
     assert.equal(manifest.chapters[1].state, 'empty');

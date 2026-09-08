@@ -1218,6 +1218,56 @@ async function test(name, fn) {
     assert.strictEqual((await coordinator.status('book')).state, 'ready');
   });
 
+  await test('ready revalidation preserves the complete byte count until every chapter is checked', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'offline-ready-bytes-'));
+    const journal = new GenerationJournal(path.join(dir, 'generation-state.json'));
+    await journal.putOfflinePreparation({ bookId: 'book', totalChapters: 2, requestId: 'ready',
+      state: 'ready', nextChapter: 2, readyChapters: 2, preparedBytes: 300 });
+    const gate = deferred();
+    let checkingLast = false;
+    const coordinator = createOfflinePreparationCoordinator({
+      stateStore: journal,
+      getBookChapters: async bookId => ({ book: { id: bookId }, chapters: [{}, {}] }),
+      chapterStatus: async ({ chapterIndex }) => {
+        if (chapterIndex === 1) { checkingLast = true; await gate.promise; }
+        return { ready: true, size: chapterIndex === 0 ? 100 : 200 };
+      },
+      prepareChapter: async () => { throw new Error('Ready bytes must not be generated again'); }
+    });
+    await coordinator.request('book');
+    await eventually(() => checkingLast);
+    assert.strictEqual((await coordinator.status('book')).bytesTotal, 300);
+    gate.resolve();
+    await coordinator.waitForIdle('book');
+    assert.strictEqual((await coordinator.status('book')).bytesTotal, 300);
+  });
+
+  await test('a verified retained package updates owners and exact bytes without another chapter scan', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'offline-retained-admission-'));
+    const journal = new GenerationJournal(path.join(dir, 'generation-state.json'));
+    const identity = { packageVariantKey: 'same-package', sourceTextRevision: 'same-text',
+      retainedPackageRevision: 'verified-catalog', retainedPackageBytes: 300, retained: true };
+    await journal.putOfflinePreparation({ ...identity, bookId: 'book', totalChapters: 2, requestId: 'ready',
+      state: 'ready', nextChapter: 2, readyChapters: 2, preparedBytes: 1, owners: ['original'] });
+    let inspections = 0;
+    const coordinator = createOfflinePreparationCoordinator({
+      stateStore: journal,
+      getBookChapters: async bookId => ({ book: { id: bookId }, chapters: [{}, {}] }),
+      preparationIdentity: () => identity,
+      chapterStatus: async () => { inspections++; return { ready: true, size: 150 }; },
+      prepareChapter: async () => { throw new Error('Retained audio must not be generated again'); }
+    });
+    const status = await coordinator.request('book', { ownerId: 'new-device' });
+    await coordinator.waitForIdle('book');
+    assert.strictEqual(status.state, 'ready');
+    assert.strictEqual(status.bytesTotal, 300);
+    assert.strictEqual(inspections, 0);
+    const record = await journal.getOfflinePreparation('book');
+    assert.strictEqual(record.requestId, 'ready');
+    assert.deepStrictEqual(record.owners, ['original', 'new-device']);
+    assert.strictEqual(record.preparedBytes, 300);
+  });
+
   await test('normal completion adopts its newly published catalog in the ready intent', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'offline-catalog-completion-'));
     const journal = new GenerationJournal(path.join(dir, 'generation-state.json'));
