@@ -1,4 +1,4 @@
-import { apiGet, getCurrentUserId } from '../api.js';
+import { apiSend, apiGet, getCurrentUserId } from '../api.js';
 import { readJSON, writeJSON } from '../util/storage.js';
 
 const jobs = new Map();
@@ -7,7 +7,7 @@ let options = {};
 let scope;
 let polling = false;
 let timer;
-const terminal = job => job.status === 'complete' || job.status === 'failed';
+const terminal = job => job.status === 'complete' || job.status === 'failed' || job.status === 'cancelled';
 const storageKey = () => `xandrio-import-dismissed:${getCurrentUserId()}`;
 const dismissed = () => {
   const stored = readJSON(storageKey(), []);
@@ -22,7 +22,16 @@ function render(job) {
     card.className = 'import-activity-card download-progress-panel';
     card.dataset.importJob = job.jobId;
     card.tabIndex = -1;
-    card.innerHTML = '<div><strong data-import-title></strong><p data-import-label role="status"></p><p data-import-detail></p></div><div class="import-activity-actions"><button type="button" class="btn-secondary" data-import-open hidden>Open book</button><button type="button" class="btn-secondary" data-import-dismiss hidden>Dismiss</button></div>';
+    card.innerHTML = '<div><strong data-import-title></strong><p data-import-label role="status"></p><p data-import-detail></p></div><div class="import-activity-actions"><button type="button" class="btn-secondary" data-import-cancel hidden>Cancel</button><button type="button" class="btn-secondary" data-import-open hidden>Open book</button><button type="button" class="btn-secondary" data-import-dismiss hidden>Dismiss</button></div>';
+    card.querySelector('[data-import-cancel]').addEventListener('click', async event => {
+      const button = event.currentTarget;
+      button.disabled = true;
+      try { merge(await apiSend('POST', `/api/download/${encodeURIComponent(card.dataset.importJob)}/cancel`)); }
+      catch (error) {
+        card.querySelector('[data-import-detail]').textContent = error.message || 'Could not cancel. Try again.';
+        button.disabled = false;
+      }
+    });
     card.querySelector('[data-import-open]').addEventListener('click', async () => {
       const current = jobs.get(card.dataset.importJob);
       const id = current?.result?.bookId || current?.error?.existingBookId;
@@ -45,18 +54,22 @@ function render(job) {
   const done = terminal(job);
   card.classList.toggle('download-progress-panel', !done);
   const duplicate = Boolean(job.error?.existingBookId);
-  const label = job.status === 'complete' ? 'Added to library'
+  const label = job.status === 'cancelled' ? 'Import cancelled' : job.cancellationRequested ? 'Cancelling…' : job.status === 'complete' ? 'Added to library'
     : duplicate ? 'Already in your library'
       : job.status === 'failed' ? 'Could not add book'
         : job.label || 'Connecting to source…';
   const labelNode = card.querySelector('[data-import-label]');
   if (labelNode.textContent !== label) labelNode.textContent = label;
-  card.querySelector('[data-import-detail]').textContent = job.status === 'complete'
+  card.querySelector('[data-import-detail]').textContent = job.status === 'cancelled' ? 'You can add this book again from Search.' : job.status === 'complete'
     ? job.result?.usedAlternative ? 'A different edition was imported because the selected version could not be used reliably.' : ''
     : job.status === 'failed' ? duplicate ? 'Open the existing book to continue.' : job.error?.suggestion || job.error?.error || 'Try again from Search.'
       : job.detail || 'You can keep browsing while this book is added.';
   card.querySelector('[data-import-open]').hidden = !(job.result?.bookId || job.error?.existingBookId);
   card.querySelector('[data-import-dismiss]').hidden = !done;
+  const cancel = card.querySelector('[data-import-cancel]');
+  cancel.hidden = (!job.canCancel && !job.cancellationRequested) || done;
+  cancel.disabled = Boolean(job.cancellationRequested);
+  cancel.textContent = job.cancellationRequested ? 'Cancelling…' : 'Cancel';
   card.dataset.status = job.status;
   region.hidden = false;
   return card;
@@ -68,6 +81,7 @@ function merge(job) {
   const next = { ...previous, ...job };
   jobs.set(job.jobId, next);
   render(next);
+  document.dispatchEvent(new Event('xandrio:importchange'));
   if (next.status === 'complete' && previous?.status !== 'complete') options.loadLibrary?.().catch(() => {});
 }
 
@@ -112,9 +126,10 @@ export function beginImport(result) {
   let leftSearch = false;
   const onView = event => { if (event.detail?.view !== 'search') leftSearch = true; };
   document.addEventListener('xandrio:viewchange', onView);
-  const job = { jobId: id, title: result.title, status: 'running', label: 'Connecting to source…' };
+  const job = { jobId: id, title: result.title, requestHash: result.hash || null, status: 'running', label: 'Connecting to source…' };
   jobs.set(id, job);
   render(job)?.focus({ preventScroll: true });
+  document.dispatchEvent(new Event('xandrio:importchange'));
   const stop = () => document.removeEventListener('xandrio:viewchange', onView);
   return {
     attach(jobId) {
@@ -122,8 +137,10 @@ export function beginImport(result) {
       const card = [...(region?.children || [])].find(node => node.dataset.importJob === id);
       jobs.delete(id);
       id = jobId;
-      if (card) card.dataset.importJob = id;
-      merge({ ...current, jobId: id });
+      const existing = jobs.get(id);
+      if (existing) card?.remove();
+      else if (card) card.dataset.importJob = id;
+      merge({ ...current, ...existing, jobId: id });
     },
     render(update) { if (getCurrentUserId() === account) merge({ ...update, jobId: id }); },
     complete(result) { if (getCurrentUserId() === account) merge({ jobId: id, status: 'complete', result }); stop(); },
@@ -131,4 +148,8 @@ export function beginImport(result) {
     stop,
     shouldOpen() { return getCurrentUserId() === account && !leftSearch && /^#\/search(?:[/?#]|$)/.test(location.hash); }
   };
+}
+
+export function activeImport(hash) {
+  return hash ? [...jobs.values()].find(job => job.requestHash === hash && !terminal(job)) : null;
 }

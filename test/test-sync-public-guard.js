@@ -30,6 +30,42 @@ function invoke(...extra) {
 
 const GUARD = /only 'main' may publish/;
 
+check('merged snapshots preserve final content, binary files, deletions, and private exclusions', () => {
+  const result = spawnSync(process.execPath, ['--input-type=module', '-e', `
+    import assert from 'node:assert/strict';
+    import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
+    import { tmpdir } from 'node:os';
+    import { join } from 'node:path';
+    import { execFileSync } from 'node:child_process';
+    import { stagePublicSnapshot } from ${JSON.stringify(require('node:url').pathToFileURL(resolve(__dirname, '../scripts/release/public-snapshot.mjs')).href)};
+    const repository = mkdtempSync(join(tmpdir(), 'public-snapshot-test-'));
+    const git = (...args) => execFileSync('git', args, { cwd: repository, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+    try {
+      git('init'); git('config', 'user.name', 'Test'); git('config', 'user.email', 'test@example.invalid');
+      writeFileSync(join(repository, 'shared.txt'), 'base');
+      writeFileSync(join(repository, 'deleted.txt'), 'remove');
+      writeFileSync(join(repository, 'AGENTS.md'), 'private instructions');
+      git('add', '.'); git('commit', '-m', 'base');
+      const base = git('rev-parse', 'HEAD');
+      writeFileSync(join(repository, 'shared.txt'), 'resolved merge');
+      writeFileSync(join(repository, 'binary.dat'), Buffer.from([0, 255, 1, 0]));
+      rmSync(join(repository, 'deleted.txt'));
+      writeFileSync(join(repository, 'AGENTS.md'), 'new private instructions');
+      git('add', '.'); git('commit', '-m', 'source');
+      const source = git('rev-parse', 'HEAD');
+      git('checkout', '-b', 'public-candidate', base);
+      git('rm', 'AGENTS.md'); git('commit', '-m', 'public exclusion');
+      stagePublicSnapshot({ repository, base, source, excludedPaths: ['AGENTS.md'] });
+      assert.equal(readFileSync(join(repository, 'shared.txt'), 'utf8'), 'resolved merge');
+      assert.deepEqual(readFileSync(join(repository, 'binary.dat')), Buffer.from([0, 255, 1, 0]));
+      assert.equal(existsSync(join(repository, 'deleted.txt')), false);
+      assert.equal(existsSync(join(repository, 'AGENTS.md')), false);
+      assert.equal(git('diff', '--cached', '--name-only', source, '--', '.', ':(exclude)AGENTS.md'), '');
+    } finally { rmSync(repository, { recursive: true, force: true }); }
+  `], { encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr);
+});
+
 check('refuses to publish from a branch other than main', () => {
   const result = invoke('--source', 'feat/anything');
   assert.notEqual(result.status, 0);

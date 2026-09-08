@@ -1452,9 +1452,16 @@ export function initSettings(options = {}) {
   function loadLanguagePref() {
     const saved = readText('xandrio_default_language', 'en');
     settingsLanguage.value = saved;
+    updateLanguageSummary();
+  }
+
+  function updateLanguageSummary() {
+    const summary = document.getElementById('settings-language-summary');
+    if (summary) summary.textContent = settingsLanguage.selectedOptions[0]?.textContent || '';
   }
 
   settingsLanguage.addEventListener('change', () => {
+    updateLanguageSummary();
     writeText('xandrio_default_language', settingsLanguage.value);
     // Sync with search view language filter if it exists
     const searchLangFilter = document.getElementById('language-filter');
