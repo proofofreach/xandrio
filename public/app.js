@@ -5,6 +5,7 @@ import { initLogin, showLoginGate } from './js/views/login.js';
 import { initRouter, navigateTo, syncPlayerHash, clearSheetStack } from './js/router.js';
 import { formatDuration, escapeHTML, cleanDisplayText, isIOSLike, needsReliablePlayback, coverPlaceholderSrc } from './js/util/format.js';
 import { showToast } from './js/ui/toast.js';
+import { initCoverImages } from './js/ui/cover-images.js';
 import { initKeys, onActivate } from './js/ui/keys.js';
 import { registerSheet } from './js/ui/sheets.js';
 import { initBookmarks, renderBookmarksSection, addBookmarkAtCurrentPosition } from './js/features/bookmarks.js';
@@ -874,6 +875,7 @@ function applyPlaybackSelection(selection) {
 
 // Initialize when DOM is ready
 document.addEventListener('DOMContentLoaded', async () => {
+  initCoverImages();
   console.log('Xandrio initialized');
   const deployment = await initDeploymentGuard({
     onChange: updated => {
