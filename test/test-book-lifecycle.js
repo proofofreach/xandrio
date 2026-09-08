@@ -147,6 +147,7 @@ function metadataHarness(options = {}) {
         filename: options.filename,
         path: options.bookPath || '/cache/book_1.epub',
         chapterStructureKey: options.chapterStructureKey,
+        importValidation: options.importValidation,
         chapterCount: options.chapterCount,
         totalDuration: options.totalDuration,
         chapterDurations: options.chapterDurations,
@@ -163,8 +164,11 @@ function metadataHarness(options = {}) {
       owner: { books: { book_1: { chapterIndex: 3, chapterStructureKey: options.chapterStructureKey } } }
     }
   };
+  files.transitions = {};
+  files.bookmarks = { users: { owner: { book_1: [{ chapterIndex: 0, timestamp: 12, chapterStructureKey: options.chapterStructureKey }] } } };
   const operations = [];
   let booksUpdateCount = 0;
+  let transitionFailuresRemaining = options.transitionFailures || 0;
   let positionFailuresRemaining = options.positionFailures ??
     (options.failPositionsWrite ? Number.POSITIVE_INFINITY : 0);
   let coverFailuresRemaining = options.coverFailures ??
@@ -182,9 +186,11 @@ function metadataHarness(options = {}) {
     const result = await mutator(working);
     if (
       (file === 'books' && options.failBookWrite) ||
-      (file === 'positions' && positionFailuresRemaining > 0)
+      (file === 'positions' && positionFailuresRemaining > 0) ||
+      (file === 'transitions' && transitionFailuresRemaining > 0)
     ) {
       if (file === 'positions') positionFailuresRemaining--;
+      if (file === 'transitions') transitionFailuresRemaining--;
       throw new Error('permission denied');
     }
     if (result !== skipSave) files[file] = working;
@@ -195,6 +201,8 @@ function metadataHarness(options = {}) {
   const service = createBookMetadataRefreshService({
     booksFile: 'books',
     positionsFile: 'positions',
+    transitionsFile: 'transitions',
+    bookmarksFile: 'bookmarks',
     cacheDir: '/cache',
     path,
     loadJSON: async file => clone(files[file]),
@@ -246,7 +254,7 @@ function metadataHarness(options = {}) {
     // Deliberately minimal test double; production uses chapter-utils.stripHTML.
     // codeql[js/incomplete-multi-character-sanitization]
     cleanBookDescription: value => value.replace(/<[^>]+>/g, ''),
-    chapterStructureKey: () => options.refreshedStructureKey || 'structure-new',
+    chapterStructureKey: options.structureKey || (() => options.refreshedStructureKey || 'structure-new'),
     bookRecordOpenLibraryFields: identity => ({
       openLibraryWorkKey: identity.openLibraryWorkKey
     }),
@@ -269,10 +277,10 @@ function metadataHarness(options = {}) {
       operations.push(`remove-positions:${bookId}`);
       for (const user of Object.values(positions)) delete user.books?.[bookId];
     },
-    setBookPositionsStructureKey: (positions, bookId, structureKey) => {
+    setBookPositionsStructureKey: (positions, bookId, structureKey, previousStructureKey) => {
       operations.push(`set-structure:${bookId}:${structureKey}`);
       for (const user of Object.values(positions)) {
-        if (user.books?.[bookId]) user.books[bookId].chapterStructureKey = structureKey;
+        if (user.books?.[bookId] && (previousStructureKey === undefined || user.books[bookId].chapterStructureKey === previousStructureKey)) user.books[bookId].chapterStructureKey = structureKey;
       }
     },
     withBookStateLock: async (bookId, operation) => {
@@ -626,6 +634,90 @@ function metadataHarness(options = {}) {
     assert.strictEqual(harness.files.positions.owner.books.book_1.chapterIndex, 3);
     assert(!harness.operations.some(operation => operation.startsWith('invalidate-audio:')));
     assert(!harness.operations.includes('remove-positions:book_1'));
+  });
+
+  function relabelHarness(extra = {}) {
+    const structureKey = require('../lib/chapter-structure').chapterStructureKey;
+    const previous = [{ title: 'Wrong ancestor — Essay', type: 'content', text: 'Exact narration remains here.', estimatedDuration: 30 }];
+    const next = [{ ...previous[0], title: 'Essay' }];
+    const harness = metadataHarness({
+      structureKey, chapterStructureKey: structureKey(previous), chapterCount: 1,
+      chapterDurations: [30], audioGenerationState: 'ready',
+      refreshedChapters: next, refreshedStructureKey: structureKey(next),
+      importValidation: { content: { extractionResult: { chapters: previous } } },
+      ...extra
+    });
+    harness.files.positions.owner.books.book_1 = { chapterIndex: 0, timestamp: 12, chunkIndex: 2, chapterStructureKey: structureKey(previous) };
+    return { ...harness, previous, next, structureKey };
+  }
+
+  await test('chapter relabeling preserves audio and exact listening state', async () => {
+    const h = relabelHarness();
+    h.files.positions.stale = { books: { book_1: { chapterIndex: 8, timestamp: 90, chapterStructureKey: 'too-old-key' } } };
+    h.files.bookmarks.users.stale = { book_1: [{ chapterIndex: 8, timestamp: 90, chapterStructureKey: 'too-old-key' }] };
+    const result = await h.service.reconcileChapterStructure('book_1', h.next);
+    assert.strictEqual(result.status, 'relabeled');
+    assert.strictEqual(h.files.positions.stale.books.book_1.chapterStructureKey, 'too-old-key');
+    assert.strictEqual(h.files.bookmarks.users.stale.book_1[0].chapterStructureKey, 'too-old-key');
+    assert.deepStrictEqual(h.files.books.book_1.chapterDurations, [30]);
+    assert.strictEqual(h.files.books.book_1.audioGenerationState, 'ready');
+    assert.deepStrictEqual(h.files.positions.owner.books.book_1, { chapterIndex: 0, timestamp: 12, chunkIndex: 2, chapterStructureKey: h.structureKey(h.next) });
+    assert.strictEqual(h.files.bookmarks.users.owner.book_1[0].timestamp, 12);
+    assert.strictEqual(h.files.bookmarks.users.owner.book_1[0].chapterStructureKey, h.structureKey(h.next));
+    const mapped = require('../lib/chapter-transition-state').mapStateWriteToCurrent({
+      bookId: 'book_1', suppliedStructureKey: h.structureKey(h.previous), book: h.files.books.book_1,
+      transitions: h.files.transitions, state: { chapterIndex: 0, timestamp: 18, chunkIndex: 3 }
+    });
+    assert.deepStrictEqual(mapped.state, { chapterIndex: 0, timestamp: 18, chunkIndex: 3, chapterStructureKey: h.structureKey(h.next) });
+    assert(!h.operations.some(op => op.startsWith('invalidate-audio:') || op.startsWith('remove-positions:')));
+  });
+
+  await test('chapter relabeling retries interrupted position persistence on the next read', async () => {
+    const h = relabelHarness({ positionFailures: 1 });
+    await assert.rejects(h.service.reconcileChapterStructure('book_1', h.next), /permission denied/);
+    assert(h.files.books.book_1.metadataRefreshReconciliation.positions);
+    await h.service.reconcileChapterStructure('book_1', h.next);
+    assert.strictEqual(h.files.positions.owner.books.book_1.timestamp, 12);
+    assert.strictEqual(h.files.positions.owner.books.book_1.chapterStructureKey, h.structureKey(h.next));
+    assert(!h.files.books.book_1.metadataRefreshReconciliation);
+  });
+
+  await test('a pending relabel maps old-device writes before transition persistence recovers', async () => {
+    const h = relabelHarness({ transitionFailures: 1 });
+    await assert.rejects(h.service.reconcileChapterStructure('book_1', h.next), /permission denied/);
+    const mapped = require('../lib/chapter-transition-state').mapStateWriteToCurrent({
+      bookId: 'book_1', suppliedStructureKey: h.structureKey(h.previous), book: h.files.books.book_1,
+      transitions: h.files.transitions, state: { chapterIndex: 0, timestamp: 18, chunkIndex: 3 }
+    });
+    assert.deepStrictEqual(mapped.state, { chapterIndex: 0, timestamp: 18, chunkIndex: 3, chapterStructureKey: h.structureKey(h.next) });
+    await h.service.reconcileChapterStructure('book_1', h.next);
+    assert(h.files.transitions.book_1.transition.metadataOnly);
+    assert(!h.files.books.book_1.metadataRefreshReconciliation);
+  });
+
+  await test('metadata refresh also preserves a verified label-only change', async () => {
+    const h = relabelHarness();
+    await h.service.refreshBook('book_1');
+    assert.strictEqual(h.files.books.book_1.chapter1Ready, true);
+    assert.strictEqual(h.files.books.book_1.preloadedThrough, 4);
+    assert.deepStrictEqual(h.files.books.book_1.chapterDurations, [30]);
+    assert.strictEqual(h.files.positions.owner.books.book_1.timestamp, 12);
+    assert(!h.operations.some(op => op.startsWith('invalidate-audio:') || op.startsWith('remove-positions:')));
+  });
+
+  await test('matching chapter count does not preserve changed narration', async () => {
+    const h = relabelHarness();
+    const next = [{ ...h.next[0], text: 'Different narration.' }];
+    const result = await h.service.reconcileChapterStructure('book_1', next);
+    assert.strictEqual(result.status, STRUCTURE_RECONCILE_RESULT.RESEGMENTED);
+    assert(h.operations.some(op => op.startsWith('invalidate-audio:')));
+  });
+
+  await test('an unrelated import snapshot cannot certify a metadata-only change', async () => {
+    const h = relabelHarness();
+    h.files.books.book_1.importValidation.content.extractionResult.chapters[0].title = 'Unrelated';
+    const result = await h.service.reconcileChapterStructure('book_1', h.next);
+    assert.strictEqual(result.status, STRUCTURE_RECONCILE_RESULT.RESEGMENTED);
   });
 
   await test('read-time re-segmentation drops positions instead of moving the reader', async () => {

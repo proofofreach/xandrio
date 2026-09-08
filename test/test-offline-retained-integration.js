@@ -23,7 +23,7 @@ const { createOfflineAudioPackage, sourceVariantKey: sourceKeyForPackage } = req
     { text: 'Last chapter', title: 'Last' }];
   await fs.writeFile(book.path, 'source identity fixture');
   await fs.utimes(book.path, new Date(0), new Date(0));
-  await fs.writeFile(book.path.replace('.epub', '.chapters.json'), JSON.stringify({ _cacheVersion: 28, chapters }));
+  await fs.writeFile(book.path.replace('.epub', '.chapters.json'), JSON.stringify({ _cacheVersion: 29, chapters }));
   await fs.writeFile(path.join(data, 'books.json'), JSON.stringify({ [book.id]: book }));
   await fs.writeFile(path.join(data, 'settings.json'), JSON.stringify({ voice: 'kokoro:am_onyx' }));
   const sourceVariantKey = 'kokoro:am_onyx:profilequality:chunk420:fmtwav:outmp3:prep8:audio6:br160k:pause350';

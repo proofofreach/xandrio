@@ -3636,6 +3636,8 @@ app.get('/api/offline/deletions', async (req, res) => {
 const bookMetadataRefreshService = createBookMetadataRefreshService({
   booksFile: BOOKS_FILE,
   positionsFile: POSITIONS_FILE,
+  transitionsFile: CHAPTER_TRANSITIONS_FILE,
+  bookmarksFile: BOOKMARKS_FILE,
   cacheDir: CACHE_DIR,
   path,
   loadJSON,
@@ -3674,8 +3676,8 @@ const bookMetadataRefreshService = createBookMetadataRefreshService({
     invalidateCache: invalidateChapterAudioCache
   }),
   removeBookPositions: (positions, bookId) => removeBookPositions(positions, bookId),
-  setBookPositionsStructureKey: (positions, bookId, structureKey) =>
-    setBookPositionsStructureKey(positions, bookId, structureKey),
+  setBookPositionsStructureKey: (positions, bookId, structureKey, previousStructureKey) =>
+    setBookPositionsStructureKey(positions, bookId, structureKey, previousStructureKey),
   withBookStateLock: (bookId, operation) =>
     bookMutationLocks.withBookStateLock(bookId, operation)
 });

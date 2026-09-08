@@ -168,6 +168,18 @@ section('4b. chapter-structure migration');
   assertEqual(positions.users.alice.bookB.chapterStructureKey, undefined, 'Does not stamp unrelated books');
 })();
 
+(() => {
+  const positions = { users: {
+    alice: { bookA: { timestamp: 12, chapterStructureKey: 'previous' } },
+    bob: { bookA: { timestamp: 90, chapterStructureKey: 'older' } },
+    carol: { bookA: { timestamp: 50 } }
+  } };
+  state.setBookPositionsStructureKey(positions, 'bookA', 'current', 'previous');
+  assertEqual(positions.users.alice.bookA.chapterStructureKey, 'current', 'Relabels only the certified previous chapter structure');
+  assertEqual(positions.users.bob.bookA.chapterStructureKey, 'older', 'Leaves unrelated stale chapter structures unverified');
+  assertEqual(positions.users.carol.bookA.chapterStructureKey, undefined, 'Does not certify an unversioned position during relabeling');
+})();
+
 section('5. user-scoped position reads');
 
 (() => {

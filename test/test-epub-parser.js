@@ -309,7 +309,51 @@ async function createScannedChapterBundleFixture() {
   return { directory, epubPath };
 }
 
+async function createAnthologyHierarchyFixture() {
+  const fixture = await createFixture();
+  const root = path.join(fixture.directory, 'book');
+  const oebps = path.join(root, 'OEBPS');
+  const sections = [
+    ['intro', 'INTRODUCTION', 0], ['intro-two', 'II', 1], ['intro-three', 'III', 1],
+    ['heart', 'THE HUMAN HEART', 0], ['estimate', 'AN ESTIMATE OF MAN', 1],
+    ['destiny', 'QUESTIONS OF LIFE AND DESTINY', 0], ['fortune', 'ON MASTERING FORTUNE', 1],
+    ['war', 'THE ART OF WAR', 0], ['war-two', 'II', 1],
+    ['notes', 'SOURCES AND NOTES', 0], ['heart-notes', 'THE HUMAN HEART', 1],
+    ['destiny-notes', 'QUESTIONS OF LIFE AND DESTINY', 1]
+  ];
+  let nav = '', open = 0;
+  for (const [id, title, level] of sections) {
+    while (open > level) { nav += '</navPoint>'; open--; }
+    nav += `<navPoint id="${id}"><navLabel><text>${title}</text></navLabel><content src="chapter%20one.xhtml#${id}"/>`;
+    open++;
+  }
+  nav += '</navPoint>'.repeat(open);
+  await fs.writeFile(path.join(oebps, 'toc.ncx'), `<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/"><navMap>${nav}</navMap></ncx>`);
+  const html = sections.map(([id, title]) => `<h1 id="${id}">${title}</h1><p>${`The ${id} passage contains its own complete text. `.repeat(id.endsWith('notes') || id.includes('two') || ['estimate', 'fortune'].includes(id) ? 20 : 2)}</p>`).join('');
+  await fs.writeFile(path.join(oebps, 'chapter one.xhtml'), `<html><body>${html}</body></html>`);
+  execFileSync('zip', ['-qr9', fixture.epubPath, 'META-INF', 'OEBPS'], { cwd: root });
+  return fixture;
+}
+
 (async () => {
+  const anthology = await createAnthologyHierarchyFixture();
+  try {
+    const chapters = await extractChapters(anthology.epubPath);
+    const byText = id => chapters.find(ch => ch.text.includes(`The ${id} passage`));
+    assert.equal(byText('intro-two').title, 'Introduction — II');
+    assert.equal(byText('intro-three').title, 'Introduction — III');
+    assert.equal(byText('war-two').title, 'The Art Of War — II');
+    assert.equal(byText('destiny').title, 'Questions Of Life And Destiny');
+    assert.equal(byText('destiny-notes').title, 'Sources And Notes — Questions Of Life And Destiny');
+    assert.equal(byText('intro-two').type, 'frontmatter');
+    assert.equal(byText('heart-notes').type, 'backmatter');
+    assert.equal(byText('destiny-notes').type, 'backmatter');
+    assert.equal(chapters.filter(ch => ch.text.includes('The destiny passage')).length, 1);
+    console.log('Anthology TOC hierarchy regression: 9 passed, 0 failed');
+  } finally {
+    await fs.rm(anthology.directory, { recursive: true, force: true });
+  }
+
   const { directory, epubPath } = await createFixture();
   try {
     const epub = await parseEpub(epubPath);
