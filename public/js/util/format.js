@@ -148,5 +148,5 @@ export function coverImageHTML(book, className = '', alt = '') {
   const src = hasCover
     ? (book?.coverUrl || `${API_BASE}/api/cover/${encodeURIComponent(id)}`)
     : placeholder;
-  return `<img src="${safeAttr(src)}" alt="${safeAttr(alt)}" class="${className}" loading="lazy" onerror="this.onerror=null;this.src='${placeholder}'" />`;
+  return `<img src="${safeAttr(src)}" alt="${safeAttr(alt)}" class="${className}" loading="lazy" data-cover-fallback="${safeAttr(placeholder)}" />`;
 }
