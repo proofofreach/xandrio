@@ -329,7 +329,7 @@ async function createAnthologyHierarchyFixture() {
   }
   nav += '</navPoint>'.repeat(open);
   await fs.writeFile(path.join(oebps, 'toc.ncx'), `<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/"><navMap>${nav}</navMap></ncx>`);
-  const html = sections.map(([id, title]) => `<h1 id="${id}">${title}</h1><p>${`The ${id} passage contains its own complete text. `.repeat(id.endsWith('notes') || id.includes('two') || ['estimate', 'fortune'].includes(id) ? 20 : 2)}</p>`).join('');
+  const html = sections.map(([id, title]) => `<h1 id="${id}">${title}</h1><p>${`The ${id} passage contains its own complete text. `.repeat(id.endsWith('notes') ? 1 : id.includes('two') || ['estimate', 'fortune'].includes(id) ? 20 : 2)}</p>`).join('');
   await fs.writeFile(path.join(oebps, 'chapter one.xhtml'), `<html><body>${html}</body></html>`);
   execFileSync('zip', ['-qr9', fixture.epubPath, 'META-INF', 'OEBPS'], { cwd: root });
   return fixture;
@@ -338,7 +338,7 @@ async function createAnthologyHierarchyFixture() {
 (async () => {
   const anthology = await createAnthologyHierarchyFixture();
   try {
-    const chapters = await extractChapters(anthology.epubPath);
+    const chapters = await createBookDocument({ log: { log() {}, error() {} } }).extractChapters(anthology.epubPath);
     const byText = id => chapters.find(ch => ch.text.includes(`The ${id} passage`));
     assert.equal(byText('intro-two').title, 'Introduction — II');
     assert.equal(byText('intro-three').title, 'Introduction — III');

@@ -27,4 +27,5 @@ Independent reviewer in a fresh context.
 - Accepted-verified: metadata refresh still reset `chapter1Ready` and `preloadedThrough`. Move those fields into the actual structure-reset branch and test preservation during relabeling.
 - Judgment-call: retain conservative invalidation when the historical baseline cannot prove identity. Do not introduce a second cache-based proof mechanism in this repair.
 - Accepted-verified: relabeling must only stamp records carrying the certified previous structure key. Keep older and unversioned positions/bookmarks stale; test both paths.
-- Final verdict: ship. Both verified findings were corrected and the reviewer ratified the amendments.
+- Accepted-verified: shared metadata normalization reclassified short source-note headings after extraction. Preserve explicit hierarchical TOC front/back-matter metadata through normalization, and run the fixture through the complete document pipeline with short note sections.
+- Amended full document pipeline verified on the target EPUB: 190 identical chapter texts and durations, including all short source-note labels.
