@@ -335,7 +335,72 @@ async function createAnthologyHierarchyFixture() {
   return fixture;
 }
 
+async function createPageScanFixture({ numbered = true, authoredToc = false, pageMarkers = true, roman = false } = {}) {
+  const fixture = await createFixture();
+  const root = path.join(fixture.directory, 'book');
+  const oebps = path.join(root, 'OEBPS');
+  const prose = '<p>' + 'Continuous narrative with no omitted words. '.repeat(40) + '</p>';
+  const page = (id, body) => (pageMarkers ? `<div class="newpage" id="page-${id}"/>` : '') + body;
+  const number = value => numbered ? `<p>${roman ? { One: 'I', Two: 'II', Three: 'III', Four: 'IV' }[value] : value}</p>` : '';
+  const documents = {
+    front: '<p>Dedication to the readers of this book.</p>' + prose,
+    contents: '<p>Contents</p><p>Opening 1</p><p>Next 10</p><p>Last 20</p>',
+    scan1: page(1, '<p>Introduction:</p><p>A short preface</p>' + prose) +
+      page(2, '<p>Part 1</p><p>First experiments</p>') +
+      page(3, (roman ? number('One') : '') + '<p>The first experiment</p>' + prose) +
+      page(4, '<p>The first experiment</p><p>4</p>' + prose) +
+      page(10, number('Two') + '<p>The next experiment</p>' + prose) +
+      page(11, '<p>The next experiment</p><p>11</p>' + prose),
+    scan2: prose + page(20, number('Three') + '<p>The later experiment</p>' + prose) +
+      page(21, '<p>Part 2</p><p>Final experiments</p>') +
+      page(30, number('Four') + '<p>The last experiment</p>' + prose) +
+      page(40, '<p>Glossary</p>' + prose) + page(41, '<p>Glossary</p>' + prose),
+    back: ''
+  };
+  const ids = Object.keys(documents);
+  await fs.writeFile(path.join(oebps, 'content.opf'), `<package version="2.0" xmlns="http://www.idpf.org/2007/opf"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>Page scan</dc:title><dc:language>en</dc:language></metadata><manifest>${ids.map(id => `<item id="${id}" href="${id}.xhtml" media-type="application/xhtml+xml"/>`).join('')}<item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/></manifest><spine toc="ncx">${ids.map(id => `<itemref idref="${id}"/>`).join('')}</spine></package>`);
+  const navigation = authoredToc
+    ? [['front', 'Preface'], ['scan1', 'Chapter 1: The authored section'], ['scan2', 'Chapter 2: The authored ending']]
+    : [['front', 'Pages'], ['contents', 'Table of Contents'], ['back', 'Back Cover']];
+  await fs.writeFile(path.join(oebps, 'toc.ncx'), `<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/"><navMap>${navigation.map(([id, title], i) => `<navPoint id="nav-${i}" playOrder="${i + 1}"><navLabel><text>${title}</text></navLabel><content src="${id}.xhtml"/></navPoint>`).join('')}</navMap></ncx>`);
+  for (const [id, html] of Object.entries(documents)) {
+    await fs.writeFile(path.join(oebps, `${id}.xhtml`), `<html><body>${html}</body></html>`);
+  }
+  execFileSync('zip', ['-qr9', fixture.epubPath, 'META-INF', 'OEBPS'], { cwd: root });
+  return { ...fixture, documents };
+}
+
 (async () => {
+  for (const options of [{}, { roman: true }, { numbered: false }, { authoredToc: true }, { pageMarkers: false }]) {
+    const fixture = await createPageScanFixture(options);
+    try {
+      const chapters = await createBookDocument({ log: { log() {}, error() {} } }).extractChapters(fixture.epubPath);
+      if (options.numbered === false || options.authoredToc || options.pageMarkers === false) {
+        assert(!chapters.some(ch => ch.title === 'Chapter 3: The later experiment'),
+          'page recovery requires page markers and a numbered sequence, and preserves authored navigation');
+      } else {
+        for (const title of ['Chapter 1: The first experiment', 'Chapter 2: The next experiment',
+          'Chapter 3: The later experiment', 'Chapter 4: The last experiment']) {
+          assert(chapters.some(ch => ch.title === title), `recover ${title} from printed page headings`);
+        }
+        assert.equal(chapters.filter(ch => ch.title === 'Glossary').length, 1,
+          'repeated running headers are not new chapters');
+        assert.equal(chapters.find(ch => ch.title === 'Chapter 2: The next experiment').text.split('Continuous narrative').length - 1, 120,
+          'a chapter retains its continuation across physical spine files');
+      }
+      const { stripHTML } = require('../lib/chapter-utils');
+      const collapse = value => value.replace(/\s+/g, ' ').trim();
+      assert.equal(collapse(chapters.map(ch => ch.text).join(' ')),
+        collapse(Object.values(fixture.documents).map(html => stripHTML(html)).join(' ')),
+        'chapter recovery preserves the complete narration in reading order');
+    } finally {
+      await fs.rm(fixture.directory, { recursive: true, force: true });
+    }
+  }
+
+
+  console.log('Page-scan navigation regressions: 5 passed, 0 failed');
+
   const anthology = await createAnthologyHierarchyFixture();
   try {
     const chapters = await createBookDocument({ log: { log() {}, error() {} } }).extractChapters(anthology.epubPath);
