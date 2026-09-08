@@ -110,3 +110,27 @@ stays ready after publishing its catalog and generates the chapter only once.
 Final independent ratification: ENDORSED, verdict SHIP. All seven design findings
 are retired. Independent focused checks passed 33 coordinator, 6 catalog,
 6 recovery, and 4 real-server integration tests. No blocker remains.
+
+## Ready size and repeated admission
+
+The production WebKit check exposed a second metadata problem. Revalidating an
+already ready title persisted the byte count of the chapters checked so far while
+keeping `state: ready`. Napoleon's 807 MB package appeared as about 1 MB, and the
+client reached 98 percent long before the transfer finished.
+
+Ready revalidation now preserves the previous complete byte count until all
+chapters have been checked. Retained selection also returns the exact sum of its
+validated artifact sizes. A request for the same retained ready package updates
+its owners and byte count without scheduling another chapter scan. Selection
+still checks every recorded artifact first; a missing catalog, changed artifact,
+or changed narration input takes the normal replacement and repair path.
+
+Regression tests hold the last chapter during revalidation, check stable complete
+bytes, verify owner updates without repeated chapter scans, and exercise repeated
+real-server preparation requests with exact total sizes.
+
+Independent Sol xhigh review of this amendment returned SHIP with no blockers.
+It verified the retained shortcut still checks exact artifacts, identity changes
+still cancel and schedule repair, and completed workers cannot restore partial
+byte counts. Focused checks passed 35 coordinator, 6 catalog, and 4 real-server
+integration tests.

@@ -42,6 +42,8 @@ const identity = (prep = 8, voice = 'am_onyx') => {
       const result = await store.select({ ...input, identity: identity(11) });
       assert.equal(result.packageVariantKey, old.packageVariantKey);
       assert.equal(result.retained, true);
+      assert.equal(result.retainedPackageBytes, 202);
+      assert.equal(remembered.retainedPackageBytes, 202);
       assert.equal(result.retainedPackageRevision, remembered.retainedPackageRevision);
       assert.notEqual(result.retainedPackageRevision, result.sourceTextRevision);
       assert.deepEqual(inspected.map(item => item.chapterIndex), [0, 2]);
