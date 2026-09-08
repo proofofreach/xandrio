@@ -164,6 +164,7 @@ const tests = [
   'test-auto-sleep-schedule.js',
   'test-player-controls.js',
   'test-ui-composition.js',
+  'test-cover-image-recovery.js',
   'test-search-url-state.js',
   'test-search-context-regressions.js',
   'test-import-activity-browser.js',
