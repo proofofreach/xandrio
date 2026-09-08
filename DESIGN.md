@@ -20,7 +20,15 @@ Xandrio is a quiet product/tool interface: dense enough for repeated use, but vi
 | `--danger` | `oklch(58% 0.22 29)` |
 | `--success` | `oklch(64% 0.17 148)` |
 | `--radius` | `8px` |
-| `--touch-min` | `44px` |
+| `--radius-cover` | `4px` |
+| `--radius-sheet` | `24px` |
+| `--space-1/2/3/4/6/8` | `4/8/12/16/24/32px` |
+| `--weight-regular/semibold/bold` | `400/600/700` |
+| `--touch-min` | `45px` |
+
+- Inter remains the interface family. Use regular for body and supporting text, semibold for titles and controls, and bold for primary emphasis. Do not introduce intermediate weights.
+- Use the spacing scale for grouped content and section separation. Phone gutters remain 16px plus safe-area protection; compact shelf rows retain their optical spacing and full-size touch targets.
+- Covers use 4px corners, ordinary controls and cards use 8px, and modal or sheet shells use 24px. Bottom sheets round only their top corners. Circular transport controls remain circular.
 
 ## Patterns
 
@@ -41,5 +49,6 @@ Xandrio is a quiet product/tool interface: dense enough for repeated use, but vi
 - The player uses one alignment for chapter, narration status, timeline, and transport. Chapter navigation has one visible entry point. Book completion is a text summary; the selected timeline remains the seek control.
 - Playback preparation and recovery stay in one status area between chapter and timeline on every viewport.
 - Continue Listening uses horizontal resume cards. Shelf rows place offline actions beside the book metadata, with full-size touch targets. Open menus must escape the list paint boundary.
+- Resume-card titles, metadata, and Play occupy explicit rows beside the cover, keeping the action within the cover's vertical span.
 - Settings are grouped by Listening, Voices, Library & Sources, and Server & Account. Voice creation is an explicit disclosure, separate from choosing a narrator.
 - Composition refinements live in composition.css and library-composition.css, both versioned in the offline app shell.

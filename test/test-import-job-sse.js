@@ -64,6 +64,22 @@ function getJson(base, pathname, headers = {}) {
   const privateJob = createImportJob({ ownerId: 'reader-a', title: 'Private book.epub', source: 'upload' });
   let runningSubscriber;
   try {
+    const queued = createImportJob({ requestHash: 'same-book', source: 'gutenberg' });
+    const repeated = await Promise.all([1, 2].map(() => fetch(`${base}/api/download`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ hash: 'same-book', filename: 'same.epub', source: 'gutenberg' })
+    }).then(response => response.json())));
+    check(repeated.every(result => result.jobId === queued.id), 'repeated requests reuse the active job');
+    const deniedCancel = await fetch(`${base}/api/download/${privateJob.id}/cancel`, { method: 'POST' });
+    check(deniedCancel.status === 404, 'another user cannot cancel an import');
+    const cancelled = await fetch(`${base}/api/download/${queued.id}/cancel`, { method: 'POST' });
+    check(cancelled.ok && (await cancelled.json()).cancellationRequested, 'cancel is acknowledged by the server');
+    assert.throws(() => __test.progressForImportJob(queued)(7), { code: 'IMPORT_CANCELLED' });
+    check(queued.step < 7, 'cancellation prevents entering persistence');
+    const saving = createImportJob({ requestHash: 'saving-book' });
+    saving.step = 7;
+    check((await fetch(`${base}/api/download/${saving.id}/cancel`, { method: 'POST' })).status === 409,
+      'cancel cannot claim success after persistence starts');
     const upload = new FormData();
     upload.append('epub', new Blob(['not an EPUB archive']), 'invalid-import.epub');
     const uploadResponse = await fetch(`${base}/api/upload`, {

@@ -49,11 +49,12 @@ async function verifyDownloadLifecycle(browser, environment) {
   const page = await context.newPage();
   let startRoute;
   let statusChecks = 0;
+  let starts = 0;
 
   try {
     await routeSearch(page);
     await page.route('**/api/imports', route => route.fulfill({ json: { jobs: [] } }));
-    await page.route('**/api/download', route => { startRoute = route; });
+    await page.route('**/api/download', route => { starts++; startRoute = route; });
     await page.route('**/api/download/job-download/status', route => {
       statusChecks++;
       if (statusChecks === 1) {
@@ -75,7 +76,10 @@ async function verifyDownloadLifecycle(browser, environment) {
     const pending = page.locator('[data-import-job^="pending-"]');
     assert.equal(await pending.locator('[data-import-label]').textContent(), 'Connecting to source…',
       'a delayed POST must not invent a server-side import stage');
+    await page.locator('#search-results [data-work-add]').evaluate(button => button.click());
     await page.waitForTimeout(150);
+    assert.equal(starts, 1, 'repeat activation must not start another import');
+    assert.equal(await page.locator('[data-import-job]').count(), 1);
     assert.equal(await pending.locator('[data-import-label]').textContent(), 'Connecting to source…',
       'the placeholder must remain stable until the POST responds');
 
@@ -153,6 +157,51 @@ async function verifyReloadedActivity(browser, environment, viewport) {
   }
 }
 
+async function verifyCancellation(browser, environment, viewport) {
+  const context = await browser.newContext({ viewport, serviceWorkers: 'block' });
+  const page = await context.newPage();
+  let job = { jobId: 'cancel-job', requestHash: 'import-flow-book', title: 'The Patient Book',
+    status: 'running', label: 'Reading book metadata', canCancel: true };
+  let cancelRoute;
+  try {
+    await routeSearch(page);
+    await page.route('**/api/imports', route => route.fulfill({ json: { jobs: [job] } }));
+    await page.route('**/api/download/cancel-job/cancel', route => { cancelRoute = route; });
+    await page.goto(`${environment.origin}/?q=patient&sources=gutenberg#/search`, { waitUntil: 'domcontentloaded' });
+    const card = page.locator('[data-import-job="cancel-job"]');
+    const add = page.locator('#search-results [data-work-add]');
+    await card.waitFor();
+    await add.waitFor();
+    await page.evaluate(async () => {
+      const { beginImport } = await import('/js/features/import-activity.js');
+      const progress = beginImport({ title: 'The Patient Book', hash: 'import-flow-book' });
+      progress.attach('cancel-job');
+      progress.stop();
+    });
+    assert.equal(await page.locator('[data-import-job="cancel-job"]').count(), 1,
+      'attaching a POST response after refresh must not duplicate the activity card');
+    assert.equal(await add.isDisabled(), true, 'reload disables Add for an active import');
+    await page.screenshot({ path: path.join(SCREENSHOT_DIR, `import-cancel-${viewport.width}.png`), fullPage: true });
+    await card.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await page.waitForTimeout(100);
+    assert.equal(await card.getByRole('button', { name: 'Cancel', exact: true }).isDisabled(), true);
+    await cancelRoute.fulfill({ status: 503, json: { error: 'Could not cancel. Try again.' } });
+    await card.locator('[data-import-detail]').filter({ hasText: 'Could not cancel. Try again.' }).waitFor();
+    assert.equal(await card.getByRole('button', { name: 'Cancel', exact: true }).isEnabled(), true);
+    cancelRoute = null;
+    await card.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await page.waitForTimeout(100);
+    job = { ...job, cancellationRequested: true, canCancel: false, label: 'Cancelling…' };
+    await cancelRoute.fulfill({ json: job });
+    await card.getByRole('button', { name: 'Cancelling…' }).waitFor();
+    job = { ...job, status: 'cancelled' };
+    await card.locator('[data-import-label]').filter({ hasText: 'Import cancelled' }).waitFor({ timeout: 6000 });
+    assert.equal(await add.isEnabled(), true, 'cancelled imports can be added again');
+    await card.getByRole('button', { name: 'Dismiss' }).click();
+    assert.equal(await page.locator('[data-import-job="cancel-job"]').count(), 0);
+  } finally { await context.close(); }
+}
+
 async function verifyUploadHandoff(browser, environment) {
   const context = await browser.newContext({
     viewport: { width: 1280, height: 800 },
@@ -206,8 +255,10 @@ async function main() {
     await verifyDownloadLifecycle(browser, environment);
     await verifyReloadedActivity(browser, environment, { name: 'mobile', width: 390, height: 844, mobile: true });
     await verifyReloadedActivity(browser, environment, { name: 'desktop', width: 1280, height: 800, mobile: false });
+    await verifyCancellation(browser, environment, { width: 390, height: 844 });
+    await verifyCancellation(browser, environment, { width: 1280, height: 800 });
     await verifyUploadHandoff(browser, environment);
-    console.log('Import activity browser regressions: 16 passed, 0 failed');
+    console.log('6 passed, 0 failed');
   } finally {
     await browser.close();
     await environment.close();

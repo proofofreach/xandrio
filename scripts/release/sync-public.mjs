@@ -2,7 +2,8 @@
 /**
  * Sync development commits to the public repository.
  *
- * Cherry-picks every commit after the durable public-sync-base checkpoint,
+ * Publishes commits after the durable public-sync-base checkpoint,
+ * using the final tree delta when the source range contains a merge,
  * scrubs tool/AI attribution lines from the commit messages, records the
  * private source SHA, secret-scans the resulting branch with the pinned
  * Gitleaks wrapper, then pushes it, opens a PR, and arms auto-merge so it
@@ -20,6 +21,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
+import { stagePublicSnapshot } from './public-snapshot.mjs';
 import { openPullRequestUrl, withGitHubRetry } from './github-retry.mjs';
 
 const args = process.argv.slice(2);
@@ -235,8 +237,7 @@ const published = publishedSourceCommits(
 );
 let recoveredCheckpoint = baseLimit;
 for (const sha of afterCheckpoint) {
-  if (!published.has(sha.toLowerCase())) break;
-  recoveredCheckpoint = sha;
+  if (published.has(sha.toLowerCase())) recoveredCheckpoint = sha;
 }
 if (recoveredCheckpoint !== baseLimit) {
   persistCheckpoint(recoveredCheckpoint);
@@ -281,23 +282,29 @@ let pushedBranch = null;
 let prOpened = false;
 
 try {
-  for (const sha of pending) {
-    try {
-      git('cherry-pick', '--allow-empty', sha);
-    } catch (err) {
-      const conflicts = git('diff', '--name-only', '--diff-filter=U')
-        .split('\n').filter(Boolean);
-      if (canAutoResolvePublicExclusions(conflicts)) {
-        for (const filePath of conflicts) git('rm', '--ignore-unmatch', '--', filePath);
-        git('cherry-pick', '--continue');
-        console.log(`Preserved public exclusion for: ${conflicts.join(', ')}`);
-      } else {
-        git('cherry-pick', '--abort');
-        throw new Error(`cherry-pick of ${sha.slice(0, 7)} conflicts with ${REMOTE}/${TARGET}; resolve manually (${err.message})`);
+  const containsMerge = Boolean(git('rev-list', '--merges', `${baseLimit}..${source}`));
+  if (containsMerge) {
+    stagePublicSnapshot({ repository: REPO_ROOT, base: baseLimit, source, excludedPaths: [...PUBLIC_EXCLUDED_PATHS] });
+    git('commit', '--allow-empty', '-m', publicationMessage('Sync merged development changes', git('rev-parse', source)));
+  } else {
+    for (const sha of pending) {
+      try {
+        git('cherry-pick', '--allow-empty', sha);
+      } catch (err) {
+        const conflicts = git('diff', '--name-only', '--diff-filter=U')
+          .split('\n').filter(Boolean);
+        if (canAutoResolvePublicExclusions(conflicts)) {
+          for (const filePath of conflicts) git('rm', '--ignore-unmatch', '--', filePath);
+          git('cherry-pick', '--continue');
+          console.log(`Preserved public exclusion for: ${conflicts.join(', ')}`);
+        } else {
+          git('cherry-pick', '--abort');
+          throw new Error(`cherry-pick of ${sha.slice(0, 7)} conflicts with ${REMOTE}/${TARGET}; resolve manually (${err.message})`);
+        }
       }
+      git('commit', '--amend', '--no-edit', '-m',
+        publicationMessage(git('log', '-1', '--format=%B', sha), sha));
     }
-    git('commit', '--amend', '--no-edit', '-m',
-      publicationMessage(git('log', '-1', '--format=%B', sha), sha));
   }
 
   // Secret-scan exactly what will be pushed: a single-branch clone whose

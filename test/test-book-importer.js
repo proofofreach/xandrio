@@ -469,6 +469,18 @@ section('Successful direct import');
   assert(misclassifiedResult.book.id === 'book-1',
     'does not turn a derived zero-content-chapter score into an import rejection');
 
+  section('Cancellation before persistence');
+  const cancelledImport = createFixture();
+  let cancellationError;
+  try {
+    await cancelledImport.importer.import(command(), step => {
+      if (step === 7) throw Object.assign(new Error('Import cancelled'), { code: 'IMPORT_CANCELLED' });
+    });
+  } catch (error) { cancellationError = error; }
+  assert(cancellationError?.code === 'IMPORT_CANCELLED', 'preserves cancellation at the final safe step');
+  assert(!cancelledImport.calls.includes('persist:book-1'), 'cancelled imports never persist');
+  assert(cancelledImport.calls.includes('remove:/library/book-1.epub'), 'cancelled imports clean owned files');
+
   section('Late failure cleanup');
   const enrichmentFailure = createFixture({
     metadata: {

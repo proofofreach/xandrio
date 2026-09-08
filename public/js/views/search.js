@@ -1,7 +1,7 @@
 import { API_BASE, apiGet, apiSend, syncHeaders } from '../api.js';
 import { formatApiDetails, escapeHTML, safeAttr, encodeState, decodeState } from '../util/format.js';
 import { loadLibrary } from './library.js';
-import { beginImport, initImportActivity } from '../features/import-activity.js';
+import { activeImport, beginImport, initImportActivity } from '../features/import-activity.js';
 import { onActivate } from '../ui/keys.js';
 import { trapFocus } from '../ui/focus-trap.js';
 import { getDefaultSearchSources } from '../client-settings.js';
@@ -107,7 +107,7 @@ const ADD_TO_LIBRARY_ICON = '<svg viewBox="0 0 20 20" fill="none" aria-hidden="t
 
 // Renders an .empty-state-modern block into the results area. When `retry` is
 // true a Retry button is shown and wired to re-run the current search.
-function renderSearchState({ icon, title, message, retry }) {
+function renderSearchState({ icon, title, message, retry, empty }) {
   const retryBtn = retry ? '<button class="btn-primary" data-search-retry>Retry</button>' : '';
   searchResults.innerHTML = `
     <div class="empty-state-modern">
@@ -115,10 +115,19 @@ function renderSearchState({ icon, title, message, retry }) {
       <h3>${escapeHTML(title)}</h3>
       <p>${escapeHTML(message)}</p>
       ${retryBtn}
+      ${empty ? `<div class="search-recovery-actions">
+        <button type="button" class="btn-primary" data-search-edit>Edit search</button>
+        <button type="button" class="btn-secondary" data-search-filters>Change filters</button>
+      </div>` : ''}
     </div>`;
   if (retry) {
     searchResults.querySelector('[data-search-retry]')?.addEventListener('click', () => searchBooks());
   }
+  searchResults.querySelector('[data-search-edit]')?.addEventListener('click', () => {
+    searchInput?.focus();
+    searchInput?.select();
+  });
+  searchResults.querySelector('[data-search-filters]')?.addEventListener('click', () => setFilterPanelExpanded(true));
 }
 
 function renderSearchActionState({ icon, title, message, action, actionLabel }) {
@@ -176,6 +185,12 @@ function updateFilterSummary() {
   const count = configuredSourceIds().length + languageCount;
   filterCount.textContent = String(count);
   filterToggle?.setAttribute('aria-label', `${count} active search ${count === 1 ? 'filter' : 'filters'}`);
+  const summary = document.getElementById('search-filter-summary');
+  if (summary) {
+    const language = languageFilter?.selectedOptions[0]?.textContent || 'English';
+    const sources = SEARCH_SOURCES.filter(source => configuredSourceIds().includes(source.id)).map(sourcePillLabel);
+    summary.textContent = [language, sources.length ? sources.join(', ') : 'No available sources'].join(' · ');
+  }
 }
 
 function syncSearchClearButton() {
@@ -412,6 +427,7 @@ function buildResultCard(work, eagerCover = false) {
       <div class="result-card-copy">
         <h3 class="result-card-title">${escapeHTML(title)}</h3>
         <p class="result-card-author">${escapeHTML(author)}</p>
+        <p class="result-card-biblio" data-result-import-status role="status" hidden>Adding to library…</p>
         ${secondaryMeta ? `<p class="result-card-biblio">${secondaryMeta}</p>` : ''}
         ${editionInfo}
         ${editionMeta.length ? `<footer class="result-card-footer"><p class="result-card-edition-meta">${editionMeta.map(value => `<span>${escapeHTML(value)}</span>`).join('')}</p></footer>` : ''}
@@ -479,6 +495,7 @@ function appendSearchResultBatch() {
     });
   });
   updateSearchLoadMore(sorted);
+  updateImportActions();
 }
 
 function observeSearchLoadMore() {
@@ -489,6 +506,26 @@ function observeSearchLoadMore() {
   }, { rootMargin: '700px 0px' });
   searchLoadObserver.observe(searchLoadMore);
 }
+
+function updateImportActions() {
+  for (const button of searchResults?.querySelectorAll('[data-work-add], [data-edition-choice]') || []) {
+    const work = lastSearchWorks.find(work => work.id === button.dataset.workId);
+    const edition = button.hasAttribute('data-edition-choice')
+      ? work?.editions?.[Number(button.dataset.editionChoice)] : work?.bestEdition;
+    const busy = Boolean(activeImport(edition?.hash));
+    button.disabled = busy;
+    button.setAttribute('aria-busy', String(busy));
+    if (!button.dataset.addLabel) button.dataset.addLabel = button.getAttribute('aria-label');
+    button.setAttribute('aria-label', busy ? `Adding ${edition.title || 'book'} to library` : button.dataset.addLabel);
+    if (button.hasAttribute('data-work-add')) {
+      const status = button.closest('.result-card')?.querySelector('[data-result-import-status]');
+      if (status) status.hidden = !busy;
+    }
+    const cue = button.querySelector('.result-cover-action-cue > span:last-child');
+    if (cue) cue.textContent = busy ? 'Adding…' : 'Add to library';
+  }
+}
+document.addEventListener('xandrio:importchange', updateImportActions);
 
 function renderSearchResults() {
   if (!searchResults || !lastSearchWorks.length) return;
@@ -747,7 +784,7 @@ async function searchBooks() {
 
     if (data.error === 'No results found') {
       if (renderSourceFailure(sources)) return;
-      renderSearchState({ icon: SEARCH_ICON, title: 'No results found', message: 'Try a different title, author, or spelling.' });
+      renderSearchState({ icon: SEARCH_ICON, title: 'No results found', message: 'Try a different title, author, or spelling.', empty: true });
       return;
     }
 
@@ -763,7 +800,7 @@ async function searchBooks() {
 
     if (!Array.isArray(data.works) || data.works.length === 0) {
       if (renderSourceFailure(sources)) return;
-      renderSearchState({ icon: SEARCH_ICON, title: 'No results found', message: 'Try a different title, author, or spelling.' });
+      renderSearchState({ icon: SEARCH_ICON, title: 'No results found', message: 'Try a different title, author, or spelling.', empty: true });
       return;
     }
 
@@ -889,6 +926,7 @@ async function waitForImportJob(jobId, result, downloadProgress) {
     }
     downloadProgress.render(status);
     if (status.status === 'complete') return status.result;
+    if (status.status === 'cancelled') throw { code: 'IMPORT_CANCELLED' };
     if (status.status === 'failed') throw status.error || { error: 'Download failed' };
     await new Promise(resolve => setTimeout(resolve, 1200));
   }
@@ -914,6 +952,7 @@ function renderZLibraryConnectionRequired(error) {
 }
 
 async function downloadBook(result) {
+  if (activeImport(result.hash)) return;
   downloadError.style.display = 'none';
   const alternatives = editionAlternativesByHash.get(result?.hash) || [];
   const downloadProgress = startDownloadProgress(result);
@@ -1032,6 +1071,7 @@ async function downloadBook(result) {
       if (isSearchRoute()) focusDownloadError();
     }
   } catch (err) {
+    if (err.code === 'IMPORT_CANCELLED') { downloadProgress.stop(); return; }
     downloadProgress.fail(err);
     console.error('Download failed:', err);
     if (isZLibraryConnectionRequired(err, result)) {

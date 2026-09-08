@@ -76,17 +76,25 @@ function render(stats) {
     return;
   }
 
+  const seconds = Math.max(0, Number(stats.totalSecondsListened) || 0);
+  const minutes = Math.floor(seconds / 60);
+  const duration = minutes < 60
+    ? (seconds > 0 && minutes === 0 ? '<1' : String(minutes))
+    : `${Math.floor(minutes / 60)}h${minutes % 60 ? ` ${minutes % 60}m` : ''}`;
+  const durationLabel = minutes < 60 ? (minutes === 1 ? 'minute listened' : 'minutes listened') : 'listened';
   const tiles = `
     <div class="stats-tiles">
-      ${statTile(stats.totalHoursListened, stats.totalHoursListened === 1 ? 'hour listened' : 'hours listened')}
+      ${statTile(duration, durationLabel)}
       ${statTile(stats.booksFinishedCount, stats.booksFinishedCount === 1 ? 'book finished' : 'books finished')}
       ${statTile(stats.booksInProgressCount, 'in progress')}
     </div>`;
 
-  const recent = stats.recent.length > 0 ? `
+  const inProgressIds = new Set(stats.inProgress.map(entry => entry.id));
+  const recentEntries = stats.recent.filter(entry => !inProgressIds.has(entry.id));
+  const recent = recentEntries.length > 0 ? `
     <section class="stats-section">
       <h2 class="rail-heading">Recently listened</h2>
-      <div class="rail-track">${stats.recent.map(recentCardHTML).join('')}</div>
+      <div class="rail-track">${recentEntries.map(recentCardHTML).join('')}</div>
     </section>` : '';
 
   const inProgress = stats.inProgress.length > 0 ? `

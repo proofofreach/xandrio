@@ -1823,7 +1823,7 @@ const importJobs = new Map();
 const IMPORT_JOB_SUBSCRIBER_LIMIT = 10;
 const IMPORT_JOB_TTL_MS = 30 * 60 * 1000;
 const IMPORT_JOB_TERMINAL_GRACE_MS = Number(process.env.IMPORT_JOB_TERMINAL_GRACE_MS) || 30 * 1000;
-const IMPORT_JOB_TERMINAL_STATUSES = new Set(['complete', 'completed', 'failed', 'error']);
+const IMPORT_JOB_TERMINAL_STATUSES = new Set(['complete', 'completed', 'failed', 'error', 'cancelled']);
 
 function chapterPreparationAbortError(signal) {
   if (signal?.reason?.name === 'AbortError') return signal.reason;
@@ -1899,13 +1899,15 @@ const IMPORT_STEPS = [
   'Adding to library'
 ];
 
-function createImportJob({ ownerId = 'default', title = '', source = '' } = {}) {
+function createImportJob({ ownerId = 'default', title = '', source = '', requestHash = null } = {}) {
   const jobId = crypto.randomBytes(12).toString('hex');
   const job = {
     id: jobId,
     ownerId: String(ownerId || 'default'),
     title: String(title || ''),
     source: String(source || ''),
+    requestHash,
+    cancellationRequested: false,
     status: 'running',
     step: 1,
     totalSteps: IMPORT_STEPS.length,
@@ -1930,6 +1932,9 @@ function importJobSnapshot(job) {
     jobId: job.id,
     title: job.title,
     source: job.source,
+    requestHash: job.requestHash,
+    cancellationRequested: job.cancellationRequested,
+    canCancel: Boolean(job.requestHash && job.status === 'running' && job.step < 7 && !job.cancellationRequested),
     status: job.status,
     step: job.step,
     totalSteps: job.totalSteps,
@@ -1961,6 +1966,7 @@ function emitImportJob(job, event, payload = {}) {
 
 function progressForImportJob(job) {
   return (step, detail = '') => {
+    if (job.cancellationRequested) throw Object.assign(new Error('Import cancelled'), { code: 'IMPORT_CANCELLED' });
     const label = IMPORT_STEPS[step - 1] || IMPORT_STEPS[0];
     emitImportJob(job, 'progress', { step, label, detail });
   };
@@ -3218,6 +3224,11 @@ app.post('/api/download', async (req, res) => {
       return res.status(publicError.statusCode).json(publicError.body);
     }
   }
+  const importUserId = positionUserId(req);
+  const existing = [...importJobs.values()].find(job =>
+    job.ownerId === importUserId && job.status === 'running' &&
+    job.requestHash && job.requestHash === req.body?.hash);
+  if (existing) return res.status(202).json({ jobId: existing.id });
   const releaseImportPermit = downloadImportGate.tryAcquire();
   if (!releaseImportPermit) {
     res.setHeader('Retry-After', '1');
@@ -3226,9 +3237,9 @@ app.post('/api/download', async (req, res) => {
       code: 'CONCURRENCY_LIMIT'
     });
   }
-  const importUserId = positionUserId(req);
   const job = createImportJob({
     ownerId: importUserId,
+    requestHash: req.body?.hash || null,
     title: req.body?.title || req.body?.filename,
     source: req.body?.source || 'annas'
   });
@@ -3249,6 +3260,11 @@ app.post('/api/download', async (req, res) => {
       job.result = payload;
       emitImportJob(job, 'complete', { result: payload });
     } catch (error) {
+      if (job.cancellationRequested) {
+        job.status = 'cancelled';
+        emitImportJob(job, 'cancelled', { label: 'Import cancelled', detail: '' });
+        return;
+      }
       console.error(`Background import job ${job.id} failed:`, error);
       job.status = 'failed';
       job.error = downloadImportFailureResponse(error, req.body);
@@ -3259,6 +3275,18 @@ app.post('/api/download', async (req, res) => {
   });
 
   res.status(202).json({ jobId: job.id });
+});
+
+app.post('/api/download/:jobId/cancel', (req, res) => {
+  const job = importJobs.get(req.params.jobId);
+  if (!job || job.ownerId !== positionUserId(req)) return res.status(404).json({ error: 'Import job not found' });
+  if (job.status === 'cancelled' || job.cancellationRequested) return res.json(importJobSnapshot(job));
+  if (!job.requestHash || job.status !== 'running' || job.step >= 7) {
+    return res.status(409).json({ error: 'This import can no longer be cancelled.' });
+  }
+  job.cancellationRequested = true;
+  emitImportJob(job, 'progress', { label: 'Cancelling…', detail: 'Waiting for the current processing step to stop.' });
+  res.json(importJobSnapshot(job));
 });
 
 app.get('/api/download/:jobId/status', (req, res) => {

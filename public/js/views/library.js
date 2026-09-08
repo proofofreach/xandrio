@@ -325,7 +325,8 @@ function railCardHTML(entry) {
   const { book, progress } = entry;
   const id = String(book.id || '');
   const title = book.title || 'Untitled';
-  const metaLine = progressMetaLine(progress);
+  const chapter = `Chapter ${progress.chapterIndex + 1}${progress.chapterCount ? ` of ${progress.chapterCount}` : ''}`;
+  const metaLine = [chapter, progress.percent != null ? `${progress.percent}%` : ''].filter(Boolean).join(' · ');
   const progressBar = progress.percent != null
     ? `<div class="rail-progress"><div class="rail-progress-fill" style="width:${progress.percent}%"></div></div>`
     : '';
@@ -339,7 +340,7 @@ function railCardHTML(entry) {
       </div>
       <p class="rail-title">${escapeHTML(title)}</p>
       <p class="rail-meta">${escapeHTML(metaLine)}</p>
-      <span class="rail-play-action" aria-hidden="true">Play</span>
+      <span class="rail-play-action" aria-hidden="true">Resume${progress.timeLeft != null ? ` · ${escapeHTML(formatDuration(progress.timeLeft))} left` : ''}</span>
       <button class="rail-dismiss" type="button" aria-label="Remove ${safeAttr(title)} from Continue Listening" title="Remove from Continue Listening">
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="12" height="12" aria-hidden="true"><path stroke-linecap="round" d="M6 18L18 6M6 6l12 12"/></svg>
       </button>

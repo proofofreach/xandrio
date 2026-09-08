@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 const assert = require('node:assert/strict');
-const { readFileSync } = require('node:fs');
+const { readFileSync, mkdtempSync, rmSync } = require('node:fs');
+const { tmpdir } = require('node:os');
 const { spawnSync } = require('node:child_process');
 const { pathToFileURL } = require('node:url');
 const { resolve } = require('node:path');
@@ -169,15 +170,23 @@ async function check(name, callback) {
   await check('production deploy is locked, atomic, readiness-gated, and self-rolling-back', () => {
     const scriptPath = resolve(__dirname, '..', 'scripts', 'deploy-prod.sh');
     const source = readFileSync(scriptPath, 'utf8');
-    const dryRun = spawnSync('bash', [
-      scriptPath,
-      '--root',
-      resolve(__dirname, '..'),
-      '--origin',
-      'https://reader.example.com',
-      '--dry-run',
-      'a'.repeat(40)
-    ], { encoding: 'utf8' });
+    const fixtureRoot = mkdtempSync(resolve(tmpdir(), 'xandrio-deploy-test-'));
+    const initialized = spawnSync('git', ['init', fixtureRoot], { encoding: 'utf8' });
+    assert.equal(initialized.status, 0, initialized.stderr);
+    let dryRun;
+    try {
+      dryRun = spawnSync('bash', [
+        scriptPath,
+        '--root',
+        fixtureRoot,
+        '--origin',
+        'https://reader.example.com',
+        '--dry-run',
+        'a'.repeat(40)
+      ], { encoding: 'utf8' });
+    } finally {
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
     assert.equal(dryRun.status, 0, dryRun.stderr);
     assert.match(dryRun.stdout, /exact revision/);
     assert.match(dryRun.stdout, /rollback:\s+automatic/);
