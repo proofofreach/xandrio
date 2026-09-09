@@ -121,15 +121,19 @@ function progressMetaLine(progress) {
   return parts.join(' · ');
 }
 
+const OFFLINE_READY_GLYPH = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="m5 12 4 4L19 6"/></svg>';
+const OFFLINE_BUSY_GLYPH = '<svg class="offline-spinner" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path stroke-linecap="round" d="M12 3a9 9 0 1 1-9 9"/></svg>';
+
 function offlineStateContents(bookId) {
   const status = offlineStatusForBook(bookId);
   const cached = Math.max(0, Number(status.cachedChapters) || 0);
   const total = Math.max(0, Number(status.totalChapters) || 0);
   const progress = total > 0 ? `${cached}/${total}` : '';
   const withProgress = label => progress ? `${label} ${progress}` : label;
+  const busy = status.autoResume || pendingBookDownloads.has(String(bookId)) || ['preparing', 'preparation-waiting', 'downloading', 'verifying'].includes(status.kind);
   const state = (label, title = status.label) => `
     <span class="book-local-state" title="${safeAttr(title)}" aria-label="${safeAttr(title)}">
-      ${OFFLINE_DOWNLOAD_GLYPH}<span>${escapeHTML(label)}</span>
+      ${status.downloaded ? OFFLINE_READY_GLYPH : busy ? OFFLINE_BUSY_GLYPH : ''}<span>${escapeHTML(label)}</span>
     </span>`;
   const action = (label, title = status.label) => `
     <button type="button" class="book-local-state" data-download-book="${safeAttr(bookId)}"
@@ -141,14 +145,14 @@ function offlineStateContents(bookId) {
   if (status.downloaded) return state('Downloaded');
   switch (status.kind) {
     case 'ready-to-prepare': return action('Download');
-    case 'prepared': return action('Download');
+    case 'prepared': return status.autoResume ? state('Waiting to download') : action('Download');
     case 'preparation-paused': return action('Resume');
     case 'preparation-error': return action('Retry');
     case 'preparation-capacity': return action('Try again');
     case 'partial-download': return action(progress ? `Partial ${progress} · Continue` : 'Partial · Continue');
     case 'repair-needed': return action('Incomplete · Retry');
     case 'partial': return action(progress ? `Cached ${progress} · Download full copy` : 'Cached chapters · Download full copy');
-    case 'preparing': return state(withProgress('Preparing'));
+    case 'preparing': return state(`Preparing audio · ${status.preparedChapters || 0}/${total} chapters`);
     case 'preparation-waiting': return state('Waiting for audio');
     case 'downloading': return state(withProgress('Downloading'));
     case 'verifying': return state('Verifying');
@@ -188,27 +192,28 @@ function offlineMenuActionContents(bookId) {
     return `<button type="button" role="menuitem" data-remove-offline-book="${safeAttr(bookId)}">Remove download</button>`;
   }
   if (status.kind === 'downloading') {
-    return `<button type="button" role="menuitem" data-download-book="${safeAttr(bookId)}">${escapeHTML(status.label)} (Cancel)</button>`;
+    return `<span class="book-menu-status" role="status">${escapeHTML(status.label)} · Keep Xandrio open</span>
+      <button type="button" role="menuitem" data-download-book="${safeAttr(bookId)}">Cancel download</button>`;
   }
-  if (status.kind === 'preparing') {
-    return `<button type="button" role="menuitem" disabled aria-busy="true">${escapeHTML(status.label)}</button>
-      <button type="button" role="menuitem" data-remove-offline-preparation="${safeAttr(bookId)}">Remove offline setup</button>`;
+  if (status.kind === 'preparing' || (status.kind === 'prepared' && status.autoResume)) {
+    return `<span class="book-menu-status" role="status">${escapeHTML(status.label)}</span>
+      <button type="button" role="menuitem" data-remove-offline-preparation="${safeAttr(bookId)}">Cancel download</button>`;
   }
   if (status.kind === 'preparation-waiting') {
-    return `<button type="button" role="menuitem" disabled>${escapeHTML(status.label)}</button>
-      <button type="button" role="menuitem" data-remove-offline-preparation="${safeAttr(bookId)}">Remove offline setup</button>`;
+    return `<span class="book-menu-status" role="status">${escapeHTML(status.label)}</span>
+      <button type="button" role="menuitem" data-remove-offline-preparation="${safeAttr(bookId)}">Cancel download</button>`;
   }
   if (status.kind === 'prepared') {
-    return `<button type="button" role="menuitem" data-download-book="${safeAttr(bookId)}">Download to this device</button>`;
+    return `<button type="button" role="menuitem" data-download-book="${safeAttr(bookId)}">Download</button>`;
   }
   if (status.kind === 'download-unavailable' || status.kind === 'download-offline') {
     return `<button type="button" role="menuitem" disabled>${escapeHTML(status.label)}</button>`;
   }
   const label = status.kind === 'preparation-error'
-    ? 'Retry offline setup'
+    ? 'Retry download'
     : status.kind === 'preparation-capacity'
-      ? 'Try offline setup again'
-      : 'Make available offline';
+      ? 'Retry download'
+      : 'Download';
   return `<button type="button" role="menuitem" data-download-book="${safeAttr(bookId)}">${label}</button>`;
 }
 
@@ -667,7 +672,7 @@ async function downloadBookFromLibrary(bookId) {
       status.kind === 'partial-download' ||
       status.kind === 'repair-needed'
     ) {
-      await downloadBookForOffline(data.book, data.chapters, { showOverlay: false });
+      await downloadBookForOffline(data.book, data.chapters, { showOverlay: false, confirmForeground: false });
     } else {
       await prepareAndDownloadBookForOffline(data.book, data.chapters, {
         notificationSetup,
@@ -987,8 +992,8 @@ export function initLibrary(options = {}) {
       closeBookMenus();
       const id = removePreparationBtn.dataset.removeOfflinePreparation;
       void cancelOfflinePreparation(id).catch(error => {
-        console.error('Could not remove offline setup:', error);
-        showToast('Could not remove offline setup. Try again.', 'error');
+        console.error('Could not cancel download:', error);
+        showToast('Could not cancel download. Try again.', 'error');
       });
       return;
     }

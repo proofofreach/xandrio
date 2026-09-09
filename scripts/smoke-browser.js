@@ -927,11 +927,35 @@ async function verifyLibraryActions(page) {
   }
   await page.click('[data-book-menu-toggle]');
   await page.waitForSelector('[data-download-book]', { state: 'visible' });
-  for (const label of ['Make available offline', 'Save to My Shelf', 'Add to Up Next', 'Share', 'Delete']) {
+  for (const label of ['Download', 'Save to My Shelf', 'Add to Up Next', 'Share', 'Delete']) {
     if (!await page.getByRole('menuitem', { name: label, exact: true }).isVisible()) {
       throw new Error(`Library overflow menu is missing ${label}`);
     }
   }
+  const originalViewport = page.viewportSize();
+  for (const width of [390, 1024]) {
+    await page.setViewportSize({ width, height: 900 });
+    await page.evaluate(() => {
+      const id = document.querySelector('[data-offline-status]').dataset.offlineStatus;
+      const entry = { bookId: id, mode: 'full', state: 'preparing', chapters: 20,
+        preparedChapters: 3, chapterEntries: [], manifestVersion: 3 };
+      localStorage.setItem('xandrio_offline_books:default', JSON.stringify({ [id]: entry }));
+      document.dispatchEvent(new CustomEvent('xandrio:offlinechange'));
+    });
+    const status = page.locator('[data-offline-status]').first();
+    if (!(await status.innerText()).includes('Preparing audio · 3/20 chapters') ||
+        await status.locator('button').count() !== 0 ||
+        !await page.getByRole('menuitem', { name: 'Cancel download', exact: true }).isVisible() ||
+        await page.getByRole('menuitem', { name: 'Download', exact: true }).count() !== 0) {
+      throw new Error('Preparing download must show progress and an active Cancel action');
+    }
+    await page.screenshot({ path: `/tmp/xandrio-download-preparing-${width}.png` });
+  }
+  await page.evaluate(() => {
+    localStorage.removeItem('xandrio_offline_books:default');
+    document.dispatchEvent(new CustomEvent('xandrio:offlinechange'));
+  });
+  await page.setViewportSize(originalViewport);
   await page.keyboard.press('Escape');
   if (await page.locator('.book-overflow-menu:not([hidden])').count() !== 0) {
     throw new Error('Library overflow menu did not close with Escape');
@@ -1530,7 +1554,7 @@ async function verifyRealServiceWorkerOffline(browser) {
     await page.goto(`${fixture.origin}/#/library`, { waitUntil: 'networkidle' });
     await page.click('[data-book-menu-toggle]');
     await page.waitForSelector('[data-download-book="smoke-offline"]', { state: 'visible' });
-    if (!await page.getByRole('menuitem', { name: 'Make available offline', exact: true }).isVisible()) {
+    if (!await page.getByRole('menuitem', { name: 'Download', exact: true }).isVisible()) {
       throw new Error('Ingested title does not offer offline setup');
     }
     await page.click('[data-download-book="smoke-offline"]');
