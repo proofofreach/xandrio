@@ -590,6 +590,18 @@ function metadataHarness(options = {}) {
     assert.strictEqual(result.book.author, 'Andrew Roberts');
   });
 
+  await test('metadata refresh restores the selected title when embedded metadata names the series', async () => {
+    const harness = metadataHarness({
+      bookTitle: 'book_1 The Magic Mountain', searchedTitle: 'The Magic Mountain',
+      filename: 'book_1 The Magic Mountain.epub',
+      embeddedMetadata: { title: 'Oxford World’s Classics', author: 'Thomas Mann', description: 'A novel' },
+      enrichedMetadata: {}, resolveMetadataSeed,
+      chapterStructureKey: 'structure-new', refreshedStructureKey: 'structure-new'
+    });
+    const result = await harness.service.refreshBook('book_1');
+    assert.strictEqual(result.book.title, 'The Magic Mountain');
+  });
+
   await test('metadata refresh clears stale audio state when chapter totals disagree', async () => {
     const harness = metadataHarness({
       chapterStructureKey: 'structure-new',
