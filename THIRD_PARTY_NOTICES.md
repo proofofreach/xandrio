@@ -289,7 +289,7 @@ This file is generated from the locked installed Node dependency tree by `npm ru
 | mkdirp-classic | 0.5.3 | MIT | https://github.com/mafintosh/mkdirp-classic.git |
 | moo | 0.5.3 | BSD-3-Clause | https://github.com/tjvr/moo.git |
 | ms | 2.1.3 | MIT | vercel/ms |
-| multer | 2.2.0 | MIT | expressjs/multer |
+| multer | 2.3.0 | MIT | https://github.com/expressjs/multer.git |
 | nan | 2.22.2 | MIT | git://github.com/nodejs/nan.git |
 | napi-build-utils | 2.0.0 | MIT | https://github.com/inspiredware/napi-build-utils.git |
 | nearley | 2.20.1 | MIT | https://github.com/hardmath123/nearley.git |
