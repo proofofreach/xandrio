@@ -26,6 +26,7 @@ function harness(overrides = {}) {
     prioritizeChunk: (...args) => { calls.push(['prioritize', ...args]); return true; },
     reconstructChapterManifest: async (...args) => {
       calls.push(['reconstruct', ...args]);
+      if (overrides.reconstructError) throw overrides.reconstructError;
       return overrides.reconstructed || manifest;
     },
     planChapterSeek: async (...args) => {
@@ -86,6 +87,15 @@ function harness(overrides = {}) {
 }
 
 (async () => {
+  await test('unspeakable chapters return a terminal status without generation', async () => {
+    const { orchestrator, calls } = harness({ reconstructError: Object.assign(new Error('Chapter has no speakable text for TTS'), { code: 'CHAPTER_UNSPEAKABLE' }) });
+    const status = await orchestrator.chunkStatus({ bookId: 'book', chapterIndex: 15 });
+    assert.equal(status.status, 'unplayable');
+    assert.equal(status.retryable, false);
+    assert.equal(status.code, 'CHAPTER_UNSPEAKABLE');
+    assert(!calls.some(call => call[0] === 'generate'));
+  });
+
   await test('serves instant while premium audio is not ready', async () => {
     const { orchestrator, calls } = harness({ ready: false });
     const result = await orchestrator.resolveTier('book', 2);

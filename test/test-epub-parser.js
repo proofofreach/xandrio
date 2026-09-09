@@ -335,6 +335,30 @@ async function createAnthologyHierarchyFixture() {
   return fixture;
 }
 
+async function createHeadingOnlyTocFixture() {
+  const fixture = await createFixture();
+  const root = path.join(fixture.directory, 'book');
+  const oebps = path.join(root, 'OEBPS');
+  const sections = [
+    ['one', 'Chapter One', 0, ''], ['arrival', 'Arrival', 1, 'The visitor arrives at the mountain. '.repeat(30)],
+    ['room', 'The room', 1, 'The room overlooks the valley. '.repeat(30)],
+    ['two', 'Chapter Two', 0, ''], ['morning', 'Morning', 1, 'Morning comes to the mountain. '.repeat(30)],
+    ['three', 'Chapter Three', 0, 'A short authored preface.'],
+    ['evening', 'Evening', 1, 'Evening settles over the mountain. '.repeat(30)]
+  ];
+  let nav = '', open = 0;
+  for (const [id, title, level] of sections) {
+    while (open > level) { nav += '</navPoint>'; open--; }
+    nav += `<navPoint id="${id}"><navLabel><text>${title}</text></navLabel><content src="chapter%20one.xhtml#${id}"/>`;
+    open++;
+  }
+  nav += '</navPoint>'.repeat(open);
+  await fs.writeFile(path.join(oebps, 'toc.ncx'), `<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/"><navMap>${nav}</navMap></ncx>`);
+  await fs.writeFile(path.join(oebps, 'chapter one.xhtml'), `<html><body>${sections.map(([id, title, , prose]) => `<h1 id="${id}">${title}</h1><p>${prose}</p>`).join('')}</body></html>`);
+  execFileSync('zip', ['-qr9', fixture.epubPath, 'META-INF', 'OEBPS'], { cwd: root });
+  return fixture;
+}
+
 async function createPageScanFixture({ numbered = true, authoredToc = false, pageMarkers = true, roman = false } = {}) {
   const fixture = await createFixture();
   const root = path.join(fixture.directory, 'book');
@@ -371,6 +395,20 @@ async function createPageScanFixture({ numbered = true, authoredToc = false, pag
 }
 
 (async () => {
+  const headingFixture = await createHeadingOnlyTocFixture();
+  try {
+    const chapters = await extractChapters(headingFixture.epubPath);
+    assert.equal(chapters.length, 5, 'heading-only parents join their first child');
+    assert.equal(chapters[0].title, 'Arrival');
+    assert.deepEqual(chapters[0].parentContext, ['Chapter One']);
+    assert.match(chapters[0].text, /^Chapter One\s+Arrival/);
+    assert.equal(chapters.map(ch => ch.text).join(' ').split('Chapter One').length - 1, 1);
+    assert.deepEqual(chapters[1].parentContext, ['Chapter One']);
+    assert.equal(chapters[2].title, 'Morning');
+    assert(chapters.some(ch => ch.title === 'Chapter Three' && ch.text.includes('A short authored preface.')),
+      'parents containing prose retain their authored boundary');
+  } finally { await fs.rm(headingFixture.directory, { recursive: true, force: true }); }
+
   for (const options of [{}, { roman: true }, { numbered: false }, { authoredToc: true }, { pageMarkers: false }]) {
     const fixture = await createPageScanFixture(options);
     try {

@@ -591,6 +591,7 @@ export function dismissChapterSheet() {
 // existing generic copy stays put.
 let audioLoadingPollTimer = null;
 let audioLoadingPollKey = null;
+let unplayableLoadingKey = null;
 
 function stopAudioLoadingPoll() {
   if (audioLoadingPollTimer) {
@@ -618,6 +619,14 @@ function startAudioLoadingPoll() {
     }
     try {
       const data = await apiGet(`/api/chunks/${encodeURIComponent(bookId)}/${chapterIndex}/status`);
+      if (audioLoadingPollKey !== key) return;
+      if (data.status === 'unplayable' || data.retryable === false) {
+        unplayableLoadingKey = key;
+        showAudioLoading('This section has no playable text', {
+          status: 'error', detail: 'Select the next section from Contents.'
+        });
+        return;
+      }
       if (!Number.isFinite(data.totalChunks) || data.totalChunks <= 0) return;
       if (loadingDetail) {
         loadingDetail.textContent = `Preparing audio · ${data.readyChunks} of ${data.totalChunks} segments`;
@@ -635,6 +644,13 @@ function startAudioLoadingPoll() {
 }
 
 export function showAudioLoading(text, options = {}) {
+  const key = `${deps.getCurrentBook?.()?.id}:${deps.getCurrentChapter?.()}`;
+  if (unplayableLoadingKey === key) {
+    text = 'This section has no playable text';
+    options = { status: 'error', detail: 'Select the next section from Contents.' };
+  } else {
+    unplayableLoadingKey = null;
+  }
   if (audioLoading && loadingText) {
     loadingText.textContent = text;
     const status = options.status || 'preparing';
@@ -664,6 +680,7 @@ export function showAudioLoading(text, options = {}) {
 }
 
 export function hideAudioLoading() {
+  unplayableLoadingKey = null;
   if (audioLoading) {
     audioLoading.style.display = 'none';
     audioLoading.dataset.status = '';

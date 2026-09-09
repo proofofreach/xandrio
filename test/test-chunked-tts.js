@@ -238,6 +238,15 @@ section('2. Manifest tracking');
 (async () => {
   const mockQueue = new MockQueue();
   const tts = new ChunkedTTS('/tmp/test-cache', mockQueue);
+  for (const operation of [
+    () => tts.reconstructChapterManifest('heading-only', 0, 'Chapter One'),
+    () => tts.generateChapter('heading-only', 0, 'Chapter One')
+  ]) {
+    let error;
+    try { await operation(); } catch (caught) { error = caught; }
+    assertEqual(error?.code, 'CHAPTER_UNSPEAKABLE', 'heading-only text reports a terminal error code');
+  }
+
 
   // Override _fileExists so nothing is "cached"
   tts._fileExists = async () => false;

@@ -26,7 +26,7 @@ const OFFLINE_CONTRACT_MARKER = 'x-xandrio-offline-contract';
  * with OFFLINE_ROUTE_CONTRACT_VERSION instead of tying downloads to a build id.
  * This value MUST equal CACHE_VERSION in public/sw.js.
  */
-export const EXPECTED_OFFLINE_SW_VERSION = 'xandrio-v178';
+export const EXPECTED_OFFLINE_SW_VERSION = 'xandrio-v179';
 export const MINIMUM_OFFLINE_ROUTE_CONTRACT = 1;
 const BLOCK_OFFLINE_ROUTE_CONTRACT = 2;
 // A chapter is only ever invalidated after this many playback failures whose

@@ -74,6 +74,27 @@ async function main() {
         assert.equal(await page.locator('#playback-buffering').isVisible(), false);
         passed++;
         if (process.env.UI_REVIEW_SHOTS) await page.screenshot({ path: `${process.env.UI_REVIEW_SHOTS}/player-${viewport.width}.png`, fullPage: true });
+        await page.route('**/poll-regression', route => route.fulfill({ contentType: 'text/html', body:
+          '<div id="audio-loading"><span id="loading-text"></span><span id="loading-detail"></span><div id="audio-loading-fill"></div></div>' }));
+        await page.goto(`${environment.origin}/poll-regression`);
+        await page.evaluate(async () => {
+          const view = await import('/js/views/player-ui.js');
+          view.initPlayerUI({ getCurrentBook: () => ({ id: 'heading-book' }), getCurrentChapter: () => 15 });
+        });
+        let statusRequests = 0;
+        await page.route('**/api/chunks/*/*/status', route => {
+          statusRequests++;
+          return route.fulfill({ json: { status: 'unplayable', retryable: false, code: 'CHAPTER_UNSPEAKABLE', totalChunks: 0, readyChunks: 0 } });
+        });
+        await page.evaluate(async () => (await import('/js/views/player-ui.js')).showAudioLoading('Preparing audio'));
+        await page.waitForFunction(() => document.getElementById('audio-loading')?.dataset.status === 'error', null, { timeout: 5000 });
+        assert.match(await page.locator('#audio-loading').textContent(), /no playable text/i);
+        const requestsAtFailure = statusRequests;
+        await page.evaluate(async () => (await import('/js/views/player-ui.js')).showAudioLoading('Preparing audio'));
+        await page.waitForTimeout(1800);
+        assert.equal(statusRequests, requestsAtFailure, 'terminal status stops loading polls even after another preparing update');
+        passed++;
+
       } finally { await context.close(); }
     }
     console.log(`${passed} passed, 0 failed`);
