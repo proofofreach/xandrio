@@ -5895,3 +5895,8 @@ body.login-gate-open { overflow: hidden; }
 .import-activity-actions button { min-height: 44px; white-space: nowrap; }
 .import-activity-card:focus-visible { outline: 2px solid var(--accent, #e5b12d); outline-offset: 3px; }
 @media (max-width: 600px) { .import-activity-card { align-items: flex-start; flex-direction: column; } }
+
+.book-menu-status { display: block; padding: 8px 10px; color: var(--text-secondary); font-size: 13px; }
+.offline-spinner { animation: offline-spin 1s linear infinite; }
+@keyframes offline-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .offline-spinner { animation: none; } }

@@ -52,3 +52,5 @@ Xandrio is a quiet product/tool interface: dense enough for repeated use, but vi
 - Resume-card titles, metadata, and Play occupy explicit rows beside the cover, keeping the action within the cover's vertical span.
 - Settings are grouped by Listening, Voices, Library & Sources, and Server & Account. Voice creation is an explicit disclosure, separate from choosing a narrator.
 - Composition refinements live in composition.css and library-composition.css, both versioned in the offline app shell.
+
+- Download is one request: prepare server audio, automatically save it on this device, then verify it. Rows show preparation progress with a spinner and verified completion with a checkmark. Menus show status text and Cancel download during work; Remove download appears only after completion. Device transfer guidance says to keep Xandrio open.

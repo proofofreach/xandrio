@@ -422,7 +422,7 @@ function installBrowser({
     assert.strictEqual(offline.offlineStatusForBook(book.id).kind, 'ready-to-prepare');
     assert.strictEqual(
       offline.offlineStatusForBook(book.id).label,
-      'Make available offline'
+      'Download'
     );
   });
 
@@ -458,6 +458,67 @@ function installBrowser({
     assert.deepStrictEqual(env.audioRequests, [0, 1]);
     assert.strictEqual(offline.offlineStatusForBook(book.id).kind, 'downloaded');
     assert(!global.__offlineToasts.some(([message]) => message === 'Audio is ready to download'));
+  });
+
+  await test('one request continues from delayed preparation through verified device download', async () => {
+    const preparationResponse = { state: 'preparing', readyChapters: 1, percent: 50 };
+    const env = installBrowser({ book, chapters, cache: makeCache(), preparationResponse });
+    await offline.prepareAndDownloadBookForOffline(book, chapters);
+    assert.deepStrictEqual(env.audioRequests, []);
+    assert.strictEqual(offline.offlineEntryForBook(book.id).autoResume, true);
+    assert.strictEqual(offline.offlineStatusForBook(book.id).preparedChapters, 1);
+    Object.assign(preparationResponse, { state: 'ready', readyChapters: 2, percent: 100 });
+    await offline.refreshOfflinePreparations();
+    assert.deepStrictEqual(env.audioRequests, [0, 1]);
+    assert.deepStrictEqual(env.confirmationCalls, []);
+    assert.strictEqual(offline.offlineEntryForBook(book.id).state, 'ready');
+  });
+
+  await test('cancel during preparation prevents automatic transfer', async () => {
+    const preparationResponse = { state: 'preparing', readyChapters: 0 };
+    const env = installBrowser({ book, chapters, cache: makeCache(), preparationResponse });
+    await offline.prepareAndDownloadBookForOffline(book, chapters);
+    await offline.cancelOfflinePreparation(book.id);
+    preparationResponse.state = 'ready';
+    await offline.refreshOfflinePreparations();
+    assert.deepStrictEqual(env.audioRequests, []);
+    assert.strictEqual(offline.offlineEntryForBook(book.id), null);
+  });
+
+  await test('cancellation wins over an in-flight ready-status response', async () => {
+    const preparationResponse = { state: 'preparing', readyChapters: 0 };
+    const env = installBrowser({ book, chapters, cache: makeCache(), preparationResponse });
+    await offline.prepareAndDownloadBookForOffline(book, chapters);
+    preparationResponse.state = 'ready';
+    await offline.refreshOfflinePreparation(book.id);
+    const originalSend = global.__offlineApiSend;
+    let release;
+    const gate = new Promise(resolve => { release = resolve; });
+    global.__offlineApiSend = async (...args) => {
+      if (args[0] === 'GET') await gate;
+      return originalSend(...args);
+    };
+    const transfer = offline.resumeInterruptedOfflineDownloads();
+    await new Promise(resolve => setImmediate(resolve));
+    await offline.cancelOfflinePreparation(book.id);
+    release();
+    await transfer;
+    assert.deepStrictEqual(env.audioRequests, []);
+    assert.strictEqual(offline.offlineEntryForBook(book.id), null);
+  });
+
+  await test('prepared download waits while hidden and resumes once without confirmation', async () => {
+    const preparationResponse = { state: 'preparing', readyChapters: 0 };
+    const env = installBrowser({ book, chapters, cache: makeCache(), preparationResponse });
+    await offline.prepareAndDownloadBookForOffline(book, chapters);
+    preparationResponse.state = 'ready';
+    document.hidden = true;
+    await offline.refreshOfflinePreparations();
+    assert.deepStrictEqual(env.audioRequests, []);
+    document.hidden = false;
+    await Promise.all([offline.resumeInterruptedOfflineDownloads(), offline.resumeInterruptedOfflineDownloads()]);
+    assert.deepStrictEqual(env.audioRequests, [0, 1]);
+    assert.deepStrictEqual(env.confirmationCalls, []);
   });
 
   await test('a fresh device stays neutral until shared server status is known', async () => {
@@ -1405,7 +1466,7 @@ function installBrowser({
     assert.strictEqual(await offline.refreshOfflinePreparation(book.id), false);
     assert.deepStrictEqual(offline.offlineStatusForBook(book.id), {
       kind: 'ready-to-prepare',
-      label: 'Make available offline',
+      label: 'Download',
       downloaded: false,
       cachedChapters: 0,
       totalChapters: 0
@@ -2254,7 +2315,7 @@ function installBrowser({
     // isAvailableOnDevice in library.js.
     assert(librarySource.includes("kind: 'partial-download'") === false);
     assert(/function isAvailableOnDevice\(status\) \{\s*return Boolean\(status\.downloaded\);/.test(librarySource));
-    assert(librarySource.includes('${escapeHTML(status.label)} (Cancel)'));
+    assert(librarySource.includes('>Cancel download</button>'));
     assert(librarySource.includes('onBookDeleted'));
     assert(librarySource.includes('await removeOfflineBook(id, { removePlaybackState: true })'));
     assert(workerSource.includes("const OFFLINE_TITLE_CACHE = 'xandrio-offline-titles';"));

@@ -26,7 +26,7 @@ const OFFLINE_CONTRACT_MARKER = 'x-xandrio-offline-contract';
  * with OFFLINE_ROUTE_CONTRACT_VERSION instead of tying downloads to a build id.
  * This value MUST equal CACHE_VERSION in public/sw.js.
  */
-export const EXPECTED_OFFLINE_SW_VERSION = 'xandrio-v179';
+export const EXPECTED_OFFLINE_SW_VERSION = 'xandrio-v180';
 export const MINIMUM_OFFLINE_ROUTE_CONTRACT = 1;
 const BLOCK_OFFLINE_ROUTE_CONTRACT = 2;
 // A chapter is only ever invalidated after this many playback failures whose
@@ -214,6 +214,7 @@ export function initOffline(options = {}) {
   window.addEventListener('online', reconcileDeletedOfflineBooks);
   window.addEventListener('online', refreshOfflinePreparations);
   window.addEventListener('online', resumeInterruptedOfflineDownloads);
+  document.addEventListener('visibilitychange', resumeInterruptedOfflineDownloads);
   window.addEventListener('online', updateOfflineBanner);
   window.addEventListener('offline', updateOfflineBanner);
   window.addEventListener('resize', updateOfflineBanner);
@@ -643,7 +644,7 @@ function availableDownloadStatus(cachedChapters = 0, totalChapters = 0) {
   }
   return {
     kind: 'ready-to-prepare',
-    label: 'Make available offline',
+    label: 'Download',
     downloaded: false,
     cachedChapters,
     totalChapters
@@ -673,7 +674,8 @@ export function offlineStatusForBook(bookId) {
       label: `Preparing audio · ${Number(entry.preparedChapters) || 0} of ${totalChapters} · Safe to close`,
       downloaded: false,
       cachedChapters,
-      totalChapters
+      totalChapters,
+      preparedChapters: Number(entry.preparedChapters) || 0
     };
   }
   if (state === 'preparation-waiting') {
@@ -700,7 +702,8 @@ export function offlineStatusForBook(bookId) {
     }
     return {
       kind: 'prepared',
-      label: 'Audio prepared · Download to this device',
+      autoResume: entry.autoResume === true,
+      label: entry.autoResume ? 'Waiting to download · Keep Xandrio open' : 'Audio prepared · Download to this device',
       downloaded: false,
       cachedChapters,
       totalChapters,
@@ -1413,7 +1416,7 @@ function applyPreparationStatus(bookId, status, seed = null, { showReadyToast = 
   };
   saveOfflineManifest(manifest);
   if (
-    showReadyToast &&
+    showReadyToast && !current.autoResume &&
     state === 'prepared' &&
     current.state !== 'prepared' &&
     offlineState(current) !== 'ready'
@@ -1431,7 +1434,8 @@ function schedulePreparationPoll(delayMs = 5000) {
     !navigator.onLine ||
     !Object.values(getOfflineManifest()).some(entry =>
       entry?.storageBackend !== 'idb' &&
-      ['preparing', 'preparation-waiting'].includes(offlineState(entry))
+      (['preparing', 'preparation-waiting'].includes(offlineState(entry)) ||
+        (entry.autoResume && offlineState(entry) === 'prepared'))
     )
   ) return;
   // Server-side preparation continues whether or not anyone is looking at it,
@@ -1478,11 +1482,16 @@ export async function prepareBookForOffline(book, chapters, options = {}) {
   const existing = offlineEntryForBook(id);
   if (offlineState(existing) === 'ready') return true;
   const entry = preparationEntry(book, chapters, existing);
+  if (options.autoResume) {
+    entry.autoResume = true;
+    persistWorkingEntry(id, entry);
+  }
   try {
     const status = await apiSend(
       'POST',
       `/api/offline/preparation/${encodeURIComponent(id)}`
     );
+    if (options.autoResume && !offlineEntryForBook(id)?.autoResume) return false;
     const ready = applyPreparationStatus(id, status, entry, options);
     if (!ready) {
       showToast(
@@ -1494,6 +1503,7 @@ export async function prepareBookForOffline(book, chapters, options = {}) {
     }
     return ready;
   } catch (error) {
+    if (options.autoResume && !offlineEntryForBook(id)?.autoResume) return false;
     persistWorkingEntry(id, {
       ...entry,
       state: error?.status === 429 ? 'preparation-capacity' : 'preparation-error'
@@ -1517,11 +1527,11 @@ export async function prepareAndDownloadBookForOffline(book, chapters, options =
     const [downloaded] = await Promise.all([blockDownload.completion, notificationReady]);
     return downloaded;
   }
-  if (!await prepareBookForOffline(book, chapters, { showReadyToast: false })) {
+  if (!await prepareBookForOffline(book, chapters, { showReadyToast: false, autoResume: true })) {
     await notificationReady;
     return false;
   }
-  return downloadBookForOffline(book, chapters, downloadOptions);
+  return downloadBookForOffline(book, chapters, { ...downloadOptions, confirmForeground: false, requireIntent: true });
 }
 
 async function startBlockOfflineDownload(book, chapters, options = {}) {
@@ -1633,8 +1643,9 @@ export async function refreshOfflinePreparations() {
     .filter(entry => entry?.storageBackend !== 'idb' &&
       ['preparing', 'preparation-waiting'].includes(offlineState(entry)))
     .map(entry => String(entry.bookId));
-  if (preparingIds.length === 0) return false;
+  if (preparingIds.length === 0) return resumeInterruptedOfflineDownloads();
   const results = await Promise.allSettled(preparingIds.map(refreshOfflinePreparation));
+  await resumeInterruptedOfflineDownloads();
   schedulePreparationPoll();
   return results.some(result => result.status === 'fulfilled' && result.value);
 }
@@ -1655,10 +1666,19 @@ export function cancelOfflineDownload(bookId) {
 export async function cancelOfflinePreparation(bookId) {
   const id = String(bookId || '');
   if (!id || !navigator.onLine) return false;
+  if (offlineEntryForBook(id)?.storageBackend === 'idb') {
+    await offlineDevice?.remove(id);
+  }
+  const pending = getOfflineManifest();
+  if (pending[id]) {
+    pending[id] = { ...pending[id], autoResume: false };
+    saveOfflineManifest(pending);
+  }
   await apiSend('DELETE', `/api/offline/preparation/${encodeURIComponent(id)}`);
   const manifest = getOfflineManifest();
   const entry = manifest[id];
   if (entry && [
+    'prepared',
     'preparing',
     'preparation-waiting',
     'preparation-error',
@@ -1668,11 +1688,24 @@ export async function cancelOfflinePreparation(bookId) {
     delete manifest[id];
     saveOfflineManifest(manifest);
   }
-  showToast('Offline setup removed');
+  showToast('Download cancelled');
   return true;
 }
 
+let resumingDownload = false;
+
 export async function resumeInterruptedOfflineDownloads() {
+  if (resumingDownload) return false;
+  resumingDownload = true;
+  try {
+    return await resumeNextOfflineDownload();
+  } finally {
+    resumingDownload = false;
+    schedulePreparationPoll();
+  }
+}
+
+async function resumeNextOfflineDownload() {
   if (
     downloadAbort ||
     !navigator.onLine ||
@@ -1687,7 +1720,7 @@ export async function resumeInterruptedOfflineDownloads() {
       entry?.storageBackend !== 'idb' &&
       entry?.mode === 'full' &&
       validTitleData(entry) &&
-      (offlineState(entry) === 'repairing' || offlineState(entry) === 'incomplete')
+      ['prepared', 'repairing', 'incomplete'].includes(offlineState(entry))
     )
     .sort((left, right) =>
       String(left.downloadStartedAt || '').localeCompare(String(right.downloadStartedAt || ''))
@@ -1696,7 +1729,7 @@ export async function resumeInterruptedOfflineDownloads() {
   return downloadBookForOffline(
     candidate.titleData.book,
     candidate.titleData.chapters,
-    { confirmForeground: false, showOverlay: false }
+    { confirmForeground: false, showOverlay: false, requireIntent: true }
   );
 }
 
@@ -1798,6 +1831,8 @@ export async function downloadBookForOffline(book, chapters, options = {}) {
     'GET',
     `/api/offline/preparation/${encodeURIComponent(book.id)}`
   );
+  if (options.requireIntent && !offlineEntryForBook(book.id)?.autoResume) return false;
+  if (downloadAbort) return false;
   let preparationReady = false;
   try {
     preparationReady = applyPreparationStatus(
