@@ -14,7 +14,7 @@ const OFFLINE_BLOCK_STORE = self.XandrioOfflineStore?.createStore?.() || null;
 const ASSET_VERSIONS = {
   '/style-v3.css': 113,
   '/composition.css': 4,
-  '/library-composition.css': 3,
+  '/library-composition.css': 4,
   '/js/ios-focus-zoom.js': 1,
   '/js/lifecycle.js': 1,
   '/app.js': 138

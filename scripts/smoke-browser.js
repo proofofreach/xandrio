@@ -935,24 +935,27 @@ async function verifyLibraryActions(page) {
   const originalViewport = page.viewportSize();
   for (const width of [390, 1024]) {
     await page.setViewportSize({ width, height: 900 });
-    await page.evaluate(() => {
+    await page.evaluate(async () => {
+      const { getOfflineStorageScopeId } = await import('/js/api.js');
       const id = document.querySelector('[data-offline-status]').dataset.offlineStatus;
       const entry = { bookId: id, mode: 'full', state: 'preparing', chapters: 20,
         preparedChapters: 3, chapterEntries: [], manifestVersion: 3 };
-      localStorage.setItem('xandrio_offline_books:default', JSON.stringify({ [id]: entry }));
+      localStorage.setItem(`xandrio_offline_books:${getOfflineStorageScopeId()}`, JSON.stringify({ [id]: entry }));
       document.dispatchEvent(new CustomEvent('xandrio:offlinechange'));
     });
     const status = page.locator('[data-offline-status]').first();
     if (!(await status.innerText()).includes('Preparing audio · 3/20 chapters') ||
         await status.locator('button').count() !== 0 ||
+        await status.locator('span > span').last().evaluate(el => el.getBoundingClientRect().width <= 1) ||
         !await page.getByRole('menuitem', { name: 'Cancel download', exact: true }).isVisible() ||
         await page.getByRole('menuitem', { name: 'Download', exact: true }).count() !== 0) {
       throw new Error('Preparing download must show progress and an active Cancel action');
     }
     await page.screenshot({ path: `/tmp/xandrio-download-preparing-${width}.png` });
   }
-  await page.evaluate(() => {
-    localStorage.removeItem('xandrio_offline_books:default');
+  await page.evaluate(async () => {
+    const { getOfflineStorageScopeId } = await import('/js/api.js');
+    localStorage.removeItem(`xandrio_offline_books:${getOfflineStorageScopeId()}`);
     document.dispatchEvent(new CustomEvent('xandrio:offlinechange'));
   });
   await page.setViewportSize(originalViewport);

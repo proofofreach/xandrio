@@ -72,7 +72,7 @@
 #library-view .book-list:not(.grid-view) .book-local-control {
   grid-column: auto;
   justify-content: flex-end;
-  max-width: 170px;
+  max-width: 260px;
   margin-left: 0;
   text-align: right;
 }
@@ -81,7 +81,7 @@
   justify-content: flex-end;
   min-height: var(--touch-min);
   padding-inline: var(--space-2);
-  white-space: nowrap;
+  white-space: normal;
 }
 
 #library-view .book-list:not(.grid-view) span.book-local-state {
@@ -178,22 +178,25 @@
 }
 
 @media (max-width: 560px) {
+  #library-view .book-list:not(.grid-view) .book-item-inner {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
   #library-view .book-list:not(.grid-view) .book-local-control {
-    max-width: 44px;
+    grid-column: 1 / -1;
+    max-width: none;
+    margin-left: 50px;
+    justify-content: flex-start;
+    text-align: left;
   }
 
-  #library-view .book-list:not(.grid-view) .book-local-state span {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip: rect(0 0 0 0);
-    white-space: nowrap;
+  #library-view .book-list:not(.grid-view) .book-local-state {
+    justify-content: flex-start;
+    white-space: normal;
   }
 
-  #library-view .book-list:not(.grid-view) .book-local-state svg {
-    width: 19px;
-    height: 19px;
+  #library-view .book-list:not(.grid-view) span.book-local-state {
+    min-height: 24px;
   }
 }
 

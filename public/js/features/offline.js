@@ -26,7 +26,7 @@ const OFFLINE_CONTRACT_MARKER = 'x-xandrio-offline-contract';
  * with OFFLINE_ROUTE_CONTRACT_VERSION instead of tying downloads to a build id.
  * This value MUST equal CACHE_VERSION in public/sw.js.
  */
-export const EXPECTED_OFFLINE_SW_VERSION = 'xandrio-v179';
+export const EXPECTED_OFFLINE_SW_VERSION = 'xandrio-v180';
 export const MINIMUM_OFFLINE_ROUTE_CONTRACT = 1;
 const BLOCK_OFFLINE_ROUTE_CONTRACT = 2;
 // A chapter is only ever invalidated after this many playback failures whose
@@ -1482,12 +1482,16 @@ export async function prepareBookForOffline(book, chapters, options = {}) {
   const existing = offlineEntryForBook(id);
   if (offlineState(existing) === 'ready') return true;
   const entry = preparationEntry(book, chapters, existing);
-  if (options.autoResume) entry.autoResume = true;
+  if (options.autoResume) {
+    entry.autoResume = true;
+    persistWorkingEntry(id, entry);
+  }
   try {
     const status = await apiSend(
       'POST',
       `/api/offline/preparation/${encodeURIComponent(id)}`
     );
+    if (options.autoResume && !offlineEntryForBook(id)?.autoResume) return false;
     const ready = applyPreparationStatus(id, status, entry, options);
     if (!ready) {
       showToast(
@@ -1499,6 +1503,7 @@ export async function prepareBookForOffline(book, chapters, options = {}) {
     }
     return ready;
   } catch (error) {
+    if (options.autoResume && !offlineEntryForBook(id)?.autoResume) return false;
     persistWorkingEntry(id, {
       ...entry,
       state: error?.status === 429 ? 'preparation-capacity' : 'preparation-error'
@@ -1526,7 +1531,7 @@ export async function prepareAndDownloadBookForOffline(book, chapters, options =
     await notificationReady;
     return false;
   }
-  return downloadBookForOffline(book, chapters, { ...downloadOptions, confirmForeground: false });
+  return downloadBookForOffline(book, chapters, { ...downloadOptions, confirmForeground: false, requireIntent: true });
 }
 
 async function startBlockOfflineDownload(book, chapters, options = {}) {

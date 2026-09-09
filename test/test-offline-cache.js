@@ -485,6 +485,28 @@ function installBrowser({
     assert.strictEqual(offline.offlineEntryForBook(book.id), null);
   });
 
+  await test('cancellation wins over an in-flight ready-status response', async () => {
+    const preparationResponse = { state: 'preparing', readyChapters: 0 };
+    const env = installBrowser({ book, chapters, cache: makeCache(), preparationResponse });
+    await offline.prepareAndDownloadBookForOffline(book, chapters);
+    preparationResponse.state = 'ready';
+    await offline.refreshOfflinePreparation(book.id);
+    const originalSend = global.__offlineApiSend;
+    let release;
+    const gate = new Promise(resolve => { release = resolve; });
+    global.__offlineApiSend = async (...args) => {
+      if (args[0] === 'GET') await gate;
+      return originalSend(...args);
+    };
+    const transfer = offline.resumeInterruptedOfflineDownloads();
+    await new Promise(resolve => setImmediate(resolve));
+    await offline.cancelOfflinePreparation(book.id);
+    release();
+    await transfer;
+    assert.deepStrictEqual(env.audioRequests, []);
+    assert.strictEqual(offline.offlineEntryForBook(book.id), null);
+  });
+
   await test('prepared download waits while hidden and resumes once without confirmation', async () => {
     const preparationResponse = { state: 'preparing', readyChapters: 0 };
     const env = installBrowser({ book, chapters, cache: makeCache(), preparationResponse });
