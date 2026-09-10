@@ -12,12 +12,20 @@
   <link rel="preload" href="/fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin>
   <!-- ?v= values must match ASSET_VERSIONS in sw.js (single source of truth) -->
   <link rel="stylesheet" href="style-v3.css?v=113">
-  <link rel="stylesheet" href="composition.css?v=4">
+  <link rel="stylesheet" href="composition.css?v=5">
   <link rel="stylesheet" href="library-composition.css?v=4">
   <script src="/js/ios-focus-zoom.js?v=1" defer></script>
   <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=2">
 </head>
 <body>
+  <!-- Player direction b6bae047, approved cover-first composition.
+  THESIS: Book artwork leads; playback stays within easy reach.
+  SCENE: A phone listener on the move or in low evening light.
+  SYSTEM: Dark neutral ground, existing Inter, ivory controls, amber elapsed time.
+  COMPOSITION: Portrait art, left-aligned metadata, chapter and seek, transport,
+  compact session details and tools. Desktop keeps two columns.
+  CONSTRAINTS: Real covers, intrinsic proportions, full touch targets, visible
+  recovery states and safe-area clearance. Long content remains scrollable. -->
   <div id="deployment-banner" class="deployment-banner" role="alert" hidden></div>
   <!-- Global offline indicator -->
   <div id="offline-banner" class="offline-banner" role="status" aria-live="polite" hidden>
@@ -936,42 +944,45 @@
             <p id="playback-buffering" class="player-buffering" role="status" hidden>Buffering…</p>
           </div>
 
-          <!-- Book-level progress -->
-          <div id="player-book-progress" class="player-book-progress" role="progressbar" aria-label="Book progress" aria-valuemin="0" aria-valuemax="100" hidden>
-            <div class="player-book-progress-meta">
-              <span class="player-book-progress-label">Book progress</span>
-              <span id="book-progress-text" class="player-book-progress-text"></span>
-            </div>
-            <div class="player-book-progress-track" aria-hidden="true" hidden><div id="player-book-progress-fill" class="player-book-progress-fill"></div></div>
-          </div>
           <button id="start-over-btn" class="start-over-btn" type="button" hidden>Start Over</button>
 
           <!-- Main controls -->
           <div class="player-controls">
             <button id="prev-chapter-btn" class="ctrl-btn ctrl-btn-chapter" aria-label="Previous chapter">
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor"><path d="M9.195 18.44c1.25.713 2.805-.19 2.805-1.629v-2.34l6.945 3.968c1.25.714 2.805-.188 2.805-1.628V7.19c0-1.44-1.555-2.342-2.805-1.628L12 9.528v-2.34c0-1.44-1.555-2.343-2.805-1.629L1.2 10.372c-1.25.712-1.25 2.544 0 3.256l7.995 4.812z"/></svg>
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M5 5h2v14H5zM18 5.6v12.8a.8.8 0 0 1-1.2.7l-8.5-6.4a.9.9 0 0 1 0-1.4l8.5-6.4a.8.8 0 0 1 1.2.7Z"/></svg>
             </button>
             <button id="skip-back-btn" class="ctrl-btn" aria-label="Skip back 15 seconds">
-              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9 15L3 9m0 0l6-6M3 9h12a6 6 0 010 12h-3"/></svg>
+              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M8 3 3 7l5 4M3 7h9a8 8 0 1 1-7.4 11"/></svg>
               <span class="skip-label">15</span>
             </button>
             <button id="play-pause-btn" class="ctrl-btn-play" aria-label="Play or pause">
               <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor"><path fill-rule="evenodd" d="M4.5 5.653c0-1.426 1.529-2.33 2.779-1.643l11.54 6.348c1.295.712 1.295 2.572 0 3.285L7.28 19.991c-1.25.687-2.779-.217-2.779-1.643V5.653z" clip-rule="evenodd"/></svg>
             </button>
             <button id="skip-forward-btn" class="ctrl-btn" aria-label="Skip forward 15 seconds">
-              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M15 15l6-6m0 0l-6-6m6 6H9a6 6 0 000 12h3"/></svg>
+              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="m16 3 5 4-5 4m5-4h-9a8 8 0 1 0 7.4 11"/></svg>
               <span class="skip-label">15</span>
             </button>
             <button id="next-chapter-btn" class="ctrl-btn ctrl-btn-chapter" aria-label="Next chapter">
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor"><path d="M5.055 7.19c0-1.44 1.555-2.342 2.805-1.628L12 9.528V7.19c0-1.44 1.555-2.342 2.805-1.628l7.995 4.812c1.25.712 1.25 2.544 0 3.256l-7.995 4.812c-1.25.713-2.805-.19-2.805-1.629v-2.34l-6.945 3.968c-1.25.714-2.805-.19-2.805-1.629V7.19z"/></svg>
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M17 5h2v14h-2zM6 5.6v12.8a.8.8 0 0 0 1.2.7l8.5-6.4a.9.9 0 0 0 0-1.4L7.2 4.9a.8.8 0 0 0-1.2.7Z"/></svg>
             </button>
           </div>
 
-          <button id="player-voice-status" class="player-voice-status" type="button" aria-label="Change narration voice">
-            <span class="player-voice-status-label">Voice</span>
-            <span id="player-voice-name" class="player-voice-status-name">Loading voice...</span>
-            <span id="player-voice-cache" class="player-voice-status-cache">Cache status unavailable</span>
-          </button>
+          <div class="player-session-meta">
+            <!-- Book-level progress -->
+            <div id="player-book-progress" class="player-book-progress" role="progressbar" aria-label="Book progress" aria-valuemin="0" aria-valuemax="100" hidden>
+              <div class="player-book-progress-meta">
+                <span class="player-book-progress-label">Book progress</span>
+                <span id="book-progress-text" class="player-book-progress-text"></span>
+              </div>
+              <div class="player-book-progress-track" aria-hidden="true" hidden><div id="player-book-progress-fill" class="player-book-progress-fill"></div></div>
+            </div>
+            <button id="player-voice-status" class="player-voice-status" type="button" aria-label="Change narration voice">
+              <span class="player-voice-status-label">Voice</span>
+              <span id="player-voice-name" class="player-voice-status-name">Loading voice...</span>
+              <span id="player-voice-cache" class="player-voice-status-cache">Cache status unavailable</span>
+            </button>
+
+          </div>
 
           <nav class="player-utility-row" aria-label="Playback tools">
             <button id="utility-timer-btn" class="player-utility-btn" type="button">

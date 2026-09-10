@@ -141,6 +141,14 @@ async function main() {
             console.log(`  bodyPadTop=${m.bodyPaddingTop} topbarH=${m.topbar?.height} coverH=${m.cover?.height} pageScroll=${m.pageScroll} viewScroll=${m.viewScroll}`);
             console.log(`  controlsBottom=${m.controls?.bottom} utilityBottom=${m.utility?.bottom} viewport=${fold} -> primary controls ${fits ? 'FIT' : 'OVERFLOW by ' + (primaryBottom - fold + Math.max(m.pageScroll, 0)) + 'px'}`);
             console.log(`  horizontal page=${m.pageOverflowX}px view=${m.viewOverflowX}px main=${JSON.stringify(m.mainSizing)} -> ${fitsWidth ? 'FIT' : 'UNCONTAINED'}${m.overflowing.length ? ` ${JSON.stringify(m.overflowing)}` : ''}`);
+            if (device.width < 760) {
+              if (!m.controls || m.controls.bottom > fold - device.insetBottom) {
+                failures.push(`${browserName} ${device.name} transport is below the safe viewport`);
+              }
+              if (!m.cover || m.cover.height < device.height * 0.25) {
+                failures.push(`${browserName} ${device.name} cover occupies less than a quarter of the viewport`);
+              }
+            }
             if (!fitsWidth) failures.push(`${browserName} ${device.name} ${standalone ? 'standalone' : 'tab'} is not horizontally contained`);
           }
         }

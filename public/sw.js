@@ -1,7 +1,7 @@
 importScripts('/js/offline-range.js');
 importScripts('/js/offline-store.js');
 
-const CACHE_VERSION = 'xandrio-v180';
+const CACHE_VERSION = 'xandrio-v181';
 const OFFLINE_ROUTE_CONTRACT_VERSION = 2;
 const OFFLINE_AUDIO_CACHE = 'xandrio-offline-audio';
 const OFFLINE_TITLE_CACHE = 'xandrio-offline-titles';
@@ -13,7 +13,7 @@ const OFFLINE_BLOCK_STORE = self.XandrioOfflineStore?.createStore?.() || null;
 // invalidate via CACHE_VERSION.
 const ASSET_VERSIONS = {
   '/style-v3.css': 113,
-  '/composition.css': 4,
+  '/composition.css': 5,
   '/library-composition.css': 4,
   '/js/ios-focus-zoom.js': 1,
   '/js/lifecycle.js': 1,
