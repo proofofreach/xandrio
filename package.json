@@ -97,7 +97,7 @@
     "puppeteer-extra-plugin-stealth": "^2.11.2",
     "puppeteer-extra-plugin-user-data-dir": "2.3.3",
     "puppeteer-extra-plugin-user-preferences": "2.3.3",
-    "undici": "8.10.0",
+    "undici": "8.10.2",
     "web-push": "3.6.7"
   },
   "devDependencies": {
