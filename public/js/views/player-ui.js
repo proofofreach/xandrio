@@ -98,6 +98,7 @@ function paintProgressLabels({ current, total, remaining, percent, context }) {
   const slider = document.getElementById('progress-slider');
   if (slider && Number.isFinite(percent)) {
     slider.value = Math.max(0, Math.min(100, percent));
+    slider.style.setProperty('--seek-percent', `${slider.value}%`);
     slider.dataset.duration = String(total);
     slider.setAttribute('aria-valuetext', `${formatTime(current)} of ${formatTime(total)}, ${context}. ${formatTime(listeningRemaining)} listening time left at ${rate}x`);
   }

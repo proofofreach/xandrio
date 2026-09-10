@@ -80,6 +80,12 @@ const { startScenarioEnvironment } = require('./fixtures/scenarios/lib/environme
           await page.evaluate(() => { document.documentElement.style.zoom = '1.4'; });
           const play = await page.locator('#play-pause-btn').boundingBox();
           assert(play.y >= 0 && play.y + play.height <= 844, 'Play stays visible at enlarged text scale');
+          const transport = await page.locator('.player-controls > button').evaluateAll(buttons => buttons.map(button => {
+            const rect = button.getBoundingClientRect();
+            return { id: button.id, left: rect.left, right: rect.right, width: rect.width, height: rect.height };
+          }));
+          assert(transport.every(button => button.left >= 0 && button.right <= 390 && button.width >= 44 && button.height >= 44),
+            `all transport targets remain visible and usable with enlarged text: ${JSON.stringify(transport)}`);
           await page.evaluate(() => { document.documentElement.style.zoom = ''; });
         }
         await page.locator('#chapter-sheet-btn').click();

@@ -39,6 +39,10 @@ async function main() {
           view.paintChapterTimes({ currentTime: 1800, totalTime: 3600, progressPercent: 50 });
           document.getElementById('progress-slider').addEventListener('change', event => { window.seekValue = Number(event.target.value); }, { capture: true });
         });
+        assert.equal(await slider.evaluate(element => element.style.getPropertyValue('--seek-percent')), '50%', 'elapsed track follows playback position');
+        await page.evaluate(async () => (await import('/js/views/player-ui.js')).paintScrubPreview(75));
+        assert.equal(await slider.evaluate(element => element.style.getPropertyValue('--seek-percent')), '75%', 'elapsed track follows the scrub preview');
+        await page.evaluate(async () => (await import('/js/views/player-ui.js')).paintChapterTimes({ currentTime: 1800, totalTime: 3600, progressPercent: 50 }));
         await slider.focus();
         await slider.press('ArrowRight');
         assert(Math.abs(await page.evaluate(() => window.seekValue) - (1805 / 3600 * 100)) < 0.0001, 'keyboard seeks five seconds, not one percent');

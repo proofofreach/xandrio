@@ -46,8 +46,12 @@ Xandrio is a quiet product/tool interface: dense enough for repeated use, but vi
 
 ## Composition
 
-- The player uses one alignment for chapter, narration status, timeline, and transport. Chapter navigation has one visible entry point. Book completion is a text summary; the selected timeline remains the seek control.
-- Playback preparation and recovery stay in one status area between chapter and timeline on every viewport.
+- The player is cover-first on phones. Show the real portrait cover at its intrinsic ratio without a square container or crop, then a left-aligned 24px semibold title and author. Use 24px phone gutters.
+- On ordinary phone heights, cap cover height at `clamp(180px, 34svh, 340px)`. At 740px viewport height or less, cap it at `27svh`. When the player content is 280px wide or less, cap it at the smaller of `34svh` and `80cqw`; extend transport 12px into each gutter, remove its gaps, and use 44px secondary controls with a 64px play control.
+- The player uses one alignment for chapter, narration status, timeline, and compact transport. Chapter navigation has one visible entry point. The native seek range uses amber for elapsed audio and the muted border color for the remainder; its Chapter and Book scope controls retain full-size touch targets.
+- Playback preparation, loading, recovery, reliability, resume, and error states stay in one visible status area between chapter and timeline on every viewport.
+- Pair the book completion summary with the changeable narrator metadata after transport. Place Sleep, Bookmark, Speed, optional Guide, and book details below as quiet secondary tools. Keep long and short phone layouts scrollable when all recovery content is present.
+- At 760px and wider, retain the two-column player with cover and book details beside the control column.
 - Continue Listening uses horizontal resume cards. Shelf rows place offline actions beside the book metadata, with full-size touch targets. Open menus must escape the list paint boundary.
 - Resume-card titles, metadata, and Play occupy explicit rows beside the cover, keeping the action within the cover's vertical span.
 - Settings are grouped by Listening, Voices, Library & Sources, and Server & Account. Voice creation is an explicit disclosure, separate from choosing a narrator.
