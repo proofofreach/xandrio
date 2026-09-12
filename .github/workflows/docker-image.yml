@@ -164,7 +164,7 @@ jobs:
             --entrypoint python xandrio-chatterbox:release-check -c \
             "from pathlib import Path; assert Path('/app/data/voice-references/release-check.wav').read_text() == 'reference'"
       - name: Scan optional engine image
-        uses: aquasecurity/trivy-action@b6643a29fecd7f34b3597bc6acb0a98b03d33ff8 # v0.33.1
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: xandrio-${{ matrix.engine }}:release-check
           format: table
@@ -462,7 +462,7 @@ jobs:
             printf 'FIRST-01: checksummed backup -> clean restore -> candidate verification -> repeat restore verification passed.\n' > release/RELEASE_DATA_GATE.txt
           fi
       - name: Scan the tested digest
-        uses: aquasecurity/trivy-action@b6643a29fecd7f34b3597bc6acb0a98b03d33ff8 # v0.33.1
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: ${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
           format: table
