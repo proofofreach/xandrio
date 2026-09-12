@@ -3,6 +3,7 @@
 const fs = require('fs/promises');
 const os = require('os');
 const path = require('path');
+const { escapeHtml, writeBenchmarkReport } = require('./lib/benchmark-report');
 const TTSQueue = require('../lib/tts-queue');
 const { getKokoroChunkSize } = require('../lib/kokoro-tuning');
 const {
@@ -165,13 +166,6 @@ function screenStrategies(results) {
   };
 }
 
-function escapeHtml(value) {
-  return String(value)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-}
 
 async function writeReport(outputDir, report) {
   const rows = report.results.map(result => `
@@ -202,8 +196,7 @@ code{background:#f3f3f3;padding:2px 5px;border-radius:4px}
   <tbody>${rows}</tbody>
 </table>
 <p>The acoustic gate detects damaged output; it does not establish perceptual narration quality. This screening report never changes the default. Any finalist must proceed to a representative, blinded comparison across multiple passages and voices.</p>`;
-  await fs.writeFile(path.join(outputDir, 'report.html'), html);
-  await fs.writeFile(path.join(outputDir, 'report.json'), JSON.stringify(report, null, 2));
+  await writeBenchmarkReport(outputDir, html, report);
 }
 
 async function main() {

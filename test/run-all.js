@@ -141,6 +141,7 @@ const tests = [
   'test-zlibrary.js',
   'test-zlibrary-routes.js',
   'test-remote-fetch.js',
+  'test-remote-download.js',
   'test-acquisition-fetch-safety.js',
   'test-annas-origin.js',
   'test-annas-routes.js',

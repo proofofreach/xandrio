@@ -5,6 +5,7 @@ const fs = require('fs/promises');
 const fsSync = require('fs');
 const os = require('os');
 const path = require('path');
+const { escapeHtml, writeBenchmarkReport } = require('./lib/benchmark-report');
 const { execFile } = require('child_process');
 const { promisify } = require('util');
 const {
@@ -295,13 +296,6 @@ function formatBytes(bytes) {
   return `${value} B`;
 }
 
-function escapeHtml(value) {
-  return String(value || '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-}
 
 function displayOutputFormat(format) {
   return String(format || '').toLowerCase() === 'raw-wav' ? 'RAW WAV' : String(format || '').toUpperCase();
@@ -360,8 +354,7 @@ dt{color:#999}dd{margin:0}a{color:#d4af37;overflow-wrap:anywhere}pre{background:
 ${comparisons}
 <h2>JSON</h2>
 <pre>${escapeHtml(JSON.stringify(report, null, 2))}</pre>`;
-  await fs.writeFile(path.join(outputDir, 'report.html'), html);
-  await fs.writeFile(path.join(outputDir, 'report.json'), JSON.stringify(report, null, 2));
+  await writeBenchmarkReport(outputDir, html, report);
 }
 
 async function main() {

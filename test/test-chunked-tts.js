@@ -24,6 +24,19 @@ const TTSQueue = require('../lib/tts-queue');
 
 let passed = 0;
 let failed = 0;
+const asyncTests = [];
+let asyncTestsSettled = false;
+
+process.once('beforeExit', () => {
+  if (asyncTestsSettled) return;
+  console.error('Chunked-TTS suite exited with unresolved async tests');
+  process.exitCode = 1;
+});
+
+function trackAsyncTest(name, promise) {
+  asyncTests.push({ name, promise });
+  return promise;
+}
 
 function assert(condition, label) {
   if (condition) {
@@ -235,7 +248,7 @@ section('1. Text splitting');
 
 section('2. Manifest tracking');
 
-(async () => {
+trackAsyncTest('Manifest tracking', (async () => {
   const mockQueue = new MockQueue();
   const tts = new ChunkedTTS('/tmp/test-cache', mockQueue);
   for (const operation of [
@@ -376,13 +389,13 @@ section('2. Manifest tracking');
     'Dialogue semantics are retained through enqueue');
   assert(structuredJob.text.includes('“Wait—don’t go,”'), 'Dialogue punctuation is not flattened');
   assertEqual(structuredJob.narration.pauseIntent, 'paragraph', 'Final paragraph pause intent is retained');
-})();
+})());
 
 // ─── Durable ordinary generation recovery ──────────────────────────────────
 
 section('Durable ordinary generation recovery');
 
-(async () => {
+trackAsyncTest('Durable ordinary generation recovery', (async () => {
   const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'xandrio-chapter-journal-'));
   try {
     const journal = new GenerationJournal(path.join(tmpDir, 'generation-journal.json'));
@@ -498,9 +511,9 @@ section('Durable ordinary generation recovery');
   } finally {
     await fsp.rm(tmpDir, { recursive: true, force: true });
   }
-})();
+})());
 
-(async () => {
+trackAsyncTest('All-variant recovery quiescence', (async () => {
   const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'xandrio-recovery-quiesce-'));
   try {
     const journal = new GenerationJournal(path.join(tmpDir, 'journal.json'));
@@ -532,9 +545,9 @@ section('Durable ordinary generation recovery');
   } finally {
     await fsp.rm(tmpDir, { recursive: true, force: true });
   }
-})();
+})());
 
-(async () => {
+trackAsyncTest('Transient generation recovery', (async () => {
   const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'xandrio-retry-journal-'));
   try {
     const journal = new GenerationJournal(path.join(tmpDir, 'journal.json'));
@@ -613,13 +626,13 @@ section('Durable ordinary generation recovery');
   } finally {
     await fsp.rm(tmpDir, { recursive: true, force: true });
   }
-})();
+})());
 
 // ─── 3. Cache Detection ─────────────────────────────────────────────────────
 
 section('3. Cache detection');
 
-(async () => {
+trackAsyncTest('Cache detection', (async () => {
   const mockQueue = new MockQueue();
   const tts = new ChunkedTTS('/tmp/test-cache', mockQueue, { chunkSize: 50 });
 
@@ -668,7 +681,7 @@ section('3. Cache detection');
   // 3f. _fileExists is called for each chunk
   assert(callCount >= manifest.totalChunks,
     `_fileExists called at least once per chunk (${callCount} calls for ${manifest.totalChunks} chunks)`);
-})();
+})());
 
 // ─── 4. File path generation ─────────────────────────────────────────────────
 
@@ -698,7 +711,7 @@ section('4. File path generation');
   assert(rejectedTraversal, 'chunkPath rejects path traversal book ids');
 })();
 
-(async () => {
+trackAsyncTest('Chapter audio deletion', (async () => {
   const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'xandrio-delete-gap-'));
   try {
     const tts = new ChunkedTTS(tmpDir, null, { variantKeyProvider: () => 'kokoro:test' });
@@ -716,13 +729,13 @@ section('4. File path generation');
   } finally {
     await fsp.rm(tmpDir, { recursive: true, force: true });
   }
-})();
+})());
 
 // ─── 5. No queue → error on generate ────────────────────────────────────────
 
 section('5. Queue requirement');
 
-(async () => {
+trackAsyncTest('Queue requirement', (async () => {
   const tts = new ChunkedTTS('/tmp/test-cache'); // no queue
   let threw = false;
   try {
@@ -732,7 +745,7 @@ section('5. Queue requirement');
     assert(e.message.includes('TTSQueue'), 'Error mentions TTSQueue');
   }
   assert(threw, 'generateChapter throws without queue');
-})();
+})());
 
 // ─── 6. Edge cases for splitting ─────────────────────────────────────────────
 
@@ -821,6 +834,74 @@ section('Variant-scoped cache paths');
   );
 })();
 
+// ─── Chunk artifact render requests ─────────────────────────────────────────
+
+section('Chunk artifact render requests');
+
+trackAsyncTest('Chunk artifact render requests', (async () => {
+  const cacheDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'xandrio-render-request-'));
+  try {
+    const requests = {
+      reuse: [],
+      fingerprint: [],
+      index: []
+    };
+    const queue = new EventEmitter();
+    queue.reuseRenderedOutput = async request => {
+      requests.reuse.push(request);
+      return false;
+    };
+    queue.renderedOutputFingerprint = request => {
+      requests.fingerprint.push(request);
+      return `fingerprint-${request.activity.chunkIndex}`;
+    };
+    queue.indexRenderedOutput = async request => {
+      requests.index.push(request);
+      return true;
+    };
+    const tts = new ChunkedTTS(cacheDir, queue, {
+      chunkSize: 70,
+      variantKeyProvider: () => 'render-parity:chunk70',
+      voiceProvider: () => 'kokoro:parity_voice'
+    });
+    const text = [
+      'First paragraph has enough words to become one audio chunk.',
+      'Second paragraph has enough words to become another audio chunk.'
+    ].join('\n\n');
+
+    const manifest = await tts.reconstructChapterManifest('render-parity', 3, text, 'fr');
+    const plan = await tts.chapterArtifactReusePlan('render-parity', 3, text, 'fr');
+    const indexed = await tts.indexChapterArtifacts('render-parity', 3, text, 'fr');
+
+    assertEqual(requests.reuse.length, manifest.totalChunks,
+      'Manifest reuse receives one canonical request per chunk');
+    assertEqual(plan.artifacts.length, manifest.totalChunks,
+      'Artifact plan fingerprints every canonical chunk request');
+    assertEqual(indexed, manifest.totalChunks,
+      'Artifact indexing receives every canonical chunk request');
+    assertDeep(requests.fingerprint, requests.reuse,
+      'Artifact fingerprints preserve the manifest reuse request fields');
+    assertDeep(requests.index, requests.reuse,
+      'Artifact indexing preserves the manifest reuse request fields');
+    assert(requests.reuse.every(request => (
+      request.language === 'fr' &&
+      request.voice === 'kokoro:parity_voice' &&
+      request.activity.variantKey === 'render-parity:chunk70' &&
+      request.outputPath === tts.chunkPath('render-parity', 3, request.activity.chunkIndex) &&
+      typeof request.text === 'string' &&
+      Number.isFinite(request.padEndMs) &&
+      Array.isArray(request.narration?.segments)
+    )), 'Canonical requests preserve render identity fields and metadata');
+    assertEqual(requests.reuse.at(-1).padEndMs, CHAPTER_PAUSE_MS,
+      'Canonical final request preserves the chapter-ending pause');
+  } finally {
+    await fsp.rm(cacheDir, { recursive: true, force: true });
+  }
+})().catch(error => {
+  failed++;
+  console.error(`  ❌ Chunk artifact render requests — ${error.stack || error.message}`);
+}));
+
 (() => {
   const coordinator = new ChunkedTTS('/tmp/test-cache', new MockQueue());
   const cancelled = [];
@@ -841,7 +922,7 @@ section('Variant-scoped cache paths');
 
 section('Chunk seek planning');
 
-(async () => {
+trackAsyncTest('Chunk seek planning', (async () => {
   const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'xandrio-seek-plan-'));
   try {
     const tts = new ChunkedTTS(dir);
@@ -882,17 +963,24 @@ section('Chunk seek planning');
 })().catch(error => {
   failed++;
   console.error(`  ❌ Chunk seek planning — ${error.stack || error.message}`);
-});
+}));
 
 // ─── Summary ─────────────────────────────────────────────────────────────────
 
-// Wait for async tests to finish
-setTimeout(() => {
+void (async () => {
+  const settled = await Promise.allSettled(asyncTests.map(test => test.promise));
+  asyncTestsSettled = true;
+  for (let index = 0; index < settled.length; index++) {
+    const result = settled[index];
+    if (result.status === 'fulfilled') continue;
+    failed++;
+    console.error(`  ❌ ${asyncTests[index].name} — ${result.reason?.stack || result.reason?.message || result.reason}`);
+  }
   console.log(`\n${'═'.repeat(50)}`);
   console.log(`Results: ${passed} passed, ${failed} failed`);
-  if (failed > 0) {
-    process.exit(1);
-  } else {
-    console.log('All tests passed! ✅');
-  }
-}, 500);
+  if (failed === 0) console.log('All tests passed! ✅');
+  process.exit(failed > 0 ? 1 : 0);
+})().catch(error => {
+  console.error(error.stack || error.message);
+  process.exit(1);
+});

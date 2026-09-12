@@ -4,6 +4,7 @@ const crypto = require('crypto');
 const fs = require('fs/promises');
 const os = require('os');
 const path = require('path');
+const { escapeHtml, writeBenchmarkReport } = require('./lib/benchmark-report');
 const { execFile } = require('child_process');
 const { promisify } = require('util');
 const TTSQueue = require('../lib/tts-queue');
@@ -245,13 +246,6 @@ function aggregateRuns(runs) {
   };
 }
 
-function escapeHtml(value) {
-  return String(value)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-}
 
 async function writeReport(outputDir, report) {
   const cards = report.samples.map(sample => `
@@ -291,8 +285,7 @@ table{border-collapse:collapse;width:100%;margin-top:20px}th,td{border:1px solid
   </tbody>
 </table>
 <p>Default gate: adopt the candidate only if it has no new truncation or pronunciation failures, no criterion drops by more than one point, and its mean listening score is no worse than control.</p>`;
-  await fs.writeFile(path.join(outputDir, 'report.html'), html);
-  await fs.writeFile(path.join(outputDir, 'report.json'), JSON.stringify(report, null, 2));
+  await writeBenchmarkReport(outputDir, html, report);
 }
 
 async function main() {
