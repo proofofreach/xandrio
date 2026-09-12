@@ -161,14 +161,14 @@ section('Format dispatch, metadata, and covers');
   await fs.utimes(source, new Date(Date.now() - 60_000), new Date(Date.now() - 60_000));
   try {
     await fs.writeFile(path.join(dir, 'cached.chapters.json'), JSON.stringify({
-      _cacheVersion: 24,
+      _cacheVersion: 28,
       chapters: [chapter('Stale version-24 chapter')]
     }));
     const first = await document.getChaptersCached(source);
     const second = await document.getChaptersCached(source);
     const cachedCalls = calls.filter(call => call === `chapters:pdf:${source}`).length;
     assert(first[0].title === 'PDF chapter' && first[0].normalized && second[0].normalized && cachedCalls === 1,
-      'regenerates version-24 chapter caches, then reuses the current extraction');
+      'regenerates version-28 chapter caches, then reuses the current extraction');
 
     let generationCalls = 0;
     const generationSource = path.join(dir, 'generation.pdf');
@@ -194,7 +194,7 @@ section('Format dispatch, metadata, and covers');
     await fs.writeFile(atomicSource, 'atomic source');
     await fs.utimes(atomicSource, new Date(Date.now() - 60_000), new Date(Date.now() - 60_000));
     const originalCache = JSON.stringify({
-      _cacheVersion: 28,
+      _cacheVersion: 30,
       chapters: [chapter('Existing cache')]
     });
     await fs.writeFile(atomicCache, originalCache);

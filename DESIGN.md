@@ -20,7 +20,15 @@ Xandrio is a quiet product/tool interface: dense enough for repeated use, but vi
 | `--danger` | `oklch(58% 0.22 29)` |
 | `--success` | `oklch(64% 0.17 148)` |
 | `--radius` | `8px` |
-| `--touch-min` | `44px` |
+| `--radius-cover` | `4px` |
+| `--radius-sheet` | `24px` |
+| `--space-1/2/3/4/6/8` | `4/8/12/16/24/32px` |
+| `--weight-regular/semibold/bold` | `400/600/700` |
+| `--touch-min` | `45px` |
+
+- Inter remains the interface family. Use regular for body and supporting text, semibold for titles and controls, and bold for primary emphasis. Do not introduce intermediate weights.
+- Use the spacing scale for grouped content and section separation. Phone gutters remain 16px plus safe-area protection; compact shelf rows retain their optical spacing and full-size touch targets.
+- Covers use 4px corners, ordinary controls and cards use 8px, and modal or sheet shells use 24px. Bottom sheets round only their top corners. Circular transport controls remain circular.
 
 ## Patterns
 
@@ -35,3 +43,18 @@ Xandrio is a quiet product/tool interface: dense enough for repeated use, but vi
 - No `backdrop-filter`; prefer solid surfaces and cover-derived ambient art.
 - No emoji UI icons.
 - Do not move engine code into view modules. Engine state stays in `app.js` and is passed to views through getters/functions.
+
+## Composition
+
+- The player is cover-first on phones. Show the real portrait cover at its intrinsic ratio without a square container or crop, then a left-aligned 24px semibold title and author. Use 24px phone gutters.
+- On ordinary phone heights, cap cover height at `clamp(180px, 34svh, 340px)`. At 740px viewport height or less, cap it at `27svh`. When the player content is 280px wide or less, cap it at the smaller of `34svh` and `80cqw`; extend transport 12px into each gutter, remove its gaps, and use 44px secondary controls with a 64px play control.
+- The player uses one alignment for chapter, narration status, timeline, and compact transport. Chapter navigation has one visible entry point. The native seek range uses amber for elapsed audio and the muted border color for the remainder; its Chapter and Book scope controls retain full-size touch targets.
+- Playback preparation, loading, recovery, reliability, resume, and error states stay in one visible status area between chapter and timeline on every viewport.
+- Pair the book completion summary with the changeable narrator metadata after transport. Place Sleep, Bookmark, Speed, optional Guide, and book details below as quiet secondary tools. Keep long and short phone layouts scrollable when all recovery content is present.
+- At 760px and wider, retain the two-column player with cover and book details beside the control column.
+- Continue Listening uses horizontal resume cards. Shelf rows place offline actions beside the book metadata, with full-size touch targets. Open menus must escape the list paint boundary.
+- Resume-card titles, metadata, and Play occupy explicit rows beside the cover, keeping the action within the cover's vertical span.
+- Settings are grouped by Listening, Voices, Library & Sources, and Server & Account. Voice creation is an explicit disclosure, separate from choosing a narrator.
+- Composition refinements live in composition.css and library-composition.css, both versioned in the offline app shell.
+
+- Download is one request: prepare server audio, automatically save it on this device, then verify it. Rows show preparation progress with a spinner and verified completion with a checkmark. Menus show status text and Cancel download during work; Remove download appears only after completion. Device transfer guidance says to keep Xandrio open.

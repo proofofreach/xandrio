@@ -51,6 +51,7 @@ export function initPlayerUI(options = {}) {
   audioLoadingFill = document.getElementById('audio-loading-fill');
   audioLoadingActions = document.getElementById('audio-loading-actions');
   playPauseBtn = document.getElementById('play-pause-btn');
+  document.getElementById('progress-slider')?.addEventListener('keydown', handleProgressKey);
   document.querySelectorAll('[data-progress-scope]').forEach(button => {
     button.addEventListener('click', () => setPlaybackProgressScope(button.dataset.progressScope));
   });
@@ -79,18 +80,53 @@ function completeBookTimeline() {
 }
 
 function paintProgressLabels({ current, total, remaining, percent, context }) {
+  const rate = Number(deps.getCurrentPlaybackSpeed?.()) || 1;
+  const listeningRemaining = Math.max(0, remaining) / rate;
   const currentEl = document.getElementById('chapter-progress-current');
   const totalEl = document.getElementById('chapter-progress-total');
   const contextEl = document.getElementById('player-progress-context');
   if (currentEl) currentEl.textContent = formatTime(current);
   if (totalEl) {
     totalEl.textContent = getTimeDisplayMode() === 'remaining'
-      ? `-${formatTime(Math.max(0, remaining))}`
+      ? `-${formatTime(listeningRemaining)} left`
       : formatTime(total);
+    totalEl.setAttribute('aria-label', getTimeDisplayMode() === 'remaining'
+      ? `${formatTime(listeningRemaining)} listening time left at ${rate}x. Show total audio time`
+      : `${formatTime(total)} total audio time. Show listening time left`);
   }
   if (contextEl) contextEl.textContent = context;
   const slider = document.getElementById('progress-slider');
-  if (slider && Number.isFinite(percent)) slider.value = Math.max(0, Math.min(100, percent));
+  if (slider && Number.isFinite(percent)) {
+    slider.value = Math.max(0, Math.min(100, percent));
+    slider.style.setProperty('--seek-percent', `${slider.value}%`);
+    slider.dataset.duration = String(total);
+    slider.setAttribute('aria-valuetext', `${formatTime(current)} of ${formatTime(total)}, ${context}. ${formatTime(listeningRemaining)} listening time left at ${rate}x`);
+  }
+}
+
+function handleProgressKey(event) {
+  const seconds = { ArrowLeft: -5, ArrowDown: -5, ArrowRight: 5, ArrowUp: 5, PageDown: -30, PageUp: 30 };
+  if (!(event.key in seconds) && event.key !== 'Home' && event.key !== 'End') return;
+  if (event.altKey || event.ctrlKey || event.metaKey) return;
+  event.preventDefault();
+  const slider = event.currentTarget;
+  const duration = Number(slider.dataset.duration);
+  if (!(duration > 0)) return;
+  const percent = event.key === 'Home' ? 0 : event.key === 'End' ? 100
+    : Number(slider.value) + seconds[event.key] / duration * 100;
+  slider.value = Math.max(0, Math.min(100, percent));
+  slider.dispatchEvent(new Event('input', { bubbles: true }));
+  slider.dispatchEvent(new Event('change', { bubbles: true }));
+}
+
+export function refreshPlaybackTimes() {
+  paintChapterTimes(lastChunkTimeData);
+  updateBookProgress();
+}
+
+export function setPlaybackBuffering(buffering) {
+  const status = document.getElementById('playback-buffering');
+  if (status) status.hidden = !buffering;
 }
 
 export function getPlaybackProgressScope() {
@@ -246,6 +282,7 @@ function humanizeWaitingMessage(message) {
 }
 
 export function handleChunkWaiting(message) {
+  setPlaybackBuffering(false);
   if (!narrationPreparingStartedAt) narrationPreparingStartedAt = Date.now();
   showAudioLoading(humanizeWaitingMessage(message) || 'Preparing narration…', {
     detail: narrationPreparationDetail(),
@@ -555,6 +592,7 @@ export function dismissChapterSheet() {
 // existing generic copy stays put.
 let audioLoadingPollTimer = null;
 let audioLoadingPollKey = null;
+let unplayableLoadingKey = null;
 
 function stopAudioLoadingPoll() {
   if (audioLoadingPollTimer) {
@@ -582,6 +620,14 @@ function startAudioLoadingPoll() {
     }
     try {
       const data = await apiGet(`/api/chunks/${encodeURIComponent(bookId)}/${chapterIndex}/status`);
+      if (audioLoadingPollKey !== key) return;
+      if (data.status === 'unplayable' || data.retryable === false) {
+        unplayableLoadingKey = key;
+        showAudioLoading('This section has no playable text', {
+          status: 'error', detail: 'Select the next section from Contents.'
+        });
+        return;
+      }
       if (!Number.isFinite(data.totalChunks) || data.totalChunks <= 0) return;
       if (loadingDetail) {
         loadingDetail.textContent = `Preparing audio · ${data.readyChunks} of ${data.totalChunks} segments`;
@@ -599,6 +645,13 @@ function startAudioLoadingPoll() {
 }
 
 export function showAudioLoading(text, options = {}) {
+  const key = `${deps.getCurrentBook?.()?.id}:${deps.getCurrentChapter?.()}`;
+  if (unplayableLoadingKey === key) {
+    text = 'This section has no playable text';
+    options = { status: 'error', detail: 'Select the next section from Contents.' };
+  } else {
+    unplayableLoadingKey = null;
+  }
   if (audioLoading && loadingText) {
     loadingText.textContent = text;
     const status = options.status || 'preparing';
@@ -628,6 +681,7 @@ export function showAudioLoading(text, options = {}) {
 }
 
 export function hideAudioLoading() {
+  unplayableLoadingKey = null;
   if (audioLoading) {
     audioLoading.style.display = 'none';
     audioLoading.dataset.status = '';

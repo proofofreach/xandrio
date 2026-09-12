@@ -398,6 +398,7 @@ function fakeAudio() {
         rewindSeconds: 0,
         targetSeconds: null
       }),
+      checkAutomaticSleepTimer: () => {},
       expireSleepTimer: reason => appImports.sleepExpiries.push(reason),
       isSleepTimerChapterTarget: () => appImports.sleepTarget,
       displayChapterTitle: () => 'Chapter',
@@ -427,6 +428,7 @@ function fakeAudio() {
       hideAudioLoading() {},
       setChunkOverlayState(...args) { appImports.overlays.push(args); },
       setPlaybackReliabilityState(...args) { appImports.reliabilityStates.push(args); },
+      setPlaybackBuffering() {},
       setResumePromptVisible(visible) { appImports.resumePromptStates.push(visible); },
       showToast(...args) { appImports.toasts.push(args); },
       syncMiniPlayerIcon() {},
@@ -461,6 +463,7 @@ function fakeAudio() {
       + `\nglobalThis.__playbackAppHarness = {
         configure({ book, chapters: nextChapters, player, chapter, openingBook = null, chapterIndex = 0 }) {
           currentBook = book;
+          playbackPausedByUser = false;
           openingBookId = openingBook;
           currentChapter = Number.isInteger(chapterIndex) ? chapterIndex : 0;
           chapters = nextChapters;
@@ -482,6 +485,7 @@ function fakeAudio() {
         skip,
         estimateChapterPlaybackDuration,
         togglePlayPause,
+        pausePlaybackForUser,
         handleChunkError,
         cancelPlaybackRecovery,
         invalidatePlaybackRecoveryForUserSeek,
@@ -521,6 +525,9 @@ function fakeAudio() {
           value: {
             addEventListener(type, fn, options) {
               appImports.windowListeners.push({ type, fn, options });
+            },
+            removeEventListener(type, fn) {
+              appImports.windowListeners = appImports.windowListeners.filter(entry => entry.type !== type || entry.fn !== fn);
             },
             localStorage: fakeLocalStorage,
             setTimeout(callback, delay) {
@@ -680,6 +687,70 @@ function fakeAudio() {
         1,
         'reconnect spends the first automatic load attempt, not a third'
       );
+      const pendingRetry = appImports.pendingTimeouts.filter(entry => entry.delay === 250 && !entry.cancelled).at(-1);
+      offlinePlayer.isPlaying = true;
+      await globalThis.__playbackAppHarness.togglePlayPause();
+      assert.strictEqual(pendingRetry.cancelled, true, 'Pause cancels the scheduled reconnect');
+      const transitionsBeforePause = appImports.transitionRequests.length;
+      await pendingRetry.callback();
+      assert.strictEqual(appImports.transitionRequests.length, transitionsBeforePause, 'a cancelled timer delivered late cannot reload or resume');
+      const delaysBeforeLateError = appImports.timeoutDelays.length;
+      globalThis.__playbackAppHarness.handleChunkError(stalled);
+      assert.strictEqual(appImports.timeoutDelays.length, delaysBeforeLateError, 'late errors after Pause cannot restart recovery');
+
+      // A lock-screen pause also cancels recovery when the engine is already
+      // marked paused while its replacement source is being prepared.
+      globalThis.__playbackAppHarness.configure({ book: { id: 'book-a' }, chapters: [{ title: 'One' }], player: offlinePlayer, chapter: uiElement });
+      globalThis.__playbackAppHarness.handleChunkError(stalled);
+      const mediaRetry = appImports.pendingTimeouts.filter(entry => entry.delay === 250 && !entry.cancelled).at(-1);
+      offlinePlayer.isPlaying = false;
+      globalThis.__playbackAppHarness.pausePlaybackForUser();
+      assert.strictEqual(mediaRetry.cancelled, true, 'lock-screen Pause cancels recovery even without a ready playing source');
+
+      const readyPlayer = engine('ready-pause');
+      readyPlayer.bookId = 'book-a';
+      let readySource = true;
+      readyPlayer.ownsReadySource = () => readySource;
+      readyPlayer.cancelPendingLoad = () => { readySource = false; };
+      globalThis.__playbackAppHarness.configure({ book: { id: 'book-a' }, chapters: [{ title: 'One' }], player: readyPlayer, chapter: uiElement });
+      globalThis.__playbackAppHarness.pausePlaybackForUser();
+      assert.strictEqual(readySource, true, 'ordinary Pause preserves the native ready source');
+      const beforeReadyResume = appImports.transitionRequests.length;
+      await globalThis.__playbackAppHarness.togglePlayPause(true);
+      assert(readyPlayer.calls.some(call => call[0] === 'play'), 'Play resumes the preserved source');
+      assert.strictEqual(appImports.transitionRequests.length, beforeReadyResume, 'ordinary resume does not reload');
+      globalThis.__playbackAppHarness.pausePlaybackForUser();
+      await globalThis.__playbackAppHarness.loadChapter(0);
+      const beforePausedNavigationError = appImports.timeoutDelays.length;
+      globalThis.__playbackAppHarness.handleChunkError(stalled);
+      assert.strictEqual(appImports.timeoutDelays.length, beforePausedNavigationError, 'navigation while paused preserves Pause intent');
+
+      globalThis.__playbackAppHarness.configure({ book: { id: 'book-a' }, chapters: [{ title: 'One' }], player: offlinePlayer, chapter: uiElement });
+      let releasePausedRecovery;
+      appImports.transitionGate = new Promise(resolve => { releasePausedRecovery = resolve; });
+      globalThis.__playbackAppHarness.handleChunkError(stalled);
+      const inFlightRetry = appImports.pendingTimeouts.filter(entry => entry.delay === 250 && !entry.cancelled).at(-1);
+      const runningRetry = inFlightRetry.callback();
+      await new Promise(resolve => setImmediate(resolve));
+      globalThis.__playbackAppHarness.pausePlaybackForUser();
+      const playsAtPause = offlinePlayer.calls.filter(call => call[0] === 'play').length;
+      releasePausedRecovery();
+      await runningRetry;
+      appImports.transitionGate = null;
+      assert.strictEqual(offlinePlayer.calls.filter(call => call[0] === 'play').length, playsAtPause, 'a recovery already loading cannot play after Pause');
+
+      appImports.windowListeners.length = 0;
+      globalThis.navigator.onLine = false;
+      globalThis.__playbackAppHarness.configure({ book: { id: 'book-a' }, chapters: [{ title: 'One' }], player: offlinePlayer, chapter: uiElement });
+      globalThis.__playbackAppHarness.handleChunkError(stalled);
+      const staleOnline = appImports.windowListeners.find(entry => entry.type === 'online').fn;
+      globalThis.__playbackAppHarness.cancelPlaybackRecovery();
+      assert.strictEqual(appImports.windowListeners.filter(entry => entry.type === 'online').length, 0, 'cancellation removes the old online listener');
+      globalThis.__playbackAppHarness.configure({ book: { id: 'book-b' }, chapters: [{ title: 'Other' }], player: offlinePlayer, chapter: uiElement });
+      const delaysBeforeStaleOnline = appImports.timeoutDelays.length;
+      globalThis.navigator.onLine = true;
+      staleOnline();
+      assert.strictEqual(appImports.timeoutDelays.length, delaysBeforeStaleOnline, 'a stale reconnect cannot start playback in the newly selected book');
       globalThis.navigator.onLine = true;
 
       globalThis.__playbackAppHarness.configure({

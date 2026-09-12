@@ -87,7 +87,28 @@ await (async () => {
   assertEqual(response.results.length, 1, 'Filters editions to the requested language before format selection');
 })();
 
-section('3. unusable editions return the established quality response');
+section('3. format preference is scoped to each work');
+
+await (async () => {
+  const response = await buildCatalogSearchResponse({
+    query: 'PDF Work',
+    results: [
+      result({ title: 'PDF Work', author: 'PDF Author', hash: 'pdf-work-pdf', format: 'PDF', size: '20 MB' }),
+      result({ title: 'Unrelated EPUB Work', author: 'EPUB Author', hash: 'unrelated-epub', format: 'EPUB' }),
+      result({ title: 'Same Work', author: 'Edition Author', hash: 'same-work-pdf', format: 'PDF', size: '20 MB' }),
+      result({ title: 'Same Work', author: 'Edition Author', hash: 'same-work-epub', format: 'EPUB' })
+    ],
+    sourceStatus: {}
+  });
+
+  const pdfWork = response.works.find(work => work.title === 'PDF Work');
+  const sameWork = response.works.find(work => work.title === 'Same Work');
+  assertEqual(pdfWork?.bestEdition.hash, 'pdf-work-pdf', 'Keeps a PDF-only work when an unrelated EPUB exists');
+  assertEqual(sameWork?.bestEdition.hash, 'same-work-epub', 'Prefers an EPUB over a PDF edition of the same work');
+  assertEqual(response.results.length, 4, 'Retains every selectable edition across works');
+})();
+
+section('4. unusable editions return the established quality response');
 
 await (async () => {
   const sourceStatus = { annas: { id: 'annas', ok: true, count: 1 } };
@@ -103,7 +124,7 @@ await (async () => {
   assert(response.sourceStatus === sourceStatus, 'Keeps source status on the quality-filter response');
 })();
 
-section('4. canonical variants group through bounded Open Library identity enrichment');
+section('5. canonical variants group through bounded Open Library identity enrichment');
 
 await (async () => {
   const resolverCalls = [];
@@ -137,7 +158,7 @@ await (async () => {
   assertEqual(resolverCalls.length, 9, 'Resolves the query plus only the top eight candidates');
 })();
 
-section('5. legacy alternatives begin with the recommended work editions');
+section('6. legacy alternatives begin with the recommended work editions');
 
 await (async () => {
   const response = await buildCatalogSearchResponse({
@@ -159,7 +180,7 @@ await (async () => {
   );
 })();
 
-section('6. cross-source aliases retain clean work metadata');
+section('7. cross-source aliases retain clean work metadata');
 
 await (async () => {
   const response = await buildCatalogSearchResponse({
@@ -187,7 +208,7 @@ await (async () => {
   assertEqual(response.works[0].title, 'Complete Works of Ernest Hemingway', 'Does not replace the clean work title with the selected version title');
 })();
 
-section('7. author-query identity cannot leak across provider results');
+section('8. author-query identity cannot leak across provider results');
 
 await (async () => {
   const openLibraryResolver = input => resolveOpenLibraryIdentity(input, {
@@ -239,7 +260,7 @@ await (async () => {
   assertEqual(tribute?.bestEdition.coverIdentity, null, 'Cover projection cannot use the unrelated query work identity');
 })();
 
-section('8. corrected searches retain explicit response metadata');
+section('9. corrected searches retain explicit response metadata');
 
 await (async () => {
   const searchCorrection = {
@@ -260,7 +281,7 @@ await (async () => {
   assertEqual(response.searchIntent.kind, 'title', 'Ranks corrected results against the effective canonical title');
 })();
 
-section('9. provider-returned typo matches rank as title intent');
+section('10. provider-returned typo matches rank as title intent');
 
 await (async () => {
   const response = await buildCatalogSearchResponse({
@@ -276,7 +297,7 @@ await (async () => {
   assertEqual(response.works.filter(work => work.isBestMatch).length, 1, 'Only the intended typo-tolerant title receives Best Match');
 })();
 
-section('10. trusted catalog title is independent from provider editions');
+section('11. trusted catalog title is independent from provider editions');
 
 await (async () => {
   const response = await buildCatalogSearchResponse({
@@ -300,7 +321,7 @@ await (async () => {
   assertEqual(response.works[0].author, 'Francis Scott Fitzgerald', 'The trusted catalog author is displayed independently from the selected edition');
 })();
 
-section('11. malformed creator metadata and work covers resolve together');
+section('12. malformed creator metadata and work covers resolve together');
 
 await (async () => {
   const response = await buildCatalogSearchResponse({

@@ -131,6 +131,17 @@ function command(overrides = {}) {
 section('Successful direct import');
 
 (async () => {
+  const metadataService = require('../lib/metadata-service');
+  const storageTitle = createFixture({
+    document: { extractMetadata: async () => ({ title: 'Oxford World’s Classics', author: 'Thomas Mann' }) },
+    metadata: { resolveSeed: metadataService.resolveMetadataSeed }
+  });
+  const titleResult = await storageTitle.importer.import(command({
+    id: 'ec0706', kind: 'download', originalName: 'ec0706 The Magic Mountain.epub',
+    selected: { title: 'The Magic Mountain', author: 'Thomas Mann' }
+  }));
+  assert(titleResult.book.title === 'The Magic Mountain', 'download storage id does not leak into the title');
+
   const { importer, calls } = createFixture();
   const progress = [];
   const result = await importer.import(command(), (step, detail) => progress.push([step, detail]));
@@ -468,6 +479,18 @@ section('Successful direct import');
   const misclassifiedResult = await misclassifiedStructure.importer.import(command());
   assert(misclassifiedResult.book.id === 'book-1',
     'does not turn a derived zero-content-chapter score into an import rejection');
+
+  section('Cancellation before persistence');
+  const cancelledImport = createFixture();
+  let cancellationError;
+  try {
+    await cancelledImport.importer.import(command(), step => {
+      if (step === 7) throw Object.assign(new Error('Import cancelled'), { code: 'IMPORT_CANCELLED' });
+    });
+  } catch (error) { cancellationError = error; }
+  assert(cancellationError?.code === 'IMPORT_CANCELLED', 'preserves cancellation at the final safe step');
+  assert(!cancelledImport.calls.includes('persist:book-1'), 'cancelled imports never persist');
+  assert(cancelledImport.calls.includes('remove:/library/book-1.epub'), 'cancelled imports clean owned files');
 
   section('Late failure cleanup');
   const enrichmentFailure = createFixture({

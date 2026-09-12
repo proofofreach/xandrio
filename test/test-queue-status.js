@@ -490,6 +490,68 @@ function fakeActivityList() {
     apiSendResult = async () => ({});
   });
 
+  await test('keeps the last known activity visible when a status poll fails', async () => {
+    apiStatus = {
+      active: 1,
+      queued: 0,
+      books: [{ id: 'book-stale', title: 'Still Preparing', author: 'A', active: 1, queued: 0, chapters: [] }]
+    };
+    await [...timers.values()][0]();
+    await settle();
+    queueStatusElement.dispatch('click');
+    apiStatus = Promise.reject(new Error('offline'));
+    await [...timers.values()][0]();
+    await settle();
+
+    assert.strictEqual(queueStatusElement.hidden, false);
+    assert.strictEqual(elements['audio-activity-sheet'].classList.contains('active'), true);
+    assert.doesNotMatch(elements['audio-activity-announcement'].textContent, /complete/i);
+    apiStatus = { active: 0, queued: 0, books: [] };
+  });
+
+  await test('keeps failed warmup visible and retries its reported chapter', async () => {
+    apiStatus = {
+      active: 0,
+      queued: 0,
+      books: [{
+        id: 'book-failed',
+        title: 'Needs Audio',
+        author: 'A',
+        failed: true,
+        retryChapterIndex: 3,
+        error: 'Voice engine unavailable',
+        active: 0,
+        queued: 0,
+        chapters: []
+      }]
+    };
+    await [...timers.values()][0]();
+    await settle();
+    queueStatusElement.dispatch('click');
+    sentRequests.length = 0;
+    global.__queueTestToasts.length = 0;
+
+    assert.strictEqual(queueStatusElement.hidden, false);
+    assert.match(queueStatusElement.getAttribute('aria-label'), /needs audio retry/);
+    assert.match(elements['audio-activity-list'].innerHTML, /Audio preparation failed/);
+    assert.match(elements['audio-activity-list'].innerHTML, /Retry audio preparation/);
+    assert.match(elements['audio-activity-announcement'].textContent, /failed for 1 book/i);
+
+    elements['audio-activity-list'].dispatch('click', {
+      closest: selector => (selector === '[data-retry-audio-book]'
+        ? { dataset: { retryAudioBook: 'book-failed', retryAudioChapter: '3' }, disabled: false }
+        : null)
+    });
+    await settle();
+
+    assert.deepStrictEqual(sentRequests[0], [
+      'POST',
+      '/api/chunks/book-failed/3/prepare-chapter-audio',
+      { purpose: 'import-warmup' }
+    ]);
+    assert.strictEqual(global.__queueTestToasts.length, 0);
+  });
+
   await test('re-init without a status element still stops the old poller', () => {
     queueStatusElement = null;
     initQueueStatus();

@@ -252,9 +252,8 @@ function renderGuide(artifact) {
 function narrationHTML(data) {
   const sections = normalizeList(data?.narration?.sections);
   if (!data?.narration?.available || !sections.length) return '';
-  return `<section class="guide-narration" aria-labelledby="guide-narration-title">
+  return `<section class="guide-narration" aria-label="Listen to guide">
     <div class="guide-narration-heading">
-      <div><span>Audio study guide</span><h3 id="guide-narration-title">Listen with your Xandrio voice</h3></div>
       <button class="btn-primary btn-sm" type="button" data-guide-listen>Listen to guide</button>
     </div>
     <div class="guide-narration-player" hidden>
@@ -582,7 +581,9 @@ function render(data) {
   document.getElementById('utility-guide-btn')?.toggleAttribute('hidden', !showEntry);
   if (!guideBody) return;
   const book = currentBook();
-  if (guideBookMeta) guideBookMeta.textContent = [book?.title, book?.author ? `by ${book.author}` : ''].filter(Boolean).join(' · ');
+  const title = document.getElementById('guide-title');
+  if (title) title.textContent = book?.title || 'Book';
+  if (guideBookMeta) guideBookMeta.textContent = book?.author ? `by ${book.author}` : '';
   guideBody.setAttribute('aria-busy', isGenerating(guideData) ? 'true' : 'false');
   guideBody.innerHTML = statusHTML(guideData);
   attachInteractions();

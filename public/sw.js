@@ -1,38 +1,47 @@
 importScripts('/js/offline-range.js');
+importScripts('/js/offline-store.js');
 
-const CACHE_VERSION = 'xandrio-v166';
-const OFFLINE_ROUTE_CONTRACT_VERSION = 1;
+const CACHE_VERSION = 'xandrio-v181';
+const OFFLINE_ROUTE_CONTRACT_VERSION = 2;
 const OFFLINE_AUDIO_CACHE = 'xandrio-offline-audio';
 const OFFLINE_TITLE_CACHE = 'xandrio-offline-titles';
 const OFFLINE_SCOPE_PARAM = 'xandrio-offline-scope';
+const OFFLINE_BLOCK_STORE = self.XandrioOfflineStore?.createStore?.() || null;
 // Versioned shell assets are kept in lockstep with index.html by
 // scripts/bump-version.mjs. Bump CACHE_VERSION whenever any APP_SHELL entry
 // changes, including the un-versioned js/ modules below, which only
 // invalidate via CACHE_VERSION.
 const ASSET_VERSIONS = {
-  '/style-v3.css': 108,
+  '/style-v3.css': 113,
+  '/composition.css': 5,
+  '/library-composition.css': 4,
   '/js/ios-focus-zoom.js': 1,
   '/js/lifecycle.js': 1,
-  '/app.js': 127
+  '/app.js': 138
 };
 const versionedAsset = (path) => `${path}?v=${ASSET_VERSIONS[path]}`;
 const APP_SHELL = [
   '/',
   '/index.html',
   versionedAsset('/style-v3.css'),
+  versionedAsset('/composition.css'),
+  versionedAsset('/library-composition.css'),
   versionedAsset('/js/ios-focus-zoom.js'),
   versionedAsset('/js/lifecycle.js'),
   versionedAsset('/app.js'),
   '/js/offline-range.js',
+  '/js/offline-store.js',
   '/js/deployment-origin.js',
   '/js/router.js',
   '/js/api.js',
   '/js/client-settings.js',
   '/js/playback-session.js',
   '/js/smart-rewind.mjs',
+  '/js/auto-sleep-schedule.mjs',
   '/js/single-file-chapter-player.js',
   '/js/util/format.js',
   '/js/ui/toast.js',
+  '/js/ui/cover-images.js',
   '/js/ui/keys.js',
   '/js/ui/confirm.js',
   '/js/ui/segmented.js',
@@ -54,10 +63,13 @@ const APP_SHELL = [
   '/js/views/sleep-timer.js',
   '/js/features/bookmarks.js',
   '/js/features/offline.js',
+  '/js/features/offline-device.mjs',
+  '/js/features/offline-transfer.mjs',
   '/js/features/rolling-offline.mjs',
   '/js/features/listening-queue.js',
   '/js/features/pronunciations.js',
   '/js/features/queue-status.js',
+  '/js/features/import-activity.js',
   '/js/features/sharing.js',
   '/fonts/inter-latin.woff2',
   '/manifest.webmanifest',
@@ -192,6 +204,13 @@ function isOfflineAudioRequest(request) {
     && /^\/api\/audio(?:-ios)?\/[^/]+\/\d+$/.test(url.pathname);
 }
 
+function isBlockOfflineAudioRequest(request) {
+  if (request.method !== 'GET' && request.method !== 'HEAD') return false;
+  const url = new URL(request.url);
+  return url.origin === self.location.origin &&
+    /^\/__xandrio_offline__\/audio\/[^/]+\/sha256-[a-f0-9]{64}$/.test(url.pathname);
+}
+
 function isOfflineTitleRequest(request) {
   if (request.method !== 'GET') return false;
   const url = new URL(request.url);
@@ -301,7 +320,16 @@ async function lookupCachedAudio(request) {
 
 self.addEventListener('fetch', event => {
   const request = event.request;
-  if (isOfflineAudioRequest(request)) {
+  if (isBlockOfflineAudioRequest(request)) {
+    // Immutable block URLs are cache-only. A miss never reaches the server.
+    event.respondWith(self.XandrioOfflineStore?.createAudioResponse
+      ? self.XandrioOfflineStore.createAudioResponse(request, {
+          store: OFFLINE_BLOCK_STORE,
+          workerVersion: CACHE_VERSION,
+          contractVersion: OFFLINE_ROUTE_CONTRACT_VERSION
+        }).catch(() => markOfflineResponse(new Response(null, { status: 503 }), 'indeterminate'))
+      : Promise.resolve(markOfflineResponse(new Response(null, { status: 503 }), 'indeterminate')));
+  } else if (isOfflineAudioRequest(request)) {
     // Cache-only, permanently. This URL is emitted only for a chapter the app
     // has already established is on this device, and the server route behind it
     // serves a different encode from the downloaded offline package — so a

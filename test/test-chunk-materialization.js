@@ -103,6 +103,12 @@ async function settle() {
   await new Promise(resolve => setImmediate(resolve));
 }
 
+function deferred() {
+  let resolve;
+  const promise = new Promise(done => { resolve = done; });
+  return { promise, resolve };
+}
+
 // Poll for a condition driven by a timer rather than a promise chain.
 async function waitUntil(condition, description, timeoutMs = 2000) {
   const deadline = Date.now() + timeoutMs;
@@ -635,6 +641,110 @@ async function test(name, fn) {
 
       queue.complete(queue.live()[0].id);
       await assert.rejects(waiting, /Synthetic enqueue failure/);
+    } finally {
+      await fs.rm(cacheDir, { recursive: true, force: true });
+    }
+  });
+
+  await test('title deletion aborts a cache lookup before it can create a chunk job', async () => {
+    const cacheDir = await fs.mkdtemp(path.join(os.tmpdir(), 'xandrio-cache-lookup-cancel-'));
+    try {
+      const lookupStarted = deferred();
+      const artifactCache = {
+        async reuseExisting(artifact, { signal } = {}) {
+          await fs.unlink(artifact.outputPath).catch(() => {});
+          lookupStarted.resolve();
+          return new Promise((resolve, reject) => {
+            const abort = () => reject(Object.assign(new Error('cancelled'), { name: 'AbortError' }));
+            signal?.addEventListener('abort', abort, { once: true });
+            if (signal?.aborted) abort();
+          });
+        },
+        async resolve() { return false; }
+      };
+      const queue = new TTSQueue({ maxConcurrent: 1, artifactCache });
+      queue._drain = () => {};
+      queue.reuseRenderedOutput = async () => false;
+      queue._artifactDescriptor = params => ({ ...params, fingerprint: 'recipe' });
+      const tts = new ChunkedTTS(cacheDir, queue, { chunkSize: 90, maxMaterializedChunks: 1 });
+      tts._fileExists = async () => false;
+      const outputPath = tts.chunkPath('lookup-delete', 0, 0);
+      await fs.writeFile(outputPath, 'invalid-v2');
+
+      const generation = tts.generateChapter('lookup-delete', 0, longChapter(4), 'en', 'download');
+      await lookupStarted.promise;
+      tts.cancelBook('lookup-delete');
+      await assert.rejects(generation, error => error.name === 'AbortError');
+      await tts.waitForIdle('lookup-delete');
+
+      assert.strictEqual(queue.getQueueStatus().queued, 0);
+      assert.strictEqual(queue.getQueueStatus().active, 0);
+      assert.strictEqual(tts.getChapterManifest('lookup-delete', 0), null);
+    } finally {
+      await fs.rm(cacheDir, { recursive: true, force: true });
+    }
+  });
+
+  await test('a cache lookup that ignores abort cannot publish a stale chunk job', async () => {
+    const cacheDir = await fs.mkdtemp(path.join(os.tmpdir(), 'xandrio-cache-lookup-stale-'));
+    try {
+      const queue = new ControlledQueue();
+      const started = deferred();
+      const release = deferred();
+      const enqueue = queue.enqueue.bind(queue);
+      queue.enqueue = async job => {
+        started.resolve();
+        await release.promise;
+        return enqueue(job);
+      };
+      const tts = new ChunkedTTS(cacheDir, queue, { chunkSize: 90, maxMaterializedChunks: 1 });
+      tts._fileExists = async () => false;
+
+      const generation = tts.generateChapter('stale-job', 0, longChapter(4), 'en', 'download');
+      await started.promise;
+      tts.cancelBook('stale-job');
+      release.resolve();
+      await assert.rejects(generation, error => error.name === 'AbortError');
+      await tts.waitForIdle('stale-job');
+
+      assert.strictEqual(queue.live().length, 0);
+      assert.strictEqual(tts.getChapterManifest('stale-job', 0), null);
+    } finally {
+      await fs.rm(cacheDir, { recursive: true, force: true });
+    }
+  });
+
+  await test('cancelling one worker keeps deduplicated jobs claimed by another worker', async () => {
+    const cacheDir = await fs.mkdtemp(path.join(os.tmpdir(), 'xandrio-shared-materialization-'));
+    try {
+      const queue = new TTSQueue({ maxConcurrent: 1 });
+      queue._drain = () => {};
+      queue.reuseRenderedOutput = async () => false;
+      const options = {
+        chunkSize: 90,
+        maxMaterializedChunks: 3,
+        variantKeyProvider: () => 'shared-variant'
+      };
+      const first = new ChunkedTTS(cacheDir, queue, options);
+      const second = new ChunkedTTS(cacheDir, queue, options);
+      first._fileExists = async () => false;
+      second._fileExists = async () => false;
+
+      await first.generateChapter('shared-cancel', 0, longChapter(6), 'en', 'download');
+      await second.generateChapter('shared-cancel', 0, longChapter(6), 'en', 'download');
+      const before = queue.getQueueStatus().queued;
+      assert(before > 0);
+      assert(queue._queue.every(job => queue.getActivityClaims(job.id).length === 2));
+
+      first.cancelBook('shared-cancel');
+      await first.waitForIdle('shared-cancel');
+
+      assert.strictEqual(queue.getQueueStatus().queued, before);
+      assert(queue._queue.every(job => queue.getActivityClaims(job.id)
+        .every(claim => claim.schedulerId === second._schedulerId)));
+      second.cancelBook('shared-cancel');
+      await second.waitForIdle('shared-cancel');
+      assert.strictEqual(queue.getQueueStatus().queued, 0);
     } finally {
       await fs.rm(cacheDir, { recursive: true, force: true });
     }

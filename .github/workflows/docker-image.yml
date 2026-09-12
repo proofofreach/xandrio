@@ -164,7 +164,7 @@ jobs:
             --entrypoint python xandrio-chatterbox:release-check -c \
             "from pathlib import Path; assert Path('/app/data/voice-references/release-check.wav').read_text() == 'reference'"
       - name: Scan optional engine image
-        uses: aquasecurity/trivy-action@b6643a29fecd7f34b3597bc6acb0a98b03d33ff8 # v0.33.1
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: xandrio-${{ matrix.engine }}:release-check
           format: table
@@ -211,7 +211,7 @@ jobs:
           git checkout --detach "$commit"
           version="${RELEASE_TAG#v}"
           printf 'tag=%s\nversion=%s\ncommit=%s\n' "$RELEASE_TAG" "$version" "$commit" >> "$GITHUB_OUTPUT"
-      - uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
+      - uses: docker/setup-qemu-action@1f40c72289eff860ee54a304f1438e3cff362e0a # v4.3.0
       - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
@@ -462,7 +462,7 @@ jobs:
             printf 'FIRST-01: checksummed backup -> clean restore -> candidate verification -> repeat restore verification passed.\n' > release/RELEASE_DATA_GATE.txt
           fi
       - name: Scan the tested digest
-        uses: aquasecurity/trivy-action@b6643a29fecd7f34b3597bc6acb0a98b03d33ff8 # v0.33.1
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: ${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
           format: table

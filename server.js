@@ -38,6 +38,8 @@ const { createNarrationRuntime } = require('./lib/narration-runtime');
 const { createPlaybackOrchestrator } = require('./lib/playback-orchestrator');
 const { createPlaybackPrefetchCoordinator } = require('./lib/playback-prefetch');
 const { createOfflinePreparationCoordinator } = require('./lib/offline-preparation-coordinator');
+const { createOfflineTransferManifest } = require('./lib/offline-transfer-manifest');
+const { createOfflineWindowPreparation } = require('./lib/offline-window-preparation');
 const {
   OFFLINE_AUDIO_BITRATE_KBPS,
   createOfflineAudioPackage
@@ -52,7 +54,9 @@ const {
 } = require('./lib/audio-generation-intent');
 const GenerationScheduler = require('./lib/generation-scheduler');
 const GenerationJournal = require('./lib/generation-journal');
-const { createPronunciationService, createCacheInvalidator } = require('./lib/pronunciation-repair');
+const { createPronunciationService, createCacheInvalidator, effectiveRules } = require('./lib/pronunciation-repair');
+const { createOfflineReadyPackages, sourceTextRevision } = require('./lib/offline-ready-packages');
+const { registerOfflineRecoveryRoutes } = require('./lib/routes/offline-recovery-routes');
 const { registerPronunciationRoutes } = require('./lib/routes/pronunciation-routes');
 const { createXBookStore } = require('./lib/xbook-store');
 const { createBookDocument } = require('./lib/book-document');
@@ -488,25 +492,11 @@ const bookArtifactCleaner = createBookArtifactCleaner({
   onSweepsComplete: bookId => deletedBookIds.delete(bookId)
 });
 
-// Unified 500 response: log the full error server-side, return a generic public
-// message with no raw err.message so internal details are not leaked to clients.
-function sendServerError(res, err, publicMessage = 'Something went wrong') {
-  // A response whose socket is already gone means the client disconnected —
-  // it seeked, navigated away or locked the phone mid-stream. That is normal
-  // client behaviour, not a server fault: logging it at error level buries real
-  // failures in noise, and writing to the dead socket only produces a second,
-  // more confusing error. Check this before logging, and before writing.
-  if (res.destroyed || res.writableEnded) return;
-  console.error(`${publicMessage}:`, err);
-  // Routes that stream (audio, covers) may fail after the response has begun.
-  // Writing a JSON body then would throw ERR_HTTP_HEADERS_SENT on top of the
-  // original error; all we can still do is cut the connection.
-  if (res.headersSent) {
-    res.destroy?.();
-    return;
-  }
-  res.status(500).json({ error: publicMessage });
-}
+// Unified 500 response lives in lib/http-error.js so route modules without
+// dependency injection share the exact same semantics (dead-response guards,
+// server-side logging, no err.message leak). Kept under the same local name
+// so the DI wiring and __test exports below are untouched.
+const { sendServerError } = require('./lib/http-error');
 
 // Anna's Archive config — read from file, fallback to hardcoded defaults
 // An unusable baseUrl must not cost the operator their configured key. The
@@ -1308,6 +1298,16 @@ async function removeFileIfExists(filePath) {
   }
 }
 
+async function removeUploadedFile(filePath) {
+  if (typeof filePath !== 'string') return false;
+  const filename = path.basename(filePath);
+  if (!/^upload_[a-f0-9-]{36}\.(?:epub|mobi|prc|azw|azw3|pdf)$/i.test(filename)) return false;
+  const uploadPath = path.join(CACHE_DIR, filename);
+  if (path.resolve(filePath) !== path.resolve(uploadPath)) return false;
+  await removeFileIfExists(uploadPath);
+  return true;
+}
+
 async function getFileSize(filePath) {
   const stats = await fs.stat(filePath);
   return stats.size;
@@ -1823,7 +1823,38 @@ const importJobs = new Map();
 const IMPORT_JOB_SUBSCRIBER_LIMIT = 10;
 const IMPORT_JOB_TTL_MS = 30 * 60 * 1000;
 const IMPORT_JOB_TERMINAL_GRACE_MS = Number(process.env.IMPORT_JOB_TERMINAL_GRACE_MS) || 30 * 1000;
-const IMPORT_JOB_TERMINAL_STATUSES = new Set(['complete', 'completed', 'failed', 'error']);
+const IMPORT_JOB_TERMINAL_STATUSES = new Set(['complete', 'completed', 'failed', 'error', 'cancelled']);
+
+function chapterPreparationAbortError(signal) {
+  if (signal?.reason?.name === 'AbortError') return signal.reason;
+  const error = new Error('Generation intent was retired', {
+    cause: signal?.reason instanceof Error ? signal.reason : undefined
+  });
+  error.name = 'AbortError';
+  return error;
+}
+
+function consumeChapterPreparation(record, signal, setup = async () => {}) {
+  if (signal?.aborted) return Promise.reject(chapterPreparationAbortError(signal));
+  const token = {};
+  record.consumers.add(token);
+  let removeAbort = () => {};
+  const aborted = new Promise((_, reject) => {
+    if (!signal) return;
+    const onAbort = () => reject(chapterPreparationAbortError(signal));
+    signal.addEventListener('abort', onAbort, { once: true });
+    removeAbort = () => signal.removeEventListener('abort', onAbort);
+  });
+  const result = Promise.resolve().then(setup).then(() => record.promise);
+  return Promise.race([result, aborted]).finally(() => {
+    removeAbort();
+    record.consumers.delete(token);
+    if (!record.settled && record.consumers.size === 0 && !record.controller.signal.aborted) {
+      record.controller.abort(chapterPreparationAbortError(signal));
+    }
+  });
+}
+
 function closeImportJobSubscribers(job) {
   for (const subscriber of job.subscribers) {
     clearInterval(subscriber.heartbeat);
@@ -1868,10 +1899,15 @@ const IMPORT_STEPS = [
   'Adding to library'
 ];
 
-function createImportJob() {
+function createImportJob({ ownerId = 'default', title = '', source = '', requestHash = null } = {}) {
   const jobId = crypto.randomBytes(12).toString('hex');
   const job = {
     id: jobId,
+    ownerId: String(ownerId || 'default'),
+    title: String(title || ''),
+    source: String(source || ''),
+    requestHash,
+    cancellationRequested: false,
     status: 'running',
     step: 1,
     totalSteps: IMPORT_STEPS.length,
@@ -1894,6 +1930,11 @@ function createImportJob() {
 function importJobSnapshot(job) {
   return {
     jobId: job.id,
+    title: job.title,
+    source: job.source,
+    requestHash: job.requestHash,
+    cancellationRequested: job.cancellationRequested,
+    canCancel: Boolean(job.requestHash && job.status === 'running' && job.step < 7 && !job.cancellationRequested),
     status: job.status,
     step: job.step,
     totalSteps: job.totalSteps,
@@ -1909,10 +1950,8 @@ function importJobSnapshot(job) {
 function emitImportJob(job, event, payload = {}) {
   job.updatedAt = new Date().toISOString();
   if (payload.step) {
-    // Alternative-edition retries re-emit earlier pipeline steps (5 -> 3 -> 5);
-    // the job's public step only moves forward so the client checklist never
-    // bounces backward. Labels still describe the actual current activity.
-    payload = { ...payload, step: Math.max(job.step, payload.step) };
+    // A fallback is a new import attempt. Report its actual stage so a reload
+    // or reconnect does not show a stale later stage with a retry label.
     job.step = payload.step;
   }
   if (payload.label) job.label = payload.label;
@@ -1927,6 +1966,7 @@ function emitImportJob(job, event, payload = {}) {
 
 function progressForImportJob(job) {
   return (step, detail = '') => {
+    if (job.cancellationRequested) throw Object.assign(new Error('Import cancelled'), { code: 'IMPORT_CANCELLED' });
     const label = IMPORT_STEPS[step - 1] || IMPORT_STEPS[0];
     emitImportJob(job, 'progress', { step, label, detail });
   };
@@ -1968,33 +2008,42 @@ async function ensureChapterAudioPrepared(bookId, chapterIndex, options = {}) {
   const key = `${bookId}:${chapterIndex}:${tts.variantKeyProvider()}`;
   if (jobs.has(key)) {
     throwIfAborted();
-    await tts.claimChapter?.(bookId, chapterIndex, {
-      origin: generationOrigin,
-      requestId: options.requestId || null,
-      sessionId: options.sessionId || null
-    }, priority, {
-      signal: options.signal,
-      chunkIndexes: playbackChunkIndexes
-    });
-    if (completeChapter || priority === 'download' || priority === 'lookahead') {
-      const existingManifest = tts.getChapterManifest(bookId, chapterIndex);
-      existingManifest?.chunks?.forEach((chunk, index) => {
-        if (chunk.status !== 'ready') {
-          tts.prioritizeChunk(bookId, chapterIndex, index, priority);
-        }
+    const record = jobs.get(key);
+    return consumeChapterPreparation(record, options.signal, async () => {
+      await tts.claimChapter?.(bookId, chapterIndex, {
+        origin: generationOrigin,
+        requestId: options.requestId || null,
+        sessionId: options.sessionId || null
+      }, priority, {
+        signal: options.signal,
+        chunkIndexes: playbackChunkIndexes
       });
-    }
-    return jobs.get(key);
+      if (completeChapter || priority === 'download' || priority === 'lookahead') {
+        const existingManifest = tts.getChapterManifest(bookId, chapterIndex);
+        existingManifest?.chunks?.forEach((chunk, index) => {
+          if (chunk.status !== 'ready') {
+            tts.prioritizeChunk(bookId, chapterIndex, index, priority);
+          }
+        });
+      }
+    });
   }
 
-  const job = (async () => {
+  const controller = new AbortController();
+  const record = { controller, consumers: new Set(), settled: false, promise: null };
+  jobs.set(key, record);
+  const jobSignal = controller.signal;
+  const throwIfJobAborted = () => {
+    if (jobSignal.aborted) throw chapterPreparationAbortError(jobSignal);
+  };
+  record.promise = (async () => {
     const books = await loadJSON(BOOKS_FILE, {});
-    throwIfAborted();
+    throwIfJobAborted();
     const book = books[bookId];
     if (!book) throw new Error('Book not found');
 
     const chapters = await getChaptersCached(book.path);
-    throwIfAborted();
+    throwIfJobAborted();
     const chapter = chapters[chapterIndex];
     if (!chapter) throw new Error('Chapter not found');
 
@@ -2019,16 +2068,16 @@ async function ensureChapterAudioPrepared(bookId, chapterIndex, options = {}) {
         requestId: options.requestId || null,
         sessionId: options.sessionId || null,
         chunkIndexes: playbackChunkIndexes,
-        signal: options.signal
+        signal: jobSignal
       });
     } else {
-      throwIfAborted();
+      throwIfJobAborted();
       await tts.claimChapter?.(bookId, chapterIndex, {
         origin: generationOrigin,
         requestId: options.requestId || null,
         sessionId: options.sessionId || null
       }, priority, {
-        signal: options.signal,
+        signal: jobSignal,
         chunkIndexes: playbackChunkIndexes
       });
       manifest.chunks.forEach((chunk, index) => {
@@ -2043,21 +2092,22 @@ async function ensureChapterAudioPrepared(bookId, chapterIndex, options = {}) {
       });
     }
 
-    await tts.waitForChapter(bookId, chapterIndex, { signal: options.signal });
-    throwIfAborted();
+    await tts.waitForChapter(bookId, chapterIndex, { signal: jobSignal });
+    throwIfJobAborted();
 
     const refreshed = tts.getChapterManifest(bookId, chapterIndex) || manifest;
     if (!refreshed.chunks.every(chunk => chunk.status === 'ready')) {
       throw new Error('Not all chunks are ready');
     }
 
-    return clean ? tts.concatenateChunksClean(bookId, chapterIndex) : tts.concatenateChunks(bookId, chapterIndex);
+    return clean
+      ? tts.concatenateChunksClean(bookId, chapterIndex)
+      : tts.concatenateChunks(bookId, chapterIndex, { signal: jobSignal });
   })().finally(() => {
-    jobs.delete(key);
+    record.settled = true;
+    if (jobs.get(key) === record) jobs.delete(key);
   });
-
-  jobs.set(key, job);
-  return job;
+  return consumeChapterPreparation(record, options.signal);
 }
 
 /**
@@ -2615,10 +2665,11 @@ function bookUploadErrorResponse(err) {
 }
 
 function uploadRouteErrorResponse(err) {
-  if (err?.statusCode === 400 && err?.existingBookId) {
+  if (err?.existingBookId) {
     return {
       error: 'Book already exists in library',
-      existingBookId: String(err.existingBookId)
+      existingBookId: String(err.existingBookId),
+      suggestion: 'Open book'
     };
   }
   if (err?.code === 'LIMIT_FILE_SIZE') return bookUploadErrorResponse(err);
@@ -2707,9 +2758,9 @@ const coverRefreshRateLimit = createRateLimitMiddleware({
 });
 const coverRefreshJobs = new Map();
 
-function isSafeBookId(value) {
-  return requestGuardIsSafeBookId(value);
-}
+// Single book-id validator lives in lib/request-guards.js and is imported
+// as requestGuardIsSafeBookId (line 27); the local delegating wrapper was
+// removed so there is exactly one definition.
 
 function sanitizeFileStem(value, fallback = 'book') {
   // Bound the input before the regexes and split the anchored trims so no
@@ -2736,7 +2787,7 @@ function sanitizeDownloadFilename(filename, fallbackStem = 'book', bookId = '') 
     throw new Error(`Unsupported book format: ${path.extname(base) || 'unknown'}`);
   }
   const stem = sanitizeFileStem(base, sanitizeFileStem(fallbackStem));
-  const prefix = isSafeBookId(bookId) ? `${bookId}_` : '';
+  const prefix = requestGuardIsSafeBookId(bookId) ? `${bookId}_` : '';
   return `${prefix}${stem}.${ext}`;
 }
 
@@ -2950,7 +3001,7 @@ function downloadImportCommand(body, { download = searchProviders.download.bind(
       response: { error: 'Hash and filename required' }
     });
   }
-  if (!isSafeBookId(hash)) {
+  if (!requestGuardIsSafeBookId(hash)) {
     throw new BookImportError('Invalid book identifier', { response: { error: 'Invalid book identifier' } });
   }
   const safeFilename = sanitizeDownloadFilename(filename, title || hash, hash);
@@ -3004,7 +3055,7 @@ function downloadImportCommand(body, { download = searchProviders.download.bind(
       sourceProvenance: sourceProvenanceFromSelection(alternative),
       gutenbergId: alternative.gutenbergId,
       shouldTry: selectedIdentity => Boolean(
-        alternative.hash && alternative.format && isSafeBookId(alternative.hash) &&
+        alternative.hash && alternative.format && requestGuardIsSafeBookId(alternative.hash) &&
         SUPPORTED_BOOK_FORMATS.has(String(alternative.format).toLowerCase()) &&
         isAcceptableFallbackMatch(alternative, expected, selectedIdentity)
       ),
@@ -3103,6 +3154,14 @@ async function addBookToShelf(userId, bookId) {
 }
 
 function downloadImportFailureResponse(error, body) {
+  if (error?.existingBookId) {
+    return {
+      ...(error.response || {}),
+      error: error.response?.error || 'Book already exists in library',
+      existingBookId: String(error.existingBookId),
+      suggestion: 'Open book'
+    };
+  }
   if (error instanceof BookImportError && error.response) {
     if (error.response.retryAlternatives) {
       return {
@@ -3165,6 +3224,11 @@ app.post('/api/download', async (req, res) => {
       return res.status(publicError.statusCode).json(publicError.body);
     }
   }
+  const importUserId = positionUserId(req);
+  const existing = [...importJobs.values()].find(job =>
+    job.ownerId === importUserId && job.status === 'running' &&
+    job.requestHash && job.requestHash === req.body?.hash);
+  if (existing) return res.status(202).json({ jobId: existing.id });
   const releaseImportPermit = downloadImportGate.tryAcquire();
   if (!releaseImportPermit) {
     res.setHeader('Retry-After', '1');
@@ -3173,11 +3237,15 @@ app.post('/api/download', async (req, res) => {
       code: 'CONCURRENCY_LIMIT'
     });
   }
-  const job = createImportJob();
+  const job = createImportJob({
+    ownerId: importUserId,
+    requestHash: req.body?.hash || null,
+    title: req.body?.title || req.body?.filename,
+    source: req.body?.source || 'annas'
+  });
   const progress = progressForImportJob(job);
   progress(1, 'Queued import');
 
-  const importUserId = positionUserId(req);
   setImmediate(async () => {
     try {
       const result = await importDownloadedBook(req.body, progress, { addedBy: importUserId });
@@ -3192,6 +3260,11 @@ app.post('/api/download', async (req, res) => {
       job.result = payload;
       emitImportJob(job, 'complete', { result: payload });
     } catch (error) {
+      if (job.cancellationRequested) {
+        job.status = 'cancelled';
+        emitImportJob(job, 'cancelled', { label: 'Import cancelled', detail: '' });
+        return;
+      }
       console.error(`Background import job ${job.id} failed:`, error);
       job.status = 'failed';
       job.error = downloadImportFailureResponse(error, req.body);
@@ -3204,15 +3277,31 @@ app.post('/api/download', async (req, res) => {
   res.status(202).json({ jobId: job.id });
 });
 
+app.post('/api/download/:jobId/cancel', (req, res) => {
+  const job = importJobs.get(req.params.jobId);
+  if (!job || job.ownerId !== positionUserId(req)) return res.status(404).json({ error: 'Import job not found' });
+  if (job.status === 'cancelled' || job.cancellationRequested) return res.json(importJobSnapshot(job));
+  if (!job.requestHash || job.status !== 'running' || job.step >= 7) {
+    return res.status(409).json({ error: 'This import can no longer be cancelled.' });
+  }
+  job.cancellationRequested = true;
+  emitImportJob(job, 'progress', { label: 'Cancelling…', detail: 'Waiting for the current processing step to stop.' });
+  res.json(importJobSnapshot(job));
+});
+
 app.get('/api/download/:jobId/status', (req, res) => {
   const job = importJobs.get(req.params.jobId);
-  if (!job) return res.status(404).json({ error: 'Import job not found' });
+  if (!job || job.ownerId !== positionUserId(req)) {
+    return res.status(404).json({ error: 'Import job not found' });
+  }
   res.json(importJobSnapshot(job));
 });
 
 app.get('/api/download/:jobId/events', (req, res) => {
   const job = importJobs.get(req.params.jobId);
-  if (!job) return res.status(404).json({ error: 'Job not found' });
+  if (!job || job.ownerId !== positionUserId(req)) {
+    return res.status(404).json({ error: 'Job not found' });
+  }
   if (job.subscribers.size >= IMPORT_JOB_SUBSCRIBER_LIMIT) {
     return res.status(429).json({ error: 'Too many event subscribers' });
   }
@@ -3241,14 +3330,23 @@ app.get('/api/download/:jobId/events', (req, res) => {
   });
 });
 
+app.get('/api/imports', (req, res) => {
+  const ownerId = positionUserId(req);
+  const jobs = [...importJobs.values()]
+    .filter(job => job.ownerId === ownerId)
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+    .map(importJobSnapshot);
+  res.json({ jobs });
+});
+
 async function handleUploadImport(req, res) {
   if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
   const originalName = req.file.originalname;
   const bookId = crypto.randomUUID();
   const uploadUserId = positionUserId(req);
-  try {
-    const result = await bookMutationLocks.withBookMutationLock(bookId, async () => {
-      const imported = await bookImporter.import({
+  const importUpload = async (progress = () => {}) => {
+    const imported = await bookMutationLocks.withBookMutationLock(bookId, async () => {
+      const result = await bookImporter.import({
         kind: 'upload',
         id: bookId,
         originalName,
@@ -3256,26 +3354,65 @@ async function handleUploadImport(req, res) {
         selected: { language: 'en' },
         downloadSource: 'upload',
         addedBy: uploadUserId
-      });
-      if (imported?.bookId) await addBookToShelf(uploadUserId, imported.bookId);
-      return imported;
+      }, progress);
+      if (result?.bookId) await addBookToShelf(uploadUserId, result.bookId);
+      return result;
     });
-    return res.json({
+    return {
       success: true,
-      bookId: result.bookId,
-      book: publicBookRecord(result.book),
-      validation: result.validation
+      bookId: imported.bookId,
+      book: publicBookRecord(imported.book),
+      validation: imported.validation
+    };
+  };
+  const respondsAsync = /(?:^|,)\s*respond-async\s*(?:,|$)/i.test(req.get('Prefer') || '');
+  const releaseImportPermit = downloadImportGate.tryAcquire();
+  if (!releaseImportPermit) {
+    await removeUploadedFile(req.file.path).catch(() => {});
+    res.setHeader('Retry-After', '1');
+    return res.status(503).json({
+      error: 'Book imports are busy. Try again shortly.',
+      code: 'CONCURRENCY_LIMIT'
     });
+  }
+  if (respondsAsync) {
+    const job = createImportJob({ ownerId: uploadUserId, title: originalName, source: 'upload' });
+    const progress = progressForImportJob(job);
+    progress(1, 'Queued import');
+    setImmediate(async () => {
+      try {
+        const payload = await importUpload(progress);
+        job.status = 'complete';
+        job.result = payload;
+        emitImportJob(job, 'complete', { result: payload });
+      } catch (error) {
+        console.error(`Background upload import job ${job.id} failed:`, error);
+        await removeUploadedFile(req.file.path).catch(() => {});
+        job.status = 'failed';
+        job.error = error?.existingBookId
+          ? uploadRouteErrorResponse(error)
+          : (error instanceof BookImportError && error.response ? error.response : uploadRouteErrorResponse(error));
+        emitImportJob(job, 'failed', { error: job.error });
+      } finally {
+        releaseImportPermit();
+      }
+    });
+    return res.status(202).json({ jobId: job.id });
+  }
+  try {
+    return res.json(await importUpload());
   } catch (error) {
     console.error('Upload error:', error);
-    await removeFileIfExists(req.file.path).catch(() => {});
+    await removeUploadedFile(req.file.path).catch(() => {});
     if (error instanceof BookImportError && error.response) {
-      return res.status(error.statusCode).json(error.response);
+      return res.status(error.statusCode).json(error.existingBookId ? uploadRouteErrorResponse(error) : error.response);
     }
     if (error.statusCode === 400 || error.code === 'LIMIT_FILE_SIZE') {
       return res.status(400).json(uploadRouteErrorResponse(error));
     }
     return sendServerError(res, error, 'Upload failed');
+  } finally {
+    releaseImportPermit();
   }
 }
 
@@ -3379,7 +3516,7 @@ function canonicalBookCoverPath(bookId) {
 
 async function publicBookRecordWithCoverArtifact(book, access = fs.access) {
   const pub = publicBookRecord(book);
-  if (!pub || pub.hasCover || !isSafeBookId(book?.id)) return pub;
+  if (!pub || pub.hasCover || !requestGuardIsSafeBookId(book?.id)) return pub;
   try {
     await access(canonicalBookCoverPath(book.id));
     pub.hasCover = true;
@@ -3457,6 +3594,14 @@ const bookDeletionService = createBookDeletionService({
       offlinePreparationCoordinator.cancel(bookId, { remove: true }),
       bookGuideService.removeBook(bookId)
     ]);
+    await offlineWindowPreparation.cancelBook(bookId);
+    await offlineAudioPackage.cancelBook(bookId);
+    await Promise.all([
+      chunkedTTS.waitForIdle(bookId),
+      instantChunkedTTS.waitForIdle(bookId),
+      offlinePreparationCoordinator.waitForIdle(bookId),
+      offlineAudioPackage.waitForIdle(bookId)
+    ]);
     return cancelledJobs;
   },
   stopPremiumPrep: bookId => premiumPrep.stopBook(bookId),
@@ -3491,6 +3636,8 @@ app.get('/api/offline/deletions', async (req, res) => {
 const bookMetadataRefreshService = createBookMetadataRefreshService({
   booksFile: BOOKS_FILE,
   positionsFile: POSITIONS_FILE,
+  transitionsFile: CHAPTER_TRANSITIONS_FILE,
+  bookmarksFile: BOOKMARKS_FILE,
   cacheDir: CACHE_DIR,
   path,
   loadJSON,
@@ -3529,8 +3676,8 @@ const bookMetadataRefreshService = createBookMetadataRefreshService({
     invalidateCache: invalidateChapterAudioCache
   }),
   removeBookPositions: (positions, bookId) => removeBookPositions(positions, bookId),
-  setBookPositionsStructureKey: (positions, bookId, structureKey) =>
-    setBookPositionsStructureKey(positions, bookId, structureKey),
+  setBookPositionsStructureKey: (positions, bookId, structureKey, previousStructureKey) =>
+    setBookPositionsStructureKey(positions, bookId, structureKey, previousStructureKey),
   withBookStateLock: (bookId, operation) =>
     bookMutationLocks.withBookStateLock(bookId, operation)
 });
@@ -3555,6 +3702,7 @@ async function getOfflineBookChapters(bookId) {
 }
 
 const offlineAudioPackage = createOfflineAudioPackage({ cacheDir: CACHE_DIR });
+const offlineReadyPackages = createOfflineReadyPackages({ cacheDir: CACHE_DIR, audioPackage: offlineAudioPackage });
 const offlineReadinessNotifications = createOfflineReadinessNotifications({
   filePath: path.join(DATA_DIR, 'push-subscriptions.json'),
   webPush,
@@ -3575,11 +3723,44 @@ function offlinePreparationIdentity() {
   };
 }
 
+async function offlinePackageInput(bookId, identity = offlinePreparationIdentity()) {
+  const target = await getOfflineBookChapters(bookId);
+  const rules = effectiveRules(await loadJSON(PRONUNCIATIONS_FILE, {}), bookId);
+  return { bookId, ...target, rules, identity };
+}
+
+async function resolveOfflinePreparationIdentity({ bookId }) {
+  return offlineReadyPackages.select(await offlinePackageInput(bookId));
+}
+
+async function rememberReadyOfflinePackage({ record, signal, beforePublish }) {
+  if (record.retainedPackageRevision) return;
+  // This hook belongs to the tracked preparation worker. Book deletion aborts
+  // and awaits that worker before removing its managed files.
+  const current = await generationJournal.getOfflinePreparation(record.bookId);
+  if (current?.requestId !== record.requestId) return;
+  const input = await offlinePackageInput(record.bookId, pinnedOfflinePreparationIdentity(record));
+  if (sourceTextRevision(input, input.rules) !== record.sourceTextRevision) {
+    throw new Error('Offline narration input changed before retention');
+  }
+  return offlineReadyPackages.remember({ ...input, signal, beforePublish: async () => {
+    await beforePublish();
+    const latest = await offlinePackageInput(record.bookId, input.identity);
+    if (sourceTextRevision(latest, latest.rules) !== record.sourceTextRevision) {
+      throw new Error('Offline narration input changed before retention');
+    }
+  } });
+}
+
 function pinnedOfflinePreparationIdentity(request = {}) {
   if (!request.sourceVariantKey || !request.sourceVoice) return offlinePreparationIdentity();
   return {
     sourceVoice: request.sourceVoice,
     sourceVariantKey: request.sourceVariantKey,
+    sourceTextRevision: request.sourceTextRevision || '',
+    retainedPackageRevision: request.retainedPackageRevision || '',
+    retainedArtifacts: request.retainedArtifacts || null,
+    retained: Boolean(request.retainedPackageRevision),
     sourceChunkSize: Math.max(
       1,
       Number(request.sourceChunkSize) || getChunkSizeForVoice(request.sourceVoice)
@@ -3597,21 +3778,214 @@ function offlineSourceWorker(identity) {
   });
 }
 
+function throwIfOfflinePreparationAborted(signal) {
+  if (!signal?.aborted) return;
+  const error = signal.reason instanceof Error
+    ? signal.reason
+    : new Error('Offline preparation cancelled');
+  error.name = 'AbortError';
+  throw error;
+}
+
+async function offlineSourceRecipe(bookId, chapterIndex, identity, signal = null) {
+  throwIfOfflinePreparationAborted(signal);
+  const { book, chapters } = await getOfflineBookChapters(bookId);
+  throwIfOfflinePreparationAborted(signal);
+  const chapter = chapters[chapterIndex];
+  if (!chapter || chapter.empty) return null;
+  const worker = offlineSourceWorker(identity);
+  const plan = await worker.chapterArtifactReusePlan?.(
+    bookId,
+    chapterIndex,
+    chapter.text,
+    book.language || 'en',
+    { voice: identity.sourceVoice }
+  );
+  throwIfOfflinePreparationAborted(signal);
+  const artifactFingerprints = (plan?.artifacts || []).map(item => item.fingerprint);
+  const digest = crypto.createHash('sha256').update(JSON.stringify([
+    2,
+    bookId,
+    chapterIndex,
+    identity.sourceVariantKey,
+    identity.sourceVoice,
+    identity.sourceChunkSize,
+    artifactFingerprints
+  ])).digest('hex');
+  return {
+    worker,
+    book,
+    chapter,
+    chapterIndex,
+    plan,
+    fingerprint: digest,
+    sourceFingerprint: `sha256-${digest}`
+  };
+}
+
+async function hashOfflineSourceFile(sourcePath, signal = null) {
+  const hash = crypto.createHash('sha256');
+  let bytes = 0;
+  const stream = fsSync.createReadStream(sourcePath);
+  const abort = () => stream.destroy(signal.reason instanceof Error
+    ? signal.reason
+    : Object.assign(new Error('Offline preparation cancelled'), { name: 'AbortError' }));
+  signal?.addEventListener?.('abort', abort, { once: true });
+  try {
+    throwIfOfflinePreparationAborted(signal);
+    for await (const chunk of stream) {
+      throwIfOfflinePreparationAborted(signal);
+      hash.update(chunk);
+      bytes += chunk.length;
+    }
+    throwIfOfflinePreparationAborted(signal);
+  } finally {
+    signal?.removeEventListener?.('abort', abort);
+  }
+  return { bytes, contentHash: `sha256-${hash.digest('hex')}` };
+}
+
+async function inspectOfflineSourceMarker(sourcePath, expectedFingerprint, signal = null) {
+  throwIfOfflinePreparationAborted(signal);
+  let stat;
+  try { stat = await fs.stat(sourcePath); } catch (error) {
+    if (error.code === 'ENOENT') return { provenance: 'missing' };
+    throw error;
+  }
+  throwIfOfflinePreparationAborted(signal);
+  if (stat.isFile?.() === false || stat.size <= 0) return { provenance: 'invalid' };
+  let marker;
+  try {
+    marker = JSON.parse(await fs.readFile(
+      `${sourcePath}.narration-artifact.json`,
+      signal ? { encoding: 'utf8', signal } : { encoding: 'utf8' }
+    ));
+  } catch (error) {
+    if (error.code === 'ENOENT') {
+      return { provenance: 'legacy-unverified', bytes: stat.size, contentHash: '' };
+    }
+    if (error instanceof SyntaxError) return { provenance: 'invalid' };
+    throw error;
+  }
+  throwIfOfflinePreparationAborted(signal);
+  if (marker?.version === 1) {
+    return { provenance: 'legacy-unverified', bytes: stat.size, contentHash: '' };
+  }
+  if (marker?.version !== 2) return { provenance: 'invalid' };
+  if (
+    marker.fingerprint !== expectedFingerprint || marker.bytes !== stat.size ||
+    marker.provenance !== 'verified' ||
+    !/^sha256-[a-f0-9]{64}$/.test(String(marker.contentHash || ''))
+  ) return { provenance: 'invalid' };
+  const actual = await hashOfflineSourceFile(sourcePath, signal);
+  if (actual.bytes !== stat.size || actual.contentHash !== marker.contentHash) {
+    return { provenance: 'invalid' };
+  }
+  return { ...actual, provenance: 'verified' };
+}
+
+async function inspectOfflineSourceChunks(recipe, signal = null) {
+  if (!recipe?.plan?.artifacts?.length) return 'legacy-unverified';
+  let provenance = 'verified';
+  for (const artifact of recipe.plan.artifacts) {
+    const identity = await inspectOfflineSourceMarker(artifact.outputPath, artifact.fingerprint, signal);
+    if (identity.provenance === 'invalid') return 'invalid';
+    if (identity.provenance !== 'verified') provenance = 'legacy-unverified';
+  }
+  return provenance;
+}
+
+async function inspectStitchedOfflineSource(sourcePath, recipe, signal = null) {
+  const identity = await inspectOfflineSourceMarker(sourcePath, recipe.fingerprint, signal);
+  return { ...identity, fingerprint: recipe.sourceFingerprint };
+}
+
+async function publishStitchedOfflineSourceMarker(sourcePath, recipe, signal = null) {
+  const { bytes, contentHash } = await hashOfflineSourceFile(sourcePath, signal);
+  if (bytes <= 0) throw new Error('Offline narration source is empty');
+  const marker = {
+    version: 2,
+    fingerprint: recipe.fingerprint,
+    bytes,
+    contentHash,
+    provenance: 'verified'
+  };
+  throwIfOfflinePreparationAborted(signal);
+  const markerPath = `${sourcePath}.narration-artifact.json`;
+  const tmpPath = `${markerPath}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.tmp`;
+  try {
+    await fs.writeFile(tmpPath, JSON.stringify(marker), { mode: 0o600, signal });
+    throwIfOfflinePreparationAborted(signal);
+    // No await separates the last cancellation check from publication.
+    fsSync.renameSync(tmpPath, markerPath);
+  } finally {
+    await fs.unlink(tmpPath).catch(() => {});
+  }
+  return {
+    fingerprint: recipe.sourceFingerprint,
+    bytes,
+    contentHash: marker.contentHash,
+    provenance: 'verified'
+  };
+}
+
+async function resolveStitchedOfflineSource(sourcePath, recipe, signal = null) {
+  let sourceIdentity = await inspectStitchedOfflineSource(sourcePath, recipe, signal);
+  // A verified stitched file is independent proof. Its source chunks can be
+  // reclaimed after concatenation without invalidating the preserved audio.
+  if (sourceIdentity.provenance === 'verified') return sourceIdentity;
+
+  const chunkProvenance = await inspectOfflineSourceChunks(recipe, signal);
+  if (chunkProvenance === 'verified') {
+    // Re-concatenation is local and bounded. It proves the stitched file was
+    // built from verified current chunks without re-running narration.
+    await recipe.worker.reconstructChapterManifest(
+      recipe.book.id,
+      recipe.chapterIndex,
+      recipe.chapter.text,
+      recipe.book.language || 'en'
+    );
+    throwIfOfflinePreparationAborted(signal);
+    await recipe.worker.concatenateChunks(recipe.book.id, recipe.chapterIndex, { signal });
+    throwIfOfflinePreparationAborted(signal);
+    return publishStitchedOfflineSourceMarker(sourcePath, recipe, signal);
+  }
+  if (sourceIdentity.provenance === 'invalid' || chunkProvenance === 'invalid') {
+    throw new Error('Offline narration source failed provenance verification');
+  }
+  // A preserved legacy stitched file stays packageable when its old chunk
+  // files no longer exist. Its provenance remains explicitly unverified.
+  return sourceIdentity;
+}
+
 async function inspectOfflineChapterAudio(bookId, chapterIndex, request = {}) {
+  const activeIdentity = pinnedOfflinePreparationIdentity(request);
   const identity = request.packageVariantKey && !request.sourceVoice
-    ? {
-        sourceVariantKey: offlineAudioPackage.sourceVariantKey(request.packageVariantKey),
-        packageVariantKey: request.packageVariantKey,
-        bitrateKbps: OFFLINE_AUDIO_BITRATE_KBPS
-      }
-    : pinnedOfflinePreparationIdentity(request);
+    ? activeIdentity.packageVariantKey === request.packageVariantKey
+      ? activeIdentity
+      : {
+          sourceVariantKey: offlineAudioPackage.sourceVariantKey(request.packageVariantKey),
+          packageVariantKey: request.packageVariantKey,
+          bitrateKbps: OFFLINE_AUDIO_BITRATE_KBPS
+        }
+    : activeIdentity;
+  const recipe = identity.sourceVoice && !identity.retained
+    ? await offlineSourceRecipe(bookId, chapterIndex, identity)
+    : null;
   const packaged = await offlineAudioPackage.inspectChapter({
     bookId,
     chapterIndex,
-    sourceVariantKey: identity.sourceVariantKey
+    sourceVariantKey: identity.sourceVariantKey,
+    sourceFingerprint: recipe?.sourceFingerprint
   });
-  if (packaged.ready) return packaged;
-  if (!identity.sourceVoice) return packaged;
+  const expectedRecipeFingerprint = recipe?.sourceFingerprint || packaged.associatedRecipeFingerprint || '';
+  if (identity.retained && packaged.artifactId !== identity.retainedArtifacts?.[chapterIndex]) {
+    return { ...packaged, ready: false, size: 0, url: null, expectedRecipeFingerprint };
+  }
+  if (packaged.ready && packaged.artifactId) {
+    return { ...packaged, expectedRecipeFingerprint };
+  }
+  if (!identity.sourceVoice || identity.retained) return { ...packaged, expectedRecipeFingerprint };
   const source = await inspectChapterAudio(bookId, chapterIndex, {
     tier: 'active',
     tts: offlineSourceWorker(identity)
@@ -3622,32 +3996,72 @@ async function inspectOfflineChapterAudio(bookId, chapterIndex, request = {}) {
     size: 0,
     url: null,
     variantKey: identity.packageVariantKey,
-    bitrateKbps: identity.bitrateKbps
+    bitrateKbps: identity.bitrateKbps,
+    expectedRecipeFingerprint
   };
 }
 
 async function prepareOfflineChapterAudio(request) {
   const identity = pinnedOfflinePreparationIdentity(request);
-  const sourcePath = await ensureChapterAudioPrepared(request.bookId, request.chapterIndex, {
+  const existing = await offlineAudioPackage.inspectChapter({ bookId: request.bookId,
+    chapterIndex: request.chapterIndex, sourceVariantKey: identity.sourceVariantKey });
+  if (identity.retained) {
+    if (!existing.ready || existing.artifactId !== identity.retainedArtifacts?.[request.chapterIndex]) {
+      throw new Error('Retained offline audio is no longer available');
+    }
+    return existing;
+  }
+  const recipe = await offlineSourceRecipe(request.bookId, request.chapterIndex, identity, request.signal);
+  // Legacy compact audio can outlive its stitched source. Validate and retain
+  // those exact bytes before asking the TTS pipeline to create anything.
+  const hasLegacyPackage = !existing.ready && existing.legacySize > 0;
+  const sourcePath = hasLegacyPackage ? null : await ensureChapterAudioPrepared(request.bookId, request.chapterIndex, {
     priority: request.priority,
     origin: request.origin,
     requestId: request.requestId,
+    signal: request.signal,
     tier: 'active',
     tts: offlineSourceWorker(identity),
     voice: identity.sourceVoice
   });
+  const sourceIdentity = recipe && !hasLegacyPackage
+    ? await resolveStitchedOfflineSource(sourcePath, recipe, request.signal)
+    : null;
   return offlineAudioPackage.ensureChapter({
     bookId: request.bookId,
     chapterIndex: request.chapterIndex,
     sourcePath,
-    sourceVariantKey: identity.sourceVariantKey
+    sourceVariantKey: identity.sourceVariantKey,
+    sourceFingerprint: recipe?.sourceFingerprint,
+    provenance: sourceIdentity?.provenance === 'verified' ? 'verified' : 'legacy-unverified',
+    signal: request.signal,
+    beforePublish: async () => {
+      if (request.signal?.aborted) throw Object.assign(new Error('Offline preparation cancelled'), { name: 'AbortError' });
+      const books = await loadJSON(BOOKS_FILE, {});
+      if (!books[request.bookId]) throw new Error('Book was deleted during offline preparation');
+      const currentRecipe = await offlineSourceRecipe(
+        request.bookId,
+        request.chapterIndex,
+        identity,
+        request.signal
+      );
+      if (recipe?.sourceFingerprint !== currentRecipe?.sourceFingerprint) {
+        throw Object.assign(new Error('Offline chapter source changed during preparation'), { name: 'AbortError' });
+      }
+      if (request.requestId && !request.requestId.startsWith('window-')) {
+        const current = await generationJournal.getOfflinePreparation(request.bookId);
+        if (current?.requestId !== request.requestId) {
+          throw Object.assign(new Error('Offline preparation was replaced'), { name: 'AbortError' });
+        }
+      }
+    }
   });
 }
 
 const offlinePreparationCoordinator = createOfflinePreparationCoordinator({
   stateStore: generationJournal,
   getBookChapters: getOfflineBookChapters,
-  preparationIdentity: offlinePreparationIdentity,
+  preparationIdentity: resolveOfflinePreparationIdentity,
   // Offline preparation owns a bounded active-variant pipeline. Inspect it
   // directly so progress checks cannot trigger the separate full-book premium
   // preparation feature.
@@ -3660,16 +4074,39 @@ const offlinePreparationCoordinator = createOfflinePreparationCoordinator({
   prepareChapter: prepareOfflineChapterAudio,
   cancelRequest: requestId => ttsQueue.cancelWhere({ requestId }),
   discardRequest: requestId => generationJournal.removeChaptersForRequest(requestId),
-  onReady: ({ book, record, status }) => offlineReadinessNotifications.notifyOwners(
-    record.owners,
-    {
-      bookId: record.bookId,
-      title: book?.title || 'Your audiobook',
-      bytesTotal: status.bytesTotal
-    }
-  ),
+  beforeReadyCommit: rememberReadyOfflinePackage,
+  onReady: async event => {
+    await offlineReadinessNotifications.notifyOwners(event.record.owners, {
+      bookId: event.record.bookId,
+      title: event.book?.title || 'Your audiobook',
+      bytesTotal: event.status.bytesTotal
+    });
+  },
   onError: (error, request) => {
     console.warn(`Offline preparation failed for ${request.bookId}: ${error.message}`);
+  }
+});
+
+const getOfflineTransferManifest = createOfflineTransferManifest({
+  getBookChapters: getOfflineBookChapters,
+  chapterStatus: inspectOfflineChapterAudio,
+  preparationStatus: (bookId, identity) => offlinePreparationCoordinator.status(bookId, identity),
+  preparationIdentity: resolveOfflinePreparationIdentity
+});
+const offlineWindowPreparation = createOfflineWindowPreparation({
+  getBookChapters: getOfflineBookChapters,
+  prepareChapter: prepareOfflineChapterAudio,
+  identity: resolveOfflinePreparationIdentity,
+  onError: (error, { bookId }) => console.warn(`Offline window failed for ${bookId}: ${error.message}`)
+});
+
+const offlineRecovery = registerOfflineRecoveryRoutes(app, {
+  requireAdmin, bookMutationLocks, loadInput: offlinePackageInput,
+  audioPackage: offlineAudioPackage, readyPackages: offlineReadyPackages,
+  afterRecovery: async bookId => {
+    await offlinePreparationCoordinator.request(bookId);
+    await offlinePreparationCoordinator.waitForIdle(bookId);
+    return offlinePreparationCoordinator.status(bookId);
   }
 });
 
@@ -3697,14 +4134,21 @@ chapterRebuildService = createChapterRebuildService({
   loadJSON,
   saveJSON,
   afterCommit: async ({ bookId, plan }) => {
+    chunkedTTS.cancelBook(bookId);
+    instantChunkedTTS.cancelBook(bookId);
     await Promise.all([
       premiumPrep.stopBook(bookId),
       playbackPrefetch.removeBook(bookId),
-      offlinePreparationCoordinator.cancel(bookId, { remove: true })
+      offlinePreparationCoordinator.cancel(bookId, { remove: true }),
+      offlineWindowPreparation.cancelBook(bookId),
+      offlineAudioPackage.cancelBook(bookId)
     ]);
     await Promise.all([
       premiumPrep.waitForIdle(bookId),
-      offlinePreparationCoordinator.waitForIdle(bookId)
+      chunkedTTS.waitForIdle(bookId),
+      instantChunkedTTS.waitForIdle(bookId),
+      offlinePreparationCoordinator.waitForIdle(bookId),
+      offlineAudioPackage.waitForIdle(bookId)
     ]);
     const books = await loadJSON(BOOKS_FILE, {});
     await chapterAudioReconciler.reconcile({
@@ -3779,6 +4223,8 @@ registerPlaybackRoutes(app, {
     }
     return inspectOfflineChapterAudio(bookId, chapterIndex, { packageVariantKey });
   },
+  getOfflineTransferManifest,
+  offlineWindowPreparation,
   offlineReadinessNotifications,
   prioritizeForegroundBook,
   canPrioritizeForegroundBook: async (req, bookId) => {
@@ -3793,6 +4239,7 @@ registerPlaybackRoutes(app, {
     return shelves.shelfForUser(shelvesStore, userId).includes(bookId) ||
       Object.hasOwn(positionsForUser(positionsStore, userId), bookId);
   },
+  retryImportWarmup: ({ bookId }) => retryImportedBookAudio(bookId),
   // The session id must match the one the position-save route builds, or the
   // look-ahead session this creates can never be retired: that route keys on
   // positionUserId(req) (which falls back to 'default'), so the 'legacy'
@@ -3871,7 +4318,8 @@ registerAudioPrepRoutes(app, {
   getChunkSizeForVoice,
   getTTSVariantKeyForVoice,
   getTtsOutputFormatForVoice,
-  sendServerError
+  sendServerError,
+  findPreferredAudioStartChapterIndex
 });
 registerSyncPositionRoutes(app, {
   booksFile: BOOKS_FILE,
@@ -3959,6 +4407,30 @@ async function warmImportedBookAudio(bookId, bookPath) {
     bookPath,
     language: book.language || 'en',
     voice: getActiveVoice()
+  });
+}
+
+async function retryImportedBookAudio(bookId) {
+  const books = await loadJSON(BOOKS_FILE, {});
+  const book = books[bookId];
+  if (!book || deletedBookIds.has(bookId)) {
+    const error = new Error('Book not found');
+    error.statusCode = 404;
+    throw error;
+  }
+  await updateJSON(BOOKS_FILE, current => {
+    const record = current[bookId];
+    if (!record || deletedBookIds.has(bookId)) return jsonStore.SKIP_SAVE;
+    record.audioGenerationState = 'generating';
+    record.audioGeneratedChapters = 0;
+    delete record.audioGenerationTotal;
+    delete record.audioGenerationError;
+    record.audioGenerationUpdatedAt = new Date().toISOString();
+  });
+  setImmediate(() => {
+    warmImportedBookAudio(bookId, book.path).catch(error => {
+      console.error(`Import audio retry failed for ${bookId}:`, error);
+    });
   });
 }
 
@@ -4402,6 +4874,7 @@ const shutdownController = createGracefulShutdown({
       queue.active === 0 && queue.queued === 0 && bookGuideService.isIdle();
   },
   cleanup: async ({ drained }) => {
+    await offlineRecovery.close();
     if (!drained) console.warn('Shutdown drain deadline reached; durable generation state will recover on restart.');
     try {
       await searchCoverService.flush();
@@ -4509,7 +4982,7 @@ async function validateEPUB(epubPath) {
 app.post('/api/validate/:bookId', async (req, res) => {
   try {
     const { bookId } = req.params;
-    if (!isSafeBookId(bookId)) {
+    if (!requestGuardIsSafeBookId(bookId)) {
       return res.status(400).json({ error: 'Invalid book identifier' });
     }
     const books = await loadJSON(BOOKS_FILE, {});
@@ -4596,5 +5069,8 @@ module.exports.__test = {
   getChatterboxRefVersionSync,
   updateCustomVoiceRegistry,
   loadCustomVoiceRegistry,
-  refreshSettingsSnapshots
+  refreshSettingsSnapshots,
+  consumeChapterPreparation,
+  resolveStitchedOfflineSource,
+  inspectOfflineSourceMarker
 };

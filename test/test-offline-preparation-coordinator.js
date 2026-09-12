@@ -1089,6 +1089,297 @@ async function test(name, fn) {
     await coordinator.waitForIdle('shared-remove');
   });
 
+  await test('cancellation fences a request still awaiting its first title load', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'offline-request-fence-'));
+    const journal = new GenerationJournal(path.join(dir, 'generation-state.json'));
+    const load = deferred();
+    let prepared = 0;
+    const coordinator = createOfflinePreparationCoordinator({
+      stateStore: journal,
+      getBookChapters: async () => load.promise,
+      chapterStatus: async () => ({ ready: false }),
+      prepareChapter: async () => { prepared += 1; }
+    });
+
+    const requesting = coordinator.request('fenced-book', { ownerId: 'device-a' });
+    const cancelling = coordinator.cancel('fenced-book', { ownerId: 'device-a', remove: true });
+    load.resolve({ book: { id: 'fenced-book' }, chapters: [{}] });
+    await assert.rejects(requesting, error => error.name === 'AbortError');
+    assert.strictEqual((await cancelling).state, 'removed');
+    await coordinator.waitForIdle('fenced-book');
+    assert.strictEqual(await journal.getOfflinePreparation('fenced-book'), null);
+    assert.strictEqual(prepared, 0);
+  });
+
+  await test('cancelling one pending owner preserves a concurrent owner request', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'offline-request-owners-'));
+    const journal = new GenerationJournal(path.join(dir, 'generation-state.json'));
+    const load = deferred();
+    let ready = false;
+    const coordinator = createOfflinePreparationCoordinator({
+      stateStore: journal,
+      getBookChapters: async bookId => {
+        await load.promise;
+        return { book: { id: bookId }, chapters: [{}] };
+      },
+      chapterStatus: async () => ({ ready, size: ready ? 10 : 0 }),
+      prepareChapter: async () => { ready = true; }
+    });
+
+    const first = coordinator.request('shared-pending', { ownerId: 'device-a' });
+    const second = coordinator.request('shared-pending', { ownerId: 'device-b' });
+    const cancelled = coordinator.cancel('shared-pending', { ownerId: 'device-a', remove: true });
+    load.resolve();
+    await assert.rejects(first, error => error.name === 'AbortError');
+    await second;
+    assert.strictEqual((await cancelled).state, 'preparing');
+    await coordinator.waitForIdle('shared-pending');
+    assert.deepStrictEqual((await journal.getOfflinePreparation('shared-pending')).owners, ['device-b']);
+  });
+
+  await test('a replacement request survives cancellation after the retired record was written', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'offline-request-replacement-'));
+    const journal = new GenerationJournal(path.join(dir, 'generation-state.json'));
+    const written = deferred();
+    const releaseWrite = deferred();
+    const put = journal.putOfflinePreparation.bind(journal);
+    let blockFirstWrite = true;
+    journal.putOfflinePreparation = async record => {
+      await put(record);
+      if (blockFirstWrite) {
+        blockFirstWrite = false;
+        written.resolve();
+        await releaseWrite.promise;
+      }
+    };
+    let ready = false;
+    const coordinator = createOfflinePreparationCoordinator({
+      stateStore: journal,
+      getBookChapters: async bookId => ({ book: { id: bookId }, chapters: [{}] }),
+      chapterStatus: async () => ({ ready, size: ready ? 10 : 0 }),
+      prepareChapter: async () => { ready = true; }
+    });
+
+    const retired = coordinator.request('replacement-book', { ownerId: 'device' });
+    await written.promise;
+    const cancel = coordinator.cancel('replacement-book', { ownerId: 'device', remove: true });
+    const replacement = coordinator.request('replacement-book', { ownerId: 'device' });
+    releaseWrite.resolve();
+
+    await assert.rejects(retired, error => error.name === 'AbortError');
+    await replacement;
+    assert.strictEqual((await cancel).state, 'preparing');
+    await coordinator.waitForIdle('replacement-book');
+    const record = await journal.getOfflinePreparation('replacement-book');
+    assert(record);
+    assert.deepStrictEqual(record.owners, ['device']);
+    assert.strictEqual(record.state, 'ready');
+  });
+
+  await test('switching to a retained package aborts obsolete preparation without deleting rendered bytes', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'offline-retained-switch-'));
+    const journal = new GenerationJournal(path.join(dir, 'generation-state.json'));
+    const rendered = path.join(dir, 'already-rendered-chunk.mp3');
+    await fs.writeFile(rendered, 'keep these existing bytes');
+    let retained = false;
+    let started = false;
+    let aborted = false;
+    const cancelled = [];
+    const discarded = [];
+    const generated = [];
+    const coordinator = createOfflinePreparationCoordinator({
+      stateStore: journal,
+      getBookChapters: async bookId => ({ book: { id: bookId }, chapters: [{}, {}] }),
+      preparationIdentity: () => ({ packageVariantKey: retained ? 'prep8:offline' : 'prep11:offline',
+        sourceTextRevision: 'same-input', sourceVoice: 'voice-a' }),
+      chapterStatus: async request => ({ ready: request.packageVariantKey === 'prep8:offline', size: 100 }),
+      prepareChapter: async request => {
+        generated.push(request.packageVariantKey);
+        started = true;
+        await new Promise((resolve, reject) => request.signal.addEventListener('abort', () => {
+          aborted = true;
+          reject(Object.assign(new Error('retired'), { name: 'AbortError' }));
+        }, { once: true }));
+      },
+      cancelRequest: requestId => cancelled.push(requestId),
+      discardRequest: async requestId => discarded.push(requestId)
+    });
+    await coordinator.request('book');
+    await eventually(() => started);
+    const old = await journal.getOfflinePreparation('book');
+    retained = true;
+    await coordinator.request('book');
+    await coordinator.waitForIdle('book');
+    assert(aborted);
+    assert.deepStrictEqual(cancelled, [old.requestId]);
+    assert.deepStrictEqual(discarded, [old.requestId]);
+    assert.deepStrictEqual(generated, ['prep11:offline']);
+    assert.strictEqual(await fs.readFile(rendered, 'utf8'), 'keep these existing bytes');
+    assert.strictEqual((await coordinator.status('book')).state, 'ready');
+  });
+
+  await test('ready revalidation preserves the complete byte count until every chapter is checked', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'offline-ready-bytes-'));
+    const journal = new GenerationJournal(path.join(dir, 'generation-state.json'));
+    await journal.putOfflinePreparation({ bookId: 'book', totalChapters: 2, requestId: 'ready',
+      state: 'ready', nextChapter: 2, readyChapters: 2, preparedBytes: 300 });
+    const gate = deferred();
+    let checkingLast = false;
+    const coordinator = createOfflinePreparationCoordinator({
+      stateStore: journal,
+      getBookChapters: async bookId => ({ book: { id: bookId }, chapters: [{}, {}] }),
+      chapterStatus: async ({ chapterIndex }) => {
+        if (chapterIndex === 1) { checkingLast = true; await gate.promise; }
+        return { ready: true, size: chapterIndex === 0 ? 100 : 200 };
+      },
+      prepareChapter: async () => { throw new Error('Ready bytes must not be generated again'); }
+    });
+    await coordinator.request('book');
+    await eventually(() => checkingLast);
+    assert.strictEqual((await coordinator.status('book')).bytesTotal, 300);
+    gate.resolve();
+    await coordinator.waitForIdle('book');
+    assert.strictEqual((await coordinator.status('book')).bytesTotal, 300);
+  });
+
+  await test('a verified retained package updates owners and exact bytes without another chapter scan', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'offline-retained-admission-'));
+    const journal = new GenerationJournal(path.join(dir, 'generation-state.json'));
+    const identity = { packageVariantKey: 'same-package', sourceTextRevision: 'same-text',
+      retainedPackageRevision: 'verified-catalog', retainedPackageBytes: 300, retained: true };
+    await journal.putOfflinePreparation({ ...identity, bookId: 'book', totalChapters: 2, requestId: 'ready',
+      state: 'ready', nextChapter: 2, readyChapters: 2, preparedBytes: 1, owners: ['original'] });
+    let inspections = 0;
+    const coordinator = createOfflinePreparationCoordinator({
+      stateStore: journal,
+      getBookChapters: async bookId => ({ book: { id: bookId }, chapters: [{}, {}] }),
+      preparationIdentity: () => identity,
+      chapterStatus: async () => { inspections++; return { ready: true, size: 150 }; },
+      prepareChapter: async () => { throw new Error('Retained audio must not be generated again'); }
+    });
+    const status = await coordinator.request('book', { ownerId: 'new-device' });
+    await coordinator.waitForIdle('book');
+    assert.strictEqual(status.state, 'ready');
+    assert.strictEqual(status.bytesTotal, 300);
+    assert.strictEqual(inspections, 0);
+    const record = await journal.getOfflinePreparation('book');
+    assert.strictEqual(record.requestId, 'ready');
+    assert.deepStrictEqual(record.owners, ['original', 'new-device']);
+    assert.strictEqual(record.preparedBytes, 300);
+  });
+
+  await test('normal completion adopts its newly published catalog in the ready intent', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'offline-catalog-completion-'));
+    const journal = new GenerationJournal(path.join(dir, 'generation-state.json'));
+    let identity = { packageVariantKey: 'same-package', sourceTextRevision: 'same-text', retainedPackageRevision: '' };
+    let generated = 0;
+    let ready = false;
+    const coordinator = createOfflinePreparationCoordinator({
+      stateStore: journal,
+      getBookChapters: async bookId => ({ book: { id: bookId }, chapters: [{}] }),
+      preparationIdentity: () => identity,
+      chapterStatus: async () => ({ ready, size: 10 }),
+      prepareChapter: async () => { generated++; ready = true; },
+      beforeReadyCommit: async ({ beforePublish }) => {
+        await beforePublish();
+        identity = { ...identity, retainedPackageRevision: 'published-catalog' };
+        return identity;
+      }
+    });
+    await coordinator.request('book');
+    await coordinator.waitForIdle('book');
+    assert.strictEqual(generated, 1);
+    assert.strictEqual((await coordinator.status('book')).state, 'ready');
+    assert.strictEqual((await journal.getOfflinePreparation('book')).retainedPackageRevision, 'published-catalog');
+  });
+
+  await test('catalog appearance, removal, and replacement cancel a worker with the same package version', async () => {
+    for (const [initial, replacement] of [['', 'catalog-a'], ['catalog-a', ''], ['catalog-a', 'catalog-b']]) {
+      const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'offline-catalog-switch-'));
+      const journal = new GenerationJournal(path.join(dir, 'generation-state.json'));
+      let revision = initial;
+      let started = false;
+      let oldSignal;
+      const cancelled = [];
+      const coordinator = createOfflinePreparationCoordinator({
+        stateStore: journal,
+        getBookChapters: async bookId => ({ book: { id: bookId }, chapters: [{}] }),
+        preparationIdentity: () => ({ packageVariantKey: 'same-package', sourceTextRevision: 'same-text',
+          retainedPackageRevision: revision }),
+        chapterStatus: async request => ({ ready: request.retainedPackageRevision === replacement, size: 10 }),
+        prepareChapter: async request => {
+          started = true;
+          oldSignal = request.signal;
+          await new Promise((resolve, reject) => request.signal.addEventListener('abort', () => {
+            reject(Object.assign(new Error('retired'), { name: 'AbortError' }));
+          }, { once: true }));
+        },
+        cancelRequest: requestId => cancelled.push(requestId)
+      });
+      await coordinator.request('book');
+      await eventually(() => started);
+      const old = await journal.getOfflinePreparation('book');
+      revision = replacement;
+      await coordinator.request('book');
+      await coordinator.waitForIdle('book');
+      assert(oldSignal.aborted);
+      assert.deepStrictEqual(cancelled, [old.requestId]);
+      const current = await journal.getOfflinePreparation('book');
+      assert.notStrictEqual(current.requestId, old.requestId);
+      assert.strictEqual(current.retainedPackageRevision, replacement);
+      assert.strictEqual(current.state, 'ready');
+    }
+  });
+
+  await test('a narration input change during the last chapter restarts before publishing readiness', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'offline-input-fence-'));
+    const journal = new GenerationJournal(path.join(dir, 'generation-state.json'));
+    let revision = 'first-input';
+    const ready = new Set();
+    const published = [];
+    const coordinator = createOfflinePreparationCoordinator({
+      stateStore: journal,
+      getBookChapters: async bookId => ({ book: { id: bookId }, chapters: [{}] }),
+      preparationIdentity: () => ({ packageVariantKey: 'same-variant', sourceTextRevision: revision }),
+      chapterStatus: async request => ({ ready: ready.has(request.sourceTextRevision), size: 10 }),
+      prepareChapter: async request => { ready.add(request.sourceTextRevision); revision = 'second-input'; },
+      beforeReadyCommit: async ({ record, beforePublish }) => { await beforePublish(); published.push(record.sourceTextRevision); }
+    });
+    await coordinator.request('book');
+    await coordinator.waitForIdle('book');
+    assert.deepStrictEqual([...ready], ['first-input', 'second-input']);
+    assert.deepStrictEqual(published, ['second-input']);
+    assert.strictEqual((await journal.getOfflinePreparation('book')).sourceTextRevision, 'second-input');
+  });
+
+  await test('deletion waits for ready catalog publication and never publishes a ready intent afterwards', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'offline-ready-fence-'));
+    const journal = new GenerationJournal(path.join(dir, 'generation-state.json'));
+    const gate = deferred();
+    let publishing = false;
+    let notified = false;
+    const coordinator = createOfflinePreparationCoordinator({
+      stateStore: journal,
+      getBookChapters: async bookId => ({ book: { id: bookId }, chapters: [{}] }),
+      chapterStatus: async () => ({ ready: true, size: 10 }),
+      prepareChapter: async () => {},
+      beforeReadyCommit: async ({ beforePublish }) => { publishing = true; await gate.promise; await beforePublish(); },
+      onReady: async () => { notified = true; }
+    });
+    await coordinator.request('book');
+    await eventually(() => publishing);
+    assert.notStrictEqual((await journal.getOfflinePreparation('book')).state, 'ready');
+    await coordinator.cancel('book', { remove: true });
+    let idle = false;
+    const idlePromise = coordinator.waitForIdle('book').then(() => { idle = true; });
+    await new Promise(resolve => setTimeout(resolve, 10));
+    assert.strictEqual(idle, false);
+    gate.resolve();
+    await idlePromise;
+    assert.strictEqual(await journal.getOfflinePreparation('book'), null);
+    assert.strictEqual(notified, false);
+  });
+
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);
 })();

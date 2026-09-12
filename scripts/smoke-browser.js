@@ -786,7 +786,7 @@ async function verifyPronunciations(page, fixtureState) {
   await page.waitForFunction(() => document.getElementById('chapter-trigger-title')?.textContent.includes('Chapter One'));
   await page.waitForFunction(() => document.getElementById('audio-loading')?.style.display === 'none');
   await page.setViewportSize({ width: 390, height: 844 });
-  for (const selector of ['#utility-timer-btn', '#utility-chapters-btn', '#utility-bookmark-btn', '#utility-speed-btn']) {
+  for (const selector of ['#utility-timer-btn', '#chapter-sheet-btn', '#utility-bookmark-btn', '#utility-speed-btn']) {
     if (!await page.isVisible(selector)) throw new Error(`Mobile playback tool is not visible: ${selector}`);
   }
   if (!await page.isVisible('#pronunciation-repair-btn')) {
@@ -892,43 +892,73 @@ async function verifyLibraryActions(page) {
       await page.evaluate(() => localStorage.getItem('xandrio_library_tab')) !== null) {
     throw new Error('Library scope preference is not isolated to the signed-in account');
   }
-  if (await page.locator('.book-card-tools > [data-download-book]').count() !== 0) {
-    throw new Error('Library card still exposes Download outside its overflow menu');
+  if (await page.locator('[data-offline-status] [data-download-book]').count() === 0) {
+    throw new Error('Library card has no direct download action');
   }
   if (await page.locator('.shelf-toggle, .queue-toggle, .library-offline-badge').count() !== 0) {
     throw new Error('Library card still renders the old action-pill cluster');
   }
-  const hiddenGridStatus = await page.locator('[data-offline-status]').first().evaluate(element => {
+  const gridStatus = await page.locator('[data-offline-status]').first().evaluate(element => {
     const list = element.closest('.book-list');
     list.classList.add('grid-view');
     const bounds = element.getBoundingClientRect();
     const display = getComputedStyle(element).display;
     list.classList.remove('grid-view');
-    return { display, width: bounds.width, height: bounds.height };
+    return { display, width: bounds.width, height: bounds.height, text: element.textContent.trim() };
   });
-  if (hiddenGridStatus.display !== 'none' || hiddenGridStatus.width !== 0 || hiddenGridStatus.height !== 0) {
-    throw new Error(`Undownloaded grid card exposes an empty local-status control: ${JSON.stringify(hiddenGridStatus)}`);
+  if (gridStatus.display === 'none' || gridStatus.width < 44 || gridStatus.height < 44 || !gridStatus.text.includes('Download')) {
+    throw new Error(`Undownloaded grid card has no visible download action: ${JSON.stringify(gridStatus)}`);
   }
   const overflowTrigger = await page.locator('[data-book-menu-toggle]').evaluate(trigger => {
     const styles = getComputedStyle(trigger);
     const bounds = trigger.getBoundingClientRect();
     return {
-      backgroundColor: styles.backgroundColor,
+      visibility: styles.visibility,
+      opacity: Number(styles.opacity),
+      color: styles.color,
       width: bounds.width,
       height: bounds.height
     };
   });
-  if (overflowTrigger.backgroundColor === 'rgba(0, 0, 0, 0)' ||
+  if (overflowTrigger.visibility !== 'visible' || overflowTrigger.opacity === 0 ||
+      overflowTrigger.color === 'rgba(0, 0, 0, 0)' ||
       overflowTrigger.width < 44 || overflowTrigger.height < 44) {
     throw new Error(`Library overflow trigger is not persistently visible: ${JSON.stringify(overflowTrigger)}`);
   }
   await page.click('[data-book-menu-toggle]');
   await page.waitForSelector('[data-download-book]', { state: 'visible' });
-  for (const label of ['Make available offline', 'Save to My Shelf', 'Add to Up Next', 'Share', 'Delete']) {
+  for (const label of ['Download', 'Save to My Shelf', 'Add to Up Next', 'Share', 'Delete']) {
     if (!await page.getByRole('menuitem', { name: label, exact: true }).isVisible()) {
       throw new Error(`Library overflow menu is missing ${label}`);
     }
   }
+  const originalViewport = page.viewportSize();
+  for (const width of [390, 1024]) {
+    await page.setViewportSize({ width, height: 900 });
+    await page.evaluate(async () => {
+      const { getOfflineStorageScopeId } = await import('/js/api.js');
+      const id = document.querySelector('[data-offline-status]').dataset.offlineStatus;
+      const entry = { bookId: id, mode: 'full', state: 'preparing', chapters: 20,
+        preparedChapters: 3, chapterEntries: [], manifestVersion: 3 };
+      localStorage.setItem(`xandrio_offline_books:${getOfflineStorageScopeId()}`, JSON.stringify({ [id]: entry }));
+      document.dispatchEvent(new CustomEvent('xandrio:offlinechange'));
+    });
+    const status = page.locator('[data-offline-status]').first();
+    if (!(await status.innerText()).includes('Preparing audio · 3/20 chapters') ||
+        await status.locator('button').count() !== 0 ||
+        await status.locator('span > span').last().evaluate(el => el.getBoundingClientRect().width <= 1) ||
+        !await page.getByRole('menuitem', { name: 'Cancel download', exact: true }).isVisible() ||
+        await page.getByRole('menuitem', { name: 'Download', exact: true }).count() !== 0) {
+      throw new Error('Preparing download must show progress and an active Cancel action');
+    }
+    await page.screenshot({ path: `/tmp/xandrio-download-preparing-${width}.png` });
+  }
+  await page.evaluate(async () => {
+    const { getOfflineStorageScopeId } = await import('/js/api.js');
+    localStorage.removeItem(`xandrio_offline_books:${getOfflineStorageScopeId()}`);
+    document.dispatchEvent(new CustomEvent('xandrio:offlinechange'));
+  });
+  await page.setViewportSize(originalViewport);
   await page.keyboard.press('Escape');
   if (await page.locator('.book-overflow-menu:not([hidden])').count() !== 0) {
     throw new Error('Library overflow menu did not close with Escape');
@@ -1185,7 +1215,7 @@ async function verifySearchWorkspace(page, fixtureState) {
         throw new Error('Book import progress panel was recreated during an elapsed-time update');
       }
     }
-    await page.waitForSelector('article[data-work-id="work-hemingway"]');
+    await page.waitForFunction(() => document.querySelector('#download-error .error-box') === document.activeElement);
     if (fixtureState.downloadRequests.length !== requestsBefore + 1 ||
         fixtureState.downloadRequests.at(-1)?.hash !== 'search-hemingway') {
       throw new Error(`Cover ${activation} did not add exactly the recommended version: ${JSON.stringify(fixtureState.downloadRequests)}`);
@@ -1434,7 +1464,7 @@ async function verifyDownloadedPlaybackDuringWorkerHandoff(context, fixture) {
       expectedWorkerVersion
     );
     await handoffPage.waitForFunction(() =>
-      document.getElementById('audio-player')?.src.includes('/api/audio/smoke-offline/0?xandrio-offline-scope=default')
+      document.getElementById('audio-player')?.src.includes('/__xandrio_offline__/audio/default/sha256-')
     );
     const completed = await handoffPage.evaluate(() => ({
       controller: navigator.serviceWorker.controller?.scriptURL || '',
@@ -1459,12 +1489,36 @@ async function verifyDownloadedPlaybackDuringWorkerHandoff(context, fixture) {
 async function verifyRealServiceWorkerOffline(browser) {
   const fixture = await startOfflineFixtureServer();
   const context = await browser.newContext({ serviceWorkers: 'allow' });
+  // The block writer remains off by default until physical iOS certification.
+  // This fixture opts in explicitly so CI exercises the new reader and writer.
+  await context.addInitScript(() => {
+    // The script also runs in the initial opaque about:blank document, where
+    // Chromium denies localStorage. It runs again after origin navigation.
+    try { localStorage.setItem('xandrio_offline_block_writer_v1', 'enabled'); } catch {}
+  });
   const pageErrors = [];
+  const offlineRequests = [];
+  const browserLogs = [];
   const observedPages = new WeakSet();
   const trackPageErrors = observedPage => {
     if (observedPages.has(observedPage)) return;
     observedPages.add(observedPage);
-    observedPage.on('pageerror', err => pageErrors.push(err.message));
+    observedPage.on('pageerror', err => pageErrors.push(err.stack || err.message));
+    observedPage.on('console', message => {
+      if (['error', 'warning'].includes(message.type())) browserLogs.push(`${message.type()}: ${message.text()}`);
+    });
+    observedPage.on('request', request => {
+      const url = new URL(request.url());
+      if (url.pathname.includes('/offline/') || url.pathname === '/api/book/smoke-offline') {
+        offlineRequests.push(`${request.method()} ${url.pathname}`);
+      }
+    });
+    observedPage.on('response', response => {
+      const url = new URL(response.url());
+      if (url.pathname.includes('/offline/') || url.pathname === '/api/book/smoke-offline') {
+        offlineRequests.push(`${response.status()} ${url.pathname}`);
+      }
+    });
   };
   context.on('page', trackPageErrors);
   let page = await context.newPage();
@@ -1498,25 +1552,33 @@ async function verifyRealServiceWorkerOffline(browser) {
     );
     await verifyAtomicServiceWorkerUpgrade(page, fixture);
 
-    // Exercise the shared server package and device-local transfer without
-    // navigating into the player. A ready package must continue from the
-    // single offline action into the foreground-download confirmation.
+    // Exercise the shared server package and block-backed device transfer from
+    // one action. The preparation POST and verified Range transfer overlap.
     await page.goto(`${fixture.origin}/#/library`, { waitUntil: 'networkidle' });
     await page.click('[data-book-menu-toggle]');
     await page.waitForSelector('[data-download-book="smoke-offline"]', { state: 'visible' });
-    if (!await page.getByRole('menuitem', { name: 'Make available offline', exact: true }).isVisible()) {
+    if (!await page.getByRole('menuitem', { name: 'Download', exact: true }).isVisible()) {
       throw new Error('Ingested title does not offer offline setup');
     }
     await page.click('[data-download-book="smoke-offline"]');
-    await page.waitForFunction(() => {
-      const manifest = JSON.parse(localStorage.getItem('xandrio_offline_books:default') || '{}');
-      return manifest['smoke-offline']?.state === 'prepared';
-    });
-    if (!await page.getByRole('button', { name: 'Start download', exact: true }).isVisible()) {
-      throw new Error('Ready server audio did not continue into the device download');
+    try {
+      await page.waitForSelector('#audio-activity-sheet.active', { state: 'visible' });
+    } catch {
+      const state = await page.evaluate(async () => ({
+        writerFlag: localStorage.getItem('xandrio_offline_block_writer_v1'),
+        online: navigator.onLine,
+        pwaStorageAllowed: document.documentElement.dataset.pwaStorageAllowed || '',
+        hash: location.hash,
+        controller: navigator.serviceWorker.controller?.scriptURL || '',
+        titles: await globalThis.XandrioOfflineStore?.createStore?.().listTitles('default').catch(error => ({ error: error?.message || String(error) })),
+        queueHidden: document.getElementById('queue-status')?.hidden,
+        sheetClass: document.getElementById('audio-activity-sheet')?.className || '',
+        sheetHidden: document.getElementById('audio-activity-sheet')?.getAttribute('aria-hidden'),
+        activity: document.getElementById('audio-activity-list')?.textContent?.trim() || '',
+        toast: document.querySelector('.toast, [role="status"]')?.textContent?.trim() || ''
+      }));
+      throw new Error(`Device download did not open Activity: ${JSON.stringify(state)}; preparationRequested=${fixture.offlinePreparationRequested()}; requests=${offlineRequests.join(' | ')}; console=${browserLogs.join(' | ')}; pageErrors=${pageErrors.join(' | ')}`);
     }
-    await page.getByRole('button', { name: 'Start download', exact: true }).click();
-    await page.waitForSelector('#audio-activity-sheet.active', { state: 'visible' });
     if (!await page.getByRole('progressbar', { name: 'Download progress' }).isVisible()) {
       throw new Error('Device download did not reveal visible progress');
     }
@@ -1527,18 +1589,19 @@ async function verifyRealServiceWorkerOffline(browser) {
       throw new Error('Library download navigated away from the library');
     }
     try {
-      await page.waitForFunction(() => {
-        const manifest = JSON.parse(localStorage.getItem('xandrio_offline_books:default') || '{}');
-        const entry = manifest['smoke-offline'];
+      await page.waitForFunction(async () => {
+        const store = XandrioOfflineStore.createStore();
+        const entry = (await store.listTitles('default'))['smoke-offline'];
         return entry?.state === 'ready' &&
+          entry?.storageBackend === 'idb' &&
           entry?.chapters === 1 &&
           entry?.chapterEntries?.length === 1;
       });
     } catch {
-      const manifest = await page.evaluate(() =>
-        localStorage.getItem('xandrio_offline_books:default')
+      const manifest = await page.evaluate(async () =>
+        XandrioOfflineStore.createStore().listTitles('default')
       );
-      throw new Error(`Device download did not finish: manifest=${manifest}; pageErrors=${pageErrors.join(' | ')}`);
+      throw new Error(`Device download did not finish: titles=${JSON.stringify(manifest)}; pageErrors=${pageErrors.join(' | ')}`);
     }
     await page.waitForFunction(() =>
       Array.from(document.querySelectorAll('[data-book-id="smoke-offline"]'))
@@ -1546,8 +1609,9 @@ async function verifyRealServiceWorkerOffline(browser) {
     );
     await page.click('[data-library-tab="downloaded"]');
     await page.waitForSelector('[data-book-id="smoke-offline"]:not(.hidden)');
-    if (await page.locator('[data-offline-status="smoke-offline"]:visible').count() !== 0) {
-      throw new Error('Completed download still renders a persistent card status');
+    const downloadedStatus = page.locator('[data-offline-status="smoke-offline"]:visible');
+    if (await downloadedStatus.count() !== 1 || !(await downloadedStatus.innerText()).includes('Downloaded')) {
+      throw new Error('Completed download does not render its verified card status');
     }
     await page.click('[data-book-menu-toggle]');
     if (!await page.getByRole('menuitem', { name: 'Remove download', exact: true }).isVisible()) {
@@ -1555,14 +1619,12 @@ async function verifyRealServiceWorkerOffline(browser) {
     }
     await page.keyboard.press('Escape');
     const cachedBytes = await page.evaluate(async () => {
-      const cache = await caches.open('xandrio-offline-audio:default');
-      const response = await cache.match(
-        `${location.origin}/api/audio/smoke-offline/0?xandrio-offline-scope=default`
-      );
-      return response ? (await response.arrayBuffer()).byteLength : 0;
+      const entry = (await XandrioOfflineStore.createStore().listTitles('default'))['smoke-offline'];
+      const response = await fetch(entry.chapterEntries[0].localUrl);
+      return response.ok ? (await response.arrayBuffer()).byteLength : 0;
     });
     if (cachedBytes !== fixture.audioBytes) {
-      throw new Error(`Offline UI cached ${cachedBytes} audio bytes; expected ${fixture.audioBytes}`);
+      throw new Error(`Offline block reader served ${cachedBytes} audio bytes; expected ${fixture.audioBytes}`);
     }
 
     // Reproduce a real rollout: the verified download already exists, the
@@ -1603,7 +1665,7 @@ async function verifyRealServiceWorkerOffline(browser) {
       select.value = '0';
       select.dispatchEvent(new Event('change', { bubbles: true }));
     });
-    await page.waitForFunction(() => document.getElementById('audio-player')?.src.includes('/api/audio/smoke-offline/0'));
+    await page.waitForFunction(() => document.getElementById('audio-player')?.src.includes('/__xandrio_offline__/audio/default/sha256-'));
     await page.waitForFunction(() => document.getElementById('audio-loading')?.style.display === 'none');
     await page.click('#play-pause-btn');
     await page.waitForFunction(() => {
@@ -1618,10 +1680,9 @@ async function verifyRealServiceWorkerOffline(browser) {
     await page.waitForFunction(() => document.getElementById('audio-player')?.currentTime >= 1.5);
 
     const range = await page.evaluate(async () => {
-      const response = await fetch(
-        '/api/audio/smoke-offline/0?xandrio-offline-scope=default',
-        { headers: { Range: 'bytes=100-199' } }
-      );
+      const response = await fetch(document.getElementById('audio-player').src, {
+        headers: { Range: 'bytes=100-199' }
+      });
       return {
         status: response.status,
         contentRange: response.headers.get('Content-Range'),
@@ -1637,10 +1698,9 @@ async function verifyRealServiceWorkerOffline(browser) {
     }
 
     const unsatisfied = await page.evaluate(async () => {
-      const response = await fetch(
-        '/api/audio/smoke-offline/0?xandrio-offline-scope=default',
-        { headers: { Range: 'bytes=999999-' } }
-      );
+      const response = await fetch(document.getElementById('audio-player').src, {
+        headers: { Range: 'bytes=999999-' }
+      });
       return { status: response.status, contentRange: response.headers.get('Content-Range') };
     });
     if (unsatisfied.status !== 416 || unsatisfied.contentRange !== `bytes */${fixture.audioBytes}`) {
@@ -1648,10 +1708,9 @@ async function verifyRealServiceWorkerOffline(browser) {
     }
 
     const malformed = await page.evaluate(async () => {
-      const response = await fetch(
-        '/api/audio/smoke-offline/0?xandrio-offline-scope=default',
-        { headers: { Range: 'bytes=broken' } }
-      );
+      const response = await fetch(document.getElementById('audio-player').src, {
+        headers: { Range: 'bytes=broken' }
+      });
       return {
         status: response.status,
         contentRange: response.headers.get('Content-Range'),
@@ -1663,10 +1722,9 @@ async function verifyRealServiceWorkerOffline(browser) {
     }
 
     const suffix = await page.evaluate(async () => {
-      const response = await fetch(
-        '/api/audio/smoke-offline/0?xandrio-offline-scope=default',
-        { headers: { Range: 'bytes=-64' } }
-      );
+      const response = await fetch(document.getElementById('audio-player').src, {
+        headers: { Range: 'bytes=-64' }
+      });
       return {
         status: response.status,
         contentLength: response.headers.get('Content-Length'),

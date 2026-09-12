@@ -26,6 +26,7 @@ const RAIL_PLAY_GLYPH = `
     <path d="M9.5 7.5v9l7-4.5-7-4.5z" class="rail-play-tri"></path>
   </svg>
 `;
+const OFFLINE_DOWNLOAD_GLYPH = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M12 3v12m0 0l-4-4m4 4l4-4M5 21h14"/></svg>';
 
 const LIBRARY_TAB_KEY = 'xandrio_library_tab';
 
@@ -120,10 +121,45 @@ function progressMetaLine(progress) {
   return parts.join(' · ');
 }
 
+const OFFLINE_READY_GLYPH = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="m5 12 4 4L19 6"/></svg>';
+const OFFLINE_BUSY_GLYPH = '<svg class="offline-spinner" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path stroke-linecap="round" d="M12 3a9 9 0 1 1-9 9"/></svg>';
+
 function offlineStateContents(bookId) {
-  // Offline state belongs in the overflow menu and Audio Activity. Keeping
-  // the card itself quiet avoids turning local/device state into another pill.
-  return '';
+  const status = offlineStatusForBook(bookId);
+  const cached = Math.max(0, Number(status.cachedChapters) || 0);
+  const total = Math.max(0, Number(status.totalChapters) || 0);
+  const progress = total > 0 ? `${cached}/${total}` : '';
+  const withProgress = label => progress ? `${label} ${progress}` : label;
+  const busy = status.autoResume || pendingBookDownloads.has(String(bookId)) || ['preparing', 'preparation-waiting', 'downloading', 'verifying'].includes(status.kind);
+  const state = (label, title = status.label) => `
+    <span class="book-local-state" title="${safeAttr(title)}" aria-label="${safeAttr(title)}">
+      ${status.downloaded ? OFFLINE_READY_GLYPH : busy ? OFFLINE_BUSY_GLYPH : ''}<span>${escapeHTML(label)}</span>
+    </span>`;
+  const action = (label, title = status.label) => `
+    <button type="button" class="book-local-state" data-download-book="${safeAttr(bookId)}"
+            title="${safeAttr(title)}" aria-label="${safeAttr(`${label}. ${title}`)}">
+      ${OFFLINE_DOWNLOAD_GLYPH}<span>${escapeHTML(label)}</span>
+    </button>`;
+
+  if (pendingBookDownloads.has(String(bookId))) return state('Checking audio…');
+  if (status.downloaded) return state('Downloaded');
+  switch (status.kind) {
+    case 'ready-to-prepare': return action('Download');
+    case 'prepared': return status.autoResume ? state('Waiting to download') : action('Download');
+    case 'preparation-paused': return action('Resume');
+    case 'preparation-error': return action('Retry');
+    case 'preparation-capacity': return action('Try again');
+    case 'partial-download': return action(progress ? `Partial ${progress} · Continue` : 'Partial · Continue');
+    case 'repair-needed': return action('Incomplete · Retry');
+    case 'partial': return action(progress ? `Cached ${progress} · Download full copy` : 'Cached chapters · Download full copy');
+    case 'preparing': return state(`Preparing audio · ${status.preparedChapters || 0}/${total} chapters`);
+    case 'preparation-waiting': return state('Waiting for audio');
+    case 'downloading': return state(withProgress('Downloading'));
+    case 'verifying': return state('Verifying');
+    case 'download-offline': return state('Connect to download');
+    case 'download-unavailable': return state('Downloads unavailable');
+    default: return state(status.label);
+  }
 }
 
 function offlineStatusHTML(bookId) {
@@ -131,8 +167,8 @@ function offlineStatusHTML(bookId) {
   const contents = offlineStateContents(bookId);
   return `
     <span class="book-local-control book-local-control--${safeAttr(status.kind)}"
-          data-offline-status="${safeAttr(bookId)}"${contents ? '' : ' hidden'}>
-      <span class="book-local-state">${contents}</span>
+          data-offline-status="${safeAttr(bookId)}">
+      ${contents}
     </span>`;
 }
 
@@ -156,27 +192,28 @@ function offlineMenuActionContents(bookId) {
     return `<button type="button" role="menuitem" data-remove-offline-book="${safeAttr(bookId)}">Remove download</button>`;
   }
   if (status.kind === 'downloading') {
-    return `<button type="button" role="menuitem" data-download-book="${safeAttr(bookId)}">${escapeHTML(status.label)} (Cancel)</button>`;
+    return `<span class="book-menu-status" role="status">${escapeHTML(status.label)} · Keep Xandrio open</span>
+      <button type="button" role="menuitem" data-download-book="${safeAttr(bookId)}">Cancel download</button>`;
   }
-  if (status.kind === 'preparing') {
-    return `<button type="button" role="menuitem" disabled aria-busy="true">${escapeHTML(status.label)}</button>
-      <button type="button" role="menuitem" data-remove-offline-preparation="${safeAttr(bookId)}">Remove offline setup</button>`;
+  if (status.kind === 'preparing' || (status.kind === 'prepared' && status.autoResume)) {
+    return `<span class="book-menu-status" role="status">${escapeHTML(status.label)}</span>
+      <button type="button" role="menuitem" data-remove-offline-preparation="${safeAttr(bookId)}">Cancel download</button>`;
   }
   if (status.kind === 'preparation-waiting') {
-    return `<button type="button" role="menuitem" disabled>${escapeHTML(status.label)}</button>
-      <button type="button" role="menuitem" data-remove-offline-preparation="${safeAttr(bookId)}">Remove offline setup</button>`;
+    return `<span class="book-menu-status" role="status">${escapeHTML(status.label)}</span>
+      <button type="button" role="menuitem" data-remove-offline-preparation="${safeAttr(bookId)}">Cancel download</button>`;
   }
   if (status.kind === 'prepared') {
-    return `<button type="button" role="menuitem" data-download-book="${safeAttr(bookId)}">Download to this device</button>`;
+    return `<button type="button" role="menuitem" data-download-book="${safeAttr(bookId)}">Download</button>`;
   }
   if (status.kind === 'download-unavailable' || status.kind === 'download-offline') {
     return `<button type="button" role="menuitem" disabled>${escapeHTML(status.label)}</button>`;
   }
   const label = status.kind === 'preparation-error'
-    ? 'Retry offline setup'
+    ? 'Retry download'
     : status.kind === 'preparation-capacity'
-      ? 'Try offline setup again'
-      : 'Make available offline';
+      ? 'Retry download'
+      : 'Download';
   return `<button type="button" role="menuitem" data-download-book="${safeAttr(bookId)}">${label}</button>`;
 }
 
@@ -245,9 +282,9 @@ function renderBookCard(book, position, onShelf = false) {
           </span>
         </button>
         <div class="book-card-tools">
-          ${offlineStatusHTML(id)}
           ${bookMenuHTML(book, onShelf)}
         </div>
+        ${offlineStatusHTML(id)}
         ${progressBar}
       </div>
       <button class="delete-btn-reveal" tabindex="-1" aria-hidden="true" data-delete-book-id="${safeAttr(id)}" data-delete-book-title="${safeAttr(title)}" data-delete-book-author="${safeAttr(author)}" aria-label="Delete ${safeAttr(title)}">
@@ -293,7 +330,8 @@ function railCardHTML(entry) {
   const { book, progress } = entry;
   const id = String(book.id || '');
   const title = book.title || 'Untitled';
-  const metaLine = progressMetaLine(progress);
+  const chapter = `Chapter ${progress.chapterIndex + 1}${progress.chapterCount ? ` of ${progress.chapterCount}` : ''}`;
+  const metaLine = [chapter, progress.percent != null ? `${progress.percent}%` : ''].filter(Boolean).join(' · ');
   const progressBar = progress.percent != null
     ? `<div class="rail-progress"><div class="rail-progress-fill" style="width:${progress.percent}%"></div></div>`
     : '';
@@ -302,14 +340,15 @@ function railCardHTML(entry) {
     <div class="rail-card" data-book-id="${safeAttr(id)}" data-updated-ms="${safeAttr(progress.updatedAtMs || 0)}" role="button" tabindex="0" aria-label="Resume ${safeAttr(title)}">
       <div class="rail-cover-wrap">
         ${coverImageHTML(book, 'rail-cover')}
-        <button class="rail-dismiss" aria-label="Remove ${safeAttr(title)} from Continue Listening" title="Remove from Continue Listening">
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="12" height="12" aria-hidden="true"><path stroke-linecap="round" d="M6 18L18 6M6 6l12 12"/></svg>
-        </button>
         <span class="rail-play-glyph">${RAIL_PLAY_GLYPH}</span>
         ${progressBar}
       </div>
       <p class="rail-title">${escapeHTML(title)}</p>
       <p class="rail-meta">${escapeHTML(metaLine)}</p>
+      <span class="rail-play-action" aria-hidden="true">Resume${progress.timeLeft != null ? ` · ${escapeHTML(formatDuration(progress.timeLeft))} left` : ''}</span>
+      <button class="rail-dismiss" type="button" aria-label="Remove ${safeAttr(title)} from Continue Listening" title="Remove from Continue Listening">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="12" height="12" aria-hidden="true"><path stroke-linecap="round" d="M6 18L18 6M6 6l12 12"/></svg>
+      </button>
     </div>
   `;
 }
@@ -427,7 +466,7 @@ function refreshOfflineIndicators() {
     if (card) card.dataset.downloaded = isAvailableOnDevice(status) ? '1' : '0';
     element.className = `book-local-control book-local-control--${status.kind}`;
     element.hidden = !contents;
-    element.innerHTML = `<span class="book-local-state">${contents}</span>`;
+    element.innerHTML = contents;
   });
   document.querySelectorAll('[data-offline-menu-action]').forEach(element => {
     const hadFocus = element.contains(document.activeElement);
@@ -448,6 +487,27 @@ function syncLibraryTabs() {
     ?.setAttribute('aria-labelledby', `library-tab-${currentTab}`);
   const deviceHint = document.getElementById('downloaded-device-hint');
   if (deviceHint) deviceHint.hidden = currentTab !== 'downloaded';
+}
+
+function filterEmptyStateHTML() {
+  return `
+    <div class="empty-state-modern" data-library-filter-empty role="status" aria-live="polite">
+      <h3>No matching books</h3>
+      <p>Try another title or author.</p>
+      <button class="btn-secondary" type="button" data-clear-library-filter>Clear filter</button>
+    </div>`;
+}
+
+function updateFilterEmptyState(query, visibleCount) {
+  const libraryList = document.getElementById('library-list');
+  if (!libraryList) return;
+  let emptyState = libraryList.querySelector('[data-library-filter-empty]');
+  const shouldShow = Boolean(query) && visibleCount === 0;
+  if (shouldShow && !emptyState) {
+    libraryList.insertAdjacentHTML('beforeend', filterEmptyStateHTML());
+    emptyState = libraryList.querySelector('[data-library-filter-empty]');
+  }
+  if (emptyState) emptyState.hidden = !shouldShow;
 }
 
 // A card is visible when it matches the search query AND the active tab
@@ -471,6 +531,7 @@ function filterLibrary() {
   if (emptyShelfHint) emptyShelfHint.hidden = !(currentTab === 'shelf' && visibleCount === 0 && !query);
   const emptyDownloadedHint = document.getElementById('downloaded-empty-hint');
   if (emptyDownloadedHint) emptyDownloadedHint.hidden = !(currentTab === 'downloaded' && visibleCount === 0 && !query);
+  updateFilterEmptyState(query, visibleCount);
 }
 
 function setLibraryTab(tab) {
@@ -611,7 +672,7 @@ async function downloadBookFromLibrary(bookId) {
       status.kind === 'partial-download' ||
       status.kind === 'repair-needed'
     ) {
-      await downloadBookForOffline(data.book, data.chapters, { showOverlay: false });
+      await downloadBookForOffline(data.book, data.chapters, { showOverlay: false, confirmForeground: false });
     } else {
       await prepareAndDownloadBookForOffline(data.book, data.chapters, {
         notificationSetup,
@@ -849,6 +910,16 @@ export function initLibrary(options = {}) {
       document.getElementById('add-book-btn')?.click();
       return;
     }
+    const clearFilterBtn = e.target.closest('[data-clear-library-filter]');
+    if (clearFilterBtn) {
+      e.preventDefault();
+      if (librarySearch) {
+        librarySearch.value = '';
+        librarySearch.focus();
+      }
+      filterLibrary();
+      return;
+    }
     const menuTrigger = e.target.closest('[data-book-menu-toggle]');
     if (menuTrigger) {
       e.stopPropagation();
@@ -921,8 +992,8 @@ export function initLibrary(options = {}) {
       closeBookMenus();
       const id = removePreparationBtn.dataset.removeOfflinePreparation;
       void cancelOfflinePreparation(id).catch(error => {
-        console.error('Could not remove offline setup:', error);
-        showToast('Could not remove offline setup. Try again.', 'error');
+        console.error('Could not cancel download:', error);
+        showToast('Could not cancel download. Try again.', 'error');
       });
       return;
     }

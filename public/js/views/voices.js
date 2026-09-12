@@ -193,7 +193,7 @@ function renderCurrentVoiceCard() {
 function voicePill(voice) {
   if (voice.custom) return '<span class="voice-pill voice-pill--cloned">Cloned</span>';
   if (voiceIsPremium(voice)) return '<span class="voice-pill voice-pill--premium">Premium</span>';
-  return '<span class="voice-pill">Instant</span>';
+  return '';
 }
 
 export async function loadVoices() {
@@ -245,6 +245,13 @@ async function loadVoiceCacheStatus() {
 }
 
 function renderVoices() {
+  const summary = document.getElementById('settings-voice-summary');
+  if (summary) summary.textContent = getVoiceName(currentVoice);
+  const selectedVoice = voices.find(v => v.id === currentVoice);
+  const hint = document.getElementById('settings-voice-hint');
+  if (hint) hint.textContent = selectedVoice?.provider
+    ? `Narration engine: ${selectedVoice.provider}. Preview a voice before selecting it.`
+    : 'Preview a voice before selecting it.';
   renderVoiceSurface('voice-filter-bar', 'voice-list');
   renderVoiceSurface('player-voice-filter-bar', 'player-voice-list');
 }
@@ -262,13 +269,14 @@ function renderVoiceSurface(filterBarId, listId) {
   }
 
   renderVoiceFilters(filterBarId);
-  const filteredVoices = filterVoices(voices);
+  const filteredVoices = filterVoices(voices).filter(v => v.id !== currentVoice);
   const savedVoices = filteredVoices.filter(v => savedVoiceIds.includes(v.id));
   const savedSet = new Set(savedVoices.map(v => v.id));
-  const topVoices = filteredVoices.filter(v => !savedSet.has(v.id) && (v.top || v.custom || v.id === currentVoice));
+  const topVoices = filteredVoices.filter(v => !savedSet.has(v.id) && (v.top || v.custom));
   const shownSet = new Set([...savedVoices, ...topVoices].map(v => v.id));
   const otherVoices = filteredVoices.filter(v => !shownSet.has(v.id));
-  const voiceSections = [];
+  const current = voices.find(v => v.id === currentVoice);
+  const voiceSections = current ? [renderVoiceSection('Current voice', [current])] : [];
 
   if (savedVoices.length > 0) {
     voiceSections.push(renderVoiceSection('My voices', savedVoices));
@@ -282,12 +290,11 @@ function renderVoiceSurface(filterBarId, listId) {
     voiceSections.push(renderVoiceSection('All voices', otherVoices));
   }
 
-  if (voiceSections.length === 0) {
-    voiceSections.push('<p class="voice-empty">No voices match those filters.</p>');
+  if (filteredVoices.length === 0) {
+    voiceSections.push('<p class="voice-empty">No other voices match those filters.</p>');
   }
 
-  // Settings is the management home: clone panel leads.
-  voiceList.innerHTML = [renderCloneVoicePanel(), ...voiceSections].join('');
+  voiceList.innerHTML = [...voiceSections, renderCloneVoicePanel()].join('');
 }
 
 // Player-sheet list: My voices / Recommended / Explore (or flat search
@@ -344,8 +351,8 @@ function renderCloneVoicePanel() {
     ? '10-30 s of clean, single-speaker audio'
     : 'Narrate any book in a voice you love — upload a 10-30 s sample and it becomes a narrator.';
   return `
-    <div class="voice-section">
-      <div class="voice-section-title">Chatterbox</div>
+    <details class="voice-section voice-create">
+      <summary>Create voice</summary>
       <form class="clone-voice-form${hasCustomVoices ? '' : ' clone-voice-form--cta'}">
         <div class="clone-voice-copy">
           ${hasCustomVoices ? '' : '<span class="clone-voice-badge"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M12 3v18M8.5 7.5A3.5 3.5 0 0 1 12 4a3.5 3.5 0 0 1 3.5 3.5v5A3.5 3.5 0 0 1 12 16a3.5 3.5 0 0 1-3.5-3.5v-5Z"/><path stroke-linecap="round" d="M5.5 12.5A6.5 6.5 0 0 0 12 19a6.5 6.5 0 0 0 6.5-6.5"/></svg><span>Voice cloning</span></span>'}
@@ -364,7 +371,7 @@ function renderCloneVoicePanel() {
           <span class="clone-voice-status" aria-live="polite"></span>
         </div>
       </form>
-    </div>
+    </details>
   `;
 }
 
@@ -502,7 +509,7 @@ function updatePlayerVoiceStatus() {
       ? `${voice.name} · Instant (premium preparing)`
       : `${voice.name} · Premium`;
   } else {
-    playerVoiceName.textContent = voice ? `${voice.name} · ${voice.provider || voice.tier || 'Voice'}` : 'Voice not selected';
+    playerVoiceName.textContent = voice ? voice.name : 'Voice not selected';
   }
   playerVoiceCache.textContent = getVoiceCacheLabel(cache) || 'Cache status unavailable';
   playerVoiceStatus.dataset.cache = getVoiceCacheClass(cache);
@@ -723,7 +730,8 @@ function renderVoiceCard(v) {
     const partialPercent = cache && cache.status === 'partial' && cache.totalChunks > 0
       ? Math.round((cache.readyChunks / cache.totalChunks) * 100)
       : null;
-    const summaryTags = (v.tags && v.tags.length ? v.tags : [v.gender, v.accent, v.depth].filter(Boolean)).slice(0, 3);
+    const summaryTags = (v.tags && v.tags.length ? v.tags : [v.gender, v.accent, v.depth].filter(Boolean))
+      .filter(tag => !['local', 'chatterbox', 'kokoro', 'edge'].includes(String(tag).toLowerCase())).slice(0, 3);
     const tagSummary = summaryTags.map(t => escapeHTML(t)).join(' · ');
     const checkIcon = isActive
       ? '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" class="voice-card-check" aria-hidden="true"><path d="M5 13l4 4L19 7"/></svg>'
@@ -741,7 +749,7 @@ function renderVoiceCard(v) {
             <div class="voice-card-name">${checkIcon}${escapeHTML(v.name)} ${voicePill(v)}</div>
             <span class="voice-readiness ${cacheClass}">${escapeHTML(cacheLabel)}</span>
           </div>
-          <div class="voice-card-meta">${selectionDisabled ? 'Local engine offline' : (isEngineDown ? 'Starts when selected' : (isStarting ? 'Local engine starting' : (v.tier === 'chatterbox' ? `Instant start · premium upgrade${tagSummary ? ' · ' + tagSummary : ''}` : tagSummary)))}</div>
+          <div class="voice-card-meta" title="${safeAttr(v.provider || '')}">${selectionDisabled ? 'Local engine offline' : (isEngineDown ? 'Starts when selected' : (isStarting ? 'Local engine starting' : tagSummary))}</div>
           ${partialPercent !== null ? `<div class="voice-progress" role="progressbar" aria-valuenow="${partialPercent}" aria-valuemin="0" aria-valuemax="100"><div style="width:${partialPercent}%"></div></div>` : ''}
         </div>
         ${v.custom ? `<button class="voice-delete-btn" data-voice-action="delete" data-delete-voice-id="${safeAttr(v.id)}" aria-label="Delete ${safeAttr(v.name)}">

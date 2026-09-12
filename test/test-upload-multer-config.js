@@ -45,6 +45,20 @@ async function test(name, fn) {
 }
 
 (async () => {
+  await test('cleanup only removes server-named uploads directly in the cache', async () => {
+    const removed = [];
+    const cleanupSource = serverSource.match(/async function removeUploadedFile\(filePath\) \{[\s\S]*?\n\}/)[0];
+    const cleanup = vm.runInNewContext(`${cleanupSource}; removeUploadedFile`, {
+      path, CACHE_DIR: '/tmp/xandrio-cache',
+      removeFileIfExists: async filePath => removed.push(filePath)
+    });
+    const name = 'upload_12345678-1234-1234-1234-123456789abc.epub';
+    assert.equal(await cleanup(`/tmp/xandrio-cache/${name}`), true);
+    assert.equal(await cleanup(`/tmp/outside/${name}`), false);
+    assert.equal(await cleanup(`/tmp/xandrio-cache/../outside/${name}`), false);
+    assert.equal(await cleanup('/tmp/xandrio-cache/books.json'), false);
+    assert.deepStrictEqual(removed, [`/tmp/xandrio-cache/${name}`]);
+  });
   await test('destination reports mkdir failure exactly once', async () => {
     const failure = new Error('mkdir failed');
     const storage = loadStorage({ mkdir: () => Promise.reject(failure) });

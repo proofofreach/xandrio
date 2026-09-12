@@ -5,6 +5,7 @@ import { initLogin, showLoginGate } from './js/views/login.js';
 import { initRouter, navigateTo, syncPlayerHash, clearSheetStack } from './js/router.js';
 import { formatDuration, escapeHTML, cleanDisplayText, isIOSLike, needsReliablePlayback, coverPlaceholderSrc } from './js/util/format.js';
 import { showToast } from './js/ui/toast.js';
+import { initCoverImages } from './js/ui/cover-images.js';
 import { initKeys, onActivate } from './js/ui/keys.js';
 import { registerSheet } from './js/ui/sheets.js';
 import { initBookmarks, renderBookmarksSection, addBookmarkAtCurrentPosition } from './js/features/bookmarks.js';
@@ -17,14 +18,14 @@ import { initSearch } from './js/views/search.js';
 import { initSettings } from './js/views/settings.js';
 import { initStats } from './js/views/stats.js';
 import { initBookGuide, openBookGuide, refreshGuideState } from './js/views/book-guide.js';
-import { initSleepTimer, restoreSleepTimer, isSleepTimerChapterTarget, expireSleepTimer, closeSleepTimerModal } from './js/views/sleep-timer.js';
+import { initSleepTimer, restoreSleepTimer, isSleepTimerChapterTarget, expireSleepTimer, closeSleepTimerModal, checkAutomaticSleepTimer } from './js/views/sleep-timer.js';
 import { loadVoices, refreshVoicePrepPanel, closeVoiceSheetDirect } from './js/views/voices.js';
 import { initPlaybackSpeed, getCurrentPlaybackSpeed, closeSpeedSheet, loadPlaybackSpeed, applyPlaybackSpeed, applySkipIntervalLabels, stepPlaybackSpeed } from './js/views/playback-speed.js';
 import { readJSON, writeJSON, readText } from './js/util/storage.js';
 import { createPlaybackSession, restorePlaybackPosition } from './js/playback-session.js';
 import { navigateChapterSelection, positionMatchesChapterStructure, shouldAllowBackwardReconciliation } from './js/chapter-navigation.mjs';
 import { SingleFileChapterPlayer } from './js/single-file-chapter-player.js';
-import { initPlayerUI, paintChapterTimes, paintScrubPreview, toggleTimeDisplayMode, syncTimeDisplayModeFromClientSettings, getPlaybackProgressScope, getBookSeekTarget, syncPlaybackProgressScope, setPlaybackReliabilityState, setResumePromptVisible, handleChunkWaiting, handleChunkPreparing, setChunkOverlayState, displayChapterTitle, updateChapterTrigger, updateBookProgress, updatePlayerAmbient, renderChapterList, openChapterSheet, closeChapterSheet, dismissChapterSheet, showAudioLoading, hideAudioLoading, updateMiniPlayer, syncMiniPlayerInfo, syncMiniPlayerIcon } from './js/views/player-ui.js';
+import { initPlayerUI, refreshPlaybackTimes, setPlaybackBuffering, paintChapterTimes, paintScrubPreview, toggleTimeDisplayMode, syncTimeDisplayModeFromClientSettings, getPlaybackProgressScope, getBookSeekTarget, syncPlaybackProgressScope, setPlaybackReliabilityState, setResumePromptVisible, handleChunkWaiting, handleChunkPreparing, setChunkOverlayState, displayChapterTitle, updateChapterTrigger, updateBookProgress, updatePlayerAmbient, renderChapterList, openChapterSheet, closeChapterSheet, dismissChapterSheet, showAudioLoading, hideAudioLoading, updateMiniPlayer, syncMiniPlayerInfo, syncMiniPlayerIcon } from './js/views/player-ui.js';
 import { findPreferredStartChapterIndex } from './js/util/chapter-labels.mjs';
 import { applyRewindForResume, createSmartRewindController } from './js/smart-rewind.mjs';
 import { initListeningQueue, loadListeningQueue, addToListeningQueue, advanceListeningQueue, getBookPlaybackSettings, saveBookPlaybackSettings } from './js/features/listening-queue.js';
@@ -65,6 +66,8 @@ let persistedPlaybackEventLedger = restoredPlaybackEventLedger.slice();
 let automaticRecoveryAttempts = 0;
 let automaticRecoveryTimer = null;
 let waitingForOnline = false;
+let recoveryOnlineListener = null;
+let playbackPausedByUser = false;
 let rateLimitedUntil = 0;
 // Recovery ownership. Every attempt captures the token that was current when it
 // started; a newer attempt, a chapter change or a book change replaces it, and
@@ -485,18 +488,21 @@ function recoverySourceTuple(snapshot, chapterIndex) {
 
 // Runs inside the tap. Nothing may be awaited before play().
 function resumeFromPreparedSource() {
+  playbackPausedByUser = false;
   if (!chunkPlayer) return Promise.resolve();
   if (!playbackEngineOwnsReadySource()) {
     recoverIdleUnreadyPlayback();
     return Promise.resolve();
   }
   applySmartRewindForResume();
+  const token = recoveryToken;
   const started = Promise.resolve(chunkPlayer.play());
   setResumePromptVisible(false);
   updatePlaybackUI(true);
   return started
-    .then(() => markPlaybackStableSoon())
+    .then(() => { if (!token.cancelled && !playbackPausedByUser) markPlaybackStableSoon(); })
     .catch(playError => {
+      if (token.cancelled || playbackPausedByUser) return;
       updatePlaybackUI(false);
       handleChunkError(playError);
     });
@@ -507,22 +513,29 @@ function resumeFromPreparedSource() {
 // session churn a single failed resume could produce.
 const MAX_AUTOMATIC_RECOVERY_ATTEMPTS = 2;
 
-function stopPendingAutomaticRecovery() {
+function stopPendingAutomaticRecovery({ preserveReadySource = false } = {}) {
   recoveryToken.cancelled = true;
   recoveryToken = { cancelled: false };
+  if (recoveryOnlineListener) {
+    window.removeEventListener?.('online', recoveryOnlineListener);
+    recoveryOnlineListener = null;
+  }
+  waitingForOnline = false;
   if (automaticRecoveryTimer !== null) {
     window.clearTimeout?.(automaticRecoveryTimer);
     automaticRecoveryTimer = null;
   }
   automaticRecoveryInFlight = false;
-  try { chunkPlayer?.cancelPendingLoad?.(); } catch {}
+  if (!preserveReadySource || !playbackEngineOwnsReadySource()) {
+    try { chunkPlayer?.cancelPendingLoad?.(); } catch {}
+  }
 }
 
 // Abandon the current recovery lineage entirely. Real navigation and explicit
 // cancellation reset both its immutable tuple and its bounded attempt budget;
 // the automatic-to-manual handoff deliberately does neither.
-function cancelPlaybackRecovery() {
-  stopPendingAutomaticRecovery();
+function cancelPlaybackRecovery(options) {
+  stopPendingAutomaticRecovery(options);
   waitingForOnline = false;
   manualRecoveryInFlight = false;
   manualRecoveryToken = null;
@@ -579,6 +592,7 @@ function retainRecoverySnapshot(snapshot) {
 // screen on top of a retry that was already running.
 function scheduleAutomaticPlaybackRecovery(error, snapshot) {
   const lineageSnapshot = retainRecoverySnapshot(snapshot);
+  if (!lineageSnapshot || playbackPausedByUser) return true;
   const resumeAt = lineageSnapshot?.startOffsetSeconds || 0;
   if (!window.setTimeout) return false;
 
@@ -604,13 +618,17 @@ function scheduleAutomaticPlaybackRecovery(error, snapshot) {
     if (waitingForOnline) return true;
     waitingForOnline = true;
     setPlaybackReliabilityState('resume', 'Waiting for connection');
-    window.addEventListener('online', () => {
+    const token = recoveryToken;
+    const listener = () => {
+      if (token.cancelled || recoveryOnlineListener !== listener) return;
+      recoveryOnlineListener = null;
       waitingForOnline = false;
-      if (recoveryToken.cancelled) return;
       if (!scheduleAutomaticPlaybackRecovery(error, lineageSnapshot)) {
         offerManualPlaybackRecovery(error, lineageSnapshot);
       }
-    }, { once: true });
+    };
+    recoveryOnlineListener = listener;
+    window.addEventListener('online', listener, { once: true });
     return true;
   }
 
@@ -662,8 +680,10 @@ function scheduleAutomaticPlaybackRecovery(error, snapshot) {
         if (!token.cancelled) followUpError = retryError;
       }
     } finally {
-      automaticRecoveryTimer = null;
-      automaticRecoveryInFlight = false;
+      if (recoveryToken === token) {
+        automaticRecoveryTimer = null;
+        automaticRecoveryInFlight = false;
+      }
     }
     if (!followUpError || token.cancelled) return;
     if (!scheduleAutomaticPlaybackRecovery(followUpError, lineageSnapshot)) {
@@ -676,6 +696,8 @@ function scheduleAutomaticPlaybackRecovery(error, snapshot) {
 
 
 function handleChunkError(error) {
+  setPlaybackBuffering(false);
+  if (playbackPausedByUser) return;
   console.error('Chunk playback error:', error);
   if (error && (error.name === 'NotAllowedError' || error.name === 'AbortError')) {
     hideAudioLoading();
@@ -765,10 +787,13 @@ function makePlaybackCallbacks() {
     onError: handleChunkError,
     onReady: handleChunkReady,
     onWaiting: handleChunkWaiting,
+    onBufferingChange: setPlaybackBuffering,
     onPreparing: handleChunkPreparing,
     onPlaybackChange: (isPlaying, detail = {}) => {
       updatePlaybackUI(isPlaying);
       if (isPlaying) {
+        checkAutomaticSleepTimer();
+        if (detail.reason === 'external') playbackPausedByUser = false;
         setResumePromptVisible(false);
         markPlaybackStableSoon();
         scheduleRollingOfflineAfterStablePlayback();
@@ -780,7 +805,12 @@ function makePlaybackCallbacks() {
           window.clearTimeout?.(rollingOfflineTimer);
           rollingOfflineTimer = null;
         }
-        if (detail.reason === 'external') recordSmartRewindPause();
+        if (detail.reason === 'external') {
+          playbackPausedByUser = true;
+          loadChapterToken++;
+          cancelPlaybackRecovery({ preserveReadySource: true });
+          recordSmartRewindPause();
+        }
         checkpointPlayback();
         scheduleServerPositionSave();
       }
@@ -845,6 +875,7 @@ function applyPlaybackSelection(selection) {
 
 // Initialize when DOM is ready
 document.addEventListener('DOMContentLoaded', async () => {
+  initCoverImages();
   console.log('Xandrio initialized');
   const deployment = await initDeploymentGuard({
     onChange: updated => {
@@ -946,6 +977,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   initListeningQueue({ openBook });
   initSearch({ openBook, navigateTo });
   initSleepTimer({
+    pausePlayback: pausePlaybackForUser,
     getCurrentBook: () => currentBook,
     getCurrentChapter: () => currentChapter,
     getChunkPlayer: () => chunkPlayer,
@@ -960,7 +992,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     isSmartRewindEnabled,
     isRollingOfflineEnabled,
     saveBookPlaybackSettings: saveCurrentBookPlaybackSettings,
-    onSpeedChange: () => updateMediaSessionPosition()
+    onSpeedChange: () => {
+      updateMediaSessionPosition();
+      refreshPlaybackTimes();
+    }
   });
   initSettings({
     getCurrentBook: () => currentBook,
@@ -1432,7 +1467,6 @@ function setupEventListeners() {
   });
 
   document.getElementById('utility-timer-btn')?.addEventListener('click', () => timerBtnInline?.click());
-  document.getElementById('utility-chapters-btn')?.addEventListener('click', openChapterSheet);
   document.getElementById('utility-bookmark-btn')?.addEventListener('click', () => {
     if (currentBook) addBookmarkAtCurrentPosition();
   });
@@ -2196,15 +2230,24 @@ function applySmartRewindForResume() {
     smartRewind.clear();
     return;
   }
+  const bookId = currentBook.id;
+  const chapterIndex = currentChapter;
+  const player = chunkPlayer;
   const outcome = applyRewindForResume({
     controller: smartRewind,
-    player: chunkPlayer,
-    bookId: currentBook.id,
-    chapterIndex: currentChapter,
-    positionSeconds: chunkPlayer.getCurrentTime?.() || 0,
+    player,
+    bookId,
+    chapterIndex,
+    positionSeconds: player.getCurrentTime?.() || 0,
     enabled: smartRewindIsEnabled()
   });
   if (outcome.status === 'applied') {
+    // Do not await: resume must still reach play() in the current activation.
+    // The identity check prevents a synchronous player callback from saving a
+    // rewind against a book or chapter that took ownership during the seek.
+    if (currentBook?.id === bookId && currentChapter === chapterIndex && chunkPlayer === player) {
+      void savePosition({ allowBackward: true });
+    }
     showToast(`Smart rewind · ${outcome.rewindSeconds} seconds`);
   } else if (outcome.status === 'deferred') {
     // Only claim a rewind that actually happened.
@@ -2225,10 +2268,17 @@ function retryDeferredSmartRewind() {
     deferredSmartRewind = null;
     return;
   }
-  if (chunkPlayer.trySeekSync?.(pending.targetSeconds)) {
-    deferredSmartRewind = null;
-    showToast(`Smart rewind · ${pending.rewindSeconds} seconds`);
-  }
+  if (!chunkPlayer.trySeekSync?.(pending.targetSeconds)) return;
+  // A synchronous seek can trigger playback callbacks that replace the
+  // selected title. Only persist the rewind which this pending tuple owns.
+  if (
+    deferredSmartRewind !== pending ||
+    pending.bookId !== currentBook?.id ||
+    pending.chapterIndex !== currentChapter
+  ) return;
+  deferredSmartRewind = null;
+  void savePosition({ allowBackward: true });
+  showToast(`Smart rewind · ${pending.rewindSeconds} seconds`);
 }
 
 function playbackEngineOwnsSelectedBook() {
@@ -2289,8 +2339,10 @@ function recoverIdleUnreadyPlayback() {
 async function togglePlayPause(forcePlay = false) {
   forcePlay = forcePlay === true;
   if (!currentBook || !chunkPlayer) return;
+  const token = recoveryToken;
   try {
     if (forcePlay || !chunkPlayer.isPlaying) {
+      playbackPausedByUser = false;
       // The player view can commit a newly selected title while metadata and
       // local-source checks are still pending. Until the media engine has been
       // retargeted, its persistent audio element still belongs to the outgoing
@@ -2316,16 +2368,16 @@ async function togglePlayPause(forcePlay = false) {
       // activation from the tap at the first await.
       applySmartRewindForResume();
       await chunkPlayer.play();
+      if (token.cancelled || playbackPausedByUser) return;
       setResumePromptVisible(false);
       updatePlaybackUI(true);
     } else {
-      recordSmartRewindPause();
-      chunkPlayer.pause();
-      updatePlaybackUI(false);
+      pausePlaybackForUser();
     }
     checkpointPlayback();
     scheduleServerPositionSave();
   } catch (err) {
+    if (token.cancelled || playbackPausedByUser) return;
     updatePlaybackUI(false);
     if (err?.code === 'SOURCE_NOT_READY') {
       recoverIdleUnreadyPlayback();
@@ -2462,17 +2514,21 @@ function isNativeSingleFileReady() {
 
 async function resumeNativeSingleFileFromMediaSession() {
   if (!isNativeSingleFileReady()) return false;
+  playbackPausedByUser = false;
+  const token = recoveryToken;
   try {
     // Same activation contract as togglePlayPause: the lock screen and Control
     // Center grant activation for exactly one synchronous play() call.
     applySmartRewindForResume();
     await chunkPlayer.play();
+    if (token.cancelled || playbackPausedByUser) return true;
     setResumePromptVisible(false);
     updatePlaybackUI(true);
     checkpointPlayback();
     scheduleServerPositionSave();
     return true;
   } catch (err) {
+    if (token.cancelled || playbackPausedByUser) return true;
     chunkPlayer.pause();
     updatePlaybackUI(false);
     console.warn('Lock-screen native resume failed:', err);
@@ -2485,15 +2541,20 @@ async function resumeNativeSingleFileFromMediaSession() {
   }
 }
 
-function pauseNativeSingleFileFromMediaSession() {
-  if (!isNativeSingleFileReady()) return false;
+function pausePlaybackForUser() {
+  playbackPausedByUser = true;
+  loadChapterToken++;
+  cancelPlaybackRecovery({ preserveReadySource: true });
+  deferredSmartRewind = null;
   recordSmartRewindPause();
-  chunkPlayer.pause();
-  navigator.mediaSession.playbackState = 'paused';
+  chunkPlayer?.pause();
+  setPlaybackBuffering(false);
+  setResumePromptVisible(false);
+  hideAudioLoading();
+  setPlaybackReliabilityState('active', 'Paused');
   updatePlaybackUI(false);
   checkpointPlayback();
   scheduleServerPositionSave();
-  return true;
 }
 
 function setupMediaSessionHandlers() {
@@ -2505,14 +2566,7 @@ function setupMediaSessionHandlers() {
     },
     pause: async () => {
       if (!chunkPlayer) return;
-      if (pauseNativeSingleFileFromMediaSession()) return;
-      if (chunkPlayer.isPlaying) {
-        await togglePlayPause();
-      } else if (chunkPlayer.supportsNativeMediaSession && audioPlayer && !audioPlayer.paused) {
-        recordSmartRewindPause();
-        audioPlayer.pause();
-        updatePlaybackUI(false);
-      }
+      pausePlaybackForUser();
     },
     seekbackward: () => skip(-getSkipInterval()),
     seekforward: () => skip(getSkipInterval()),
@@ -2820,3 +2874,13 @@ function openShortcutOverlay() {
 function closeShortcutOverlay() {
   shortcutOverlayController?.dismiss();
 }
+
+// Group navigation leaves the application route unchanged.
+(document.querySelectorAll?.("[data-settings-group]") || []).forEach(button => {
+  button.addEventListener("click", () => {
+    const section = document.getElementById(button.dataset.settingsGroup);
+    const heading = section?.querySelector("h3");
+    section?.scrollIntoView({ block: "start", behavior: "instant" });
+    if (heading) { heading.tabIndex = -1; heading.focus({ preventScroll: true }); }
+  });
+});
