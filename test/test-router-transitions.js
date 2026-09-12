@@ -30,5 +30,11 @@ test('both view-transition promises are handled', () => {
   assert.ok(router.includes('transition.finished.catch('), 'finished rejection is handled');
 });
 
+test('settings routes include a section and keep the view key stable', () => {
+  assert.ok(router.includes('#\\/settings(?:\\/([a-z-]+))?'), 'settings hashes parse an optional section');
+  assert.ok(router.includes('settings:${route.section || \'\'}'), 'section changes re-render settings');
+  assert.ok(router.includes("view === 'settings' && param"), 'navigateTo can open a settings page');
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

@@ -1,6 +1,7 @@
 import { apiGet, apiSend, getCurrentUser, logout, getCurrentUserId, setCurrentUserId, getCurrentDeviceId, getCurrentDeviceName, resetSyncUser, isDefaultSyncUser } from '../api.js';
 import { navigateTo } from '../router.js';
-import { loadClientSettings, getClientSettings, getSkipInterval, getProgressDisplayMode, getDefaultSearchSources, setClientSetting } from '../client-settings.js';
+import { loadClientSettings, getClientSettings, getSkipInterval, getProgressDisplayMode, getDefaultSearchSources, getDefaultSpeed, isRollingOfflineEnabled, setClientSetting } from '../client-settings.js';
+import { getOfflineManifest, renderOfflineState } from '../features/offline.js';
 import { loadLibrary } from './library.js';
 import { initVoices, loadVoices, stopVoiceSample } from './voices.js';
 import { readText, writeText } from '../util/storage.js';
@@ -9,6 +10,35 @@ import { confirmSheet } from '../ui/confirm.js';
 import { showToast } from '../ui/toast.js';
 import { renderSegmentedControl } from '../ui/segmented.js';
 import { registerSheet } from '../ui/sheets.js';
+
+const SETTINGS_PAGES = {
+  playback: {},
+  sleep: {},
+  voice: {},
+  sources: {},
+  offline: {},
+  language: {},
+  account: { signedIn: true },
+  sync: { signedOut: true },
+  calibre: {},
+  accounts: { admin: true, signedIn: true },
+  guides: { admin: true },
+  diagnostics: { admin: true }
+};
+
+function isAdminUser(user = getCurrentUser()) {
+  return !user || user.role === 'admin';
+}
+
+function setHidden(el, hidden) {
+  if (!el) return;
+  el.hidden = Boolean(hidden);
+}
+
+function setSummary(id, text) {
+  const node = document.getElementById(id);
+  if (node) node.textContent = text || '';
+}
 
 let deps = {};
 // --- Settings View ---
@@ -87,7 +117,17 @@ export function initSettings(options = {}) {
   const adminNewPassword = document.getElementById('admin-new-password');
   const adminNewIsAdmin = document.getElementById('admin-new-is-admin');
   const adminAddAccountBtn = document.getElementById('admin-add-account-btn');
+  const adminAddAccountOpen = document.getElementById('admin-add-account-open');
+  const adminAccountForm = document.getElementById('admin-account-form');
   const adminAccountsError = document.getElementById('admin-accounts-error');
+  const adminAccountSheetError = document.getElementById('admin-account-sheet-error');
+  const adminAccountSheetController = registerSheet(document.getElementById('admin-account-sheet'), {
+    backdrop: document.getElementById('admin-account-backdrop'),
+    closeBtn: document.getElementById('admin-account-close')
+  });
+  const accountSignoutOthersBtn = document.getElementById('account-signout-others-btn');
+  const accountSessionsError = document.getElementById('account-sessions-error');
+  const defaultSpeedSelect = document.getElementById('default-speed-select');
 
   // Admin-only operational diagnostics
   const operatorDiagnosticsSection = document.getElementById('operator-diagnostics-section');
@@ -154,18 +194,111 @@ export function initSettings(options = {}) {
 
   document.addEventListener('xandrio:viewchange', (e) => {
     if (e.detail.view !== 'settings') return;
-    checkAnnasStatus();
-    checkZlibStatus();
-    loadProviderStatus();
-    loadAccountOrSync();
-    loadCalibreConnections();
-    loadBookGuideSettings();
-    loadOperatorDiagnostics();
-    renderClientSettings();
-    loadPremiumPrepSetting();
-    loadVoices();
-    loadLanguagePref();
+    applySettingsSection(e.detail.section || null);
   });
+
+  function applySettingsSection(requested) {
+    const user = getCurrentUser();
+    const signedIn = Boolean(user?.id);
+    const admin = isAdminUser(user);
+
+    setHidden(document.getElementById('settings-identity'), !signedIn);
+    setHidden(document.getElementById('settings-menu-account-row'), !signedIn);
+    setHidden(accountLogoutBtn, !signedIn);
+    setHidden(document.getElementById('settings-menu-sync-row'), signedIn);
+    setHidden(document.getElementById('settings-menu-server'), !admin);
+    setHidden(document.getElementById('settings-menu-accounts-row'), !signedIn || !admin);
+
+    let section = requested || '';
+    const page = SETTINGS_PAGES[section];
+    if (section && !page) section = 'missing';
+    else if (page?.signedIn && !signedIn) section = 'missing';
+    else if (page?.signedOut && signedIn) section = 'account';
+    else if (page?.admin && !admin) section = 'missing';
+
+    if (section === 'missing') {
+      const copy = document.getElementById('settings-missing-copy');
+      if (copy) copy.textContent = requested && SETTINGS_PAGES[requested]?.admin
+        ? 'This settings page is only available to administrators.'
+        : 'This settings page is not available on this account.';
+    }
+
+    settingsView.dataset.settingsSection = section;
+    settingsView.classList.toggle('settings-has-pane', Boolean(section));
+    document.querySelectorAll('[data-settings-pane]').forEach(pane => {
+      pane.hidden = pane.dataset.settingsPane !== section;
+    });
+    document.querySelectorAll('[data-settings-link]').forEach(link => {
+      const active = link.dataset.settingsLink === section;
+      link.classList.toggle('is-active', active);
+      if (active) link.setAttribute('aria-current', 'page');
+      else link.removeAttribute('aria-current');
+    });
+
+    const heading = document.querySelector(`[data-settings-pane="${CSS.escape(section)}"] h2`);
+    if (heading) {
+      heading.tabIndex = -1;
+      heading.focus({ preventScroll: true });
+    }
+
+    loadSettingsSection(section);
+  }
+
+  function loadSettingsSection(section) {
+    renderClientSettings();
+    loadLanguagePref();
+    updateHubIdentity();
+    updatePlaybackSummary();
+    updateOfflineSummary();
+
+    const needsHub = !section;
+    if (needsHub || section === 'voice') loadVoices();
+    if (needsHub || section === 'playback') loadPremiumPrepSetting();
+    if (needsHub || section === 'sources') {
+      loadProviderStatus();
+      checkAnnasStatus();
+      checkZlibStatus();
+    }
+    if (needsHub || section === 'offline') renderOfflineState({ audit: false });
+    if (needsHub || section === 'account' || section === 'sync') loadAccountOrSync();
+    if (needsHub || section === 'calibre') loadCalibreConnections();
+    if ((needsHub || section === 'guides') && isAdminUser()) loadBookGuideSettings();
+    if ((needsHub || section === 'diagnostics') && isAdminUser()) loadOperatorDiagnostics();
+    if ((needsHub || section === 'accounts') && isAdminUser() && getCurrentUser()?.id) loadAdminAccounts();
+    if (section !== 'voice') stopVoiceSample();
+  }
+
+  function updateHubIdentity() {
+    const user = getCurrentUser();
+    if (!user) return;
+    const name = user.displayName || user.username || 'Signed in';
+    const nameEl = document.getElementById('settings-identity-name');
+    const detailEl = document.getElementById('settings-identity-detail');
+    const roleEl = document.getElementById('settings-identity-role');
+    const avatar = document.getElementById('settings-identity-avatar');
+    if (nameEl) nameEl.textContent = name;
+    if (detailEl) detailEl.textContent = user.username ? `@${user.username}` : '';
+    if (roleEl) {
+      roleEl.textContent = user.role || '';
+      roleEl.className = 'settings-status settings-status-ok';
+    }
+    if (avatar) avatar.textContent = name.slice(0, 1).toUpperCase();
+  }
+
+  function updatePlaybackSummary() {
+    const settings = getClientSettings();
+    const skip = settings.skipIntervalSeconds || getSkipInterval();
+    const rewind = settings.smartRewindEnabled === false ? 'smart rewind off' : 'smart rewind on';
+    setSummary('settings-playback-summary', `${skip}s skip · ${rewind}`);
+  }
+
+  function updateOfflineSummary() {
+    const count = Object.keys(getOfflineManifest() || {}).length;
+    const cacheOn = isRollingOfflineEnabled();
+    setSummary('settings-offline-summary', count
+      ? `${count} book${count === 1 ? '' : 's'}${cacheOn ? '' : ' · auto-cache off'}`
+      : (cacheOn ? 'Auto-cache on' : 'Off'));
+  }
 
   if (settingsBackBtn) {
     settingsBackBtn.addEventListener('click', () => {
@@ -250,27 +383,45 @@ export function initSettings(options = {}) {
   }
 
   async function loadProviderStatus() {
-    if (!providerStatusList) return;
     try {
       const data = await apiGet('/api/search/sources');
       const sources = data.sources || [];
       if (unverifiedSourcesEnabled) {
         unverifiedSourcesEnabled.checked = Boolean(data.operatorPolicy?.unverifiedSourcesEnabled);
       }
-      providerStatusList.innerHTML = sources.map(provider => {
+      let enabled = 0;
+      let needsKey = 0;
+      sources.forEach(provider => {
         const fallback = PROVIDER_DISCLOSURES[provider.id] || {};
         const enablement = providerEnablement(provider);
         const detail = provider.detail || fallback.detail || 'Review this provider before use.';
-        return `<div class="provider-status-row">
-          <div class="provider-status-copy">
-            <strong>${escapeHTML(provider.label || provider.id)}</strong>
-            <span>${escapeHTML(detail)}</span>
-          </div>
-          <span class="provider-status-badge ${enablement.className}">${escapeHTML(enablement.label)}</span>
-        </div>`;
-      }).join('') || '<p class="settings-hint">No providers are available on this instance.</p>';
+        const badge = document.querySelector(`[data-provider-status="${CSS.escape(provider.id)}"]`);
+        if (badge) {
+          badge.textContent = enablement.label;
+          badge.className = `provider-status-badge ${enablement.className}`;
+        }
+        const detailEl = document.querySelector(`[data-provider-detail="${CSS.escape(provider.id)}"]`);
+        if (detailEl && provider.detail) detailEl.textContent = detail;
+        if (enablement.label === 'Enabled') enabled += 1;
+        if (enablement.label === 'Unconfigured' || enablement.label === 'Acknowledgement required') needsKey += 1;
+      });
+      setSummary('settings-sources-summary', sources.length
+        ? `${enabled} enabled${needsKey ? ` · ${needsKey} need setup` : ''}`
+        : 'Unavailable');
+      if (providerStatusList) {
+        providerStatusList.innerHTML = sources.map(provider => {
+          const enablement = providerEnablement(provider);
+          return `<div class="provider-status-row">
+            <div class="provider-status-copy"><strong>${escapeHTML(provider.label || provider.id)}</strong></div>
+            <span class="provider-status-badge ${enablement.className}">${escapeHTML(enablement.label)}</span>
+          </div>`;
+        }).join('');
+      }
     } catch {
-      providerStatusList.innerHTML = '<p class="settings-hint">Provider status is unavailable. Check the server connection.</p>';
+      setSummary('settings-sources-summary', 'Unavailable');
+      document.querySelectorAll('[data-provider-status]').forEach(badge => {
+        if (badge.textContent === 'Checking…') badge.textContent = 'Unavailable';
+      });
     }
   }
 
@@ -304,7 +455,8 @@ export function initSettings(options = {}) {
       const data = await apiGet('/api/annas/status');
       if (data.configured) {
         annasStatus.textContent = 'Connected';
-        annasStatus.className = 'settings-status settings-status-ok';
+        annasStatus.className = 'provider-status-badge is-enabled';
+        setSummary('annas-account-summary', 'Connected');
         annasConnectedInfo.style.display = 'block';
         annasBaseUrl.textContent = data.baseUrl;
         if (annasKeyUpdated) {
@@ -326,8 +478,9 @@ export function initSettings(options = {}) {
         annasCancelEditBtn.style.display = 'none';
         annasIsEditing = false;
       } else {
-        annasStatus.textContent = 'Not configured';
-        annasStatus.className = 'settings-status';
+        annasStatus.textContent = 'Unconfigured';
+        annasStatus.className = 'provider-status-badge is-attention';
+        setSummary('annas-account-summary', 'Not configured');
         annasConnectedInfo.style.display = 'none';
         annasForm.style.display = 'flex';
         annasEditBtn.disabled = false;
@@ -339,8 +492,9 @@ export function initSettings(options = {}) {
         annasIsEditing = false;
       }
     } catch {
-      annasStatus.textContent = 'Error';
-      annasStatus.className = 'settings-status';
+      annasStatus.textContent = 'Unavailable';
+      annasStatus.className = 'provider-status-badge is-attention';
+      setSummary('annas-account-summary', 'Unavailable');
     }
   }
 
@@ -392,7 +546,8 @@ export function initSettings(options = {}) {
   });
 
   // Anna's Archive — Save
-  annasSaveBtn.addEventListener('click', async () => {
+  annasForm.addEventListener('submit', async (event) => {
+    event.preventDefault();
     const secretKey = annasSecretKey.value.trim();
     if (!secretKey) {
       annasError.textContent = 'Secret key is required';
@@ -448,12 +603,14 @@ export function initSettings(options = {}) {
     }[state] || 'Temporarily unavailable';
 
     zlibStatus.textContent = statusCopy;
-    zlibStatus.className = isConnected ? 'settings-status settings-status-ok' : 'settings-status';
+    zlibStatus.className = isConnected ? 'provider-status-badge is-enabled' : 'provider-status-badge';
+    setSummary('zlib-account-summary', isConnected ? 'Connected' : statusCopy);
     zlibConnectedInfo.style.display = isConnected || requiresReconnect ? 'block' : 'none';
     zlibForm.style.display = isConnected ? 'none' : 'flex';
     zlibCancelEditBtn.style.display = zlibIsEditing ? 'inline-block' : 'none';
     zlibEditBtn.style.display = isConnected ? 'inline-block' : 'none';
 
+    if (!isConnected && requiresReconnect) zlibStatus.className = 'provider-status-badge is-attention';
     if (isConnected) {
       zlibDownloadsLeft.textContent = `${data.downloadsRemaining} downloads left today`;
     } else if (state === 'auth-expired') {
@@ -518,7 +675,8 @@ export function initSettings(options = {}) {
   });
 
   // Z-Library — Connect
-  zlibConnectBtn.addEventListener('click', async () => {
+  zlibForm.addEventListener('submit', async (event) => {
+    event.preventDefault();
     const email = zlibEmail.value.trim();
     const password = zlibPassword.value;
     if (!email || !password) {
@@ -560,6 +718,7 @@ export function initSettings(options = {}) {
 
   function renderSyncProfile(profile) {
     const isSynced = Boolean(profile) && !isDefaultSyncUser(profile.id);
+    setSummary('settings-sync-summary', isSynced ? 'Synced' : 'Local');
     if (syncStatus) {
       syncStatus.textContent = isSynced ? 'Synced' : 'Local';
       syncStatus.className = isSynced ? 'settings-status settings-status-ok' : 'settings-status';
@@ -604,7 +763,8 @@ export function initSettings(options = {}) {
     }
   }
 
-  syncStartBtn?.addEventListener('click', async () => {
+  syncForm?.addEventListener('submit', async (event) => {
+    event.preventDefault();
     syncStartBtn.disabled = true;
     syncStartBtn.textContent = 'Starting...';
     setSyncError('');
@@ -637,6 +797,31 @@ export function initSettings(options = {}) {
     accountError.style.display = message ? 'block' : 'none';
   }
 
+  function setAccountSessionsError(message = '') {
+    if (!accountSessionsError) return;
+    accountSessionsError.textContent = message;
+    accountSessionsError.style.display = message ? 'block' : 'none';
+  }
+
+  function renderAccountSessions(sessions = []) {
+    setSummary('settings-account-summary', `${sessions.length} device${sessions.length === 1 ? '' : 's'}`);
+    if (accountSignoutOthersBtn) accountSignoutOthersBtn.hidden = sessions.filter(session => !session.current).length === 0;
+    if (!accountDeviceList) return;
+    if (!sessions.length) {
+      accountDeviceList.innerHTML = '<p class="settings-hint">No other signed-in devices.</p>';
+      return;
+    }
+    accountDeviceList.innerHTML = sessions.map(session => `
+      <div class="sync-device-row">
+        <span>${escapeHTML(session.deviceName || 'Device')}${session.current ? ' · this device' : ''}</span>
+        <span class="admin-account-actions">
+          <small>${escapeHTML(session.createdAt ? `signed in ${relativeTime(session.createdAt)}` : '')}</small>
+          ${session.current ? '' : `<button class="btn-ghost btn-ghost-danger btn-sm" type="button" data-session-revoke="${escapeHTML(session.id)}">Sign out</button>`}
+        </span>
+      </div>
+    `).join('');
+  }
+
   async function loadAccountSection() {
     const user = getCurrentUser();
     if (!user) return;
@@ -644,25 +829,21 @@ export function initSettings(options = {}) {
     if (accountUsernameHint) accountUsernameHint.textContent = `@${user.username}`;
     if (accountRole) accountRole.textContent = user.role;
     setAccountError('');
-    // Registering this device also returns the account's device list.
+    setAccountSessionsError('');
     try {
-      const data = await apiSend('POST', '/api/sync/device', {
+      await apiSend('POST', '/api/sync/device', {
         deviceId: getCurrentDeviceId(),
         deviceName: getCurrentDeviceName()
       });
-      const devices = data.profile?.devices || [];
-      if (accountDeviceList) {
-        accountDeviceList.innerHTML = devices.map(device => `
-          <div class="sync-device-row">
-            <span>${escapeHTML(device.name || 'Device')}${device.id === getCurrentDeviceId() ? ' · this device' : ''}</span>
-            <small>${escapeHTML(device.lastSeenAt ? relativeTime(device.lastSeenAt) : 'not seen yet')}</small>
-          </div>
-        `).join('');
-      }
     } catch (err) {
       console.warn('Device registration failed:', err);
     }
-    if (adminAccounts) adminAccounts.style.display = user.role === 'admin' ? 'block' : 'none';
+    try {
+      const data = await apiGet('/api/auth/sessions');
+      renderAccountSessions(data.sessions || []);
+    } catch (err) {
+      setAccountSessionsError(err.message || 'Could not load signed-in devices.');
+    }
     if (user.role === 'admin') loadAdminAccounts();
   }
 
@@ -717,12 +898,27 @@ export function initSettings(options = {}) {
   function renderAdminAccounts() {
     if (!adminAccountList) return;
     adminAccountList.innerHTML = adminAccountsCache.map(adminAccountRowHTML).join('');
+    const count = adminAccountsCache.length;
+    setSummary('settings-accounts-summary', `${count} account${count === 1 ? '' : 's'}`);
   }
 
-  adminAddAccountBtn?.addEventListener('click', async (e) => {
+  function setAdminSheetError(message = '') {
+    if (!adminAccountSheetError) return;
+    adminAccountSheetError.textContent = message;
+    adminAccountSheetError.style.display = message ? 'block' : 'none';
+  }
+
+  adminAddAccountOpen?.addEventListener('click', () => {
+    setAdminSheetError('');
+    adminAccountSheetController.open();
+    adminNewUsername?.focus();
+  });
+
+  adminAccountForm?.addEventListener('submit', async (e) => {
     e.preventDefault();
     setAdminAccountsError('');
-    adminAddAccountBtn.disabled = true;
+    setAdminSheetError('');
+    if (adminAddAccountBtn) adminAddAccountBtn.disabled = true;
     try {
       await apiSend('POST', '/api/accounts', {
         username: adminNewUsername?.value.trim() || '',
@@ -732,12 +928,13 @@ export function initSettings(options = {}) {
       if (adminNewUsername) adminNewUsername.value = '';
       if (adminNewPassword) adminNewPassword.value = '';
       if (adminNewIsAdmin) adminNewIsAdmin.checked = false;
+      adminAccountSheetController.dismiss();
       showToast('Account created');
       await loadAdminAccounts();
     } catch (err) {
-      setAdminAccountsError(err.message || 'Failed to create account');
+      setAdminSheetError(err.message || 'Failed to create account');
     } finally {
-      adminAddAccountBtn.disabled = false;
+      if (adminAddAccountBtn) adminAddAccountBtn.disabled = false;
     }
   });
 
@@ -796,8 +993,6 @@ export function initSettings(options = {}) {
   // section for trusted-LAN instances without accounts.
   function loadAccountOrSync() {
     const user = getCurrentUser();
-    if (accountSection) accountSection.style.display = user ? 'block' : 'none';
-    if (syncSection) syncSection.style.display = user ? 'none' : 'block';
     if (user) loadAccountSection();
     else loadSyncStatus();
   }
@@ -820,6 +1015,7 @@ export function initSettings(options = {}) {
       calibreIntegrationStatus.textContent = connections.length ? `${connections.length} connected` : 'Not connected';
       calibreIntegrationStatus.className = `settings-status${connections.length ? ' settings-status-ok' : ''}`;
     }
+    setSummary('settings-calibre-summary', connections.length ? `${connections.length} paired` : 'Not connected');
     if (!calibreConnectionList) return;
     calibreConnectionList.innerHTML = connections.map(connection => `
       <div class="sync-device-row">
@@ -841,6 +1037,7 @@ export function initSettings(options = {}) {
       return data.connections || [];
     } catch (err) {
       if (calibreIntegrationStatus) calibreIntegrationStatus.textContent = 'Unavailable';
+      setSummary('settings-calibre-summary', 'Unavailable');
       setCalibreError(err.message || 'Could not load Calibre connections.');
     }
   }
@@ -983,6 +1180,7 @@ export function initSettings(options = {}) {
         : (config.enabled ? 'Setup incomplete' : 'Disabled');
       bookGuidesSettingsStatus.className = `settings-status ${config.ready ? 'settings-status-ok' : (config.enabled ? 'settings-status-warning' : '')}`.trim();
     }
+    setSummary('settings-guides-summary', config.ready ? 'Ready' : (config.enabled ? 'Setup incomplete' : 'Disabled'));
   }
 
   function renderBookGuideLogin(state = {}) {
@@ -1058,25 +1256,22 @@ export function initSettings(options = {}) {
     if (!bookGuidesSettingsSection) return;
     const user = getCurrentUser();
     if (user && user.role !== 'admin') {
-      bookGuidesSettingsSection.style.display = 'none';
       return;
     }
     setBookGuideSettingsError('');
     try {
       const config = await apiGet('/api/book-guides/config');
-      bookGuidesSettingsSection.style.display = 'block';
       renderBookGuideSettings(config);
     } catch (err) {
       if (err.status === 403) {
-        bookGuidesSettingsSection.style.display = 'none';
         return;
       }
-      bookGuidesSettingsSection.style.display = 'block';
       setBookGuideSettingsError(err.message || 'Could not load study-guide settings.');
     }
   }
 
-  bookGuidesSave?.addEventListener('click', async () => {
+  bookGuidesSave?.closest('form')?.addEventListener('submit', async (event) => {
+    event.preventDefault();
     setBookGuideSettingsError('');
     bookGuidesSave.disabled = true;
     try {
@@ -1185,6 +1380,7 @@ export function initSettings(options = {}) {
       operatorDiagnosticsUpdated.textContent = `Checked ${relativeTime(report.generatedAt)}`;
     }
     if (operatorDiagnosticsCopy) operatorDiagnosticsCopy.disabled = false;
+    setSummary('settings-diagnostics-summary', diagnosticsLabel(report.status));
 
     const dataStorage = report.storage?.data || {};
     const cacheStorage = report.storage?.cache || {};
@@ -1247,7 +1443,6 @@ export function initSettings(options = {}) {
     if (!operatorDiagnosticsSection) return;
     const user = getCurrentUser();
     if (user && user.role !== 'admin') {
-      operatorDiagnosticsSection.style.display = 'none';
       return;
     }
     if (operatorDiagnosticsError) {
@@ -1261,14 +1456,11 @@ export function initSettings(options = {}) {
     }
     try {
       const report = await apiGet(`/api/admin/diagnostics${refresh ? '?refresh=1' : ''}`);
-      operatorDiagnosticsSection.style.display = 'block';
       renderOperatorDiagnostics(report);
     } catch (err) {
       if (err.status === 403) {
-        operatorDiagnosticsSection.style.display = 'none';
         return;
       }
-      operatorDiagnosticsSection.style.display = 'block';
       if (operatorDiagnosticsStatus) {
         operatorDiagnosticsStatus.textContent = 'Unavailable';
         operatorDiagnosticsStatus.className = 'settings-status settings-status-error';
@@ -1311,11 +1503,57 @@ export function initSettings(options = {}) {
   }
 
   accountChangePasswordBtn?.addEventListener('click', () => {
-    toggleAccountPasswordForm(accountPasswordForm?.style.display === 'none');
+    const visible = accountPasswordForm?.style.display === 'none';
+    toggleAccountPasswordForm(visible);
+    accountChangePasswordBtn.setAttribute('aria-expanded', String(visible));
   });
-  accountPasswordCancelBtn?.addEventListener('click', () => toggleAccountPasswordForm(false));
+  accountPasswordCancelBtn?.addEventListener('click', () => {
+    toggleAccountPasswordForm(false);
+    accountChangePasswordBtn?.setAttribute('aria-expanded', 'false');
+  });
 
-  accountPasswordSaveBtn?.addEventListener('click', async (e) => {
+  accountDeviceList?.addEventListener('click', async (e) => {
+    const button = e.target.closest('[data-session-revoke]');
+    if (!button) return;
+    const ok = await confirmSheet({
+      title: 'Sign out this device?',
+      message: 'That device will need to sign in again.',
+      confirmLabel: 'Sign out'
+    });
+    if (!ok) return;
+    button.disabled = true;
+    setAccountSessionsError('');
+    try {
+      await apiSend('POST', '/api/auth/sessions/revoke', { sessionId: button.dataset.sessionRevoke });
+      await loadAccountSection();
+      showToast('Device signed out');
+    } catch (err) {
+      setAccountSessionsError(err.message || 'Could not sign out that device.');
+      button.disabled = false;
+    }
+  });
+
+  accountSignoutOthersBtn?.addEventListener('click', async () => {
+    const ok = await confirmSheet({
+      title: 'Sign out other devices?',
+      message: 'Every other signed-in device will need to sign in again. This device stays signed in.',
+      confirmLabel: 'Sign out others'
+    });
+    if (!ok) return;
+    accountSignoutOthersBtn.disabled = true;
+    setAccountSessionsError('');
+    try {
+      await apiSend('POST', '/api/auth/sessions/revoke-others');
+      await loadAccountSection();
+      showToast('Other devices were signed out');
+    } catch (err) {
+      setAccountSessionsError(err.message || 'Could not sign out other devices.');
+    } finally {
+      accountSignoutOthersBtn.disabled = false;
+    }
+  });
+
+  accountPasswordForm?.addEventListener('submit', async (e) => {
     e.preventDefault();
     setAccountError('');
     accountPasswordSaveBtn.disabled = true;
@@ -1325,6 +1563,7 @@ export function initSettings(options = {}) {
         newPassword: accountNewPassword?.value || ''
       });
       toggleAccountPasswordForm(false);
+      accountChangePasswordBtn?.setAttribute('aria-expanded', 'false');
       showToast('Password updated. Other devices were signed out.');
     } catch (err) {
       setAccountError(err.message || 'Failed to change password');
@@ -1345,7 +1584,6 @@ export function initSettings(options = {}) {
   syncForgetBtn?.addEventListener('click', async () => {
     resetSyncUser();
     await reloadClientSettingsForSyncUser();
-    if (syncCodeOutput) syncCodeOutput.style.display = 'none';
     renderSyncProfile(null);
     loadLibrary();
   });
@@ -1354,15 +1592,22 @@ export function initSettings(options = {}) {
     const settings = getClientSettings();
     renderSegmentedControl(skipIntervalControl, settings.skipIntervalSeconds || getSkipInterval(), 'skipInterval');
     renderSegmentedControl(progressModeControl, settings.progressDisplayMode || getProgressDisplayMode(), 'progressMode');
-    renderSegmentedControl(smartRewindControl, settings.smartRewindEnabled === false ? 'off' : 'on', 'smartRewind');
-    renderSegmentedControl(rollingOfflineControl, settings.rollingOfflineEnabled === false ? 'off' : 'on', 'rollingOffline');
+    if (smartRewindControl) smartRewindControl.checked = settings.smartRewindEnabled !== false;
+    if (rollingOfflineControl) rollingOfflineControl.checked = settings.rollingOfflineEnabled !== false;
     const defaultSources = settings.defaultSearchSources || getDefaultSearchSources();
     defaultSearchSourcesControl?.querySelectorAll('input[type="checkbox"]').forEach(input => {
       input.checked = defaultSources.includes(input.value);
     });
-    if (defaultSpeedLabel) {
-      defaultSpeedLabel.textContent = settings.defaultSpeed ? `${Number(settings.defaultSpeed).toFixed(2)}x` : 'Not set';
+    const speed = settings.defaultSpeed ?? getDefaultSpeed();
+    if (defaultSpeedSelect) {
+      const match = [...defaultSpeedSelect.options].find(option => option.value && Number(option.value) === Number(speed));
+      defaultSpeedSelect.value = match ? match.value : '';
     }
+    if (defaultSpeedLabel) {
+      defaultSpeedLabel.textContent = speed ? `${Number(speed).toFixed(2)}x` : '1.00x (normal)';
+    }
+    updatePlaybackSummary();
+    updateOfflineSummary();
   }
 
   async function reloadClientSettingsForSyncUser() {
@@ -1389,17 +1634,18 @@ export function initSettings(options = {}) {
     renderClientSettings();
   });
 
-  smartRewindControl?.addEventListener('click', (e) => {
-    const btn = e.target.closest('[data-smart-rewind]');
-    if (!btn) return;
-    setClientSetting('smartRewindEnabled', btn.dataset.smartRewind === 'on');
+  smartRewindControl?.addEventListener('change', () => {
+    setClientSetting('smartRewindEnabled', smartRewindControl.checked);
     renderClientSettings();
   });
 
-  rollingOfflineControl?.addEventListener('click', (e) => {
-    const btn = e.target.closest('[data-rolling-offline]');
-    if (!btn) return;
-    setClientSetting('rollingOfflineEnabled', btn.dataset.rollingOffline === 'on');
+  rollingOfflineControl?.addEventListener('change', () => {
+    setClientSetting('rollingOfflineEnabled', rollingOfflineControl.checked);
+    renderClientSettings();
+  });
+
+  defaultSpeedSelect?.addEventListener('change', () => {
+    setClientSetting('defaultSpeed', defaultSpeedSelect.value ? Number(defaultSpeedSelect.value) : null);
     renderClientSettings();
   });
 
@@ -1423,17 +1669,14 @@ export function initSettings(options = {}) {
     if (!premiumPrepControl) return;
     try {
       const data = await apiGet('/api/premium-prep/settings');
-      renderSegmentedControl(premiumPrepControl, data.enabled === false ? 'off' : 'on', 'premiumPrep');
+      premiumPrepControl.checked = data.enabled !== false;
     } catch (err) {
       console.warn('Premium prep setting load failed:', err);
     }
   }
 
-  premiumPrepControl?.addEventListener('click', async (e) => {
-    const btn = e.target.closest('[data-premium-prep]');
-    if (!btn) return;
-    const enabled = btn.dataset.premiumPrep === 'on';
-    renderSegmentedControl(premiumPrepControl, btn.dataset.premiumPrep, 'premiumPrep');
+  premiumPrepControl?.addEventListener('change', async () => {
+    const enabled = premiumPrepControl.checked;
     try {
       await apiSend('POST', '/api/premium-prep/settings', { enabled });
     } catch (err) {

@@ -11,8 +11,8 @@
   <title>Xandrio - Audiobook Library</title>
   <link rel="preload" href="/fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin>
   <!-- ?v= values must match ASSET_VERSIONS in sw.js (single source of truth) -->
-  <link rel="stylesheet" href="style-v3.css?v=113">
-  <link rel="stylesheet" href="composition.css?v=5">
+  <link rel="stylesheet" href="style-v3.css?v=115">
+  <link rel="stylesheet" href="composition.css?v=6">
   <link rel="stylesheet" href="library-composition.css?v=4">
   <script src="/js/ios-focus-zoom.js?v=1" defer></script>
   <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=2">
@@ -344,431 +344,698 @@
       </div>
     </div>
 
-    <!-- Settings View -->
-    <div id="settings-view" class="view">
-      <header>
-        <button id="settings-back-btn" class="btn-back" aria-label="Return to library">← Library</button>
-        <h2>Settings</h2>
-      </header>
+    <!-- Settings View: a hub of sections, one page per section (#/settings/:section). -->
+    <div id="settings-view" class="view" data-settings-section="">
+      <div class="settings-shell">
+        <aside id="settings-hub" class="settings-hub" aria-label="Settings">
+          <header class="settings-hub-header">
+            <button id="settings-back-btn" class="btn-back" aria-label="Return to library">← Library</button>
+            <h2>Settings</h2>
+          </header>
 
-      <nav class="settings-index" aria-label="Settings groups"><button type="button" data-settings-group="settings-group-0">Listening</button><button type="button" data-settings-group="settings-group-1">Voices</button><button type="button" data-settings-group="settings-group-2">Library & Sources</button><button type="button" data-settings-group="settings-group-3">Server & Account</button></nav>
-      <div class="settings-sections">
-<section class="settings-group" id="settings-group-0" aria-labelledby="settings-group-title-0"><h3 id="settings-group-title-0">Listening</h3><details class="settings-section">
-          <summary class="settings-section-header">
-            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="width:18px;height:18px"><path stroke-linecap="round" stroke-linejoin="round" d="M5.25 5.653c0-1.427 1.529-2.33 2.78-1.642l11.52 6.347c1.295.714 1.295 2.572 0 3.286L8.03 19.991c-1.251.688-2.78-.215-2.78-1.642V5.653z"/></svg>
-            <span>Playback</span><span id="settings-playback-summary" class="settings-value"></span>
-          </summary>
-          <div class="settings-section-body">
-            <fieldset class="auto-sleep-settings">
-              <legend>Automatic sleep timer</legend>
-              <label class="auto-sleep-enable"><input id="auto-sleep-enabled" type="checkbox"> Enable scheduled sleep timer</label>
-              <p class="settings-hint">When you listen during this window, a sleep timer starts automatically. Uses this device’s local time, including overnight windows.</p>
+          <a id="settings-identity" class="settings-identity" href="#/settings/account" hidden>
+            <span id="settings-identity-avatar" class="settings-identity-avatar" aria-hidden="true"></span>
+            <span class="settings-identity-copy">
+              <strong id="settings-identity-name">Signed in</strong>
+              <span id="settings-identity-detail"></span>
+            </span>
+            <span id="settings-identity-role" class="settings-status"></span>
+          </a>
+
+          <nav class="settings-menu" aria-label="Settings sections">
+            <section class="settings-menu-group" aria-labelledby="settings-menu-listening">
+              <h3 id="settings-menu-listening">Listening</h3>
+              <ul>
+                <li><a class="settings-menu-row" href="#/settings/playback" data-settings-link="playback">
+                  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M5.25 5.653c0-1.427 1.529-2.33 2.78-1.642l11.52 6.347c1.295.714 1.295 2.572 0 3.286L8.03 19.991c-1.251.688-2.78-.215-2.78-1.642V5.653z"/></svg>
+                  <span class="settings-menu-title">Playback</span>
+                  <span class="settings-menu-value" id="settings-playback-summary" data-settings-summary="playback"></span>
+                </a></li>
+                <li><a class="settings-menu-row" href="#/settings/sleep" data-settings-link="sleep">
+                  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M21.752 15.002A9.718 9.718 0 0118 15.75c-5.385 0-9.75-4.365-9.75-9.75 0-1.33.266-2.597.748-3.752A9.753 9.753 0 003 11.25C3 16.635 7.365 21 12.75 21a9.753 9.753 0 009.002-5.998z"/></svg>
+                  <span class="settings-menu-title">Sleep schedule</span>
+                  <span class="settings-menu-value" id="settings-sleep-summary" data-settings-summary="sleep"></span>
+                </a></li>
+                <li><a class="settings-menu-row" href="#/settings/voice" data-settings-link="voice">
+                  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M19.114 5.636a9 9 0 010 12.728M16.463 8.288a5.25 5.25 0 010 7.424M6.75 8.25l4.72-4.72a.75.75 0 011.28.53v15.88a.75.75 0 01-1.28.53l-4.72-4.72H4.51c-.88 0-1.704-.507-1.938-1.354A9.01 9.01 0 012.25 12c0-.83.112-1.633.322-2.396C2.806 8.756 3.63 8.25 4.51 8.25H6.75z"/></svg>
+                  <span class="settings-menu-title">Voice</span>
+                  <span class="settings-menu-value" id="settings-voice-summary" data-settings-summary="voice"></span>
+                </a></li>
+              </ul>
+            </section>
+
+            <section class="settings-menu-group" aria-labelledby="settings-menu-library">
+              <h3 id="settings-menu-library">Library</h3>
+              <ul>
+                <li><a class="settings-menu-row" href="#/settings/sources" data-settings-link="sources">
+                  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6.042A8.967 8.967 0 006 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 016 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 016-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0018 18a8.967 8.967 0 00-6 2.292m0-14.25v14.25"/></svg>
+                  <span class="settings-menu-title">Book sources</span>
+                  <span class="settings-menu-value" id="settings-sources-summary" data-settings-summary="sources"></span>
+                </a></li>
+                <li><a class="settings-menu-row" href="#/settings/offline" data-settings-link="offline">
+                  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M12 3v12m0 0l-4-4m4 4l4-4M4.5 19.5h15"/></svg>
+                  <span class="settings-menu-title">Offline</span>
+                  <span class="settings-menu-value" id="settings-offline-summary" data-settings-summary="offline"></span>
+                </a></li>
+                <li><a class="settings-menu-row" href="#/settings/language" data-settings-link="language">
+                  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M10.5 21l5.25-11.25L21 21m-9-3h7.5M3 5.621a48.474 48.474 0 016-.371m0 0c1.12 0 2.233.038 3.334.114M9 5.25V3m3.334 2.364C11.176 10.658 7.69 15.08 3 17.502m9.334-12.138c.896.061 1.785.147 2.666.257m-4.589 8.495a18.023 18.023 0 01-3.827-5.802"/></svg>
+                  <span class="settings-menu-title">Search language</span>
+                  <span class="settings-menu-value" id="settings-language-summary" data-settings-summary="language"></span>
+                </a></li>
+              </ul>
+            </section>
+
+            <section class="settings-menu-group" aria-labelledby="settings-menu-devices">
+              <h3 id="settings-menu-devices">Devices &amp; integrations</h3>
+              <ul>
+                <li id="settings-menu-account-row" hidden><a class="settings-menu-row" href="#/settings/account" data-settings-link="account">
+                  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M17.982 18.725A7.488 7.488 0 0012 15.75a7.488 7.488 0 00-5.982 2.975m11.963 0a9 9 0 10-11.963 0m11.963 0A8.966 8.966 0 0112 21a8.966 8.966 0 01-5.982-2.275M15 9.75a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+                  <span class="settings-menu-title">Account &amp; devices</span>
+                  <span class="settings-menu-value" id="settings-account-summary" data-settings-summary="account"></span>
+                </a></li>
+                <li id="settings-menu-sync-row" hidden><a class="settings-menu-row" href="#/settings/sync" data-settings-link="sync">
+                  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001m-4.992.001a8.25 8.25 0 00-13.07 2.577m13.07-2.577L18.75 6.62M7.977 14.652H2.985v.001m4.992-.001a8.25 8.25 0 0013.07-2.577m-13.07 2.577L5.25 17.38"/></svg>
+                  <span class="settings-menu-title">Sync</span>
+                  <span class="settings-menu-value" id="settings-sync-summary" data-settings-summary="sync"></span>
+                </a></li>
+                <li><a class="settings-menu-row" href="#/settings/calibre" data-settings-link="calibre">
+                  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M4.5 5.25A2.25 2.25 0 016.75 3h10.5a2.25 2.25 0 012.25 2.25v13.5A2.25 2.25 0 0117.25 21H6.75a2.25 2.25 0 01-2.25-2.25V5.25zM8.25 7.5h7.5M8.25 11.25h7.5M8.25 15h4.5"/></svg>
+                  <span class="settings-menu-title">Calibre</span>
+                  <span class="settings-menu-value" id="settings-calibre-summary" data-settings-summary="calibre"></span>
+                </a></li>
+              </ul>
+            </section>
+
+            <section id="settings-menu-server" class="settings-menu-group" aria-labelledby="settings-menu-server-title" hidden>
+              <h3 id="settings-menu-server-title">Server</h3>
+              <ul>
+                <li id="settings-menu-accounts-row" hidden><a class="settings-menu-row" href="#/settings/accounts" data-settings-link="accounts">
+                  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M15 19.128a9.38 9.38 0 002.625.372 9.337 9.337 0 004.121-.952 4.125 4.125 0 00-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 018.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0111.964-3.07M12 6.375a3.375 3.375 0 11-6.75 0 3.375 3.375 0 016.75 0zm8.25 2.25a2.625 2.625 0 11-5.25 0 2.625 2.625 0 015.25 0z"/></svg>
+                  <span class="settings-menu-title">Accounts</span>
+                  <span class="settings-menu-value" id="settings-accounts-summary" data-settings-summary="accounts"></span>
+                </a></li>
+                <li><a class="settings-menu-row" href="#/settings/guides" data-settings-link="guides">
+                  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5s3.332.477 4.5 1.253v13C19.832 18.477 18.246 18 16.5 18s-3.332.477-4.5 1.253"/></svg>
+                  <span class="settings-menu-title">Study guides</span>
+                  <span class="settings-menu-value" id="settings-guides-summary" data-settings-summary="guides"></span>
+                </a></li>
+                <li><a class="settings-menu-row" href="#/settings/diagnostics" data-settings-link="diagnostics">
+                  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M11.42 15.17l-5.66 5.66a2.12 2.12 0 01-3-3l5.66-5.66m3-3l2.83-2.83m0 0l-1.42-1.41 2.12-2.12 4.24 4.24-2.12 2.12-1.41-1.42-2.83 2.83m1.41 1.42l5.66 5.66a2.12 2.12 0 01-3 3l-5.66-5.66"/></svg>
+                  <span class="settings-menu-title">Diagnostics</span>
+                  <span class="settings-menu-value" id="settings-diagnostics-summary" data-settings-summary="diagnostics"></span>
+                </a></li>
+              </ul>
+            </section>
+          </nav>
+
+          <footer class="settings-hub-footer">
+            <button id="account-logout-btn" class="btn-ghost btn-ghost-danger settings-signout" type="button" hidden>Sign out</button>
+            <p class="settings-hub-links"><a href="/legal.html" target="_blank" rel="noopener">Legal notice</a><a href="/legal.html#data-flow" target="_blank" rel="noopener">Data flow</a></p>
+          </footer>
+        </aside>
+
+        <main id="settings-detail" class="settings-detail">
+          <!-- Playback -->
+          <section class="settings-pane" data-settings-pane="playback" aria-labelledby="settings-pane-title-playback" hidden>
+            <header class="settings-pane-header">
+              <a class="btn-back settings-pane-back" href="#/settings">← Settings</a>
+              <h2 id="settings-pane-title-playback">Playback</h2>
+            </header>
+            <div class="settings-card">
+              <div class="settings-row settings-row-stacked">
+                <div class="settings-label">
+                  <span class="settings-label-text">Skip interval</span>
+                  <span class="settings-label-hint">Used by player buttons, keyboard shortcuts, and lock screen controls.</span>
+                </div>
+                <div id="skip-interval-control" class="segmented-control" role="group" aria-label="Skip interval">
+                  <button type="button" data-skip-interval="10">10s</button>
+                  <button type="button" data-skip-interval="15">15s</button>
+                  <button type="button" data-skip-interval="30">30s</button>
+                </div>
+              </div>
+              <div class="settings-row settings-row-stacked">
+                <label class="settings-label" for="default-speed-select">
+                  <span class="settings-label-text">Default speed</span>
+                  <span class="settings-label-hint">New books start at this speed. A book keeps its own speed once you change it while listening.</span>
+                </label>
+                <select id="default-speed-select" class="settings-select" aria-describedby="default-speed-label">
+                  <option value="">1.00x (normal)</option>
+                  <option value="0.75">0.75x</option>
+                  <option value="0.9">0.90x</option>
+                  <option value="1.1">1.10x</option>
+                  <option value="1.25">1.25x</option>
+                  <option value="1.5">1.50x</option>
+                  <option value="1.75">1.75x</option>
+                  <option value="2">2.00x</option>
+                  <option value="2.5">2.50x</option>
+                </select>
+                <span id="default-speed-label" class="sr-only">Not set</span>
+              </div>
+              <label class="settings-row settings-row-switch">
+                <span class="settings-label">
+                  <span class="settings-label-text">Smart rewind</span>
+                  <span class="settings-label-hint">After a pause, replay 5–30 seconds depending on how long you were away.</span>
+                </span>
+                <input id="smart-rewind-control" class="switch" type="checkbox" role="switch">
+              </label>
+              <div class="settings-row settings-row-stacked">
+                <div class="settings-label">
+                  <span class="settings-label-text">Chapter time display</span>
+                  <span class="settings-label-hint">What the right-hand chapter time shows by default.</span>
+                </div>
+                <div id="progress-mode-control" class="segmented-control" role="group" aria-label="Chapter time display">
+                  <button type="button" data-progress-mode="elapsed">Total</button>
+                  <button type="button" data-progress-mode="remaining">Remaining</button>
+                </div>
+              </div>
+              <label class="settings-row settings-row-switch">
+                <span class="settings-label">
+                  <span class="settings-label-text">Prepare premium audio in background</span>
+                  <span class="settings-label-hint">With a premium voice, playback starts instantly and chapters upgrade as they're ready.</span>
+                </span>
+                <input id="premium-prep-control" class="switch" type="checkbox" role="switch">
+              </label>
+            </div>
+            <div class="settings-card">
+              <div class="settings-row">
+                <div class="settings-label">
+                  <span class="settings-label-text">Playback report</span>
+                  <span class="settings-label-hint">Recent playback events from this device, for reporting a chapter that stopped or a lock screen that would not resume.</span>
+                </div>
+                <button id="playback-report-copy" class="btn-ghost btn-sm" type="button">Copy report</button>
+              </div>
+            </div>
+          </section>
+
+          <!-- Sleep schedule -->
+          <section class="settings-pane" data-settings-pane="sleep" aria-labelledby="settings-pane-title-sleep" hidden>
+            <header class="settings-pane-header">
+              <a class="btn-back settings-pane-back" href="#/settings">← Settings</a>
+              <h2 id="settings-pane-title-sleep">Sleep schedule</h2>
+            </header>
+            <fieldset class="settings-card auto-sleep-settings">
+              <legend class="sr-only">Automatic sleep timer</legend>
+              <label class="settings-row settings-row-switch auto-sleep-enable">
+                <span class="settings-label">
+                  <span class="settings-label-text">Start a sleep timer automatically</span>
+                  <span class="settings-label-hint">When you listen during this window, a sleep timer starts on its own. Uses this device's local time, including overnight windows.</span>
+                </span>
+                <input id="auto-sleep-enabled" class="switch" type="checkbox" role="switch">
+              </label>
               <div class="auto-sleep-fields">
-                <label>From<input id="auto-sleep-start" type="time" value="23:00" required disabled></label>
-                <label>Until<input id="auto-sleep-end" type="time" value="08:00" required disabled></label>
-                <label>Stop after<select id="auto-sleep-duration" disabled>
+                <label class="settings-field">From<input id="auto-sleep-start" type="time" value="23:00" required disabled></label>
+                <label class="settings-field">Until<input id="auto-sleep-end" type="time" value="08:00" required disabled></label>
+                <label class="settings-field">Stop after<select id="auto-sleep-duration" disabled>
                   <option value="5">5 minutes</option><option value="10">10 minutes</option><option value="15">15 minutes</option><option value="30" selected>30 minutes</option><option value="45">45 minutes</option><option value="60">60 minutes</option><option value="90">90 minutes</option><option value="chapter">End of chapter</option>
                 </select></label>
               </div>
-              <p class="settings-hint">An active timer keeps its deadline after the window ends. Cancel skips automatic timers until the next window. Minute timers are best effort when iOS suspends the app; end of chapter is more reliable with the screen locked.</p>
               <p id="auto-sleep-status" class="settings-hint" role="status" aria-live="polite"></p>
+              <p class="settings-hint">An active timer keeps its deadline after the window ends. Cancelling skips automatic timers until the next window. Minute timers are best effort when iOS suspends the app; end of chapter is more reliable with the screen locked.</p>
             </fieldset>
-            <div class="settings-row settings-row-stacked">
-              <div class="settings-label">
-                <span class="settings-label-text">Skip interval</span>
-                <span class="settings-label-hint">Used by player buttons, keyboard shortcuts, and lock screen controls</span>
-              </div>
-              <div id="skip-interval-control" class="segmented-control" role="group" aria-label="Skip interval">
-                <button type="button" data-skip-interval="10">10s</button>
-                <button type="button" data-skip-interval="15">15s</button>
-                <button type="button" data-skip-interval="30">30s</button>
-              </div>
-            </div>
-            <div class="settings-row">
-              <div class="settings-label">
-                <span class="settings-label-text">Default speed</span>
-                <span class="settings-label-hint">Set from the speed panel while listening</span>
-              </div>
-              <span id="default-speed-label" class="settings-status">Not set</span>
-            </div>
-            <div class="settings-row settings-row-stacked">
-              <div class="settings-label">
-                <span class="settings-label-text">Smart rewind</span>
-                <span class="settings-label-hint">After a pause, replay 5–30 seconds depending on how long you were away.</span>
-              </div>
-              <div id="smart-rewind-control" class="segmented-control" role="group" aria-label="Smart rewind">
-                <button type="button" data-smart-rewind="on">On</button>
-                <button type="button" data-smart-rewind="off">Off</button>
-              </div>
-            </div>
-            <div class="settings-row settings-row-stacked">
-              <div class="settings-label">
-                <span class="settings-label-text">Chapter time display</span>
-                <span class="settings-label-hint">Choose what the right-side chapter time shows by default</span>
-              </div>
-              <div id="progress-mode-control" class="segmented-control" role="group" aria-label="Chapter time display">
-                <button type="button" data-progress-mode="elapsed">Total</button>
-                <button type="button" data-progress-mode="remaining">Remaining</button>
-              </div>
-            </div>
-            <div class="settings-row settings-row-stacked">
-              <div class="settings-label">
-                <span class="settings-label-text">Prepare premium audio in background</span>
-                <span class="settings-label-hint">With a premium voice, playback starts instantly and chapters upgrade as they're ready</span>
-              </div>
-              <div id="premium-prep-control" class="segmented-control" role="group" aria-label="Prepare premium audio in background">
-                <button type="button" data-premium-prep="on">On</button>
-                <button type="button" data-premium-prep="off">Off</button>
-              </div>
-            </div>
-            <div class="settings-row settings-row-stacked">
-              <div class="settings-label">
-                <span class="settings-label-text">Playback report</span>
-                <span class="settings-label-hint">Recent playback events from this device. Useful when reporting a chapter that stopped or a lock screen that would not resume.</span>
-              </div>
-              <div class="settings-actions">
-                <button id="playback-report-copy" class="btn-ghost btn-sm" type="button">Copy playback report</button>
-              </div>
-            </div>
-          </div>
-        </details></section><section class="settings-group" id="settings-group-1" aria-labelledby="settings-group-title-1"><h3 id="settings-group-title-1">Voices</h3><details class="settings-section">
-          <summary class="settings-section-header">
-            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="width:18px;height:18px"><path stroke-linecap="round" stroke-linejoin="round" d="M19.114 5.636a9 9 0 010 12.728M16.463 8.288a5.25 5.25 0 010 7.424M6.75 8.25l4.72-4.72a.75.75 0 011.28.53v15.88a.75.75 0 01-1.28.53l-4.72-4.72H4.51c-.88 0-1.704-.507-1.938-1.354A9.01 9.01 0 012.25 12c0-.83.112-1.633.322-2.396C2.806 8.756 3.63 8.25 4.51 8.25H6.75z"/></svg>
-            <span>Voice</span><span id="settings-voice-summary" class="settings-value"></span>
-          </summary>
-          <div class="settings-section-body">
-            <p id="settings-voice-hint" class="settings-hint">Choose a voice for audiobook narration.</p>
+          </section>
+
+          <!-- Voice -->
+          <section class="settings-pane" data-settings-pane="voice" aria-labelledby="settings-pane-title-voice" hidden>
+            <header class="settings-pane-header">
+              <a class="btn-back settings-pane-back" href="#/settings">← Settings</a>
+              <h2 id="settings-pane-title-voice">Voice</h2>
+            </header>
+            <p id="settings-voice-hint" class="settings-lead">Choose a voice for audiobook narration.</p>
             <div id="voice-filter-bar" class="voice-filter-bar" aria-label="Voice filters"></div>
             <div id="voice-list" class="voice-list"></div>
-          </div>
-        </details></section><section class="settings-group" id="settings-group-2" aria-labelledby="settings-group-title-2"><h3 id="settings-group-title-2">Library & Sources</h3><details class="settings-section">
-          <summary class="settings-section-header">
-            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="width:18px;height:18px"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6.042A8.967 8.967 0 006 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 016 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 016-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0018 18a8.967 8.967 0 00-6 2.292m0-14.25v14.25"/></svg>
-            Book Sources
-          </summary>
-          <div class="settings-section-body">
-            <div class="settings-subsection">
-              <div class="settings-row settings-row-stacked">
-                <div class="settings-label">
-                  <span class="settings-label-text">Default search sources</span>
-                  <span class="settings-label-hint">Used when opening Search. You can temporarily change the source shelf there. A source may still require instance enablement.</span>
-                </div>
-                <fieldset id="default-search-sources" class="source-default-list">
-                  <legend class="sr-only">Default search sources</legend>
-                  <div class="source-default-group">
-                    <span class="source-default-group-label">Public domain</span>
-                    <label><input type="checkbox" value="standardebooks" /> <span class="source-default-copy"><span>Standard Ebooks</span><small>Carefully formatted public-domain EPUBs</small></span></label>
-                    <label><input type="checkbox" value="gutenberg" /> <span class="source-default-copy"><span>Project Gutenberg</span><small>Large public-domain library</small></span></label>
-                  </div>
-                  <div class="source-default-group">
-                    <span class="source-default-group-label">Libraries</span>
-                    <label><input type="checkbox" value="annas" /> <span class="source-default-copy"><span>Anna's Archive</span><small>Broad coverage; rights unverified</small></span></label>
-                    <label><input type="checkbox" value="zlibrary" /> <span class="source-default-copy"><span>Z-Library</span><small>Broad coverage; downloads need an account</small></span></label>
-                    <label><input type="checkbox" value="internetarchive" /> <span class="source-default-copy"><span>Internet Archive</span><small>Scanned and digitized texts; rights unverified</small></span></label>
-                  </div>
-                  <div class="source-default-group">
-                    <span class="source-default-group-label">Your catalogs</span>
-                    <label><input type="checkbox" value="opds" /> <span class="source-default-copy"><span>My catalog (OPDS)</span><small>Your own OPDS server — Calibre-Web, Kavita, COPS</small></span></label>
-                  </div>
-                </fieldset>
-                <p id="default-search-sources-error" class="settings-error" aria-live="polite"></p>
-              </div>
-              <div class="provider-disclosure" aria-labelledby="provider-disclosure-title">
-                <div class="settings-label">
-                  <span id="provider-disclosure-title" class="settings-label-text">Provider status</span>
-                  <span class="settings-label-hint">Status describes configuration and reported metadata, not whether a work is lawful to use.</span>
-                </div>
-                <div id="provider-status-list" class="provider-status-list" aria-live="polite">
-                  <p class="settings-hint">Checking this instance's provider settings…</p>
-                </div>
-                <label class="provider-policy-control">
-                  <input id="unverified-sources-enabled" type="checkbox" />
-                  <span>Enable sources whose rights status is unverified</span>
-                </label>
-                <p id="unverified-sources-error" class="settings-error" aria-live="polite"></p>
-                <p class="provider-disclosure-note">Leave a provider disabled or unconfigured to prevent Xandrio from contacting it. Provider terms, availability, and rights status remain the operator's responsibility.</p>
-              </div>
-            </div>
-            <div class="settings-divider"></div>
-            <div class="settings-subsection">
-              <div class="settings-row">
-                <div class="settings-label">
-                  <span class="settings-label-text">Anna's Archive</span>
-                  <span class="settings-label-hint">Optional source. A secret key is required for downloads.</span>
-                </div>
-                <span id="annas-status" class="settings-status">Checking...</span>
-              </div>
-              <div id="annas-connected-info" class="settings-info" style="display:none">
-                <span class="settings-info-text"><span id="annas-base-url"></span><span id="annas-key-updated"></span></span>
-                <div class="settings-actions">
-                  <button id="annas-edit-btn" class="btn-ghost btn-ghost-edit btn-sm">Replace local key</button>
-                  <button id="annas-disconnect-btn" class="btn-ghost btn-ghost-danger btn-sm">Disconnect</button>
-                </div>
-              </div>
-              <div id="annas-form" class="settings-form" style="display:none">
-                <input type="password" id="annas-secret-key" placeholder="Secret Key" autocomplete="off" />
-                <input type="text" id="annas-base-url-input" placeholder="Base URL (default: annas-archive.gl)" autocomplete="off" />
-                <div class="settings-form-buttons">
-                  <button id="annas-save-btn" class="btn-primary btn-sm">Save</button>
-                  <button id="annas-cancel-edit-btn" class="btn-ghost btn-sm" style="display:none">Cancel</button>
-                </div>
-                <p class="settings-hint">This only replaces Xandrio's local copy. It does not rotate or revoke the provider-side key.</p>
-              </div>
-              <p id="annas-error" class="settings-error" style="display:none"></p>
-            </div>
-            <div class="settings-divider"></div>
-            <div class="settings-subsection">
-              <div class="settings-row">
-                <div class="settings-label">
-                  <span class="settings-label-text">Z-Library</span>
-                  <span class="settings-label-hint">Search works without an account. Connect to download.</span>
-                </div>
-                <span id="zlib-status" class="settings-status">Not connected</span>
-              </div>
-              <div id="zlib-connected-info" class="settings-info" style="display:none">
-                <span id="zlib-downloads-left" class="settings-info-text"></span>
-                <div class="settings-actions">
-                  <button id="zlib-edit-btn" class="btn-ghost btn-ghost-edit btn-sm">Edit</button>
-                  <button id="zlib-disconnect-btn" class="btn-ghost btn-ghost-danger btn-sm">Disconnect</button>
-                </div>
-              </div>
-              <div id="zlib-form" class="settings-form" style="display:none">
-                <input type="email" id="zlib-email" placeholder="Email" autocomplete="email" />
-                <input type="password" id="zlib-password" placeholder="Password" autocomplete="current-password" />
-                <div class="settings-form-buttons">
-                  <button id="zlib-connect-btn" class="btn-primary btn-sm">Connect</button>
-                  <button id="zlib-cancel-edit-btn" class="btn-ghost btn-sm" style="display:none">Cancel</button>
-                </div>
-              </div>
-              <p id="zlib-error" class="settings-error" style="display:none"></p>
-            </div>
-          </div>
-        </details><details class="settings-section">
-          <summary class="settings-section-header">
-            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="width:18px;height:18px"><path stroke-linecap="round" stroke-linejoin="round" d="M10.5 21l5.25-11.25L21 21m-9-3h7.5M3 5.621a48.474 48.474 0 016-.371m0 0c1.12 0 2.233.038 3.334.114M9 5.25V3m3.334 2.364C11.176 10.658 7.69 15.08 3 17.502m9.334-12.138c.896.061 1.785.147 2.666.257m-4.589 8.495a18.023 18.023 0 01-3.827-5.802"/></svg>
-            <span>Language</span><span id="settings-language-summary" class="settings-value"></span>
-          </summary>
-          <div class="settings-section-body">
-            <div class="settings-row">
-              <div class="settings-label">
-                <span class="settings-label-text">Default search language</span>
-                <span class="settings-label-hint">Used when searching for new books</span>
-              </div>
-              <select id="settings-language" class="settings-select" aria-label="Default language">
-                <option value="en">English</option>
-                <option value="de">Deutsch</option>
-                <option value="es">Español</option>
-                <option value="fr">Français</option>
-                <option value="it">Italiano</option>
-                <option value="pt">Português</option>
-                <option value="ru">Русский</option>
-                <option value="zh">中文</option>
-                <option value="ja">日本語</option>
-                <option value="all">Any Language</option>
-              </select>
-            </div>
-          </div>
-        </details><details class="settings-section">
-          <summary class="settings-section-header">
-            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="width:18px;height:18px"><path stroke-linecap="round" stroke-linejoin="round" d="M12 3v12m0 0l-4-4m4 4l4-4M4.5 19.5h15"/></svg>
-            Offline
-          </summary>
-          <div class="settings-section-body">
-            <div class="settings-row settings-row-stacked">
-              <div class="settings-label">
-                <span class="settings-label-text">Automatic chapter cache</span>
-                <span class="settings-label-hint">Keep the current chapter, one behind, and two ahead. Data Saver pauses automatic downloads.</span>
-              </div>
-              <div id="rolling-offline-control" class="segmented-control" role="group" aria-label="Automatic chapter cache">
-                <button type="button" data-rolling-offline="on">On</button>
-                <button type="button" data-rolling-offline="off">Off</button>
-              </div>
-            </div>
-            <div id="offline-books-list" class="offline-books-list"></div>
-          </div>
-        </details></section><section class="settings-group" id="settings-group-3" aria-labelledby="settings-group-title-3"><h3 id="settings-group-title-3">Server & Account</h3><details class="settings-section" id="account-section" style="display:none" open>
-          <summary class="settings-section-header">
-            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="width:18px;height:18px"><path stroke-linecap="round" stroke-linejoin="round" d="M17.982 18.725A7.488 7.488 0 0012 15.75a7.488 7.488 0 00-5.982 2.975m11.963 0a9 9 0 10-11.963 0m11.963 0A8.966 8.966 0 0112 21a8.966 8.966 0 01-5.982-2.275M15 9.75a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
-            Account
-          </summary>
-          <div class="settings-section-body">
-            <div class="settings-row">
-              <div class="settings-label">
-                <span class="settings-label-text" id="account-display-name">Signed in</span>
-                <span id="account-username-hint" class="settings-label-hint"></span>
-              </div>
-              <span id="account-role" class="settings-status settings-status-ok">member</span>
-            </div>
-            <div id="account-device-list" class="sync-device-list"></div>
-            <div class="settings-actions">
-              <button id="account-change-password-btn" class="btn-ghost btn-sm">Change Password</button>
-              <button id="account-logout-btn" class="btn-ghost btn-ghost-danger btn-sm">Sign Out</button>
-            </div>
-            <div id="account-password-form" class="settings-form" style="display:none">
-              <input type="password" id="account-current-password" placeholder="Current password" autocomplete="current-password" />
-              <input type="password" id="account-new-password" placeholder="New password (min 8 characters)" autocomplete="new-password" />
-              <div class="settings-form-buttons">
-                <button id="account-password-save-btn" class="btn-primary btn-sm">Update Password</button>
-                <button id="account-password-cancel-btn" class="btn-ghost btn-sm">Cancel</button>
-              </div>
-            </div>
-            <p id="account-error" class="settings-error" style="display:none"></p>
+          </section>
 
-            <!-- Admin-only account management -->
-            <div id="admin-accounts" style="display:none">
+          <!-- Book sources -->
+          <section class="settings-pane" data-settings-pane="sources" aria-labelledby="settings-pane-title-sources" hidden>
+            <header class="settings-pane-header">
+              <a class="btn-back settings-pane-back" href="#/settings">← Settings</a>
+              <h2 id="settings-pane-title-sources">Book sources</h2>
+            </header>
+            <p class="settings-lead">Choose which catalogs Search uses by default. You can change the selection for a single search on the Search page.</p>
+            <div class="settings-card">
+              <label class="settings-row settings-row-switch">
+                <span class="settings-label">
+                  <span class="settings-label-text">Sources with unverified rights status</span>
+                  <span class="settings-label-hint">Off keeps this server from contacting Anna's Archive, Z-Library, and Internet Archive.</span>
+                </span>
+                <input id="unverified-sources-enabled" class="switch" type="checkbox" role="switch" aria-describedby="unverified-sources-error">
+              </label>
+              <p id="unverified-sources-error" class="settings-error" aria-live="polite"></p>
+              <details class="settings-disclosure">
+                <summary>How sources and rights status work</summary>
+                <p>Status describes configuration and provider-reported metadata, not whether a work is lawful to use. Leave a provider disabled or unconfigured to prevent Xandrio from contacting it. Provider terms, availability, and rights status remain the operator's responsibility.</p>
+              </details>
+            </div>
+            <fieldset id="default-search-sources" class="provider-list">
+              <legend class="sr-only">Default search sources</legend>
+              <div class="provider-group">
+                <h3>Public domain</h3>
+                <div class="settings-card">
+                  <div class="provider-row" data-provider="standardebooks">
+                    <div class="provider-copy">
+                      <div class="provider-heading">
+                        <strong>Standard Ebooks</strong>
+                        <span class="provider-status-badge" data-provider-status="standardebooks">Checking…</span>
+                      </div>
+                      <small data-provider-detail="standardebooks">Carefully formatted public-domain EPUBs.</small>
+                    </div>
+                    <label class="provider-default"><span class="sr-only">Search Standard Ebooks by default</span><input class="switch" type="checkbox" role="switch" value="standardebooks"></label>
+                  </div>
+                  <div class="provider-row" data-provider="gutenberg">
+                    <div class="provider-copy">
+                      <div class="provider-heading">
+                        <strong>Project Gutenberg</strong>
+                        <span class="provider-status-badge" data-provider-status="gutenberg">Checking…</span>
+                      </div>
+                      <small data-provider-detail="gutenberg">Large public-domain library.</small>
+                    </div>
+                    <label class="provider-default"><span class="sr-only">Search Project Gutenberg by default</span><input class="switch" type="checkbox" role="switch" value="gutenberg"></label>
+                  </div>
+                </div>
+              </div>
+              <div class="provider-group">
+                <h3>Libraries</h3>
+                <div class="settings-card">
+                  <div class="provider-row" data-provider="annas">
+                    <div class="provider-copy">
+                      <div class="provider-heading">
+                        <strong>Anna's Archive</strong>
+                        <span id="annas-status" class="provider-status-badge" data-provider-status="annas">Checking…</span>
+                      </div>
+                      <small data-provider-detail="annas">Broad coverage; rights unverified. Downloads need a secret key.</small>
+                    </div>
+                    <label class="provider-default"><span class="sr-only">Search Anna's Archive by default</span><input class="switch" type="checkbox" role="switch" value="annas"></label>
+                  </div>
+                  <details class="provider-account" id="annas-account">
+                    <summary><span>Secret key</span><span id="annas-account-summary" class="settings-menu-value"></span></summary>
+                    <div id="annas-connected-info" class="settings-info" style="display:none">
+                      <span class="settings-info-text"><span id="annas-base-url"></span><span id="annas-key-updated"></span></span>
+                      <div class="settings-actions">
+                        <button id="annas-edit-btn" class="btn-ghost btn-sm" type="button">Replace local key</button>
+                        <button id="annas-disconnect-btn" class="btn-ghost btn-ghost-danger btn-sm" type="button">Disconnect</button>
+                      </div>
+                    </div>
+                    <form id="annas-form" class="settings-form" style="display:none" autocomplete="off">
+                      <div class="settings-field">
+                        <label for="annas-secret-key">Secret key</label>
+                        <input type="password" id="annas-secret-key" autocomplete="off" aria-describedby="annas-error" />
+                      </div>
+                      <div class="settings-field">
+                        <label for="annas-base-url-input">Base URL <span class="settings-field-optional">optional</span></label>
+                        <input type="text" id="annas-base-url-input" placeholder="annas-archive.gl" autocomplete="off" inputmode="url" />
+                      </div>
+                      <div class="settings-form-buttons">
+                        <button id="annas-save-btn" class="btn-primary btn-sm" type="submit">Save</button>
+                        <button id="annas-cancel-edit-btn" class="btn-ghost btn-sm" type="button" style="display:none">Cancel</button>
+                      </div>
+                      <p class="settings-hint">This only replaces Xandrio's local copy. It does not rotate or revoke the provider-side key.</p>
+                    </form>
+                    <p id="annas-error" class="settings-error" role="alert" style="display:none"></p>
+                  </details>
+                  <div class="provider-row" data-provider="zlibrary">
+                    <div class="provider-copy">
+                      <div class="provider-heading">
+                        <strong>Z-Library</strong>
+                        <span id="zlib-status" class="provider-status-badge" data-provider-status="zlibrary">Checking…</span>
+                      </div>
+                      <small data-provider-detail="zlibrary">Broad coverage; search works without an account, downloads need one.</small>
+                    </div>
+                    <label class="provider-default"><span class="sr-only">Search Z-Library by default</span><input class="switch" type="checkbox" role="switch" value="zlibrary"></label>
+                  </div>
+                  <details class="provider-account" id="zlib-account">
+                    <summary><span>Account</span><span id="zlib-account-summary" class="settings-menu-value"></span></summary>
+                    <div id="zlib-connected-info" class="settings-info" style="display:none">
+                      <span id="zlib-downloads-left" class="settings-info-text"></span>
+                      <div class="settings-actions">
+                        <button id="zlib-edit-btn" class="btn-ghost btn-sm" type="button">Change account</button>
+                        <button id="zlib-disconnect-btn" class="btn-ghost btn-ghost-danger btn-sm" type="button">Disconnect</button>
+                      </div>
+                    </div>
+                    <form id="zlib-form" class="settings-form" style="display:none">
+                      <div class="settings-field">
+                        <label for="zlib-email">Email</label>
+                        <input type="email" id="zlib-email" autocomplete="email" inputmode="email" aria-describedby="zlib-error" />
+                      </div>
+                      <div class="settings-field">
+                        <label for="zlib-password">Password</label>
+                        <input type="password" id="zlib-password" autocomplete="current-password" />
+                      </div>
+                      <div class="settings-form-buttons">
+                        <button id="zlib-connect-btn" class="btn-primary btn-sm" type="submit">Connect</button>
+                        <button id="zlib-cancel-edit-btn" class="btn-ghost btn-sm" type="button" style="display:none">Cancel</button>
+                      </div>
+                    </form>
+                    <p id="zlib-error" class="settings-error" role="alert" style="display:none"></p>
+                  </details>
+                  <div class="provider-row" data-provider="internetarchive">
+                    <div class="provider-copy">
+                      <div class="provider-heading">
+                        <strong>Internet Archive</strong>
+                        <span class="provider-status-badge" data-provider-status="internetarchive">Checking…</span>
+                      </div>
+                      <small data-provider-detail="internetarchive">Scanned and digitized texts; rights unverified.</small>
+                    </div>
+                    <label class="provider-default"><span class="sr-only">Search Internet Archive by default</span><input class="switch" type="checkbox" role="switch" value="internetarchive"></label>
+                  </div>
+                </div>
+              </div>
+              <div class="provider-group">
+                <h3>Your catalogs</h3>
+                <div class="settings-card">
+                  <div class="provider-row" data-provider="opds">
+                    <div class="provider-copy">
+                      <div class="provider-heading">
+                        <strong>My catalog (OPDS)</strong>
+                        <span class="provider-status-badge" data-provider-status="opds">Checking…</span>
+                      </div>
+                      <small data-provider-detail="opds">Your own OPDS server — Calibre-Web, Kavita, COPS.</small>
+                    </div>
+                    <label class="provider-default"><span class="sr-only">Search my OPDS catalog by default</span><input class="switch" type="checkbox" role="switch" value="opds"></label>
+                  </div>
+                </div>
+              </div>
+            </fieldset>
+            <p id="default-search-sources-error" class="settings-error" aria-live="polite"></p>
+            <div id="provider-status-list" hidden></div>
+          </section>
+
+          <!-- Offline -->
+          <section class="settings-pane" data-settings-pane="offline" aria-labelledby="settings-pane-title-offline" hidden>
+            <header class="settings-pane-header">
+              <a class="btn-back settings-pane-back" href="#/settings">← Settings</a>
+              <h2 id="settings-pane-title-offline">Offline</h2>
+            </header>
+            <div class="settings-card">
+              <label class="settings-row settings-row-switch">
+                <span class="settings-label">
+                  <span class="settings-label-text">Automatic chapter cache</span>
+                  <span class="settings-label-hint">Keep the current chapter, one behind, and two ahead. Data Saver pauses automatic downloads.</span>
+                </span>
+                <input id="rolling-offline-control" class="switch" type="checkbox" role="switch">
+              </label>
+            </div>
+            <h3 class="settings-subheading">Downloaded books</h3>
+            <div id="offline-books-list" class="offline-books-list"></div>
+          </section>
+
+          <!-- Search language -->
+          <section class="settings-pane" data-settings-pane="language" aria-labelledby="settings-pane-title-language" hidden>
+            <header class="settings-pane-header">
+              <a class="btn-back settings-pane-back" href="#/settings">← Settings</a>
+              <h2 id="settings-pane-title-language">Search language</h2>
+            </header>
+            <div class="settings-card">
+              <div class="settings-row">
+                <label class="settings-label" for="settings-language">
+                  <span class="settings-label-text">Default search language</span>
+                  <span class="settings-label-hint">Used when searching for new books.</span>
+                </label>
+                <select id="settings-language" class="settings-select">
+                  <option value="en">English</option>
+                  <option value="de">Deutsch</option>
+                  <option value="es">Español</option>
+                  <option value="fr">Français</option>
+                  <option value="it">Italiano</option>
+                  <option value="pt">Português</option>
+                  <option value="ru">Русский</option>
+                  <option value="zh">中文</option>
+                  <option value="ja">日本語</option>
+                  <option value="all">Any Language</option>
+                </select>
+              </div>
+            </div>
+          </section>
+
+          <!-- Account & devices (signed-in instances) -->
+          <section class="settings-pane" data-settings-pane="account" id="account-section" aria-labelledby="settings-pane-title-account" hidden>
+            <header class="settings-pane-header">
+              <a class="btn-back settings-pane-back" href="#/settings">← Settings</a>
+              <h2 id="settings-pane-title-account">Account &amp; devices</h2>
+            </header>
+            <div class="settings-card">
               <div class="settings-row">
                 <div class="settings-label">
-                  <span class="settings-label-text">Accounts</span>
-                  <span class="settings-label-hint">Manage who can sign in to this server</span>
+                  <span class="settings-label-text" id="account-display-name">Signed in</span>
+                  <span id="account-username-hint" class="settings-label-hint"></span>
                 </div>
-                <span class="settings-status">Admin</span>
+                <span id="account-role" class="settings-status settings-status-ok">member</span>
               </div>
-              <div id="admin-account-list" class="sync-device-list"></div>
-              <div id="admin-account-form" class="settings-form">
-                <input type="text" id="admin-new-username" placeholder="Username (a-z, 0-9, _ or -)" autocomplete="off" autocapitalize="none" spellcheck="false" />
-                <input type="password" id="admin-new-password" placeholder="Password (min 8 characters)" autocomplete="new-password" />
-                <label class="admin-role-check"><input type="checkbox" id="admin-new-is-admin" /> Admin account</label>
+              <div class="settings-row">
+                <div class="settings-label">
+                  <span class="settings-label-text">Password</span>
+                  <span class="settings-label-hint">Changing it signs out every other device.</span>
+                </div>
+                <button id="account-change-password-btn" class="btn-ghost btn-sm" type="button" aria-expanded="false" aria-controls="account-password-form">Change password</button>
+              </div>
+              <form id="account-password-form" class="settings-form" style="display:none">
+                <div class="settings-field">
+                  <label for="account-current-password">Current password</label>
+                  <input type="password" id="account-current-password" autocomplete="current-password" aria-describedby="account-error" />
+                </div>
+                <div class="settings-field">
+                  <label for="account-new-password">New password <span class="settings-field-optional">at least 8 characters</span></label>
+                  <input type="password" id="account-new-password" autocomplete="new-password" minlength="8" />
+                </div>
                 <div class="settings-form-buttons">
-                  <button id="admin-add-account-btn" class="btn-primary btn-sm">Add Account</button>
+                  <button id="account-password-save-btn" class="btn-primary btn-sm" type="submit">Update password</button>
+                  <button id="account-password-cancel-btn" class="btn-ghost btn-sm" type="button">Cancel</button>
                 </div>
-              </div>
-              <p id="admin-accounts-error" class="settings-error" style="display:none"></p>
+              </form>
+              <p id="account-error" class="settings-error" role="alert" style="display:none"></p>
             </div>
-          </div>
-        </details><details class="settings-section" id="sync-section">
-          <summary class="settings-section-header">
-            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="width:18px;height:18px"><path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001m-4.992.001a8.25 8.25 0 00-13.07 2.577m13.07-2.577L18.75 6.62M7.977 14.652H2.985v.001m4.992-.001a8.25 8.25 0 0013.07-2.577m-13.07 2.577L5.25 17.38"/></svg>
-            Sync
-          </summary>
-          <div class="settings-section-body">
-            <div class="settings-row">
-              <div class="settings-label">
-                <span class="settings-label-text">Reading progress</span>
-                <span id="sync-profile-hint" class="settings-label-hint">Not linked to a sync profile</span>
-              </div>
-              <span id="sync-status" class="settings-status">Local</span>
+            <h3 class="settings-subheading">Signed-in devices</h3>
+            <div id="account-device-list" class="settings-card settings-list" aria-live="polite"></div>
+            <div class="settings-actions">
+              <button id="account-signout-others-btn" class="btn-ghost btn-sm" type="button" hidden>Sign out other devices</button>
             </div>
+            <p id="account-sessions-error" class="settings-error" role="alert" style="display:none"></p>
+          </section>
+
+          <!-- Sync (trusted-LAN instances without accounts) -->
+          <section class="settings-pane" data-settings-pane="sync" id="sync-section" aria-labelledby="settings-pane-title-sync" hidden>
+            <header class="settings-pane-header">
+              <a class="btn-back settings-pane-back" href="#/settings">← Settings</a>
+              <h2 id="settings-pane-title-sync">Sync</h2>
+            </header>
+            <div class="settings-card">
+              <div class="settings-row">
+                <div class="settings-label">
+                  <span class="settings-label-text">Reading progress</span>
+                  <span id="sync-profile-hint" class="settings-label-hint">Not linked to a sync profile</span>
+                </div>
+                <span id="sync-status" class="settings-status">Local</span>
+              </div>
               <div id="sync-connected-info" class="settings-info" style="display:none">
                 <span id="sync-profile-name" class="settings-info-text"></span>
+                <div id="sync-device-list" class="settings-list"></div>
                 <div class="settings-actions">
-                  <button id="sync-forget-btn" class="btn-ghost btn-ghost-danger btn-sm">Forget This Device</button>
+                  <button id="sync-forget-btn" class="btn-ghost btn-ghost-danger btn-sm" type="button">Forget this device</button>
                 </div>
-                <div id="sync-device-list" class="sync-device-list"></div>
               </div>
-            <div id="sync-form" class="settings-form">
-              <input type="text" id="sync-profile-input" placeholder="Profile name" autocomplete="off" />
-              <div class="settings-form-buttons">
-                <button id="sync-start-btn" class="btn-primary btn-sm">Create Profile</button>
+              <form id="sync-form" class="settings-form">
+                <div class="settings-field">
+                  <label for="sync-profile-input">Profile name</label>
+                  <input type="text" id="sync-profile-input" placeholder="My Library" autocomplete="off" />
+                </div>
+                <div class="settings-form-buttons">
+                  <button id="sync-start-btn" class="btn-primary btn-sm" type="submit">Create profile</button>
+                </div>
+              </form>
+              <p id="sync-error" class="settings-error" role="alert" style="display:none"></p>
+            </div>
+          </section>
+
+          <!-- Calibre -->
+          <section class="settings-pane" data-settings-pane="calibre" id="calibre-integration-section" aria-labelledby="settings-pane-title-calibre" hidden>
+            <header class="settings-pane-header">
+              <a class="btn-back settings-pane-back" href="#/settings">← Settings</a>
+              <h2 id="settings-pane-title-calibre">Calibre</h2>
+            </header>
+            <div class="settings-card">
+              <div class="settings-row">
+                <div class="settings-label">
+                  <span class="settings-label-text">Send books from Calibre</span>
+                  <span class="settings-label-hint">Install the desktop plugin, pair it once, then send selected books or your full catalog.</span>
+                </div>
+                <span id="calibre-integration-status" class="settings-status">Checking…</span>
               </div>
-            </div>
-            <p id="sync-error" class="settings-error" style="display:none"></p>
-          </div>
-        </details><details class="settings-section" id="calibre-integration-section">
-          <summary class="settings-section-header">
-            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="width:18px;height:18px"><path stroke-linecap="round" stroke-linejoin="round" d="M4.5 5.25A2.25 2.25 0 016.75 3h10.5a2.25 2.25 0 012.25 2.25v13.5A2.25 2.25 0 0117.25 21H6.75a2.25 2.25 0 01-2.25-2.25V5.25zM8.25 7.5h7.5M8.25 11.25h7.5M8.25 15h4.5"/></svg>
-            Calibre
-          </summary>
-          <div class="settings-section-body">
-            <div class="settings-row">
-              <div class="settings-label">
-                <span class="settings-label-text">Send books from Calibre</span>
-                <span class="settings-label-hint">Install the desktop plugin, pair it once, then send selected books or your full catalog.</span>
+              <div class="settings-actions">
+                <a class="btn-ghost btn-sm" href="/downloads/Xandrio-Calibre.zip" download>Download plugin</a>
+                <button id="calibre-pair-btn" class="btn-primary btn-sm" type="button">Pair Calibre</button>
               </div>
-              <span id="calibre-integration-status" class="settings-status">Checking…</span>
+              <div id="calibre-pairing-panel" class="calibre-pairing-panel" hidden>
+                <span class="settings-label-hint">In Calibre, choose Xandrio → Connect, then enter this code:</span>
+                <strong id="calibre-pair-code" class="calibre-pair-code" aria-live="polite"></strong>
+                <small id="calibre-pair-expiry">Expires in 10 minutes</small>
+              </div>
+              <p id="calibre-integration-error" class="settings-error" role="alert" hidden></p>
             </div>
-            <div class="settings-actions">
-              <a class="btn-ghost btn-sm" href="/downloads/Xandrio-Calibre.zip" download>Download plugin</a>
-              <button id="calibre-pair-btn" class="btn-primary btn-sm" type="button">Pair Calibre</button>
-            </div>
-            <div id="calibre-pairing-panel" class="calibre-pairing-panel" hidden>
-              <span class="settings-label-hint">In Calibre, choose Xandrio → Connect, then enter this code:</span>
-              <strong id="calibre-pair-code" class="calibre-pair-code" aria-live="polite"></strong>
-              <small id="calibre-pair-expiry">Expires in 10 minutes</small>
-            </div>
-            <div id="calibre-connection-list" class="sync-device-list"></div>
-            <p id="calibre-integration-error" class="settings-error" role="alert" hidden></p>
+            <h3 class="settings-subheading">Paired computers</h3>
+            <div id="calibre-connection-list" class="settings-card settings-list"></div>
             <p class="settings-hint">A paired plugin can only check and import Calibre books for this profile. Revoke a computer here at any time.</p>
-          </div>
-        </details><details class="settings-section" id="book-guides-settings-section" style="display:none">
-          <summary class="settings-section-header">
-            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="width:18px;height:18px"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5s3.332.477 4.5 1.253v13C19.832 18.477 18.246 18 16.5 18s-3.332.477-4.5 1.253"/></svg>
-            Experimental study guides
-          </summary>
-          <div class="settings-section-body">
-            <div class="settings-row">
-              <div class="settings-label">
-                <span class="settings-label-text">English nonfiction guides</span>
-                <span id="book-guides-provider-hint" class="settings-label-hint">Book text and evidence leave this server for generation and verification.</span>
-              </div>
-              <span id="book-guides-settings-status" class="settings-status">Checking…</span>
+          </section>
+
+          <!-- Accounts (admin) -->
+          <section class="settings-pane" data-settings-pane="accounts" id="admin-accounts" aria-labelledby="settings-pane-title-accounts" hidden>
+            <header class="settings-pane-header">
+              <a class="btn-back settings-pane-back" href="#/settings">← Settings</a>
+              <h2 id="settings-pane-title-accounts">Accounts</h2>
+            </header>
+            <p class="settings-lead">Manage who can sign in to this server. Disabled accounts are signed out everywhere and cannot sign in until re-enabled.</p>
+            <div id="admin-account-list" class="settings-card settings-list" aria-live="polite"></div>
+            <div class="settings-actions">
+              <button id="admin-add-account-open" class="btn-primary btn-sm" type="button">Add account</button>
             </div>
-            <div class="settings-form book-guide-settings-form">
-              <label class="admin-role-check"><input id="book-guides-enabled" type="checkbox" /> Enable experimental guides</label>
-              <div id="book-guides-device-connection" class="guide-connection-ledger" hidden>
-                <div class="guide-connection-copy">
-                  <span id="book-guides-connection-label" class="guide-connection-name">Codex subscription</span>
-                  <span id="book-guides-connection-detail" class="settings-label-hint" aria-live="polite">Checking connection…</span>
+            <p id="admin-accounts-error" class="settings-error" role="alert" style="display:none"></p>
+          </section>
+
+          <!-- Study guides (admin, experimental) -->
+          <section class="settings-pane" data-settings-pane="guides" id="book-guides-settings-section" aria-labelledby="settings-pane-title-guides" hidden>
+            <header class="settings-pane-header">
+              <a class="btn-back settings-pane-back" href="#/settings">← Settings</a>
+              <h2 id="settings-pane-title-guides">Study guides <span class="settings-title-tag">Experimental</span></h2>
+            </header>
+            <div class="settings-card">
+              <div class="settings-row">
+                <div class="settings-label">
+                  <span class="settings-label-text">English nonfiction guides</span>
+                  <span id="book-guides-provider-hint" class="settings-label-hint">Book text and evidence leave this server for generation and verification.</span>
                 </div>
-                <div class="guide-connection-actions">
-                  <button id="book-guides-connect" class="btn-primary btn-sm" type="button">Connect Codex</button>
-                  <button id="book-guides-disconnect" class="btn-ghost btn-ghost-danger btn-sm" type="button" hidden>Disconnect</button>
-                </div>
-              </div>
-              <div id="book-guides-api-key-group">
-                <label for="book-guides-api-key">PPQ.ai API key</label>
-                <input id="book-guides-api-key" name="book-guides-api-key" type="password" placeholder="Enter a dedicated API key…" autocomplete="new-password" spellcheck="false" />
-              </div>
-              <div class="guide-model-field">
-                <label for="book-guides-generator-model">Generator model</label>
-                <select id="book-guides-generator-model">
-                  <option value="gemini-3.7-flash">Gemini 3.7 Flash · recommended</option>
-                  <option value="deepseek/deepseek-v4-flash-0731">DeepSeek V4 Flash 0731 · 1M context</option>
-                  <option value="deepseek/deepseek-v4-pro-0813">DeepSeek V4 Pro 0813 · 1M context</option>
-                  <option value="glm-5.2">GLM 5.2 · 1M context</option>
-                </select>
-              </div>
-              <div class="guide-model-field">
-                <label for="book-guides-verifier-model">Verifier model</label>
-                <select id="book-guides-verifier-model">
-                  <option value="glm-5.2">GLM 5.2 · 1M context · independent verifier</option>
-                  <option value="gemini-3.7-flash">Gemini 3.7 Flash · 1M context</option>
-                  <option value="deepseek/deepseek-v4-flash-0731">DeepSeek V4 Flash 0731 · 1M context</option>
-                  <option value="deepseek/deepseek-v4-pro-0813">DeepSeek V4 Pro 0813 · 1M context</option>
-                </select>
-              </div>
-              <div class="settings-form-buttons">
-                <button id="book-guides-save" class="btn-primary btn-sm">Save configuration</button>
-                <button id="book-guides-test" class="btn-ghost btn-sm">Test connection</button>
-                <button id="book-guides-clear" class="btn-ghost btn-ghost-danger btn-sm">Clear configuration</button>
+                <span id="book-guides-settings-status" class="settings-status">Checking…</span>
               </div>
             </div>
-            <p id="book-guides-settings-error" class="settings-error" aria-live="polite" style="display:none"></p>
-            <p id="book-guides-key-note" class="settings-hint">The API key is write-only. Use a dedicated PPQ.ai key with a strict spending limit. The connection test sends a small paid request.</p>
-          </div>
-        </details><details class="settings-section" id="operator-diagnostics-section" style="display:none">
-          <summary class="settings-section-header">
-            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="width:18px;height:18px"><path stroke-linecap="round" stroke-linejoin="round" d="M11.42 15.17l-5.66 5.66a2.12 2.12 0 01-3-3l5.66-5.66m3-3l2.83-2.83m0 0l-1.42-1.41 2.12-2.12 4.24 4.24-2.12 2.12-1.41-1.42-2.83 2.83m1.41 1.42l5.66 5.66a2.12 2.12 0 01-3 3l-5.66-5.66"/></svg>
-            System diagnostics
-          </summary>
-          <div class="settings-section-body">
-            <div class="settings-row">
-              <div class="settings-label">
-                <span class="settings-label-text">Server health</span>
-                <span id="operator-diagnostics-updated" class="settings-label-hint">Not checked yet</span>
+            <form class="book-guide-settings-form">
+              <h3 class="settings-subheading"><span class="settings-step">1</span>Provider</h3>
+              <div class="settings-card">
+                <div id="book-guides-device-connection" class="guide-connection-ledger" hidden>
+                  <div class="guide-connection-copy">
+                    <span id="book-guides-connection-label" class="guide-connection-name">Codex subscription</span>
+                    <span id="book-guides-connection-detail" class="settings-label-hint" aria-live="polite">Checking connection…</span>
+                  </div>
+                  <div class="guide-connection-actions">
+                    <button id="book-guides-connect" class="btn-primary btn-sm" type="button">Connect Codex</button>
+                    <button id="book-guides-disconnect" class="btn-ghost btn-ghost-danger btn-sm" type="button" hidden>Disconnect</button>
+                  </div>
+                </div>
+                <div id="book-guides-api-key-group" class="settings-field">
+                  <label for="book-guides-api-key">PPQ.ai API key</label>
+                  <input id="book-guides-api-key" name="book-guides-api-key" type="password" placeholder="Enter a dedicated API key…" autocomplete="new-password" spellcheck="false" />
+                </div>
+                <p id="book-guides-key-note" class="settings-hint">The API key is write-only. Use a dedicated PPQ.ai key with a strict spending limit. The connection test sends a small paid request.</p>
               </div>
-              <span id="operator-diagnostics-status" class="settings-status">Checking…</span>
+              <h3 class="settings-subheading"><span class="settings-step">2</span>Models</h3>
+              <div class="settings-card guide-model-grid">
+                <div class="settings-field guide-model-field">
+                  <label for="book-guides-generator-model">Generator model</label>
+                  <select id="book-guides-generator-model">
+                    <option value="gemini-3.7-flash">Gemini 3.7 Flash · recommended</option>
+                    <option value="deepseek/deepseek-v4-flash-0731">DeepSeek V4 Flash 0731 · 1M context</option>
+                    <option value="deepseek/deepseek-v4-pro-0813">DeepSeek V4 Pro 0813 · 1M context</option>
+                    <option value="glm-5.2">GLM 5.2 · 1M context</option>
+                  </select>
+                </div>
+                <div class="settings-field guide-model-field">
+                  <label for="book-guides-verifier-model">Verifier model</label>
+                  <select id="book-guides-verifier-model">
+                    <option value="glm-5.2">GLM 5.2 · 1M context · independent verifier</option>
+                    <option value="gemini-3.7-flash">Gemini 3.7 Flash · 1M context</option>
+                    <option value="deepseek/deepseek-v4-flash-0731">DeepSeek V4 Flash 0731 · 1M context</option>
+                    <option value="deepseek/deepseek-v4-pro-0813">DeepSeek V4 Pro 0813 · 1M context</option>
+                  </select>
+                </div>
+              </div>
+              <h3 class="settings-subheading"><span class="settings-step">3</span>Enable</h3>
+              <div class="settings-card">
+                <label class="settings-row settings-row-switch">
+                  <span class="settings-label">
+                    <span class="settings-label-text">Enable experimental guides</span>
+                    <span class="settings-label-hint">Admins can start a guide from a tagged English nonfiction book.</span>
+                  </span>
+                  <input id="book-guides-enabled" class="switch" type="checkbox" role="switch" />
+                </label>
+                <div class="settings-form-buttons">
+                  <button id="book-guides-save" class="btn-primary btn-sm" type="submit">Save configuration</button>
+                  <button id="book-guides-test" class="btn-ghost btn-sm" type="button">Test connection</button>
+                  <button id="book-guides-clear" class="btn-ghost btn-ghost-danger btn-sm" type="button">Clear configuration</button>
+                </div>
+              </div>
+            </form>
+            <p id="book-guides-settings-error" class="settings-error" role="alert" aria-live="polite" style="display:none"></p>
+          </section>
+
+          <!-- Diagnostics (admin) -->
+          <section class="settings-pane" data-settings-pane="diagnostics" id="operator-diagnostics-section" aria-labelledby="settings-pane-title-diagnostics" hidden>
+            <header class="settings-pane-header">
+              <a class="btn-back settings-pane-back" href="#/settings">← Settings</a>
+              <h2 id="settings-pane-title-diagnostics">Diagnostics</h2>
+            </header>
+            <div class="settings-card">
+              <div class="settings-row">
+                <div class="settings-label">
+                  <span class="settings-label-text">Server health</span>
+                  <span id="operator-diagnostics-updated" class="settings-label-hint">Not checked yet</span>
+                </div>
+                <span id="operator-diagnostics-status" class="settings-status">Checking…</span>
+              </div>
+              <div class="settings-actions">
+                <button id="operator-diagnostics-refresh" class="btn-ghost btn-sm" type="button">Refresh</button>
+                <button id="operator-diagnostics-copy" class="btn-primary btn-sm" type="button" disabled>Copy redacted report</button>
+              </div>
+              <p id="operator-diagnostics-error" class="settings-error" role="alert" style="display:none"></p>
             </div>
             <div id="operator-diagnostics-summary" class="operator-diagnostics-summary" aria-live="polite"></div>
             <div id="operator-diagnostics-issues" class="operator-diagnostics-issues"></div>
-            <p id="operator-diagnostics-error" class="settings-error" style="display:none"></p>
-            <div class="settings-actions">
-              <button id="operator-diagnostics-refresh" class="btn-primary btn-sm">Refresh diagnostics</button>
-              <button id="operator-diagnostics-copy" class="btn-ghost btn-sm" disabled>Copy redacted report</button>
-            </div>
             <p class="settings-hint operator-diagnostics-note">Reports contain counts and component states only. They exclude credentials, account details, book data, custom voice names, and filesystem paths.</p>
-          </div>
-        </details></section>
+          </section>
+
+          <!-- Unknown section -->
+          <section class="settings-pane" data-settings-pane="missing" aria-labelledby="settings-pane-title-missing" hidden>
+            <header class="settings-pane-header">
+              <a class="btn-back settings-pane-back" href="#/settings">← Settings</a>
+              <h2 id="settings-pane-title-missing">Not available</h2>
+            </header>
+            <p class="settings-lead" id="settings-missing-copy">This settings page is not available on this account.</p>
+          </section>
+        </main>
       </div>
+    </div>
+
+    <!-- Add account sheet (admin) -->
+    <div id="admin-account-sheet" class="voice-sheet settings-sheet" aria-hidden="true">
+      <div id="admin-account-backdrop" class="voice-sheet-backdrop"></div>
+      <section class="voice-sheet-panel settings-sheet-panel" role="dialog" aria-modal="true" aria-labelledby="admin-account-sheet-title">
+        <div class="voice-sheet-handle" aria-hidden="true"></div>
+        <div class="voice-sheet-header">
+          <div>
+            <h3 id="admin-account-sheet-title">Add account</h3>
+            <p>Create a sign-in for another person on this server.</p>
+          </div>
+          <button id="admin-account-close" class="btn-icon" type="button" aria-label="Close add account">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
+          </button>
+        </div>
+        <form id="admin-account-form" class="settings-form settings-sheet-body">
+          <div class="settings-field">
+            <label for="admin-new-username">Username <span class="settings-field-optional">a–z, 0–9, _ or -</span></label>
+            <input type="text" id="admin-new-username" autocomplete="off" autocapitalize="none" spellcheck="false" pattern="[a-z0-9_\-]+" required aria-describedby="admin-account-sheet-error" />
+          </div>
+          <div class="settings-field">
+            <label for="admin-new-password">Password <span class="settings-field-optional">at least 8 characters</span></label>
+            <input type="password" id="admin-new-password" autocomplete="new-password" minlength="8" required />
+          </div>
+          <label class="settings-row settings-row-switch">
+            <span class="settings-label">
+              <span class="settings-label-text">Admin account</span>
+              <span class="settings-label-hint">Admins manage accounts, sources, and server settings.</span>
+            </span>
+            <input type="checkbox" id="admin-new-is-admin" class="switch" role="switch" />
+          </label>
+          <p id="admin-account-sheet-error" class="settings-error" role="alert" style="display:none"></p>
+          <div class="settings-form-buttons">
+            <button id="admin-add-account-btn" class="btn-primary" type="submit">Add account</button>
+          </div>
+        </form>
+      </section>
     </div>
 
     <!-- Stats / Listening History View -->
@@ -1265,6 +1532,6 @@
   </div>
 
   <script src="/js/lifecycle.js?v=1"></script>
-  <script type="module" src="app.js?v=138"></script>
+  <script type="module" src="app.js?v=139"></script>
 </body>
 </html>

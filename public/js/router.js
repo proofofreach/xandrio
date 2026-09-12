@@ -24,18 +24,26 @@ function parseHash() {
   if (guideMatch) {
     return { view: 'guide', bookId: decodeURIComponent(guideMatch[1]) };
   }
-  const viewMatch = hash.match(/^#\/(library|search|settings|stats)\b/);
-  return { view: viewMatch ? viewMatch[1] : 'library', bookId: null };
+  // Settings is a hub with one page per section: #/settings/voice, etc.
+  const settingsMatch = hash.match(/^#\/settings(?:\/([a-z-]+))?(?:[?#]|$)/);
+  if (settingsMatch) {
+    return { view: 'settings', bookId: null, section: settingsMatch[1] || null };
+  }
+  const viewMatch = hash.match(/^#\/(library|search|stats)\b/);
+  return { view: viewMatch ? viewMatch[1] : 'library', bookId: null, section: null };
 }
 
 function routeKey(route) {
-  return route.view === 'player' || route.view === 'guide' ? `${route.view}:${route.bookId}` : route.view;
+  if (route.view === 'player' || route.view === 'guide') return `${route.view}:${route.bookId}`;
+  if (route.view === 'settings') return `settings:${route.section || ''}`;
+  return route.view;
 }
 
 function keyToView(key) {
   if (!key) return null;
   if (key.startsWith('player:')) return 'player';
   if (key.startsWith('guide:')) return 'guide';
+  if (key.startsWith('settings:')) return 'settings';
   return key;
 }
 
@@ -110,13 +118,14 @@ async function route({ force = false } = {}) {
     runViewTransition(previousView, 'guide', () => config.showView('guide'));
     await config.openGuide?.(target.bookId);
   } else {
-    runViewTransition(previousView, target.view, () => config.showView(target.view));
+    runViewTransition(previousView, target.view, () => config.showView(target.view, target));
   }
 }
 
-export function navigateTo(view, bookId = null, { replace = false } = {}) {
-  const hash = view === 'player' || view === 'guide'
-    ? `#/${view}/${encodeURIComponent(bookId)}`
+// `param` is a book id for player/guide routes and a section name for settings.
+export function navigateTo(view, param = null, { replace = false } = {}) {
+  const hash = (view === 'player' || view === 'guide') || (view === 'settings' && param)
+    ? `#/${view}/${encodeURIComponent(param)}`
     : `#/${view}`;
   if (window.location.hash === hash) {
     route({ force: true });

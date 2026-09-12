@@ -45,10 +45,15 @@ function initAutomaticSleepSettings() {
   if (!enabled || !start || !end || !duration) return;
   autoSleepSchedule = normalizeAutoSleepSchedule(readJSON(AUTO_SLEEP_KEY, {}));
   const render = () => {
-    const summary = document.getElementById('settings-playback-summary');
-    if (summary) summary.textContent = autoSleepSchedule.enabled
-      ? `Sleep: ${autoSleepSchedule.mode === 'chapter' ? 'chapter end' : `${autoSleepSchedule.minutes} min`}`
-      : 'Auto sleep off';
+    const summary = document.getElementById('settings-sleep-summary');
+    if (summary) {
+      if (!autoSleepSchedule.enabled) summary.textContent = 'Off';
+      else if (autoSleepSchedule.mode === 'chapter') {
+        summary.textContent = `${autoSleepSchedule.start}–${autoSleepSchedule.end}, chapter end`;
+      } else {
+        summary.textContent = `${autoSleepSchedule.start}–${autoSleepSchedule.end}, ${autoSleepSchedule.minutes} min`;
+      }
+    }
     enabled.checked = autoSleepSchedule.enabled;
     start.value = autoSleepSchedule.start;
     end.value = autoSleepSchedule.end;

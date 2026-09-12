@@ -657,6 +657,56 @@ test('changePassword verifies the current password and revokes other sessions', 
   assert.strictEqual(legacy.statusCode, 400);
 });
 
+test('login stores the device name on the session', async () => {
+  const { routes, sessionStore, member } = await accountModeFixture();
+  const res = response();
+  await routes.login({
+    body: { username: 'member', password: 'password123' },
+    headers: { 'x-xandrio-device-id': 'dev_phone', 'x-xandrio-device-name': 'iPhone' },
+    secure: true
+  }, res);
+  const session = await sessionStore.resolve(res.cookies[0].value);
+  assert.strictEqual(session.userId, member.id);
+  assert.strictEqual(session.deviceName, 'iPhone');
+  assert.strictEqual(session.deviceId, 'dev_phone');
+});
+
+test('listSessions marks the current session and revoke signs out another device', async () => {
+  const { routes, sessionStore, member } = await accountModeFixture();
+  const current = await sessionStore.create(member.id, { deviceName: 'This browser' });
+  const other = await sessionStore.create(member.id, { deviceName: 'Laptop' });
+  const listed = response();
+  await routes.listSessions({ user: { id: member.id, sessionToken: current.token } }, listed);
+  assert.strictEqual(listed.body.sessions.length, 2);
+  const currentRow = listed.body.sessions.find(session => session.current);
+  const otherRow = listed.body.sessions.find(session => !session.current);
+  assert.strictEqual(currentRow.deviceName, 'This browser');
+  assert.strictEqual(otherRow.deviceName, 'Laptop');
+
+  const self = response();
+  await routes.revokeSession({
+    user: { id: member.id, sessionToken: current.token },
+    body: { sessionId: currentRow.id }
+  }, self);
+  assert.strictEqual(self.statusCode, 400);
+  assert((await sessionStore.resolve(current.token)).userId === member.id);
+
+  const revoked = response();
+  await routes.revokeSession({
+    user: { id: member.id, sessionToken: current.token },
+    body: { sessionId: otherRow.id }
+  }, revoked);
+  assert.strictEqual(revoked.statusCode, 204);
+  assert.strictEqual(await sessionStore.resolve(other.token), null);
+
+  const others = response();
+  const extra = await sessionStore.create(member.id, { deviceName: 'Tablet' });
+  await routes.revokeOtherSessions({ user: { id: member.id, sessionToken: current.token } }, others);
+  assert.strictEqual(others.statusCode, 204);
+  assert((await sessionStore.resolve(current.token)).userId === member.id);
+  assert.strictEqual(await sessionStore.resolve(extra.token), null);
+});
+
 // ─── Admin account-management routes ───────────────────────────────────────
 
 const { registerAccountRoutes } = require('../lib/routes/accounts-routes');

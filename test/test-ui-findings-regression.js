@@ -88,7 +88,7 @@ async function main() {
     {
       const browserContext = await context(1280, 800, 'settings:full');
       const page = await browserContext.newPage();
-      await page.goto(`${environment.origin}/#/settings`, { waitUntil: 'networkidle' });
+      await page.goto(`${environment.origin}/#/settings/playback`, { waitUntil: 'networkidle' });
       const hint = await page.locator('.settings-label-hint').first().evaluate(element => ({
         fontSize: parseFloat(getComputedStyle(element).fontSize),
         color: getComputedStyle(element).color,
@@ -98,8 +98,7 @@ async function main() {
       assert(hint.color, 'settings helper text has a computed color');
       passed++;
 
-      const voiceSummary = page.locator('.settings-section-header').filter({ hasText: /^\s*Voice\s*$/ });
-      await voiceSummary.click();
+      await page.goto(`${environment.origin}/#/settings/voice`, { waitUntil: 'networkidle' });
       await page.waitForSelector('#voice-list .voice-card');
       const voiceGrid = await page.locator('#voice-list .voice-section').first().evaluate(element =>
         getComputedStyle(element).gridTemplateColumns
