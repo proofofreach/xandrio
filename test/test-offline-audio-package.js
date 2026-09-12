@@ -437,8 +437,9 @@ async function withCache(prefix, callback) {
       let releaseFirstGuard;
       const guardStarted = new Promise(resolve => { firstGuardStarted = resolve; });
       const releaseGuard = new Promise(resolve => { releaseFirstGuard = resolve; });
-      let secondGuardCalls = 0;
-      const firstController = new AbortController();
+      const guardCalls = [0, 0];
+      const controllers = [new AbortController(), new AbortController()];
+      let firstGuardIndex = null;
       const audioPackage = createOfflineAudioPackage({
         cacheDir,
         runCommand: fakeCommandRunner()
@@ -449,25 +450,28 @@ async function withCache(prefix, callback) {
         sourcePath,
         sourceVariantKey: 'voice-a'
       };
-      const first = audioPackage.ensureChapter({
+      const ensuring = controllers.map((controller, index) => audioPackage.ensureChapter({
         ...request,
-        signal: firstController.signal,
+        signal: controller.signal,
         beforePublish: async () => {
-          firstGuardStarted();
-          await releaseGuard;
+          guardCalls[index] += 1;
+          // Filesystem inspection can finish in either order. Abort the
+          // consumer whose guard actually starts first, not the first caller.
+          if (firstGuardIndex === null) {
+            firstGuardIndex = index;
+            firstGuardStarted(index);
+            await releaseGuard;
+          }
         }
-      });
-      const second = audioPackage.ensureChapter({
-        ...request,
-        beforePublish: async () => { secondGuardCalls += 1; }
-      });
-      await guardStarted;
-      const firstRejected = assert.rejects(first, error => error.name === 'AbortError');
-      firstController.abort();
+      }));
+      const abortedIndex = await guardStarted;
+      const remainingIndex = 1 - abortedIndex;
+      const firstRejected = assert.rejects(ensuring[abortedIndex], error => error.name === 'AbortError');
+      controllers[abortedIndex].abort();
       releaseFirstGuard();
       await firstRejected;
-      assert.strictEqual((await second).ready, true);
-      assert.strictEqual(secondGuardCalls, 1);
+      assert.strictEqual((await ensuring[remainingIndex]).ready, true);
+      assert.deepStrictEqual(guardCalls, [1, 1]);
     });
   });
 

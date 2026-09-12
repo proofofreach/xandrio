@@ -268,6 +268,37 @@ async function run() {
       });
     });
 
+    await test('reports API-key provider connection state from its credentials', async () => {
+      let credentialsConfigured = false;
+      let credentialChecks = 0;
+      const service = createBookGuideService({
+        provider: {
+          hasCredentials: async () => {
+            credentialChecks += 1;
+            return credentialsConfigured;
+          }
+        },
+        store: {},
+        journal: {},
+        loadBook: async () => null,
+        getChapters: async () => [],
+        getSourceVersion: async () => ''
+      });
+
+      assert.deepStrictEqual(await service.providerLoginStatus(), {
+        available: true,
+        connected: false,
+        state: 'disconnected'
+      });
+      credentialsConfigured = true;
+      assert.deepStrictEqual(await service.providerLoginStatus(), {
+        available: true,
+        connected: true,
+        state: 'connected'
+      });
+      assert.strictEqual(credentialChecks, 2, 'each status check must read credentials once');
+    });
+
     await test('reuses a versioned source snapshot across repeated guide reads', async () => {
       const before = h.chapterReads();
       await h.service.get('book_1');
