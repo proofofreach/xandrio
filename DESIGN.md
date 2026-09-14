@@ -54,7 +54,7 @@ Xandrio is a quiet product/tool interface: dense enough for repeated use, but vi
 - At 760px and wider, retain the two-column player with cover and book details beside the control column.
 - Continue Listening uses horizontal resume cards. Shelf rows place offline actions beside the book metadata, with full-size touch targets. Open menus must escape the list paint boundary.
 - Resume-card titles, metadata, and Play occupy explicit rows beside the cover, keeping the action within the cover's vertical span.
-- Settings are grouped by Listening, Voices, Library & Sources, and Server & Account. Voice creation is an explicit disclosure, separate from choosing a narrator.
+- Settings is a hub with one page per section (`#/settings/playback`, `#/settings/voice`, …). On phones the hub and a page replace each other; at 760px and wider they sit side by side. Hub rows show the current value. Admin-only pages are omitted at render time. Voice creation stays an explicit disclosure, separate from choosing a narrator.
 - Composition refinements live in composition.css and library-composition.css, both versioned in the offline app shell.
 
 - Download is one request: prepare server audio, automatically save it on this device, then verify it. Rows show preparation progress with a spinner and verified completion with a checkmark. Menus show status text and Cancel download during work; Remove download appears only after completion. Device transfer guidance says to keep Xandrio open.

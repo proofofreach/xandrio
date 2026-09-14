@@ -26,8 +26,7 @@ const { startScenarioEnvironment } = require('./fixtures/scenarios/lib/environme
         await page.waitForURL('**/#/player/scn-meridian');
         await page.waitForFunction(() => document.getElementById('audio-loading')?.style.display === 'none' && document.getElementById('book-title')?.textContent === 'The Meridian Line');
         passed++;
-        await page.goto(`${environment.origin}/#/settings`);
-        await page.locator('#settings-group-0 details.settings-section > summary').click();
+        await page.goto(`${environment.origin}/#/settings/sleep`);
         const automatic = page.locator('#auto-sleep-enabled');
         assert.equal(await automatic.isChecked(), false);
         assert.equal(await page.locator('#auto-sleep-start').isDisabled(), true);
@@ -40,24 +39,30 @@ const { startScenarioEnvironment } = require('./fixtures/scenarios/lib/environme
         assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
         if (process.env.AUTO_SLEEP_SHOTS) await page.screenshot({ path: `${process.env.AUTO_SLEEP_SHOTS}/settings-${width}.png`, fullPage: true });
         await page.reload();
-        await page.locator('#settings-group-0 details.settings-section > summary').click();
-        assert.equal(await automatic.isChecked(), true);
+        await page.waitForURL('**/#/settings/sleep');
+        await page.waitForFunction(() => document.getElementById('auto-sleep-enabled')?.checked === true);
         assert.equal(await page.locator('#auto-sleep-start').inputValue(), '22:30');
         assert.equal(await page.locator('#auto-sleep-duration').inputValue(), '45');
         await automatic.uncheck();
         passed++;
         if (width >= 760) {
-          await page.locator('[data-settings-group="settings-group-1"]').click();
-          assert.equal(new URL(page.url()).hash, '#/settings');
-          assert.equal(await page.evaluate(() => document.activeElement.id), 'settings-group-title-1');
+          await page.locator('[data-settings-link="voice"]').click();
+          await page.waitForURL('**/#/settings/voice');
+          await page.waitForFunction(() => document.activeElement?.id === 'settings-pane-title-voice');
+          assert.equal(await page.locator('#settings-hub').isVisible(), true);
         } else {
-          assert.equal(await page.locator('.settings-index').isVisible(), false, 'mobile settings omit duplicate jump navigation');
+          await page.locator('.settings-pane:not([hidden]) .settings-pane-back').click();
+          await page.waitForURL('**/#/settings');
+          await page.locator('#settings-hub').waitFor({ state: 'visible' });
+          assert.equal(await page.locator('[data-settings-pane="voice"]').isVisible(), false);
         }
-        assert.equal(await page.locator('#settings-playback-summary').textContent(), 'Auto sleep off');
+        assert.equal(await page.locator('#settings-playback-summary').textContent(), '15s skip · smart rewind on');
+        assert.equal(await page.locator('#settings-sleep-summary').textContent(), 'Off');
         assert.equal(await page.locator('#settings-language-summary').textContent(), 'English');
-        const voiceSection = page.locator('#settings-group-1 details.settings-section');
-        await voiceSection.locator('summary').first().click();
-        const firstVoice = page.locator('#voice-list .voice-card').first();
+        if (width < 760) await page.locator('[data-settings-link="voice"]').click();
+        await page.waitForURL('**/#/settings/voice');
+        const firstVoice = page.locator('[data-settings-pane="voice"]:not([hidden]) #voice-list .voice-card').first();
+        await firstVoice.waitFor();
         assert.equal(await firstVoice.getAttribute('aria-selected'), 'true', 'the selected voice is first');
         for (const button of [firstVoice.locator('.voice-save-btn'), firstVoice.locator('.voice-play-btn')]) {
           const target = await button.boundingBox();

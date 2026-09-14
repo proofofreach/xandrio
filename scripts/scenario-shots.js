@@ -177,21 +177,16 @@ async function performInteraction(page, interaction, log) {
     return true;
   }
   if (interaction === 'settings-expand-voice') {
-    // The Voice section (public/index.html) is a native <details
-    // class="settings-section"> with no "open" attribute, so its voice-card
-    // markup never renders visibly until a user (or this interaction) opens
-    // it — clicking the <summary> is exactly how a real user would.
-    const summary = page.locator('details:has(#voice-list) > summary').first();
-    const visible = await summary.waitFor({ state: 'visible', timeout: 5000 })
+    // Voice is its own settings page. Deep-link there if the hub is showing,
+    // then keep the list in frame for the screenshot.
+    if (!page.url().includes('#/settings/voice')) {
+      await page.evaluate(() => { window.location.hash = '#/settings/voice'; });
+    }
+    const list = page.locator('#voice-list');
+    const visible = await list.waitFor({ state: 'visible', timeout: 5000 })
       .then(() => true, () => false);
-    if (!visible) return log('  (skipping settings accordion interaction — no Voice section found)');
-    await summary.click();
-    // The Voice section is deliberately late in the long Settings page. A
-    // summary click exposes it but does not guarantee that the state-bearing
-    // voice list is within the fixed viewport screenshot. Scroll the real
-    // list into the frame after opening it so a degraded engine card cannot
-    // be technically present in the DOM yet indistinguishable from "full".
-    await page.locator('#voice-list').scrollIntoViewIfNeeded();
+    if (!visible) return log('  (skipping settings voice page — #voice-list not visible)');
+    await list.scrollIntoViewIfNeeded();
     return true;
   }
   if (interaction === 'player-open-chapters') {

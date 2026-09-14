@@ -122,15 +122,9 @@ const MATRIX = {
   settings: {
     cold: cell({ dataset: 'cold', domSignature: COLD_SIGNATURE }),
     empty: NA('Settings is a fixed set of sections; there is no "no settings" state'),
-    // #voice-list's own content (public/index.html: <details class="settings-section">
-    // with no "open" attribute) is collapsed behind a closed native <details>
-    // by default, so none of loading/error/degraded/full's distinguishing
-    // voice-card markup is visible without expanding the accordion first.
-    // 'settings-expand-voice' (scripts/scenario-shots.js performInteraction)
-    // clicks the Voice section's <summary> the same way a user would; each
-    // state below then asserts on what actually renders inside #voice-list
-    // once it's open.
-    loading: cell({ dataset: 'full', delayMs: 6000, interaction: 'settings-expand-voice', domSignature: sig(['details.settings-section[open]:has(#voice-list) > summary', 'details.settings-section[open]:has(#voice-list) .settings-hint'], '#voice-list .voice-card') }),
+    // Voice lives at #/settings/voice. The hub itself has no voice-card
+    // markup, so loading/error/degraded/full open that page first.
+    loading: cell({ dataset: 'full', delayMs: 6000, route: '#/settings/voice', interaction: 'settings-expand-voice', domSignature: sig(['#settings-view[data-settings-section="voice"] #settings-voice-hint', '#settings-view[data-settings-section="voice"] #voice-list'], '#voice-list .voice-card') }),
     skeleton: NA('Settings has no dedicated skeleton placeholder — see "loading"'),
     // The settings view's primary endpoint (above) targets GET /api/voices,
     // not GET /api/engines/status: voices.js's loadEngineStatus() swallows a
@@ -142,15 +136,15 @@ const MATRIX = {
     // loadVoices()'s existing catch block (voices.js:199-219), which really
     // does replace #voice-list's content with a distinct "Couldn't load
     // voices" retry state.
-    error: cell({ dataset: 'full', errorStatus: 503, interaction: 'settings-expand-voice', domSignature: sig('details.settings-section[open] #voice-list [data-retry-voices]') }),
+    error: cell({ dataset: 'full', errorStatus: 503, route: '#/settings/voice', interaction: 'settings-expand-voice', domSignature: sig('#settings-view[data-settings-section="voice"] #voice-list [data-retry-voices]') }),
     offline: offlineCell({ dataset: 'full' }),
     // The degraded dataset's Chatterbox stub genuinely reports itself down
     // (test/fixtures/scenarios/lib/environment.js: createTtsEngineStub
     // ('chatterbox', { failing: dataset === 'degraded' })), which
     // voices.js's renderVoiceCard() reflects as a real .voice-card--engine-down
     // class — previously hidden only by the same closed accordion as "loading".
-    degraded: cell({ dataset: 'degraded', interaction: 'settings-expand-voice', domSignature: sig('details.settings-section[open] #voice-list .voice-card--engine-down') }),
-    full: cell({ dataset: 'full', interaction: 'settings-expand-voice', domSignature: sig('details.settings-section[open] #voice-list .voice-card', '#voice-list .voice-card--engine-down') })
+    degraded: cell({ dataset: 'degraded', route: '#/settings/voice', interaction: 'settings-expand-voice', domSignature: sig('#settings-view[data-settings-section="voice"] #voice-list .voice-card--engine-down') }),
+    full: cell({ dataset: 'full', route: '#/settings/voice', interaction: 'settings-expand-voice', domSignature: sig('#settings-view[data-settings-section="voice"] #voice-list .voice-card', '#voice-list .voice-card--engine-down') })
   },
   stats: {
     cold: cell({ dataset: 'cold', domSignature: COLD_SIGNATURE }),

@@ -363,6 +363,9 @@ app.post('/api/auth/logout', authRoutes.logout);
 app.get('/api/auth/status', authRoutes.status);
 app.use(createAuthMiddleware({ token: XANDRIO_TOKEN, accounts: accountsStore, sessionStore: accountSessionStore, sessionTtlMs: SESSION_TTL_MS }));
 app.post('/api/auth/change-password', authRoutes.changePassword);
+app.get('/api/auth/sessions', authRoutes.listSessions);
+app.post('/api/auth/sessions/revoke', authRoutes.revokeSession);
+app.post('/api/auth/sessions/revoke-others', authRoutes.revokeOtherSessions);
 registerAccountRoutes(app, { accounts: accountsStore, sessionStore: accountSessionStore, requireAdmin });
 
 // Instance-wide configuration stays admin-only once accounts exist; in

@@ -291,7 +291,7 @@ function errorRecoveryCopy({ hasArtifact, canGenerate }) {
 }
 
 function adminRecoveryActions() {
-  return '<div class="guide-generation-actions"><button class="btn-primary" type="button" data-guide-generate>Try again</button><a class="btn-secondary" href="#/settings">Open settings</a></div>';
+  return '<div class="guide-generation-actions"><button class="btn-primary" type="button" data-guide-generate>Try again</button><a class="btn-secondary" href="#/settings/guides">Open settings</a></div>';
 }
 
 function guideManagementActions(data) {

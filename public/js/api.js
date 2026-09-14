@@ -121,7 +121,12 @@ export async function login(username, password) {
   const response = await __originalFetch(`${API_BASE}/api/auth/login`, {
     method: 'POST',
     credentials: 'same-origin',
-    headers: { 'Content-Type': 'application/json' },
+    // Device identity lets the Account page name this session among others.
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Xandrio-Device-Id': getCurrentDeviceId(),
+      'X-Xandrio-Device-Name': getCurrentDeviceName()
+    },
     body: JSON.stringify({ username, password })
   });
   const data = await response.json().catch(() => ({}));

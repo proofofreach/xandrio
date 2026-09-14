@@ -1490,7 +1490,7 @@ function setupEventListeners() {
 }
 
 // View Management
-function showView(viewName) {
+function showView(viewName, route = null) {
   document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
   if (viewName !== 'player') closeTransientSheets();
 
@@ -1520,7 +1520,9 @@ function showView(viewName) {
   updateMiniPlayer(viewName);
 
   // Let feature modules react to navigation (settings loads its data on entry).
-  document.dispatchEvent(new CustomEvent('xandrio:viewchange', { detail: { view: viewName } }));
+  document.dispatchEvent(new CustomEvent('xandrio:viewchange', {
+    detail: { view: viewName, section: route?.section || null }
+  }));
 }
 
 function closeTransientSheets() {
@@ -2874,13 +2876,3 @@ function openShortcutOverlay() {
 function closeShortcutOverlay() {
   shortcutOverlayController?.dismiss();
 }
-
-// Group navigation leaves the application route unchanged.
-(document.querySelectorAll?.("[data-settings-group]") || []).forEach(button => {
-  button.addEventListener("click", () => {
-    const section = document.getElementById(button.dataset.settingsGroup);
-    const heading = section?.querySelector("h3");
-    section?.scrollIntoView({ block: "start", behavior: "instant" });
-    if (heading) { heading.tabIndex = -1; heading.focus({ preventScroll: true }); }
-  });
-});
