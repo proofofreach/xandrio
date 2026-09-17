@@ -1777,6 +1777,22 @@ function fakeAudio() {
   // continuous source fails, one cheap probe recovers the reason so the app can
   // tell the user to wait instead of retrying into the same rate limit.
 
+  await test('preparation throttling preserves Retry-After before any media is loaded', async () => {
+    const audio = fakeAudio();
+    const { player } = makePlayer(audio, {
+      preparePlaybackRunway: true,
+      fetch: async () => new Response(JSON.stringify({ error: 'Too many narration generation requests' }), {
+        status: 429,
+        headers: { 'Retry-After': '23' }
+      })
+    });
+    await assert.rejects(player.loadChapter('book1', 0), error => {
+      assert.strictEqual(error.status, 429);
+      assert.strictEqual(error.retryAfterSeconds, 23);
+      return true;
+    });
+  });
+
   await test('a failed continuous load is classified as rate limited', async () => {
     const audio = fakeAudio();
     audio.canPlayType = () => 'maybe';

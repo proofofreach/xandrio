@@ -622,6 +622,10 @@ export class SingleFileChapterPlayer {
         const detail = await response.json().catch(() => ({}));
         const error = new Error(detail.error || `Playback runway preparation failed (${response.status})`);
         error.status = response.status;
+        const retryAfter = Number(response.headers?.get?.('Retry-After'));
+        if (Number.isFinite(retryAfter) && retryAfter > 0) {
+          error.retryAfterSeconds = retryAfter;
+        }
         throw error;
       }
       return response.json();
