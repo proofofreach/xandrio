@@ -4,7 +4,7 @@
 const assert = require('node:assert');
 const fs = require('node:fs/promises');
 const path = require('node:path');
-const { chromium } = require('playwright');
+const { chromium, webkit } = require('playwright');
 const { startScenarioEnvironment } = require('./fixtures/scenarios/lib/environment');
 
 const SCREENSHOT_DIR = '/tmp/alexandrio-import-activity';
@@ -202,6 +202,117 @@ async function verifyCancellation(browser, environment, viewport) {
   } finally { await context.close(); }
 }
 
+async function verifyCompletedImportActions(browser, environment, viewport) {
+  const context = await browser.newContext({
+    viewport, isMobile: viewport.width < 600, hasTouch: viewport.width < 600,
+    reducedMotion: 'reduce', serviceWorkers: 'block'
+  });
+  const page = await context.newPage();
+  try {
+    await page.route('**/api/imports', route => route.fulfill({ json: { jobs: [{
+      jobId: 'job-open', title: 'The Meridian Line', status: 'complete',
+      result: { success: true, bookId: 'scn-meridian' }
+    }] } }));
+    await page.goto(`${environment.origin}/#/library`, { waitUntil: 'domcontentloaded' });
+    const card = page.locator('[data-import-job="job-open"]');
+    await card.getByRole('button', { name: 'Open book' }).click();
+    await page.waitForURL(/#\/player\/scn-meridian$/);
+    await page.locator('#player-view.active').waitFor();
+    assert.equal(await page.locator('#book-title').textContent(), 'The Meridian Line');
+    assert.equal(await page.locator('#library-view').isVisible(), false,
+      'Open book must show the player without the shelf');
+    await card.waitFor({ state: 'detached', timeout: 2000 });
+    await page.screenshot({ path: path.join(SCREENSHOT_DIR, `import-open-${viewport.width}.png`), fullPage: true });
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.locator('#player-view.active').waitFor();
+    assert.equal(await card.count(), 0, 'an opened import must stay dismissed after reload');
+  } finally { await context.close(); }
+}
+
+async function verifyOpenDuringNavigation(browser, environment) {
+  const context = await browser.newContext({ serviceWorkers: 'block', reducedMotion: 'no-preference' });
+  const page = await context.newPage();
+  try {
+    await page.route('**/api/imports', route => route.fulfill({ json: { jobs: [{
+      jobId: 'job-navigation', title: 'The Meridian Line', status: 'complete',
+      result: { success: true, bookId: 'scn-meridian' }
+    }] } }));
+    await page.goto(`${environment.origin}/#/search`, { waitUntil: 'domcontentloaded' });
+    await page.locator('#search-view.active').waitFor();
+    // Hold the outgoing animation's DOM update until the book has opened.
+    await page.evaluate(() => {
+      document.startViewTransition = update => {
+        const finished = new Promise(resolve => {
+          window.finishPreviousNavigation = async () => { await update(); resolve(); };
+        });
+        return { ready: Promise.resolve(), finished };
+      };
+    });
+    await page.locator('#back-to-library-btn').click();
+    await page.waitForURL(/#\/library$/);
+    await page.locator('[data-import-job="job-navigation"] [data-import-open]').click();
+    await page.locator('#player-view.active').waitFor();
+    await page.evaluate(() => window.finishPreviousNavigation());
+    assert.match(page.url(), /#\/player\/scn-meridian$/);
+    assert.equal(await page.locator('#player-view.active').count(), 1,
+      'an older shelf transition must not replace the book opened from the banner');
+  } finally { await context.close(); }
+}
+
+async function verifyCompletedImportExpiry(browser, environment) {
+  const context = await browser.newContext({ serviceWorkers: 'block' });
+  const page = await context.newPage();
+  try {
+    await page.route('**/api/imports', route => route.fulfill({ json: { jobs: [{
+      jobId: 'job-expire', title: 'The Meridian Line', status: 'complete',
+      result: { success: true, bookId: 'scn-meridian' }
+    }, {
+      jobId: 'job-running', title: 'Still adding', status: 'running', canCancel: true
+    }, {
+      jobId: 'job-failed', title: 'Needs attention', status: 'failed', error: { error: 'Try again.' }
+    }] } }));
+    await page.goto(`${environment.origin}/#/library`, { waitUntil: 'domcontentloaded' });
+    const card = page.locator('[data-import-job="job-expire"]');
+    await card.waitFor();
+    await card.waitFor({ state: 'detached', timeout: 10000 });
+    assert.equal(await page.locator('[data-import-job="job-running"]').isVisible(), true);
+    assert.equal(await page.locator('[data-import-job="job-failed"]').isVisible(), true);
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.locator('#library-list .book-item:not(.skeleton)').first().waitFor();
+    assert.equal(await card.count(), 0, 'polling and reload must not revive expired success banners');
+  } finally { await context.close(); }
+}
+
+async function verifyOpenFailureAndRetry(browser, environment) {
+  const context = await browser.newContext({ serviceWorkers: 'block', reducedMotion: 'reduce' });
+  const page = await context.newPage();
+  let bookRoute;
+  try {
+    await page.clock.install();
+    await page.route('**/api/imports', route => route.fulfill({ json: { jobs: [{
+      jobId: 'job-retry', title: 'The Meridian Line', status: 'complete',
+      result: { success: true, bookId: 'scn-meridian' }
+    }] } }));
+    await page.route('**/api/book/scn-meridian', route => { bookRoute = route; });
+    await page.goto(`${environment.origin}/#/library`, { waitUntil: 'domcontentloaded' });
+    const card = page.locator('[data-import-job="job-retry"]');
+    await card.getByRole('button', { name: 'Open book' }).click();
+    await page.clock.fastForward(7000);
+    assert.equal(await card.isVisible(), true, 'an in-flight Open book must not expire');
+    assert.equal(await card.getByRole('button', { name: 'Opening…' }).isDisabled(), true);
+    await bookRoute.fulfill({ status: 503, json: { error: 'Temporarily unavailable' } });
+    await card.locator('[data-import-detail]').filter({ hasText: 'Could not open this book. Try again.' }).waitFor();
+    await page.clock.fastForward(7000);
+    assert.equal(await card.isVisible(), true, 'a failed open must remain available for retry');
+    assert.equal(await card.locator('[data-import-detail]').textContent(), 'Could not open this book. Try again.');
+    await page.unroute('**/api/book/scn-meridian');
+    await card.getByRole('button', { name: 'Open book' }).click();
+    await page.locator('#player-view.active').waitFor();
+    await card.waitFor({ state: 'detached' });
+    assert.equal(await page.locator('#import-activity').isVisible(), false);
+  } finally { await context.close(); }
+}
+
 async function verifyUploadHandoff(browser, environment) {
   const context = await browser.newContext({
     viewport: { width: 1280, height: 800 },
@@ -249,16 +360,21 @@ async function verifyUploadHandoff(browser, environment) {
 async function main() {
   await fs.mkdir(SCREENSHOT_DIR, { recursive: true });
   const environment = await startScenarioEnvironment({ proxyPort: 0, datasets: ['full'], defaultDataset: 'full' });
-  const browser = await chromium.launch({ headless: true });
+  const browser = await (process.env.IMPORT_TEST_BROWSER === 'webkit' ? webkit : chromium).launch({ headless: true });
 
   try {
+    await verifyOpenDuringNavigation(browser, environment);
+    await verifyCompletedImportActions(browser, environment, { width: 390, height: 844 });
+    await verifyCompletedImportActions(browser, environment, { width: 1280, height: 800 });
+    await verifyCompletedImportExpiry(browser, environment);
+    await verifyOpenFailureAndRetry(browser, environment);
     await verifyDownloadLifecycle(browser, environment);
     await verifyReloadedActivity(browser, environment, { name: 'mobile', width: 390, height: 844, mobile: true });
     await verifyReloadedActivity(browser, environment, { name: 'desktop', width: 1280, height: 800, mobile: false });
     await verifyCancellation(browser, environment, { width: 390, height: 844 });
     await verifyCancellation(browser, environment, { width: 1280, height: 800 });
     await verifyUploadHandoff(browser, environment);
-    console.log('6 passed, 0 failed');
+    console.log('11 passed, 0 failed');
   } finally {
     await browser.close();
     await environment.close();

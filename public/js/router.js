@@ -65,7 +65,12 @@ function runViewTransition(fromView, toView, apply) {
   else if (fromView === 'player' && toView === 'library') html.dataset.vt = 'down';
   else html.dataset.vt = 'fade';
 
-  const transition = document.startViewTransition(() => apply());
+  // A direct openBook can finish while the outgoing snapshot is still being
+  // captured. Do not let that older transition overwrite the new player.
+  const expectedKey = lastRenderedKey;
+  const transition = document.startViewTransition(() => {
+    if (lastRenderedKey === expectedKey) apply();
+  });
   // A route change that interrupts an in-flight transition rejects `ready`.
   // Both promises need a handler: an unhandled rejection surfaces as a page
   // error, and the navigation itself is still correct.

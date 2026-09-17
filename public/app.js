@@ -609,8 +609,8 @@ function scheduleAutomaticPlaybackRecovery(error, snapshot) {
     if (Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0) {
       rateLimitedUntil = Date.now() + retryAfterSeconds * 1000;
     }
-    setPlaybackReliabilityState('resume', 'Too many playback attempts');
-    showToast(`Too many playback sessions started.${wait}`, 'error');
+    setPlaybackReliabilityState('resume', 'Playback temporarily rate-limited');
+    showToast(`Playback requests are temporarily limited.${wait}`, 'error');
     return true;
   }
 
@@ -2313,11 +2313,11 @@ function recoverIdleUnreadyPlayback() {
   if (isPlaybackSourcePreparing()) return;
   if (Date.now() < rateLimitedUntil) {
     const wait = Math.ceil((rateLimitedUntil - Date.now()) / 1000);
-    setPlaybackReliabilityState('resume', 'Too many playback attempts');
+    setPlaybackReliabilityState('resume', 'Playback temporarily rate-limited');
     showToast(
       wait > 0
-        ? `Too many playback sessions started. Try again in ${wait}s.`
-        : 'Too many playback sessions started.',
+        ? `Playback requests are temporarily limited. Try again in ${wait}s.`
+        : 'Playback requests are temporarily limited.',
       'error'
     );
     return;

@@ -72,6 +72,44 @@ async function test(name, fn) {
       assert.strictEqual(prioritized, 0);
     });
 
+    await test('first-load readiness polls do not consume the generation budget', async () => {
+      const isolatedApp = require('express')();
+      isolatedApp.use(require('express').json());
+      let starts = 0;
+      registerPlaybackRoutes(isolatedApp, {
+        rateLimitMax: 2,
+        playbackOrchestrator: {
+          chapterAudioStatus: async () => ({ ready: false, status: 'generating' }),
+          startChapterAudio: async () => {
+            starts += 1;
+            return { ready: false, status: 'generating' };
+          }
+        },
+        sendServerError(res, error) { res.status(500).json({ error: error.message }); }
+      });
+      const instance = await new Promise(resolve => {
+        const listening = isolatedApp.listen(0, '127.0.0.1', () => resolve(listening));
+      });
+      const origin = `http://127.0.0.1:${instance.address().port}`;
+      const prepare = () => fetch(`${origin}/api/chunks/chaos/0/prepare-chapter-audio`, { method: 'POST' });
+      try {
+        assert.strictEqual((await prepare()).status, 202);
+        for (let poll = 0; poll < 65; poll += 1) {
+          // Exercise Express decoding and both status representations.
+          const suffix = poll % 2 ? '?purpose=playback-runway' : '/';
+          const response = await fetch(`${origin}/api/chunks/ch%61os/0/chapter-audio-status${suffix}`);
+          assert.strictEqual(response.status, 200, `readiness poll ${poll + 1} must not exhaust generation quota`);
+        }
+        assert.strictEqual((await prepare()).status, 202, 'polls leave the remaining generation slot available');
+        const blocked = await prepare();
+        assert.strictEqual(blocked.status, 429, 'generation retains its original limit');
+        assert.ok(Number(blocked.headers.get('retry-after')) > 0);
+        assert.strictEqual(starts, 2);
+      } finally {
+        await new Promise(resolve => instance.close(resolve));
+      }
+    });
+
     await test('authenticated HLS ownership ignores caller-controlled owner ids', () => {
       const req = {
         user: { id: 'account-one', sessionToken: 'opaque-session-token' },
