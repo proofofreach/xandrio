@@ -2,6 +2,8 @@ import { apiSend, apiGet, getCurrentUserId } from '../api.js';
 import { readJSON, writeJSON } from '../util/storage.js';
 
 const jobs = new Map();
+const dismissalTimers = new Map();
+const SUCCESS_DURATION_MS = 6000;
 let region;
 let options = {};
 let scope;
@@ -13,6 +15,21 @@ const dismissed = () => {
   const stored = readJSON(storageKey(), []);
   return new Set(Array.isArray(stored) ? stored : []);
 };
+
+function clearDismissal(jobId) {
+  clearTimeout(dismissalTimers.get(jobId));
+  dismissalTimers.delete(jobId);
+}
+
+function dismissJob(jobId) {
+  clearDismissal(jobId);
+  const hidden = dismissed();
+  hidden.add(jobId);
+  writeJSON(storageKey(), [...hidden].slice(-100));
+  // Keep the terminal state so polling does not refresh the library again.
+  [...region.children].find(node => node.dataset.importJob === jobId)?.remove();
+  region.hidden = !region.children.length;
+}
 
 function render(job) {
   if (!region || dismissed().has(job.jobId)) return;
@@ -32,21 +49,33 @@ function render(job) {
         button.disabled = false;
       }
     });
-    card.querySelector('[data-import-open]').addEventListener('click', async () => {
+    card.querySelector('[data-import-open]').addEventListener('click', async event => {
       const current = jobs.get(card.dataset.importJob);
       const id = current?.result?.bookId || current?.error?.existingBookId;
-      if (id) {
-        try { await options.openBook?.(id); }
-        catch { card.querySelector('[data-import-detail]').textContent = 'Could not open this book. Try again.'; }
+      if (!id || card.dataset.opening) return;
+      const account = getCurrentUserId();
+      const button = event.currentTarget;
+      clearDismissal(card.dataset.importJob);
+      card.dataset.opening = 'true';
+      delete card.dataset.openError;
+      button.disabled = true;
+      button.textContent = 'Opening…';
+      try {
+        if (typeof options.openBook !== 'function' || await options.openBook(id) === false) {
+          throw new Error('Book did not open');
+        }
+        if (getCurrentUserId() === account) dismissJob(card.dataset.importJob);
+      } catch {
+        card.dataset.openError = 'Could not open this book. Try again.';
+        card.querySelector('[data-import-detail]').textContent = card.dataset.openError;
+      } finally {
+        delete card.dataset.opening;
+        button.disabled = false;
+        button.textContent = 'Open book';
       }
     });
     card.querySelector('[data-import-dismiss]').addEventListener('click', () => {
-      const hidden = dismissed();
-      hidden.add(card.dataset.importJob);
-      writeJSON(storageKey(), [...hidden].slice(-100));
-      jobs.delete(card.dataset.importJob);
-      card.remove();
-      region.hidden = !region.children.length;
+      dismissJob(card.dataset.importJob);
     });
     region.append(card);
   }
@@ -60,10 +89,10 @@ function render(job) {
         : job.label || 'Connecting to source…';
   const labelNode = card.querySelector('[data-import-label]');
   if (labelNode.textContent !== label) labelNode.textContent = label;
-  card.querySelector('[data-import-detail]').textContent = job.status === 'cancelled' ? 'You can add this book again from Search.' : job.status === 'complete'
+  card.querySelector('[data-import-detail]').textContent = card.dataset.openError || (job.status === 'cancelled' ? 'You can add this book again from Search.' : job.status === 'complete'
     ? job.result?.usedAlternative ? 'A different edition was imported because the selected version could not be used reliably.' : ''
     : job.status === 'failed' ? duplicate ? 'Open the existing book to continue.' : job.error?.suggestion || job.error?.error || 'Try again from Search.'
-      : job.detail || 'You can keep browsing while this book is added.';
+      : job.detail || 'You can keep browsing while this book is added.');
   card.querySelector('[data-import-open]').hidden = !(job.result?.bookId || job.error?.existingBookId);
   card.querySelector('[data-import-dismiss]').hidden = !done;
   const cancel = card.querySelector('[data-import-cancel]');
@@ -72,6 +101,14 @@ function render(job) {
   cancel.textContent = job.cancellationRequested ? 'Cancelling…' : 'Cancel';
   card.dataset.status = job.status;
   region.hidden = false;
+  // Start once per completion; four-second polling must not extend the toast.
+  if (job.status === 'complete' && !card.dataset.opening && !card.dataset.openError && !dismissalTimers.has(job.jobId)) {
+    const account = getCurrentUserId();
+    dismissalTimers.set(job.jobId, setTimeout(() => {
+      clearDismissal(job.jobId);
+      if (getCurrentUserId() === account) dismissJob(job.jobId);
+    }, SUCCESS_DURATION_MS));
+  }
   return card;
 }
 
@@ -89,6 +126,7 @@ async function refresh() {
   if (polling || document.hidden || !region) return;
   const account = getCurrentUserId();
   if (scope !== account) {
+    for (const jobId of dismissalTimers.keys()) clearDismissal(jobId);
     jobs.clear();
     region.replaceChildren();
     region.hidden = true;

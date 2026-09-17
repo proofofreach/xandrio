@@ -1,7 +1,7 @@
 importScripts('/js/offline-range.js');
 importScripts('/js/offline-store.js');
 
-const CACHE_VERSION = 'xandrio-v184';
+const CACHE_VERSION = 'xandrio-v185';
 const OFFLINE_ROUTE_CONTRACT_VERSION = 2;
 const OFFLINE_AUDIO_CACHE = 'xandrio-offline-audio';
 const OFFLINE_TITLE_CACHE = 'xandrio-offline-titles';
