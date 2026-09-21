@@ -265,7 +265,7 @@ async function run() {
         const result = await j.service.get('book_1');
         assert.strictEqual(result.status, 'ready');
         assert.ok(calls > 1);
-        assert.strictEqual(peak, 1);
+        assert.ok(peak > 1, 'service retains configured fallback concurrency');
         assert.strictEqual(result.artifact.verification.policy, 'jev-test-policy');
       } finally { await fs.rm(j.temp, { recursive: true, force: true }); }
     });

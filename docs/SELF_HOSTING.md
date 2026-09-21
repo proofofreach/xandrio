@@ -285,7 +285,7 @@ The outbound inference destination is `https://ai-gateway.vercel.sh`; the restri
 
 ### Upgrade and rollback
 
-No data migration or automatic reprocessing is required. Existing artifacts stay readable. New artifacts with accepted repairs retain the original PDF and include optional source/decision metadata. Back up both `data/` and `cache/` before upgrading, including retained originals. Unset either enablement flag and restart to stop future requests. Existing repaired text remains; reimport the retained original with the feature disabled to return to local processing. Do not delete the retained original merely because an artifact exists. The standalone Gutenberg license metadata correction applies when chapters are normalized; version-30 disk chapter caches regenerate automatically on their next read under cache version 31.
+No data migration or automatic reprocessing is required. Existing artifacts stay readable. New artifacts with accepted repairs retain the original PDF and include optional source/decision metadata. Back up both `data/` and `cache/` before upgrading, including retained originals. Unset either enablement flag and restart to stop future requests. Existing repaired text remains; reimport the retained original with the feature disabled to return to local processing. Do not delete the retained original merely because an artifact exists. The standalone Gutenberg license metadata correction applies when chapters are normalized; version-30 disk chapter caches migrate without re-extraction, retaining chapter text, order and indices on their next read under cache version 31.
 
 ### Experimental Jev guide verifier
 
@@ -299,8 +299,9 @@ Generation, composition and repair stay with the existing provider.
 The cascade accepts probabilities at least 0.95 and rejects probabilities at
 most 0.05. Other cases use the configured verifier. Missing credentials,
 malformed answers, route mismatches, capacity errors and a two-second deadline
-fall back to that verifier. Guide verification batches run serially through Jev; a failure opens a
-60-second cooldown, during which remaining batches use the configured verifier. There are no Jev
+fall back to that verifier. A bounded queue admits one Jev call at a time while preserving configured
+fallback concurrency. A failure opens a 60-second cooldown; queued calls
+recheck it before sending. The queue slot is released before any fallback. There are no Jev
 retries within a batch. The model alias is not an immutable model version.
 
 Enabling the cascade changes certification and checkpoint provenance. An old
