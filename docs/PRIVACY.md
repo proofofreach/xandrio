@@ -38,3 +38,23 @@ Chatterbox voice references are local operator files. Use them only with authori
 ## Operator controls
 
 The first-run acknowledgement and provider controls are per instance. Operators can leave providers unconfigured, remove provider credentials, choose local narration, delete books and cached artifacts, clear browser site data, and manage their own backup retention. Xandrio cannot erase data retained by an external provider after a request has reached that provider.
+
+## Experimental Jev PDF repairs
+
+PDF repairs are disabled by default. An operator can enable them for new imports by setting `XANDRIO_JEV_REPAIRS_ENABLED=true`, `XANDRIO_JEV_EXTERNAL_TEXT_ACKNOWLEDGED=true`, and `AI_GATEWAY_API_KEY`. This sends up to 64 short PDF text excerpts per imported candidate to TypeSafe Jev through Vercel AI Gateway (`typesafe-ai/jev`). Each excerpt is limited to 800 characters; candidate alternatives and instructions accompany it. Both Vercel and TypeSafe process these requests externally. The underlying model version is not pinned by this alias. Do not enable this option for books whose text must remain local.
+
+The experimental pass only preserves existing hyphens that local line-wrap normalization would remove. It does not generate replacement prose. Low-confidence or invalid answers retain the local result. Requests use no SDK retries, a 15-second deadline, and at most four concurrent calls across imports. A reported-cost stop at $0.01 is a best-effort guard; concurrent or unaccounted requests can exceed it. Gateway charges and token usage are recorded when available. Promotional zero-cost benchmark results do not guarantee future pricing.
+
+For imports with accepted repairs, the original PDF is retained. The local artifact also stores raw pages, repaired normalized pages, accepted source spans, hashes and routing/accounting metadata. Reading and artifact rebuilding use local stored text and do not call Jev. Disabling either flag prevents new repair requests; it does not undo existing repaired artifacts. Keep the original to reimport with repairs disabled. Delete the book, its retained source, artifacts and backups to remove the local records. Xandrio cannot delete copies retained by an external provider.
+
+### Optional Jev study-guide verification
+
+When the operator enables `XANDRIO_JEV_GUIDE_VERIFIER_ENABLED` and acknowledges
+external text processing, guide statements and their source evidence are sent
+through Vercel AI Gateway to TypeSafe (`typesafe-ai/jev`). This is an additional
+external destination even when guide generation uses the private Codex provider.
+The configured verifier receives uncertain judgments or whole batches when Jev
+is unavailable. Credentials remain server-side. Requests and responses are not
+written to application logs; guide artifacts record the verification policy.
+This path does not assert zero provider retention or inherit PPQ's ZDR setting.
+Disable the feature flag to stop these additional requests.

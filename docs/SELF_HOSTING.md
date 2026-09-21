@@ -276,3 +276,59 @@ uploads and providers with reported rights metadata remain available, while
 unverified-rights providers stay disabled. The operator can disable those
 providers again with `PUT /api/legal/operator-policy` without deleting their
 configuration or removing any integration.
+
+## Experimental PDF hyphen repairs
+
+This optional import step uses Jev through Vercel AI Gateway. It is disabled by default. Set `AI_GATEWAY_API_KEY` to an AI Gateway inference key, not a Vercel management token. Set both `XANDRIO_JEV_REPAIRS_ENABLED=true` and `XANDRIO_JEV_EXTERNAL_TEXT_ACKNOWLEDGED=true` only after accepting the external-text flow described in [PRIVACY.md](PRIVACY.md#experimental-jev-pdf-repairs). Keep the key in protected server environment configuration. Restart the service through your normal deployment procedure to apply configuration changes.
+
+The outbound inference destination is `https://ai-gateway.vercel.sh`; the restricted upstream provider is TypeSafe. The model alias is `typesafe-ai/jev`. Limits are 64 excerpts per imported PDF candidate, 800 context characters per excerpt, four concurrent calls across imports, and a 15-second request-pass deadline. No inference runs during playback or artifact rebuilding. This improves a few ambiguous compounds; it adds latency and is not a speed optimization. See [measured results](JEV_REAL_BOOK_RESULTS.md).
+
+### Upgrade and rollback
+
+No data migration or automatic reprocessing is required. Existing artifacts stay readable. New artifacts with accepted repairs retain the original PDF and include optional source/decision metadata. Back up both `data/` and `cache/` before upgrading, including retained originals. Unset either enablement flag and restart to stop future requests. Existing repaired text remains; reimport the retained original with the feature disabled to return to local processing. Do not delete the retained original merely because an artifact exists. The standalone Gutenberg license metadata correction applies when chapters are normalized; version-30 disk chapter caches migrate without re-extraction, retaining chapter text, order and indices on their next read under cache version 31.
+
+### Experimental Jev guide verifier
+
+Set `XANDRIO_JEV_GUIDE_VERIFIER_ENABLED=true`,
+`XANDRIO_JEV_EXTERNAL_TEXT_ACKNOWLEDGED=true`, and a server-side
+`AI_GATEWAY_API_KEY` to use `typesafe-ai/jev` through Vercel AI Gateway for
+study-guide evidence checks. This also works with the private Codex guide
+provider; uncertain answers use whichever verifier is already configured.
+Generation, composition and repair stay with the existing provider.
+
+The cascade accepts probabilities at least 0.95 and rejects probabilities at
+most 0.05. Other cases use the configured verifier. Missing credentials,
+malformed answers, route mismatches, capacity errors and a two-second deadline
+fall back to that verifier. A bounded queue admits one Jev call at a time while preserving configured
+fallback concurrency. A failure opens a 60-second cooldown; queued calls
+recheck it before sending. The queue slot is released before any fallback. There are no Jev
+retries within a batch. The model alias is not an immutable model version.
+
+Enabling the cascade changes certification and checkpoint provenance. An old
+verifier certificate does not certify Jev. Existing certification requirements
+remain in force; the deployment must not turn on `allowUncertified` to bypass
+these requirements. Disable the feature flag and restart to return to the
+configured verifier. Existing published guides remain available. The PDF repair
+flag is independent and remains disabled unless separately enabled.
+
+New imports preserve PRE line breaks and can recover Kindle chapters when a
+complete consecutive source-heading sequence matches the contents page. Existing
+retained `.xbook` artifacts are not recut. Reimport an original book to use these
+changes; do not delete retained artifacts or saved positions as a migration.
+
+### Reviewed recovery release for diverged source history
+
+When the active source tree matches public/main but private main has unrelated
+unmerged work, an explicitly reviewed release may preserve private main and
+publish a branch based on public/main. This is a recovery procedure, not a way
+to skip the normal release gates. Record the exception and exact source SHA in
+the release plan. Require a clean committed tree, an exact private branch mirror
+(`XANDRIO_SOURCE_BRANCH=<branch> node scripts/release/check-source-mirror.mjs`),
+the full local suite, browser smoke and committed-candidate import benchmark.
+Publish through a protected public PR with every required check passing.
+Verify that the tested source commit is an ancestor of merged public/main and
+that their trees match before using the internal exact-revision deploy script.
+Check the running process revision, service state, internal/external readiness
+and durable deployment receipt. Preserve the previous env file and restore it
+with the previous release on failure. Do not move the normal public-sync-base
+checkpoint or force-update private main during this recovery procedure.

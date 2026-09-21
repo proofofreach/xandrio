@@ -6,6 +6,9 @@ This file is generated from the locked installed Node dependency tree by `npm ru
 
 | Package | Version | Declared licence | Source |
 | --- | --- | --- | --- |
+| @ai-sdk/gateway | 4.0.85 | Apache-2.0 | https://github.com/vercel/ai |
+| @ai-sdk/provider | 4.0.17 | Apache-2.0 | https://github.com/vercel/ai |
+| @ai-sdk/provider-utils | 5.0.43 | Apache-2.0 | https://github.com/vercel/ai |
 | @cyclonedx/cyclonedx-library | 10.1.0 | Apache-2.0 | https://github.com/CycloneDX/cyclonedx-javascript-library.git |
 | @cyclonedx/cyclonedx-npm | 6.0.1 | Apache-2.0 | https://github.com/CycloneDX/cyclonedx-node-npm.git |
 | @esbuild/aix-ppc64 | 0.28.2 | MIT | https://www.npmjs.com/package/@esbuild/aix-ppc64 |
@@ -74,13 +77,17 @@ This file is generated from the locked installed Node dependency tree by `npm ru
 | @oozcitak/url | 3.0.0 | MIT | https://github.com/oozcitak/url.git |
 | @oozcitak/util | 10.0.0 | MIT | git://github.com/oozcitak/util.git |
 | @pkgjs/parseargs | 0.11.0 | MIT | git@github.com:pkgjs/parseargs.git |
+| @standard-schema/spec | 1.1.0 | MIT | https://github.com/standard-schema/standard-schema |
 | @types/debug | 4.1.12 | MIT | https://github.com/DefinitelyTyped/DefinitelyTyped.git |
 | @types/ms | 2.1.0 | MIT | https://github.com/DefinitelyTyped/DefinitelyTyped.git |
+| @vercel/oidc | 3.2.0 | Apache-2.0 | https://github.com/vercel/vercel.git |
+| @workflow/serde | 4.1.0 | Apache-2.0 | https://github.com/vercel/workflow.git |
 | abbrev | 3.0.1 | ISC | https://github.com/npm/abbrev-js.git |
 | accepts | 2.0.0 | MIT | jshttp/accepts |
 | agent-base | 6.0.2 | MIT | git://github.com/TooTallNate/node-agent-base.git |
 | agent-base | 7.1.4 | MIT | https://github.com/TooTallNate/proxy-agents.git |
 | agent-base | 9.0.0 | MIT | https://github.com/TooTallNate/proxy-agents.git |
+| ai | 7.0.105 | Apache-2.0 | https://github.com/vercel/ai |
 | ajv | 8.20.0 | MIT | ajv-validator/ajv |
 | ajv-formats | 3.0.1 | MIT | https://github.com/ajv-validator/ajv-formats.git |
 | ajv-formats-draft2019 | 1.6.1 | MIT | https://github.com/luzlab/ajv-formats-draft2019.git |
@@ -163,6 +170,7 @@ This file is generated from the locked installed Node dependency tree by `npm ru
 | escape-html | 1.0.3 | MIT | component/escape-html |
 | etag | 1.8.1 | MIT | jshttp/etag |
 | events | 3.3.0 | MIT | git://github.com/Gozala/events.git |
+| eventsource-parser | 3.1.1 | MIT | ssh://git@github.com/rexxars/eventsource-parser.git |
 | expand-template | 2.0.3 | (MIT OR WTFPL) | https://github.com/ralphtheninja/expand-template.git |
 | exponential-backoff | 3.1.3 | Apache-2.0 | https://github.com/coveooss/exponential-backoff.git |
 | express | 5.2.1 | MIT | expressjs/express |
@@ -241,6 +249,7 @@ This file is generated from the locked installed Node dependency tree by `npm ru
 | isobject | 3.0.1 | MIT | jonschlinkert/isobject |
 | jackspeak | 3.4.3 | BlueOak-1.0.0 | https://github.com/isaacs/jackspeak.git |
 | js-yaml | 4.3.1 | MIT | nodeca/js-yaml |
+| json-schema | 0.4.0 | (AFL-2.1 OR BSD-3-Clause) | http://github.com/kriszyp/json-schema |
 | json-schema-traverse | 1.0.0 | MIT | https://github.com/epoberezkin/json-schema-traverse.git |
 | jsonfile | 6.2.0 | MIT | git@github.com:jprichardson/node-jsonfile.git |
 | jszip | 3.10.1 | (MIT OR GPL-3.0-or-later) | https://github.com/Stuk/jszip.git |
@@ -412,6 +421,7 @@ This file is generated from the locked installed Node dependency tree by `npm ru
 | typedarray | 0.0.6 | MIT | git://github.com/substack/typedarray.git |
 | typescript | 5.9.3 | Apache-2.0 | https://github.com/microsoft/TypeScript.git |
 | undefsafe | 2.0.5 | MIT | https://github.com/remy/undefsafe.git |
+| undici | 7.29.1 | MIT | https://github.com/nodejs/undici.git |
 | undici | 8.10.0 | MIT | https://github.com/nodejs/undici.git |
 | unique-filename | 4.0.0 | ISC | https://github.com/npm/unique-filename.git |
 | unique-slug | 5.0.0 | ISC | https://github.com/npm/unique-slug.git |

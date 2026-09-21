@@ -176,7 +176,7 @@ async function waitIdle(service) {
   assert.strictEqual(service.isIdle(), true, 'service did not become idle');
 }
 
-async function harness({ initialSourceText = EVIDENCE.join(' '), segmentChars, modelConcurrency } = {}) {
+async function harness({ initialSourceText = EVIDENCE.join(' '), segmentChars, modelConcurrency, semanticVerifier } = {}) {
   const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'book-guide-service-'));
   const certificationFile = path.join(temp, 'certification.json');
   const provider = fakeProvider();
@@ -212,6 +212,7 @@ async function harness({ initialSourceText = EVIDENCE.join(' '), segmentChars, m
     store,
     journal,
     provider,
+    semanticVerifier,
     segmentChars,
     modelConcurrency,
     now: () => new Date('2026-08-13T12:00:00.000Z'),
@@ -248,6 +249,26 @@ async function harness({ initialSourceText = EVIDENCE.join(' '), segmentChars, m
 async function run() {
   const h = await harness();
   try {
+    await test('Jev policy invalidates GLM certification and records the actual verification path', async () => {
+      let calls = 0, active = 0, peak = 0;
+      const semanticVerifier = { active: true, policyId: 'jev-test-policy', async verify(items, { fallback }) { calls++; active++; peak = Math.max(peak, active); await new Promise(resolve => setTimeout(resolve, 5)); try { return await fallback(items); } finally { active--; } } };
+      const j = await harness({ semanticVerifier });
+      try {
+        j.setCategory('nonfiction');
+        await j.service.configure({ enabled: true, externalProcessingAcknowledged: true, baseUrl: 'https://api.ppq.ai', generatorModel: 'guide:1', verifierModel: 'verify:1' });
+        const config = await j.service.getConfig();
+        assert.strictEqual(config.certified, false);
+        assert.strictEqual(config.ready, false);
+        assert.strictEqual(config.provenance.verificationPolicy, 'jev-test-policy');
+        await jsonStore.save(j.certificationFile, { ...j.certificationReport, provenance: config.provenance });
+        await j.service.start('book_1'); await waitIdle(j.service);
+        const result = await j.service.get('book_1');
+        assert.strictEqual(result.status, 'ready');
+        assert.ok(calls > 1);
+        assert.ok(peak > 1, 'service retains configured fallback concurrency');
+        assert.strictEqual(result.artifact.verification.policy, 'jev-test-policy');
+      } finally { await fs.rm(j.temp, { recursive: true, force: true }); }
+    });
     await test('normalizes durable job phases for the public UI contract', () => {
       assert.strictEqual(publicJobStatus({ status: 'pending' }), 'queued');
       assert.strictEqual(publicJobStatus({ status: 'running', phase: 'extracting' }), 'generating');

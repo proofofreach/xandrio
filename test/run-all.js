@@ -8,6 +8,7 @@ const { execSync } = require('child_process');
 const path = require('path');
 
 const tests = [
+  'test-processing-judgments-benchmark.js',
   'test-generation-scheduler.js',
   'test-generation-journal-indexes.js',
   'test-book-guide-source.js',
@@ -16,6 +17,7 @@ const tests = [
   'test-book-guide-codex-provider.js',
   'test-book-guide-store.js',
   'test-book-guide-service.js',
+  'test-jev-guide-verifier.js',
   'test-book-guide-routes.js',
   'test-book-guide-narration.js',
   'test-calibre-integration.js',
@@ -202,7 +204,11 @@ let suitesSkipped = 0;
 // line. The first match could be any incidental log line.
 function lastCount(output, word) {
   const matches = [...output.matchAll(new RegExp(`(\\d+)\\s+${word}`, 'g'))];
-  return matches.length ? parseInt(matches[matches.length - 1][1]) : 0;
+  if (matches.length) return parseInt(matches[matches.length - 1][1]);
+  // Node's built-in test runner uses pass/fail summaries in TAP or spec format.
+  const nativeWord = word === 'passed' ? 'pass' : 'fail';
+  const native = [...output.matchAll(new RegExp(`^(?:#|ℹ) ${nativeWord} (\\d+)$`, 'gm'))];
+  return native.length ? Number(native[native.length - 1][1]) : 0;
 }
 
 console.log('╔══════════════════════════════════════════════════╗');

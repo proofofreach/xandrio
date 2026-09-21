@@ -79,7 +79,7 @@ async function run() {
     assert.deepStrictEqual(request.body.response_format, { type: 'json_object' });
     assert.deepStrictEqual(request.body.provider, { zdr: true });
     assert.strictEqual(request.body.temperature, 0);
-    assert.strictEqual(request.body.max_tokens, 1500);
+    assert.strictEqual(request.body.max_tokens, 6000);
     assert.deepStrictEqual(request.body.reasoning, { effort: 'low' });
   });
 

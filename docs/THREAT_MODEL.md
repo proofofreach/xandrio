@@ -55,3 +55,21 @@ unauthorized client, verify the browser receives a secure session through the
 proxy, inspect permissions on `data/` and voice references, and confirm backups
 are encrypted and access-controlled. See [SELF_HOSTING.md](SELF_HOSTING.md) and
 [SECURITY.md](../SECURITY.md) for deployment and reporting guidance.
+
+## Experimental Jev import boundary
+
+Opting into PDF repair sends bounded book excerpts and fixed text alternatives to `ai-gateway.vercel.sh` and TypeSafe. The server requires both repair enablement and an explicit external-text acknowledgment, plus a server-only Gateway key. It does not use the Vercel management token or a direct TypeSafe endpoint. Book text is untrusted model input; model output is also untrusted. Code validates the route, single-attempt accounting, typed alternatives, probabilities and confidence. Only preservation of an existing source hyphen is allowed, and a failed pass applies no edits.
+
+A prompt injection can still influence which allowed alternative the model chooses. Confidence is not proof of fidelity. The feature therefore remains experimental, disabled by default, and limited to imports. Raw source evidence and the original PDF remain available after accepted changes. Shared concurrency, call-count and deadline limits reduce resource exposure; reported-cost limits are best effort and do not replace a provider-side budget. Reading and rebuilding use a separate local document service. External provider retention is outside the instance's control; do not enable the feature for text that must stay local.
+
+### Jev verifier cascade
+
+Source text is untrusted evidence. The optional Jev verifier returns typed
+probabilities, not executable instructions. Invalid/missing/extra answers and
+wrong model/provider routes discard the whole Jev batch. Timeout or provider
+failure falls back to the configured verifier. Cancellation stops processing.
+A failed or uncertain judgment cannot itself publish a guide. The policy is
+included in certification and checkpoint identity; prior GLM/Codex certification
+cannot authorize Jev judgments. Confidence is not a correctness guarantee, and
+80 authored controls do not establish production certification. The provider
+alias can change; model-version pinning remains unavailable through this route.

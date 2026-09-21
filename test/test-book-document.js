@@ -194,7 +194,7 @@ section('Format dispatch, metadata, and covers');
     await fs.writeFile(atomicSource, 'atomic source');
     await fs.utimes(atomicSource, new Date(Date.now() - 60_000), new Date(Date.now() - 60_000));
     const originalCache = JSON.stringify({
-      _cacheVersion: 30,
+      _cacheVersion: 31,
       chapters: [chapter('Existing cache')]
     });
     await fs.writeFile(atomicCache, originalCache);

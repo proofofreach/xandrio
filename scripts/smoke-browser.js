@@ -361,7 +361,13 @@ async function installBrowserFixtures(page) {
       }
       const firstRecommendedImport = payload.hash === 'search-hemingway' &&
         fixtureState.downloadRequests.filter(item => item.hash === 'search-hemingway').length === 1;
-      await new Promise(resolve => setTimeout(resolve, firstRecommendedImport ? 1150 : 120));
+      // Hold this response until the timer-update assertion completes. A fixed
+      // 1150ms response raced the 1050ms assertion under scheduler load.
+      if (firstRecommendedImport) {
+        await new Promise(resolve => { fixtureState.releaseRecommendedImport = resolve; });
+      } else {
+        await new Promise(resolve => setTimeout(resolve, 120));
+      }
       return json(route, { error: 'Fixture import failure', suggestion: 'Expected in browser smoke.' }, 400);
     }
     if (pathname.startsWith('/api/search-cover/')) {
@@ -1214,6 +1220,8 @@ async function verifySearchWorkspace(page, fixtureState) {
           window.__smokeProgressPanel === document.querySelector('.download-progress-panel'))) {
         throw new Error('Book import progress panel was recreated during an elapsed-time update');
       }
+      fixtureState.releaseRecommendedImport();
+      fixtureState.releaseRecommendedImport = null;
     }
     await page.waitForFunction(() => document.querySelector('#download-error .error-box') === document.activeElement);
     if (fixtureState.downloadRequests.length !== requestsBefore + 1 ||
