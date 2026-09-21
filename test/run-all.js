@@ -204,7 +204,11 @@ let suitesSkipped = 0;
 // line. The first match could be any incidental log line.
 function lastCount(output, word) {
   const matches = [...output.matchAll(new RegExp(`(\\d+)\\s+${word}`, 'g'))];
-  return matches.length ? parseInt(matches[matches.length - 1][1]) : 0;
+  if (matches.length) return parseInt(matches[matches.length - 1][1]);
+  // Node's built-in test runner uses pass/fail summaries in TAP or spec format.
+  const nativeWord = word === 'passed' ? 'pass' : 'fail';
+  const native = [...output.matchAll(new RegExp(`^(?:#|ℹ) ${nativeWord} (\\d+)$`, 'gm'))];
+  return native.length ? Number(native[native.length - 1][1]) : 0;
 }
 
 console.log('╔══════════════════════════════════════════════════╗');

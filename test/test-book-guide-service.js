@@ -250,8 +250,8 @@ async function run() {
   const h = await harness();
   try {
     await test('Jev policy invalidates GLM certification and records the actual verification path', async () => {
-      let calls = 0;
-      const semanticVerifier = { active: true, policyId: 'jev-test-policy', async verify(items, { fallback }) { calls++; return fallback(items); } };
+      let calls = 0, active = 0, peak = 0;
+      const semanticVerifier = { active: true, policyId: 'jev-test-policy', async verify(items, { fallback }) { calls++; active++; peak = Math.max(peak, active); await new Promise(resolve => setTimeout(resolve, 5)); try { return await fallback(items); } finally { active--; } } };
       const j = await harness({ semanticVerifier });
       try {
         j.setCategory('nonfiction');
@@ -264,7 +264,8 @@ async function run() {
         await j.service.start('book_1'); await waitIdle(j.service);
         const result = await j.service.get('book_1');
         assert.strictEqual(result.status, 'ready');
-        assert.ok(calls > 0);
+        assert.ok(calls > 1);
+        assert.strictEqual(peak, 1);
         assert.strictEqual(result.artifact.verification.policy, 'jev-test-policy');
       } finally { await fs.rm(j.temp, { recursive: true, force: true }); }
     });

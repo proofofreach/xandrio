@@ -299,8 +299,8 @@ Generation, composition and repair stay with the existing provider.
 The cascade accepts probabilities at least 0.95 and rejects probabilities at
 most 0.05. Other cases use the configured verifier. Missing credentials,
 malformed answers, route mismatches, capacity errors and a two-second deadline
-fall back to that verifier. Only one Jev request runs at a time; concurrent work
-uses the fallback, and a failure opens a 60-second cooldown. There are no Jev
+fall back to that verifier. Guide verification batches run serially through Jev; a failure opens a
+60-second cooldown, during which remaining batches use the configured verifier. There are no Jev
 retries within a batch. The model alias is not an immutable model version.
 
 Enabling the cascade changes certification and checkpoint provenance. An old
@@ -314,3 +314,20 @@ New imports preserve PRE line breaks and can recover Kindle chapters when a
 complete consecutive source-heading sequence matches the contents page. Existing
 retained `.xbook` artifacts are not recut. Reimport an original book to use these
 changes; do not delete retained artifacts or saved positions as a migration.
+
+### Reviewed recovery release for diverged source history
+
+When the active source tree matches public/main but private main has unrelated
+unmerged work, an explicitly reviewed release may preserve private main and
+publish a branch based on public/main. This is a recovery procedure, not a way
+to skip the normal release gates. Record the exception and exact source SHA in
+the release plan. Require a clean committed tree, an exact private branch mirror
+(`XANDRIO_SOURCE_BRANCH=<branch> node scripts/release/check-source-mirror.mjs`),
+the full local suite, browser smoke and committed-candidate import benchmark.
+Publish through a protected public PR with every required check passing.
+Verify that the tested source commit is an ancestor of merged public/main and
+that their trees match before using the internal exact-revision deploy script.
+Check the running process revision, service state, internal/external readiness
+and durable deployment receipt. Preserve the previous env file and restore it
+with the previous release on failure. Do not move the normal public-sync-base
+checkpoint or force-update private main during this recovery procedure.

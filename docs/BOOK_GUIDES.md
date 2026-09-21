@@ -73,3 +73,20 @@ Any change to generator model, verifier model, extraction/normalization version,
 V1 admits one background guide job at a time. Within that job, the dedicated network scheduler admits up to `XANDRIO_BOOK_GUIDE_MODEL_CONCURRENCY` independent model calls. Provider failures retry only the failed call. Quality failures retain grounded extraction, regenerate the affected composition, and verify every final material statement again. PPQ.ai calls are paid. The UI connection test is also a small paid call. Operators must use a dedicated key, set a provider-side spending limit, monitor account activity, and keep uncertified output limited to deliberate testing until the selected model pair passes the evaluation gate.
 
 The feature must be kept behind an instance-level experimental flag. Start with public-domain or licensed works and an opt-in beta. The rollback is to disable guide generation and hide entry points for books without an existing guide. Existing verified guides remain locally readable and deletable; cleanup of guide artifacts is an explicit destructive action.
+
+## Optional Jev verification cascade
+
+An operator can enable `XANDRIO_JEV_GUIDE_VERIFIER_ENABLED=true` with
+`XANDRIO_JEV_EXTERNAL_TEXT_ACKNOWLEDGED=true` and `AI_GATEWAY_API_KEY`.
+Guide statements and cited source evidence then go to TypeSafe through Vercel
+AI Gateway. This adds an external processor even for a Codex-generated guide.
+Generation and repair stay with the selected provider; uncertain checks and
+Jev failures use the configured verifier. See SELF_HOSTING.md for the deadline,
+serial batching, cooldown, disablement and certification requirements.
+
+Artifacts record the verification policy and content-free counts for the last
+verification attempt: Jev accepts/rejects, escalations, whole-batch fallback
+items, elapsed time and previously supported items reused from checkpoints.
+These counts do not attribute reused decisions or measure total generation time.
+PPQ's 6,000-token verifier output profile has its own policy identity, so the
+old 1,500-token profile's certificate/checkpoints cannot silently certify it.

@@ -17,3 +17,12 @@ Release path: the starting checkout's tree exactly matched public/main, while pr
 Review routing: Opus is not exposed by the available agent tools. The available independent gpt-5.6-sol reviewer is used under the model-selection fallback, with the same factual verification and adversarial contract; this does not claim equivalent vendor calibration.
 
 Verification so far: adapter/service/provider tests pass; actual Huckleberry import recovers43chapters without changing non-whitespace text; Leaves400 PRE blocks preserve lines; live production adapter8/8public controls,6Jev decisions and2GLM fallbacks. Browser smoke passed. Raw artifacts remain ignored under data/benchmarks/jev-expanded.
+
+Review round1 adjudication (each checked against implementation):
+- accepted-verified: modelLimit concurrency would divert most batches. Active Jev policy now uses verification concurrency1; multi-batch service integration asserts peak1.
+- accepted-verified: add actual routing evidence rather than policy-only attribution. Artifact lastAttemptMetrics records accepts/rejects/escalated/fullFallback/elapsedMs/reusedSupportedItems without evidence text. Counts explicitly exclude attribution of reused work.
+- accepted-verified: require exactly one model/provider attempt as well as correct canonical route.
+- accepted-verified: inherited source metadata was wrong. Recovered headings now use their owning input section's metadata and list only overlapping spine ids; actual-source check verifies references.
+- accepted-verified: PPQ output-budget change needs distinct identity. Provider supplies ppq-verification-v2-output6000; active Jev combines that fallback profile where applicable. Certification/checkpoints compare policy on enable and disable.
+- accepted-verified: guide cloud disclosure added to BOOK_GUIDES, PRIVACY, SELF_HOSTING and THREAT_MODEL.
+- judgment-call: preserve divergent private main and its unrelated UI work. Document an explicit reviewed recovery release with private branch mirror, unchanged local test/import/browser gates, protected publicPR and source-ancestor/tree-equality checks, internal exactrevision deploy with rollback, process health/revision/receipt evidence. This preserves gate intent without overwriting unrelated work or rewriting the stale sync checkpoint.
