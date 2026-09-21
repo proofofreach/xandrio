@@ -101,6 +101,7 @@ const { registerLibraryBookRoutes } = require('./lib/routes/library-book-routes'
 const { registerAudioPrepRoutes } = require('./lib/routes/audio-prep-routes');
 const { registerSyncPositionRoutes } = require('./lib/routes/sync-position-routes');
 const { createBookGuideJournal } = require('./lib/book-guide-journal');
+const { createJevGuideVerifier } = require('./lib/jev-guide-verifier');
 const { createPpqBookGuideProvider } = require('./lib/book-guide-provider');
 const { createCodexBookGuideProvider } = require('./lib/book-guide-codex-provider');
 const { createBookGuideService } = require('./lib/book-guide-service');
@@ -155,8 +156,10 @@ const {
   normalizeChapterTitleForDisplay
 } = require('./lib/chapter-utils');
 const {
+  extractPdfChapters,
   __test: pdfExtractionTestHooks
 } = require('./lib/pdf-extraction');
+const { createJevPdfRepair } = require('./lib/jev-pdf-repair');
 const {
   isGarbageTitle,
   isGarbageAuthor,
@@ -1246,12 +1249,27 @@ function startProviderServersForVoice(voice) {
 
 let xbookStore;
 let chapterRebuildService;
+const repairPdfPages = createJevPdfRepair({
+  enabled: process.env.XANDRIO_JEV_REPAIRS_ENABLED === 'true',
+  acknowledged: process.env.XANDRIO_JEV_EXTERNAL_TEXT_ACKNOWLEDGED === 'true',
+  apiKey: process.env.AI_GATEWAY_API_KEY || ''
+});
 const bookDocument = createBookDocument({
   supportedFormats: SUPPORTED_BOOK_FORMATS,
   largeBookWarningSize: LARGE_BOOK_WARNING_SIZE,
   getFileIdentity,
   invalidateFileIdentity,
   getXBookStore: () => xbookStore
+});
+// Only import transactions may send repair excerpts externally. Playback,
+// cache misses and artifact rebuilding use the ordinary local document service.
+const importBookDocument = createBookDocument({
+  supportedFormats: SUPPORTED_BOOK_FORMATS,
+  largeBookWarningSize: LARGE_BOOK_WARNING_SIZE,
+  getFileIdentity,
+  invalidateFileIdentity,
+  getXBookStore: () => xbookStore,
+  extractPdfChapters: source => extractPdfChapters(source, { repairPages: repairPdfPages })
 });
 
 function getBookFormatFromName(fileName) {
@@ -1612,7 +1630,7 @@ const bookImporter = createBookImporter({
     validateBook,
     validateExtractedChapters: bookDocument.validateExtractedChapters,
     extractMetadata: bookDocument.extractMetadata,
-    extractChapters: bookDocument.extractChapters,
+    extractChapters: importBookDocument.extractChapters,
     getChaptersCached: bookDocument.getChaptersCached
   },
   checkChapterQuality,
@@ -2546,6 +2564,10 @@ const bookGuideService = createBookGuideService({
   store: bookGuideStore,
   journal: bookGuideJournal,
   provider: bookGuideProvider,
+  semanticVerifier: createJevGuideVerifier({
+    enabled: process.env.XANDRIO_JEV_GUIDE_VERIFIER_ENABLED === 'true',
+    acknowledged: process.env.XANDRIO_JEV_EXTERNAL_TEXT_ACKNOWLEDGED === 'true'
+  }),
   scheduler: generationScheduler,
   withBookStateLock: bookMutationLocks.withBookStateLock,
   onArtifactPublished: pruneBookGuideNarrationAudio,

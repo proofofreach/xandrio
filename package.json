@@ -82,6 +82,7 @@
   },
   "dependencies": {
     "@lingo-reader/mobi-parser": "^0.4.6",
+    "ai": "7.0.105",
     "body-parser": "2.3.0",
     "cors": "^2.8.5",
     "epub": "2.1.1",

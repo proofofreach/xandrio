@@ -8,6 +8,7 @@ const { execSync } = require('child_process');
 const path = require('path');
 
 const tests = [
+  'test-processing-judgments-benchmark.js',
   'test-generation-scheduler.js',
   'test-generation-journal-indexes.js',
   'test-book-guide-source.js',
@@ -16,6 +17,7 @@ const tests = [
   'test-book-guide-codex-provider.js',
   'test-book-guide-store.js',
   'test-book-guide-service.js',
+  'test-jev-guide-verifier.js',
   'test-book-guide-routes.js',
   'test-book-guide-narration.js',
   'test-calibre-integration.js',
