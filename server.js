@@ -4155,6 +4155,7 @@ chapterRebuildService = createChapterRebuildService({
     transitions: CHAPTER_TRANSITIONS_FILE
   },
   xbookStore,
+  bookDocument,
   locks: bookMutationLocks,
   loadJSON,
   saveJSON,
