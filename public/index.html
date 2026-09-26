@@ -11,7 +11,7 @@
   <title>Xandrio - Audiobook Library</title>
   <link rel="preload" href="/fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin>
   <!-- ?v= values must match ASSET_VERSIONS in sw.js (single source of truth) -->
-  <link rel="stylesheet" href="style-v3.css?v=115">
+  <link rel="stylesheet" href="style-v3.css?v=116">
   <link rel="stylesheet" href="composition.css?v=6">
   <link rel="stylesheet" href="library-composition.css?v=4">
   <script src="/js/ios-focus-zoom.js?v=1" defer></script>
@@ -517,7 +517,7 @@
               </label>
             </div>
             <div class="settings-card">
-              <div class="settings-row">
+              <div class="settings-row settings-row-stacked">
                 <div class="settings-label">
                   <span class="settings-label-text">Playback report</span>
                   <span class="settings-label-hint">Recent playback events from this device, for reporting a chapter that stopped or a lock screen that would not resume.</span>
@@ -745,7 +745,7 @@
               <h2 id="settings-pane-title-language">Search language</h2>
             </header>
             <div class="settings-card">
-              <div class="settings-row">
+              <div class="settings-row settings-row-stacked">
                 <label class="settings-label" for="settings-language">
                   <span class="settings-label-text">Default search language</span>
                   <span class="settings-label-hint">Used when searching for new books.</span>
