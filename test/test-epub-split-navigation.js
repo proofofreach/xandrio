@@ -55,7 +55,7 @@ async function main() {
 
   // Missing TOC entries must not be concealed just because filenames contain
   // split suffixes. Only referenced logical documents count as covered.
-  await fs.writeFile(path.join(source, 'toc.ncx'), ncx(docs.slice(0, 3)));
+  await fs.writeFile(path.join(source, 'toc.ncx'), ncx(docs.slice(0, 3).map(d => ({ ...d, group: 1 }))));
   const sparsePath = path.join(root, 'sparse.epub');
   execFileSync('zip', ['-qr9', sparsePath, '.'], { cwd: source });
   const sparse = await document.extractChapters(sparsePath);
