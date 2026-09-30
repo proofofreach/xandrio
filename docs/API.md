@@ -637,6 +637,8 @@ curl -X POST http://localhost:8181/api/upload \
 
 Rebuild derived chapter boundaries from retained recovery data. This endpoint is available only when the public book record has `canRebuildChapters: true`. It keeps the current book when narration text would change. Positions, bookmarks, and compatible audio are reconciled by the journaled rebuild transaction.
 
+Retained EPUB files with an existing chapter cache are supported alongside XBook recovery data. An EPUB rebuild replaces only the derived cache and preserves the source file. Chapter-indexed duration and readiness summaries are cleared for recalculation. Existing caches are rebuilt only by this explicit action; deploying a new extractor does not silently change their chapter indices.
+
 `POST /api/book/:bookId/reprocess-pdf` is a compatibility alias and is scheduled for removal after 2026-12-31.
 
 ---

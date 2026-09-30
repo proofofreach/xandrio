@@ -107,6 +107,7 @@ const tests = [
   'test-github-retry.js',
   'test-data-dir.js',
   'test-book-document.js',
+  'test-epub-split-navigation.js',
   'test-xbook-store.js',
   'test-book-mutation-lock.js',
   'test-backfill-book-metadata.js',

@@ -12,7 +12,7 @@ const OFFLINE_BLOCK_STORE = self.XandrioOfflineStore?.createStore?.() || null;
 // changes, including the un-versioned js/ modules below, which only
 // invalidate via CACHE_VERSION.
 const ASSET_VERSIONS = {
-  '/style-v3.css': 115,
+  '/style-v3.css': 116,
   '/composition.css': 6,
   '/library-composition.css': 4,
   '/js/ios-focus-zoom.js': 1,
