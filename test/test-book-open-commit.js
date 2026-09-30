@@ -73,6 +73,7 @@ function createHarness({
     offlineUnavailableOnlineRetry: { clear() {} },
     updatePlaybackUI() {},
     checkpointPlayback() {},
+    clearPlaybackRecoveryTimers() {},
     refreshGuideState: async () => {},
     showAudioLoading() {},
     cacheBookMeta() {},
