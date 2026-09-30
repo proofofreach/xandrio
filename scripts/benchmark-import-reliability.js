@@ -5,9 +5,27 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const { execFileSync, spawnSync } = require('node:child_process');
-const { compareImportBenchmark } = require('../lib/import-benchmark');
+const { compareImportBenchmark, acceptedNarrationChanges } = require('../lib/import-benchmark');
 
 const DECLARED_STRUCTURE_CHANGES = 'test/fixtures/import-structure-changes.json';
+const DECLARED_NARRATION_CORRECTIONS = 'test/fixtures/import-narration-corrections.json';
+
+async function declaredNarrationCorrections(root = REPO_ROOT) {
+  let raw;
+  try {
+    raw = await fs.readFile(path.join(root, DECLARED_NARRATION_CORRECTIONS), 'utf8');
+  } catch (error) {
+    if (error.code === 'ENOENT') return { changes: [] };
+    throw error;
+  }
+  const parsed = JSON.parse(raw);
+  if (parsed?.schemaVersion !== 1 || !/^[0-9a-f]{40}$/.test(parsed.referenceCommit) ||
+      !Array.isArray(parsed.changes) || !parsed.changes.length) {
+    throw new Error(`${DECLARED_NARRATION_CORRECTIONS} requires schemaVersion 1, an immutable reference commit, and corrections`);
+  }
+  acceptedNarrationChanges(parsed.changes);
+  return parsed;
+}
 
 // The declaration lives in the repository, so a re-segmentation is reviewed in
 // the same diff that causes it. It records opaque case ids and chapter counts
@@ -178,15 +196,19 @@ function publicOutcome(value = {}) {
   };
 }
 
-function privacySafeReport({ baselineRef, candidateRef, baseline, candidate, comparison }) {
+function privacySafeReport({ baselineRef, candidateRef, narrationReferenceRef, baseline, candidate,
+  narrationReference, comparison }) {
   const before = new Map((baseline?.cases || []).map(value => [value.id, value]));
   const after = new Map((candidate?.cases || []).map(value => [value.id, value]));
   const ids = [...new Set([...before.keys(), ...after.keys()])];
+  const reference = new Map((narrationReference?.cases || []).map(value => [value.id, value]));
+  const corrected = new Set(comparison?.acceptedNarrationCaseIds || []);
   return {
     schemaVersion: 1,
     privacy: 'opaque-no-book-metadata-paths-text-or-content-hashes',
     baselineRef,
     candidateRef,
+    narrationReferenceRef,
     passed: Boolean(comparison?.passed),
     summary: comparison?.summary,
     gates: comparison?.gates,
@@ -204,6 +226,9 @@ function privacySafeReport({ baselineRef, candidateRef, baseline, candidate, com
           baselineCase.normalizedHash &&
           baselineCase.normalizedHash === candidateCase.normalizedHash
         ),
+        narrationCorrectionAccepted: corrected.has(id),
+        narrationReferenceConserved: Boolean(reference.get(id)?.normalizedHash &&
+          reference.get(id).normalizedHash === candidateCase.normalizedHash),
         chapterStructureConserved: Boolean(
           baselineCase.structureKey &&
           baselineCase.structureKey === candidateCase.structureKey
@@ -231,6 +256,18 @@ async function runBenchmark(args) {
         encoding: 'utf8'
       })
     });
+    const narrationCorrections = await declaredNarrationCorrections();
+    let referenceRoot;
+    if (narrationCorrections.referenceCommit) {
+      // The reference is a previously verified correction, never the moving
+      // candidate. Exact runtime hashes stay private and catch same-size edits.
+      if (narrationCorrections.referenceCommit === candidateCommit ||
+          spawnSync('git', ['merge-base', '--is-ancestor', narrationCorrections.referenceCommit, candidateCommit],
+            { cwd: REPO_ROOT }).status !== 0) {
+        throw new Error('Narration correction reference must be an earlier ancestor of the candidate');
+      }
+      referenceRoot = await snapshotRevision(narrationCorrections.referenceCommit, temporaryRoot, 'narration-reference');
+    }
     const [baselineRoot, candidateRoot, privateBooks] = await Promise.all([
       snapshotRevision(baselineCommit, temporaryRoot, 'baseline'),
       snapshotRevision(candidateCommit, temporaryRoot, 'candidate'),
@@ -244,16 +281,23 @@ async function runBenchmark(args) {
     };
     const baseline = await evaluateImportVersion({ versionRoot: baselineRoot, ...inputs });
     const candidate = await evaluateImportVersion({ versionRoot: candidateRoot, ...inputs });
+    const narrationReference = referenceRoot
+      ? await evaluateImportVersion({ versionRoot: referenceRoot, ...inputs, evaluateUx: async () => ({}) })
+      : undefined;
     const comparison = compareImportBenchmark({
       baseline,
       candidate,
-      acceptedStructureChanges: await declaredStructureChanges()
+      acceptedStructureChanges: await declaredStructureChanges(),
+      acceptedNarrationChanges: narrationCorrections.changes,
+      narrationReference
     });
     return privacySafeReport({
       baselineRef: baselineCommit,
       candidateRef: candidateCommit,
+      narrationReferenceRef: narrationCorrections.referenceCommit,
       baseline,
       candidate,
+      narrationReference,
       comparison
     });
   } finally {
@@ -281,6 +325,7 @@ if (require.main === module) {
 module.exports = {
   REQUIRED_BASELINE,
   REQUIRED_PRIVATE_BOOKS,
+  declaredNarrationCorrections,
   assertCandidateSnapshot,
   parseArgs,
   privacySafeReport,

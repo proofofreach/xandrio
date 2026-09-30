@@ -2,7 +2,7 @@ const DEFAULT_PROVISIONAL_MIN_LISTEN_MS = 45_000;
 const DEFAULT_PROVISIONAL_MIN_POSITION_SECONDS = 45;
 
 function positionSeconds(position) {
-  return Math.max(0, Number(position?.totalEstimatedTime || position?.currentTime) || 0);
+  return Math.max(0, Number(position?.timestamp ?? position?.totalEstimatedTime ?? position?.currentTime ?? position?.chunkTime) || 0);
 }
 
 function enginePosition(engine) {
@@ -25,7 +25,7 @@ export async function restorePlaybackPosition(engine, position) {
   if (typeof engine.seek !== 'function') return;
   const seconds = Math.max(
     0,
-    Number(position.timestamp ?? position.currentTime ?? position.chunkTime) || 0
+    Number(position.timestamp ?? position.totalEstimatedTime ?? position.currentTime ?? position.chunkTime) || 0
   );
   // A continuous HLS source opened at the saved chapter position maps that
   // position to media time zero. Reassigning currentTime after metadata loads
@@ -48,6 +48,7 @@ export function createPlaybackSession(options = {}) {
   let revision = 0;
   let queue = Promise.resolve();
   let activeTransition = null;
+  let pendingTransition = null;
   let disposed = false;
   let provisional = null;
   const engineClaims = new Map();
@@ -151,6 +152,12 @@ export function createPlaybackSession(options = {}) {
   }
 
   function buildCheckpoint(options = {}) {
+    // Selection is published before loading so the UI can show its target.
+    // It does not yet identify the audio whose position could be persisted.
+    if (pendingTransition) return null;
+    if (state.engine?.bookId != null && state.engine.bookId !== state.book?.id) return null;
+    if (state.engine?.chapterIndex != null && state.engine.chapterIndex !== state.chapterIndex) return null;
+    if (state.engine?.ownsReadySource && !state.engine.ownsReadySource(state.book?.id, state.chapterIndex)) return null;
     const position = enginePosition(state.engine);
     if (!state.book || !position || !isCheckpointEligible(position, options)) return null;
     const chunkIndex = Number.isInteger(position.chunkIndex)
@@ -178,6 +185,10 @@ export function createPlaybackSession(options = {}) {
   async function commitTransition(transition) {
     const { id, request } = transition;
     if (!isCurrent(id)) return { stale: true, snapshot: snapshot() };
+    const old = state.engine;
+    // Capture before loading: the incoming engine can also be the old engine.
+    const handoffPosition = request.position || (request.preservePosition ? enginePosition(old) : null);
+    const shouldResume = request.play === undefined ? Boolean(old?.isPlaying) : Boolean(request.play);
     const incoming = request.createEngine
       ? await request.createEngine()
       : transition.engine;
@@ -185,8 +196,6 @@ export function createPlaybackSession(options = {}) {
     if (!incoming) throw new Error('Playback transition requires an engine');
     if (!isCurrent(id)) return { stale: true, snapshot: snapshot() };
 
-    const old = state.engine;
-    const shouldResume = request.play === undefined ? Boolean(old?.isPlaying) : Boolean(request.play);
     // `sourceTuple` is the exact canonical request a recovery captured. Passing
     // it through means the transport opens *at* the resume position instead of
     // opening at zero and relocating, which created a second server session for
@@ -198,9 +207,7 @@ export function createPlaybackSession(options = {}) {
     );
     if (!isCurrent(id)) return { stale: true, snapshot: snapshot() };
 
-    const handoffPosition = request.position || (request.preservePosition ? enginePosition(old) : null);
-    const seekTo = positionSeconds(handoffPosition);
-    if (incoming !== old && seekTo > 0) await incoming.seek(seekTo);
+    if (handoffPosition) await restorePlaybackPosition(incoming, handoffPosition);
     if (!isCurrent(id)) return { stale: true, snapshot: snapshot() };
     if (shouldResume) await incoming.play();
     if (!isCurrent(id)) return { stale: true, snapshot: snapshot() };
@@ -227,6 +234,7 @@ export function createPlaybackSession(options = {}) {
 
     const id = ++revision;
     const transition = { id, request, engine: null };
+    pendingTransition = transition;
     if (!request.createEngine) claimTransitionEngine(transition, request.engine);
     // isCurrent() prevents a stale transition from committing, but that check
     // happens after loadChapter() settles. Cancel the active wait now so the
@@ -250,6 +258,7 @@ export function createPlaybackSession(options = {}) {
         throw error;
       } finally {
         if (activeTransition === transition) activeTransition = null;
+        if (pendingTransition === transition) pendingTransition = null;
       }
     };
     const result = queue.then(run, run).finally(() => finishTransition(transition));

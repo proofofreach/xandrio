@@ -50,6 +50,8 @@ class ChunkPlayer {
     this.playbackRate = 1.0;
     this._volume = 1.0;
     this._isPlaying = false;
+    this._playRequested = false;
+    this._seekRevision = 0;
     this._destroyed = false;
 
     // Bounded retries for transient chunk load/play failures
@@ -394,20 +396,21 @@ class ChunkPlayer {
    * Load a chunk into a specific Audio element.
    * Returns a promise that resolves when loadedmetadata fires.
    */
-  async _loadChunkInto(audioEl, chunkIndex, retries = this._maxChunkLoadRetries, expectedGeneration = this._generation) {
+  async _loadChunkInto(audioEl, chunkIndex, retries = this._maxChunkLoadRetries, expectedGeneration = this._generation, expectedSeek = this._seekRevision) {
     let lastError = null;
+    const isCurrent = () => expectedGeneration === this._generation && expectedSeek === this._seekRevision;
 
     for (let attempt = 0; attempt <= retries; attempt++) {
-      if (expectedGeneration !== this._generation) return;
+      if (!isCurrent()) return;
       try {
         await this._loadChunkIntoOnce(audioEl, chunkIndex);
         return;
       } catch (err) {
-        if (expectedGeneration !== this._generation) return;
+        if (!isCurrent()) return;
         lastError = err;
         if (this._destroyed || attempt >= retries) break;
         await this._refreshManifest(expectedGeneration, chunkIndex);
-        if (expectedGeneration !== this._generation) return;
+        if (!isCurrent()) return;
         if (!this._isChunkReady(chunkIndex)) break;
         await this._delay(this._retryDelayMs * (attempt + 1));
       }
@@ -600,6 +603,7 @@ class ChunkPlayer {
    */
   async play() {
     if (this._destroyed) return;
+    this._playRequested = true;
     this._isPlaying = true;
     try {
       await this._playActiveWithRetry();
@@ -632,6 +636,7 @@ class ChunkPlayer {
    * Pause playback.
    */
   pause() {
+    this._playRequested = false;
     this._isPlaying = false;
     this.audio.pause();
   }
@@ -659,41 +664,47 @@ class ChunkPlayer {
     if (this._destroyed || this.totalChunks === 0) return false;
 
     const gen = this._generation;
+    const seekRevision = ++this._seekRevision;
+    const isCurrent = () => gen === this._generation && seekRevision === this._seekRevision;
     const targetChunk = Math.max(0, Math.min(this.totalChunks - 1, Math.floor(chunkIndex || 0)));
     const targetTime = Math.max(0, Number(chunkTime) || 0);
-    const wasPlaying = options.resumePlayback === false ? false : this._isPlaying;
+    this._playRequested = this._playRequested || this._isPlaying;
+    const wasPlaying = options.resumePlayback === false ? false : this._playRequested;
 
+    this._cancelPollWait?.();
+    for (const cancel of [...this._pendingAudioLoads]) cancel();
     this._detachEvents();
-    this.pause();
+    this._isPlaying = false;
+    this.audio.pause();
 
     await this._refreshManifest(gen, targetChunk);
-    if (gen !== this._generation) return false; // chapter changed while refreshing
+    if (!isCurrent()) return false;
     if (!this._isChunkReady(targetChunk)) {
       await this._prioritizeChunk(targetChunk);
-      if (gen !== this._generation) return false;
+      if (!isCurrent()) return false;
       this._emitWaiting('Generating audio…');
       try {
         await this._pollUntilChunkReady(targetChunk);
       } catch {
-        if (gen === this._generation) this._attachEvents();
+        if (isCurrent()) this._attachEvents();
         return false;
       }
-      if (gen !== this._generation) return false;
+      if (!isCurrent()) return false;
     }
 
     const active = this._getActive();
     try {
       if (targetChunk !== this.currentChunk || !active.src) {
-        await this._loadChunkInto(active, targetChunk);
+        await this._loadChunkInto(active, targetChunk, this._maxChunkLoadRetries, gen, seekRevision);
       }
     } catch (err) {
-      if (gen === this._generation) {
+      if (isCurrent()) {
         this._attachEvents();
         this._emitError(err);
       }
       return false;
     }
-    if (gen !== this._generation) return false;
+    if (!isCurrent()) return false;
 
     this.currentChunk = targetChunk;
     active.currentTime = Math.min(targetTime, active.duration || targetTime);
@@ -706,7 +717,7 @@ class ChunkPlayer {
 
     this._preloadNext(targetChunk + 1);
 
-    if (wasPlaying) {
+    if (wasPlaying && this._playRequested) {
       try {
         await this.play();
       } catch (err) {
@@ -731,8 +742,10 @@ class ChunkPlayer {
     if (this._skipPromise) return this._skipPromise;
 
     const gen = this._generation;
-    const shouldResume = this._isPlaying;
-    this.pause();
+    this._playRequested = this._playRequested || this._isPlaying;
+    const shouldResume = this._playRequested;
+    this._isPlaying = false;
+    this.audio.pause();
 
     this._skipPromise = (async () => {
       do {
@@ -746,8 +759,11 @@ class ChunkPlayer {
           }
         }
 
-        if (gen === this._generation && shouldResume) await this.play();
-        if (Math.abs(this._pendingSkipSeconds) > 0.001) this.pause();
+        if (gen === this._generation && shouldResume && this._playRequested) await this.play();
+        if (Math.abs(this._pendingSkipSeconds) > 0.001) {
+          this._isPlaying = false;
+          this.audio.pause();
+        }
       } while (gen === this._generation && Math.abs(this._pendingSkipSeconds) > 0.001);
     })().finally(() => {
       this._skipPromise = null;

@@ -148,7 +148,8 @@ module.exports = Object.freeze([
       mutationCodes: [],
       chapterCount: 2,
       sourceHash: '35657d10b931b62ab8f3de8205918b3ce272a98970db56eb50a322642445814b',
-      normalizedHash: '86314caf142f3199954b284e90457cfa1ac801cb88168de7f036de2fb91eb09d',
+      // Hash the authored source, retaining "EPUB" instead of speech's "Epub".
+      normalizedHash: '557d3186a243ed2ef6261232daabc1f29fc17d72ed13ed48db49ad7734add7a4',
       structureKey: 'v1-71f000b387ae76f0e10d'
     }
   }),

@@ -41,6 +41,7 @@ async function withServer(zlibrary, fn) {
   const app = express();
   app.use(express.json());
   registerPreferencesRoutes(app, {
+    requireAdmin: (_req, _res, next) => next(),
     annasAuthFile: '/tmp/unused-annas.json',
     availableVoices: [],
     cacheDir: '/tmp',

@@ -38,3 +38,23 @@ Round2 amendment: service-wide serial verification would also serialize fallback
 Browser-gate reliability: the unchanged UI assertion waits1050ms, but its mock failure response was released1150ms after request receipt, leaving only100ms for scheduling overhead. A final loaded run hit that race. Keep the DOM identity assertion and explicitly release the mock response only after the assertion. Stable browser smoke passed. An unrelated500ms voice cancellation test timed out once under concurrent gates; isolated rerun passed9/9. Run final full suite without competing gates; no test expectation or deadline was weakened.
 
 Final code ratification: ENDORSED by the independent gpt-5.6-sol reviewer after FIFO/cancellation amendments. An admitted user cancellation originally opened the outage cooldown; a test first reproduced that failure, then the catch was narrowed to provider/deadline failures only. Cancelling a call now leaves the next job eligible for Jev. No code blocker remains. GitHub repository-control failure remains an external release blocker; production has not changed.
+
+Owner-authorized unblock (2026-09-30): the owner requested "push all t production"
+and then "what repo review requirements? unblock!". Live GitHub evidence shows
+the personal repository owner is the only writer and CODEOWNER; GitHub cannot
+record that author's approving PR review. Governance and the repository checker
+now support direct sole-owner review. Required CI is strict, administrator
+enforcement and no-force/no-delete rules remain, conversations must be resolved,
+and the release environment retains the owner as its required approver while
+allowing that owner to approve their own run. Another writer restores the
+independent review requirements. This resolution supersedes the earlier
+repository-control blocker; all test, benchmark, scan, protected-merge,
+source/tree-equality, and deployment evidence gates remain mandatory.
+
+Public CI correction: the historical correction E2E referenced the private-only
+approved baseline, unavailable in the public repository. It now uses published
+pre-correction commit 559007ae73f2a8fcd3574e19d42732e18aac8e88 to test correction
+gates against immutable reference 1ce734f4f8944382304e69d5625054a6415422a5.
+The local production benchmark keeps its original approved baseline and still
+must pass every gate. The correction E2E checks both correction gates directly,
+so unrelated import-improvement results cannot hide a broken correction check.

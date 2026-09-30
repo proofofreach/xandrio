@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "referenceCommit": "1ce734f4f8944382304e69d5625054a6415422a5",
+  "changes": [
+    {
+      "id": "policy:epub-oversized-narration",
+      "fromNormalizedChars": 148992,
+      "toNormalizedChars": 148992,
+      "reason": "Restore authored EPUB casing by keeping speech substitutions out of stored chapter partitioning."
+    },
+    {
+      "id": "private:d588238fefbc",
+      "fromNormalizedChars": 1073620,
+      "toNormalizedChars": 1068804,
+      "reason": "Conserve extracted source exactly: preserve citation abbreviations, source number forms and casing during oversized partitioning, and authored inline spacing."
+    },
+    {
+      "id": "private:e8adbf5cd758",
+      "fromNormalizedChars": 591024,
+      "toNormalizedChars": 590927,
+      "reason": "Conserve extracted source exactly: remove artificial spaces inserted at inline markup boundaries and in authored names."
+    },
+    {
+      "id": "private:eb71045b5091",
+      "fromNormalizedChars": 856004,
+      "toNormalizedChars": 855196,
+      "reason": "Conserve extracted source exactly: remove artificial spaces inserted at inline markup boundaries and in authored names."
+    }
+  ]
+}

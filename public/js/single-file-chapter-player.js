@@ -170,6 +170,7 @@ export class SingleFileChapterPlayer {
     this._eventScope = null;
     this._playWait = null;
     this._playProgressWait = null;
+    this._playRevision = 0;
     this._pauseReason = null;
     this._playReason = null;
     // Disposer for the running stall probe, and the last observed liveness
@@ -755,7 +756,7 @@ export class SingleFileChapterPlayer {
         }
         timeline.durations.forEach((duration, offset) => {
           const value = Number(duration);
-          if (Number.isFinite(value) && value > 0) {
+          if (duration !== null && duration !== undefined && Number.isFinite(value) && value >= 0) {
             this._timelineDurations.set(Number(timeline.startChapterIndex) + offset, value);
           }
         });
@@ -786,7 +787,7 @@ export class SingleFileChapterPlayer {
 
   _estimatedDuration(chapterIndex) {
     const measured = Number(this._timelineDurations.get(chapterIndex));
-    if (Number.isFinite(measured) && measured > 0) return measured;
+    if (Number.isFinite(measured) && measured >= 0) return measured;
     const duration = Number(this.getEstimatedDuration(this.bookId, chapterIndex));
     return Number.isFinite(duration) && duration > 0 ? duration : 0;
   }
@@ -823,9 +824,14 @@ export class SingleFileChapterPlayer {
       const chapterStartOffset = index === this.startChapterIndex
         ? this.streamStartOffset
         : 0;
-      const duration = Math.max(0, this._estimatedDuration(index) - chapterStartOffset);
+      const measured = this._timelineDurations.get(index);
+      const hasMeasuredDuration = Number.isFinite(measured) && measured >= 0;
+      const duration = hasMeasuredDuration ? Math.max(0, measured - chapterStartOffset) : 0;
       const isLast = index === count - 1;
-      if (isLast || (duration > 0 && streamTime < offset + duration)) {
+      // An estimate cannot identify an audible boundary. Until the server
+      // reports it, retain the chapter and its time rather than saving a
+      // position in a chapter the listener has not reached.
+      if (isLast || !hasMeasuredDuration || streamTime < offset + duration) {
         return {
           chapterIndex: index,
           chapterTime: Math.max(0, streamTime - offset + chapterStartOffset)
@@ -1122,6 +1128,7 @@ export class SingleFileChapterPlayer {
   _completeBoundaryPrewarm(generation) {
     if (generation !== this._generation) return;
     if (!this._awaitingBoundaryPrewarm) return;
+    if (!this._isPlaying) return;
     this._awaitingBoundaryPrewarm = false;
     this._clearBoundaryPrewarmTimeout();
     if (this._advanceToPrewarmedChapter()) return;
@@ -1233,6 +1240,9 @@ export class SingleFileChapterPlayer {
     if (nextChapterIndex >= this._chapterCount()) return false;
     if (this._stopsAtCurrentChapter()) return false;
 
+    this._awaitingBoundaryPrewarm = false;
+    this._clearBoundaryPrewarmTimeout();
+
     const previousChapterIndex = this.chapterIndex;
     const previousObjectUrl = this._activeObjectUrl;
     this._prewarm = null;
@@ -1323,6 +1333,30 @@ export class SingleFileChapterPlayer {
     this.audio.autoplay = false;
     if (this.isContinuous) {
       this._syncContinuousChapter(Number(this.audio.currentTime) || 0);
+      const finalChapterIndex = Number.isInteger(this.endChapterIndex)
+        ? this.endChapterIndex : this._chapterCount() - 1;
+      const measuredDuration = this._timelineDurations.get(this.chapterIndex);
+      const chapterTime = this.getCurrentTime();
+      // An end-chapter limit is a requested boundary, not proof that the
+      // transport reached it. A truncated final chapter is also recoverable
+      // when decoded duration confirms narration still remains.
+      const endedEarly = this.chapterIndex < finalChapterIndex || (
+        Number.isFinite(measuredDuration) && chapterTime + 0.25 < measuredDuration
+      );
+      if (endedEarly) {
+        const error = new Error('Continuous playback ended before the end of the book');
+        error.name = 'UnexpectedEndError';
+        error.code = 'CONTINUOUS_STREAM_EOF';
+        error.recoverable = true;
+        error.chapterIndex = this.chapterIndex;
+        error.chapterTime = chapterTime;
+        this._emitDiagnostic('unexpected-ended', {
+          reason: 'premature-eof'
+        });
+        this.onPlaybackChange?.(false, { reason: 'unexpected-ended', error });
+        this.onError?.(error);
+        return;
+      }
       if (Number.isInteger(this.endChapterIndex)) {
         this._invalidateReadySource();
         this._emitDiagnostic('continuous-limit-ended', {
@@ -1333,21 +1367,6 @@ export class SingleFileChapterPlayer {
           reason: 'continuous-limit',
           endChapterIndex: this.endChapterIndex
         });
-        return;
-      }
-      const lastChapterIndex = this._chapterCount() - 1;
-      if (this.chapterIndex < lastChapterIndex) {
-        const error = new Error('Continuous playback ended before the end of the book');
-        error.name = 'UnexpectedEndError';
-        error.code = 'CONTINUOUS_STREAM_EOF';
-        error.recoverable = true;
-        error.chapterIndex = this.chapterIndex;
-        error.chapterTime = this.getCurrentTime();
-        this._emitDiagnostic('unexpected-ended', {
-          reason: 'premature-eof'
-        });
-        this.onPlaybackChange?.(false, { reason: 'unexpected-ended', error });
-        this.onError?.(error);
         return;
       }
     }
@@ -1365,6 +1384,7 @@ export class SingleFileChapterPlayer {
   }
 
   _handleNativePlay(event) {
+    if (this.audio.paused) return;
     if (event?.type === 'playing') this._setBuffering(false);
     this._clearChapterAdvancePlayWatchdog();
     this.audio.autoplay = false;
@@ -1381,8 +1401,10 @@ export class SingleFileChapterPlayer {
   }
 
   _handleNativePause() {
+    if (!this.audio.paused) return;
     this._setBuffering(false);
     if (this.audio.ended) return;
+    this._cancelPlaybackStart();
     this._isPlaying = false;
     this._stopStallWatchdog();
     const reason = this._pauseReason || 'external';
@@ -1393,9 +1415,14 @@ export class SingleFileChapterPlayer {
 
   async play() {
     if (this._awaitingBoundaryPrewarm) {
-      if (this._advanceToPrewarmedChapter()) return;
       this._isPlaying = true;
+      if (this._advanceToPrewarmedChapter()) return;
+      if (this._prewarmInFlight !== this.chapterIndex + 1) {
+        this._finishEndedWithoutPrewarm();
+        return;
+      }
       this.audio.autoplay = true;
+      this._armBoundaryPrewarmTimeout();
       return;
     }
     if (this._isLoading || !this._readySource) {
@@ -1403,6 +1430,8 @@ export class SingleFileChapterPlayer {
       error.code = 'SOURCE_NOT_READY';
       throw error;
     }
+    this._cancelPlaybackStart();
+    const playRevision = this._playRevision;
     this._pauseReason = null;
     this._playReason = 'app';
     this._isPlaying = true;
@@ -1429,24 +1458,36 @@ export class SingleFileChapterPlayer {
       nativePlay.catch(() => {});
       await Promise.race([nativePlay, wait.promise]);
       await wait.promise;
+      if (playRevision !== this._playRevision) throw new LifecycleCancelledError('Playback start cancelled');
       progressWait = this._waitForPlaybackProgress(startTime);
       this._playProgressWait = progressWait;
       progressWait.promise.catch(() => {});
       await progressWait.promise;
     } catch (error) {
-      this._isPlaying = false;
-      this.onPlaybackChange?.(false, { reason: 'app', error });
+      if (playRevision === this._playRevision) {
+        this._isPlaying = false;
+        this.onPlaybackChange?.(false, { reason: 'app', error });
+      }
       throw error;
     } finally {
       wait.cancel();
       if (this._playWait === wait) this._playWait = null;
       progressWait?.cancel();
       if (this._playProgressWait === progressWait) this._playProgressWait = null;
-      this._playReason = null;
+      if (playRevision === this._playRevision) this._playReason = null;
     }
   }
 
+  _cancelPlaybackStart() {
+    this._playRevision++;
+    this._playWait?.cancel();
+    this._playProgressWait?.cancel();
+  }
+
   pause(reason = 'app') {
+    this._cancelPlaybackStart();
+    this._clearBoundaryPrewarmTimeout();
+    this._clearChapterAdvancePlayWatchdog();
     this._setBuffering(false);
     this._isPlaying = false;
     this._pauseReason = reason;
@@ -1455,7 +1496,14 @@ export class SingleFileChapterPlayer {
   }
   get isPlaying() { return this._isPlaying && !this.audio.paused; }
   _streamTimeForChapterTime(seconds) {
-    const chapterTime = Math.max(0, Math.min(Number(seconds) || 0, this.getTotalTime() || Number(seconds) || 0));
+    // Estimates describe the UI timeline; they cannot bound an actual seek.
+    // Only measured chapter duration or finite media metadata can do that.
+    const duration = this.isContinuous
+      ? Number(this._timelineDurations.get(this.chapterIndex))
+      : this.getTotalTime();
+    const requested = Math.max(0, Number(seconds) || 0);
+    const chapterTime = Number.isFinite(duration) && duration > 0
+      ? Math.min(requested, duration) : requested;
     const streamTime = this._streamOffsetForChapter(this.chapterIndex)
       + chapterTime
       - (this.chapterIndex === this.startChapterIndex ? this.streamStartOffset : 0);
@@ -1620,7 +1668,7 @@ export class SingleFileChapterPlayer {
       throw error;
     } finally {
       if (this._loadWait === wait) this._loadWait = null;
-      this._isLoading = false;
+      if (generation === this._generation) this._isLoading = false;
     }
   }
   async seekToPercent(percent) { await this.seek((Math.max(0, Math.min(100, percent)) / 100) * this.getTotalTime()); }
@@ -1663,7 +1711,7 @@ export class SingleFileChapterPlayer {
       continuous: this.isContinuous
     };
   }
-  cancelPendingLoad() {
+  cancelPendingLoad({ releaseSource = false } = {}) {
     this._generation++;
     this._isLoading = false;
     this._invalidateReadySource();
@@ -1671,6 +1719,12 @@ export class SingleFileChapterPlayer {
     this._releasePrewarm();
     this.pause();
     this._detach();
+    if (releaseSource) {
+      this.audio.removeAttribute('src');
+      this.audio.load();
+      this.activeSource = null;
+      this._revokeObjectUrl(this._activeObjectUrl);
+    }
   }
   dispose() {
     this.cancelPendingLoad();

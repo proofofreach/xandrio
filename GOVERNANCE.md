@@ -8,6 +8,14 @@ The project owner sets release scope, approves releases, licence changes, featur
 
 Changes need passing required checks and maintainer review. Security, provider, TTS, packaging, legal, and release-workflow changes require review from the relevant code owner. Release authority remains with the project owner. Once public, the repository should protect the default branch, disallow force pushes and tag deletion, and restrict release-workflow changes.
 
+When a personal repository's owner is its only writer, the owner reviews and
+authorizes releases directly. GitHub cannot record an approving review on the
+owner's own pull request. This mode still requires enforced, up-to-date CI,
+resolved conversations, and owner approval in the release environment; the
+owner may approve their own workflow run. Adding another writer restores the
+independent CODEOWNER review and no-self-review requirements. Organizations
+cannot use this exception.
+
 The GitHub `release` environment must require project-owner approval. Release
 tags must be signed and the evidence checklist in
 `docs/RELEASE_APPROVALS.md` must be complete before the environment is approved.

@@ -661,15 +661,16 @@ List all books in the library.
       "description": "A wholly remarkable book",
       "subjects": ["Science fiction"],
       "language": "en",
-      "filename": "hitchhikers_guide.epub",
-      "path": "/home/user/audiobook-player/cache/hitchhikers_guide.epub",
       "addedAt": "2026-02-05T12:00:00.000Z",
+      "hasCover": true,
       "chapter1Ready": true,
       "preloadedThrough": 2
     }
   ]
 }
 ```
+
+Public book records omit storage paths, account ownership, original upload filenames, provider item IDs, and import diagnostics.
 
 ---
 

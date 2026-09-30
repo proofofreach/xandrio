@@ -371,24 +371,6 @@ app.post('/api/auth/sessions/revoke', authRoutes.revokeSession);
 app.post('/api/auth/sessions/revoke-others', authRoutes.revokeOtherSessions);
 registerAccountRoutes(app, { accounts: accountsStore, sessionStore: accountSessionStore, requireAdmin });
 
-// Instance-wide configuration stays admin-only once accounts exist; in
-// trusted-LAN and shared-token modes every caller resolves as admin, so
-// these guards are inert until the first account is created. The guard
-// layers run before the matching handlers registered further down and fall
-// through via next() when the caller is an admin.
-const ADMIN_ONLY_ROUTES = [
-  ['post', '/api/voice'],
-  ['post', '/api/premium-prep/settings'],
-  ['put', '/api/legal/operator-policy'],
-  ['post', '/api/annas/configure'],
-  ['delete', '/api/annas/configure'],
-  ['post', '/api/zlibrary/configure'],
-  ['delete', '/api/zlibrary/configure'],
-  ['post', '/api/gutenberg/configure']
-];
-for (const [method, route] of ADMIN_ONLY_ROUTES) {
-  app[method](route, requireAdmin);
-}
 app.get('/sw.js', (req, res, next) => {
   res.setHeader('Cache-Control', 'no-store');
   res.setHeader('Service-Worker-Allowed', '/');
@@ -3481,56 +3463,35 @@ registerCalibreRoutes(app, {
   supportedFormats: [...SUPPORTED_BOOK_FORMATS]
 });
 // API: Get library (all downloaded books)
-// Strip server-internal fields (absolute paths, import forensics) from
-// book records before they leave the API.
+// The library record also contains paths, ownership, and import diagnostics.
+// Keep the public response explicit so new stored fields stay private.
+const PUBLIC_BOOK_FIELDS = Object.freeze([
+  'id', 'title', 'author', 'publisher', 'publishedDate', 'description',
+  'subjects', 'language', 'isbn', 'series', 'seriesIndex',
+  'searchedTitle', 'searchedAuthor', 'sourceFormat', 'sourceDeletedAfterExtract',
+  'sourceRetainedAfterExtract', 'wasResized', 'addedAt', 'downloadSource',
+  'coverSource', 'gutenbergId', 'chapterCount', 'chapterStructureKey',
+  'openLibraryWorkKey', 'openLibraryEditionKey', 'metadataConfidence',
+  'workKey', 'metadataRefreshed', 'reprocessedAt', 'studyGuideCategory',
+  'studyGuideCategorySetAt', 'audioGenerationState', 'audioGeneratedChapters',
+  'audioGenerationTotal', 'audioGenerationError', 'audioGenerationUpdatedAt',
+  'chapter1Ready', 'preloadedThrough', 'chapterDurations', 'totalDuration'
+]);
+
 function publicBookRecord(book) {
   if (!book || typeof book !== 'object') return book;
-  const {
-    path: _path,
-    sourcePath: _sourcePath,
-    coverPath,
-    extractedArtifact,
-    retainedSourcePath: _retainedSourcePath,
-    sourceHash,
-    importValidation,
-    needsReview: _needsReview,
-    validationWarnings: _validationWarnings,
-    pdfExtraction: _pdfExtraction,
-    pdfReprocessable: _pdfReprocessable,
-    candidates: _candidates,
-    diagnostics: _diagnostics,
-    diagnosticEvidence: _diagnosticEvidence,
-    extractionReport: _extractionReport,
-    importDiagnosticCodes: _importDiagnosticCodes,
-    textIntegrity: _textIntegrity,
-    sourceRecovery: _sourceRecovery,
-    calibre: _calibre,
-    processingVersion: _processingVersion,
-    metadataRefreshReconciliation,
-    // Server-side bookkeeping that no client view reads (verified against
-    // public/js). `addedBy` names the owning account to every other member,
-    // and the filename fields disclose the operator's original upload paths
-    // and on-disk layout. This list is a denylist, which is private-by-accident
-    // rather than private-by-default -- a new internal field is published
-    // until someone remembers to add it here.
-    addedBy: _addedBy,
-    filename: _filename,
-    uploadedFile: _uploadedFile,
-    originalFilename: _originalFilename,
-    sourceFilePath: _sourceFilePath,
-    ...pub
-  } = book;
+  const pub = {};
+  for (const field of PUBLIC_BOOK_FIELDS) {
+    if (Object.hasOwn(book, field)) pub[field] = book[field];
+  }
   pub.canRebuildChapters = Boolean(book.canRebuildChapters) || undefined;
-  pub.hasCover = Boolean(coverPath);
-  // The `calibre` block is stripped above, but sourceProvenance.itemId carries
-  // the same identity as "<libraryUuid>:<bookUuid>". A Calibre book id is
-  // sha256("calibre\0<libraryUuid>\0<bookUuid>"), so publishing itemId let any
-  // reader of /api/library recompute another user's book id and target it
-  // through the Calibre import route. The provider and rights fields the UI
-  // renders are kept.
-  if (pub.sourceProvenance && typeof pub.sourceProvenance === 'object') {
-    const { itemId: _itemId, ...provenance } = pub.sourceProvenance;
-    pub.sourceProvenance = provenance;
+  pub.hasCover = Boolean(book.coverPath);
+  // Publish only attribution and rights metadata. The stored provenance also
+  // contains the original upload filename and provider item id; neither is
+  // needed by clients, and the item id can identify a Calibre book.
+  if (book.sourceProvenance && typeof book.sourceProvenance === 'object') {
+    const { provider, rightsStatus, acquiredAt, sourceUrl, reportedLicense, reportedRights } = book.sourceProvenance;
+    pub.sourceProvenance = { provider, rightsStatus, acquiredAt, sourceUrl, reportedLicense, reportedRights };
   }
   return pub;
 }
@@ -4319,6 +4280,7 @@ const {
   recordPosition
 } = userLibraryState;
 registerAudioPrepRoutes(app, {
+  requireAdmin,
   booksFile: BOOKS_FILE,
   shelvesFile: SHELVES_FILE,
   positionsFile: POSITIONS_FILE,
@@ -4672,6 +4634,7 @@ async function backfillNarrationArtifacts() {
 }
 
 const preferencesRoutes = registerPreferencesRoutes(app, {
+  requireAdmin,
   annasAuthFile: ANNAS_AUTH_FILE,
   chatterboxVoicesEnabled: !ALLOWED_VOICE_PROVIDERS || ALLOWED_VOICE_PROVIDERS.has('chatterbox'),
   availableVoices: AVAILABLE_VOICES,
@@ -4731,6 +4694,7 @@ registerListeningQueueRoutes(app, {
 });
 
 registerOperatorPolicyRoutes(app, {
+  requireAdmin,
   settingsFile: SETTINGS_FILE,
   jsonStore,
   updateSettingsCache

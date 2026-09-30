@@ -422,7 +422,7 @@ This file is generated from the locked installed Node dependency tree by `npm ru
 | typescript | 5.9.3 | Apache-2.0 | https://github.com/microsoft/TypeScript.git |
 | undefsafe | 2.0.5 | MIT | https://github.com/remy/undefsafe.git |
 | undici | 7.29.1 | MIT | https://github.com/nodejs/undici.git |
-| undici | 8.10.0 | MIT | https://github.com/nodejs/undici.git |
+| undici | 8.11.2 | MIT | https://github.com/nodejs/undici.git |
 | unique-filename | 4.0.0 | ISC | https://github.com/npm/unique-filename.git |
 | unique-slug | 5.0.0 | ISC | https://github.com/npm/unique-slug.git |
 | universalify | 2.0.1 | MIT | https://github.com/RyanZim/universalify.git |

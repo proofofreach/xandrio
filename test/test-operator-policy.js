@@ -71,6 +71,7 @@ async function request(base, method, pathname, body) {
   const app = express();
   app.use(express.json());
   registerOperatorPolicyRoutes(app, {
+    requireAdmin: (_req, _res, next) => next(),
     settingsFile: '/tmp/settings.json',
     jsonStore: store,
     now: () => '2026-07-12T12:00:00.000Z',

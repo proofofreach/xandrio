@@ -130,7 +130,8 @@ The release gate requires:
 - no import, narration, or content-defect regression;
 - every chapter-structure change to be declared, every declaration to still
   describe a real change, and every must-conserve case to be checkable at all;
-- exact normalized narration conservation for comparable cases;
+- exact normalized narration conservation, or an explicitly declared correction
+  that exactly matches a pinned, verified extraction reference;
 - zero unexpected defects in synthetic and format output after accounting for
   defects deliberately present in a characterization source; and
 - zero manual actions after either a clean or warning-bearing successful import.
@@ -162,6 +163,30 @@ Private results are opaque. The report contains no book metadata, paths, text,
 or content hashes. Existing defects in an unrebuildable legacy artifact remain
 visible in the aggregate but do not authorize a lossy repair or a title-specific
 rule.
+
+Source corrections are declared in
+`test/fixtures/import-narration-corrections.json`. Its `referenceCommit` is a
+full commit SHA for the already tested corrected extraction. It must be an
+earlier ancestor of the candidate; `HEAD`, tags, and the candidate itself cannot
+be references. Each correction names an opaque case id, exact before/after
+normalized character counts, and a reason. The original approved baseline
+remains fixed.
+
+The benchmark re-extracts identical inputs with the pinned reference and
+requires the candidate's normalized narration hash to match it exactly. Hashes
+are compared in memory and omitted from declarations and reports. Character
+counts alone never authorize a correction. Missing reference evidence,
+undeclared changes, same-length substitutions, deletions, reordered prose,
+changed bounds, and stale declarations fail the gate. The report retains the
+baseline difference and separately marks an accepted correction, so a corrected
+case is not reported as unchanged narration.
+
+The initial reference preserves authored citation abbreviations, numeric forms,
+casing, and inline spacing. These corrections conserve the extracted EPUB
+source rather than the previous system's speech rewrites. Repeat the historical
+import and fault-injection checks with `npm run verify:benchmark-corrections`.
+The command writes a repeatable JSON artifact under
+`output/playback-processing/`; public CI also saves that artifact.
 
 ## Bounded old-versus-new confirmation
 
