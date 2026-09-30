@@ -11,6 +11,20 @@ process.env.DATA_DIR = path.join(testRoot, 'data');
 process.env.CACHE_DIR = path.join(testRoot, 'cache');
 fs.mkdirSync(process.env.DATA_DIR, { recursive: true });
 fs.mkdirSync(process.env.CACHE_DIR, { recursive: true });
+fs.writeFileSync(path.join(process.env.DATA_DIR, 'books.json'), JSON.stringify({
+  book1: {
+    id: 'book1',
+    title: 'Private Import',
+    author: 'Example Author',
+    internalOnlyMarker: 'server-private-marker',
+    sourceProvenance: {
+      provider: 'upload',
+      rightsStatus: 'operator-supplied',
+      acquiredAt: '2026-01-01T00:00:00.000Z',
+      originalFilename: 'private-source-name.epub'
+    }
+  }
+}));
 
 // These must be set before server.js is required.
 process.env.XANDRIO_TOKEN = 'security-test-token';
@@ -202,6 +216,31 @@ async function main() {
     });
     test('bearer authentication remains supported for API clients', () => assert.notStrictEqual(bearerLibrary.status, 401));
 
+    const profile = await request(server, {
+      method: 'POST', path: '/api/sync/profile',
+      headers: { Authorization: 'Bearer security-test-token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId: 'toString', name: 'Reader' })
+    });
+    test('inherited object names cannot become sync profile ids', () => {
+      assert.strictEqual(profile.status, 200);
+      const saved = JSON.parse(profile.body);
+      assert.match(saved.userId, /^usr_[a-f0-9]{24}$/);
+      assert.strictEqual(saved.profile.id, saved.userId);
+      const disk = JSON.parse(fs.readFileSync(path.join(process.env.DATA_DIR, 'users.json'), 'utf8'));
+      assert(Object.hasOwn(disk.users, saved.userId));
+      assert(!Object.hasOwn(disk.users, 'toString'));
+    });
+
+    const phantomQueue = await request(server, {
+      method: 'PUT', path: '/api/listening-queue',
+      headers: { Authorization: 'Bearer security-test-token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ queue: { bookIds: ['constructor', 'book1'] } })
+    });
+    test('listening queue excludes inherited book properties', () => {
+      assert.strictEqual(phantomQueue.status, 200);
+      assert.deepStrictEqual(JSON.parse(phantomQueue.body).queue.bookIds, ['book1']);
+    });
+
     const annasStatus = await request(server, {
       path: '/api/annas/status', headers: { Authorization: 'Bearer security-test-token' }
     });
@@ -244,6 +283,36 @@ async function main() {
       body: JSON.stringify({ username: 'covermember', password: 'password123' })
     });
     const memberCookie = (memberLogin.headers['set-cookie']?.[0] || '').split(';', 1)[0];
+    const memberLibrary = await request(server, {
+      path: '/api/library', headers: { Cookie: memberCookie }
+    });
+    test('library responses never expose another import’s original filename', () => {
+      assert.strictEqual(memberLibrary.status, 200);
+      const book = JSON.parse(memberLibrary.body).books.find(item => item.id === 'book1');
+      assert(book);
+      assert.strictEqual(book.sourceProvenance.provider, 'upload');
+      assert(!Object.hasOwn(book.sourceProvenance, 'originalFilename'));
+      assert(!Object.hasOwn(book, 'internalOnlyMarker'));
+      assert(!memberLibrary.body.includes('private-source-name.epub'));
+    });
+
+    for (const [method, route] of [
+      ['POST', '/api/voice'],
+      ['POST', '/api/premium-prep/settings'],
+      ['PUT', '/api/legal/operator-policy'],
+      ['POST', '/api/annas/configure'],
+      ['DELETE', '/api/annas/configure'],
+      ['POST', '/api/zlibrary/configure'],
+      ['DELETE', '/api/zlibrary/configure'],
+      ['POST', '/api/gutenberg/configure']
+    ]) {
+      const guarded = await request(server, {
+        method, path: route,
+        headers: { Cookie: memberCookie, 'Content-Type': 'application/json' },
+        body: method === 'DELETE' ? undefined : JSON.stringify({})
+      });
+      test(`${method} ${route} stays admin-only`, () => assert.strictEqual(guarded.status, 403));
+    }
     const forcedCover = await request(server, {
       path: '/api/cover/valid-book?force=1',
       headers: { Cookie: memberCookie }

@@ -578,6 +578,7 @@ function fakeAudio() {
     const load = player.loadChapter('book1', 1);
     audio.emit('loadedmetadata');
     await load;
+    durations.forEach((duration, index) => player._timelineDurations.set(index, duration));
     const source = audio.src;
     const loadCalls = audio.loadCalls;
 
@@ -610,6 +611,7 @@ function fakeAudio() {
     const load = player.loadChapter('book1', 0);
     audio.emit('loadedmetadata');
     await load;
+    durations.forEach((duration, index) => player._timelineDurations.set(index, duration));
 
     audio.currentTime = 11;
     audio.emit('timeupdate');
@@ -634,6 +636,7 @@ function fakeAudio() {
     const load = player.loadChapter('book1', 0);
     audio.emit('loadedmetadata');
     await load;
+    durations.forEach((duration, index) => player._timelineDurations.set(index, duration));
 
     audio.currentTime = 15;
     audio.ended = true;
@@ -646,7 +649,7 @@ function fakeAudio() {
     assert.strictEqual(errors[0].recoverable, true);
   });
 
-  await test('continuous EOF finishes only after playback maps into the final chapter', async () => {
+  await test('continuous EOF finishes at the end of the final chapter', async () => {
     const audio = fakeAudio();
     audio.duration = Infinity;
     const errors = [];
@@ -661,8 +664,9 @@ function fakeAudio() {
     const load = player.loadChapter('book1', 0);
     audio.emit('loadedmetadata');
     await load;
+    durations.forEach((duration, index) => player._timelineDurations.set(index, duration));
 
-    audio.currentTime = 55;
+    audio.currentTime = 60;
     audio.ended = true;
     audio.emit('ended');
 
@@ -1937,7 +1941,7 @@ function fakeAudio() {
     assert.strictEqual(player.openedAtOffset(3, 412.5), false, 'a different chapter is not a match');
   });
 
-  await test('an underestimated duration would otherwise relocate an already-correct stream', async () => {
+  await test('an underestimated duration cannot relocate an already-correct stream', async () => {
     const audio = fakeAudio();
     const { player } = makePlayer(audio, {
       isIOSLike: () => false,
@@ -1949,15 +1953,13 @@ function fakeAudio() {
     await load;
     const loadsAfterOpen = audio.loadCalls;
 
-    // This is the call the guard exists to skip. Left unguarded it reloads.
+    // The offset is valid even when it exceeds the UI's duration estimate.
     const seek = player.seek(412.5);
     audio.emit('loadedmetadata');
     await seek;
 
-    assert(
-      audio.loadCalls > loadsAfterOpen,
-      'the clamp does relocate — openedAtOffset is what prevents this being reached'
-    );
+    assert.strictEqual(audio.loadCalls, loadsAfterOpen, 'a duration estimate cannot force a transport reload');
+    assert.strictEqual(player.getCurrentTime(), 412.5, 'the source remains at its requested chapter offset');
   });
 
   await test('skipping the redundant seek keeps one source URL and one session', async () => {

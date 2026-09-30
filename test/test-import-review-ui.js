@@ -40,10 +40,12 @@ assert(appSource.includes('if (!chapterTextLength || !checkpoint) return undefin
   appSource.includes('if (!duration || !Number.isFinite(timestamp)) return undefined;'),
   'the player omits a character offset when no timing estimate is available');
 
+const publicFieldsSource = serverSource.match(/const PUBLIC_BOOK_FIELDS = Object\.freeze\(\[([\s\S]*?)\]\);/);
+assert(publicFieldsSource, 'public book serialization uses an explicit field list');
+const publicFields = new Set([...publicFieldsSource[1].matchAll(/'([^']+)'/g)].map(match => match[1]));
 for (const privateField of ['needsReview', 'validationWarnings', 'importValidation', 'pdfExtraction', 'sourceRecovery']) {
-  const pattern = new RegExp(`${privateField}(?:: _[A-Za-z]+)?`);
-  assert(pattern.test(serverSource.slice(serverSource.indexOf('function publicBookRecord'), serverSource.indexOf('function canonicalBookCoverPath'))),
-    `public book serialization explicitly strips ${privateField}`);
+  assert(!publicFields.has(privateField),
+    `public book serialization excludes ${privateField}`);
 }
 
-console.log('15 passed, 0 failed');
+console.log('16 passed, 0 failed');

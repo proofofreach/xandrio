@@ -1692,11 +1692,19 @@ async function openBook(bookId) {
       try { chunkPlayer?.pause?.(); } catch {}
       updatePlaybackUI(false);
       checkpointPlayback();
+      clearPlaybackRecoveryTimers();
+      // Pausing leaves the old resource available to native resume controls
+      // and does not stop an outgoing load from completing during the next
+      // book's position fetch. Retire both before publishing the new title.
+      try { chunkPlayer?.cancelPendingLoad?.({ releaseSource: true }); } catch {}
     }
     // Keep the address bar/history in sync no matter who called us (router,
     // library tap, post-download/upload flow).
     syncPlayerHash(bookId);
     currentBook = nextBook;
+    // Invalidate an outgoing session transition before awaiting position.
+    // Its late commit must not put the previous book behind the new UI.
+    playbackSession.setBook(currentBook, { chapterIndex: 0, finished: false });
     chapters = nextChapters;
     void refreshGuideState(bookId);
     currentBookOfflineFallback = usedOfflineFallback;

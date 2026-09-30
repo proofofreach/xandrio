@@ -27,6 +27,7 @@ async function withServer(fn) {
   const app = express();
   app.use(express.json());
   registerPreferencesRoutes(app, {
+    requireAdmin: (_req, _res, next) => next(),
     annasAuthFile: `/tmp/xandrio-annas-route-${process.pid}.json`,
     availableVoices: [],
     cacheDir: '/tmp',

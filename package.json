@@ -40,6 +40,8 @@
     "build:calibre-plugin": "node scripts/build-calibre-plugin.mjs",
     "verify:audio": "node scripts/verify-audio-quality.js",
     "verify:audio:ci": "node scripts/verify-audio-quality.js --calibration-fixtures",
+    "verify:playback-processing": "node scripts/verify-playback-processing-e2e.js",
+    "verify:book-switch": "node scripts/verify-book-switch-e2e.js",
     "audit:production": "npm audit --omit=dev",
     "audit:release": "npm audit --omit=dev --audit-level=high",
     "audit:imports": "node scripts/audit-private-import-corpus.js",
@@ -82,6 +84,7 @@
   },
   "dependencies": {
     "@lingo-reader/mobi-parser": "^0.4.6",
+    "@nodable/entities": "3.0.0",
     "ai": "7.0.105",
     "body-parser": "2.3.0",
     "cors": "^2.8.5",

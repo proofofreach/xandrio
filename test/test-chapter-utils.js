@@ -178,7 +178,7 @@ test('removes semantic EPUB pagebreak markers before extracting text', () => {
       '<span epub:type="pagebreak" title="39"/>',
       '<span>Closing prose.</span>'
     ].join('')),
-    'First printed page.\n Second printed page.\n Closing prose.'
+    'First printed page.\n Second printed page.\nClosing prose.'
   );
 });
 

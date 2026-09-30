@@ -6,8 +6,8 @@
 //   node scripts/bump-version.mjs app.js       # bump only app.js (+ SW cache)
 //
 // Rewrites the ?v=N query strings in public/index.html and the matching
-// APP_SHELL entries in public/sw.js, and always bumps CACHE_VERSION so
-// installed PWAs refetch the shell.
+// APP_SHELL entries in public/sw.js, and always bumps CACHE_VERSION and the
+// offline controller pin so installed PWAs refetch and recognize the shell.
 
 import { readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -16,6 +16,7 @@ import { dirname, join } from 'node:path';
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const indexPath = join(root, 'public', 'index.html');
 const swPath = join(root, 'public', 'sw.js');
+const offlinePath = join(root, 'public', 'js', 'features', 'offline.js');
 
 const KNOWN = ['app.js', 'style-v3.css'];
 const SW_ASSET_KEYS = {
@@ -34,6 +35,7 @@ if (args.length && targets.length === 0) {
 
 let indexHtml = readFileSync(indexPath, 'utf8');
 let sw = readFileSync(swPath, 'utf8');
+let offline = readFileSync(offlinePath, 'utf8');
 
 for (const name of targets) {
   const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -58,12 +60,21 @@ for (const name of targets) {
 }
 
 // Always bump the SW cache version so clients purge the old app shell.
+let cacheVersion = null;
 sw = sw.replace(/(const CACHE_VERSION = 'xandrio-v)(\d+)(')/, (_, pre, n, post) => {
   const next = Number(n) + 1;
+  cacheVersion = `xandrio-v${next}`;
   console.log(`CACHE_VERSION -> xandrio-v${next}`);
   return `${pre}${next}${post}`;
 });
+const offlineVersionRe = /(export const EXPECTED_OFFLINE_SW_VERSION = ')[^']+(')/;
+if (!cacheVersion || !offlineVersionRe.test(offline)) {
+  console.error('Missing worker cache version or offline controller pin');
+  process.exit(1);
+}
+offline = offline.replace(offlineVersionRe, `$1${cacheVersion}$2`);
 
 writeFileSync(indexPath, indexHtml);
 writeFileSync(swPath, sw);
-console.log('Done. index.html and sw.js updated in lockstep.');
+writeFileSync(offlinePath, offline);
+console.log('Done. index.html, sw.js, and the offline controller pin updated in lockstep.');
