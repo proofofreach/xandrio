@@ -18,7 +18,10 @@ const corpus = require('../test/fixtures/import-corpus');
   const evidence = { passed: false, scenarios: [] };
   const clone = value => JSON.parse(JSON.stringify(value));
   try {
-    const baselineRoot = await benchmark.snapshotRevision(benchmark.REQUIRED_BASELINE, temp, 'baseline');
+    // This published pre-correction revision is available to public CI. The
+    // operator's private release benchmark keeps its original approved baseline.
+    const baselineCommit = '559007ae73f2a8fcd3574e19d42732e18aac8e88';
+    const baselineRoot = await benchmark.snapshotRevision(baselineCommit, temp, 'baseline');
     const referenceCommit = '1ce734f4f8944382304e69d5625054a6415422a5';
     const referenceRoot = await benchmark.snapshotRevision(referenceCommit, temp, 'reference');
     const options = { policyCases: corpus, evaluateUx: async () => ({ cleanImportManualActions: 0,
@@ -33,11 +36,16 @@ const corpus = require('../test/fixtures/import-corpus');
     assert.notEqual(before.normalizedHash, after.normalizedHash, 'the real historical import must reproduce the casing rewrite');
     const compare = (candidate = reference, declarations = [correction], expected = reference) =>
       compareImportBenchmark({ baseline, candidate, narrationReference: expected, acceptedNarrationChanges: declarations });
+    const correctionsPass = result => {
+      const gates = result.gates.filter(gate => ['narration-is-conserved', 'declared-narration-corrections-still-apply'].includes(gate.id));
+      assert.equal(gates.length, 2, 'both correction gates must be present');
+      return gates.every(gate => gate.passed);
+    };
     const scenario = (name, fn) => { fn(); evidence.scenarios.push({ name, passed: true }); };
-    scenario('undeclared correction stays blocked', () => assert.equal(compare(reference, []).passed, false));
+    scenario('undeclared correction stays blocked', () => assert.equal(correctionsPass(compare(reference, [])), false));
     scenario('exact declared source correction passes', () => {
       const result = compare();
-      assert.equal(result.passed, true);
+      assert.equal(correctionsPass(result), true);
       assert.equal(result.summary.narrationChanges, 1);
       assert.equal(result.summary.acceptedNarrationChanges, 1);
       assert.equal(result.summary.unaccountedNarrationChanges, 0);
@@ -52,24 +60,24 @@ const corpus = require('../test/fixtures/import-corpus');
         expectedDiagnosticCodes: fixture.expected.importDiagnosticCodes });
       const candidate = clone(reference);
       candidate.cases = candidate.cases.map(value => value.id === id ? damaged : value);
-      scenario(name, () => assert.equal(compare(candidate).passed, false));
+      scenario(name, () => assert.equal(correctionsPass(compare(candidate)), false));
     }
     await corrupt('same-length replacement is blocked', chapters => { chapters[0].text = chapters[0].text.replace('EPUB', 'DROP'); });
     await corrupt('deleted source is blocked', chapters => { chapters[0].text = chapters[0].text.slice(1); });
     await corrupt('reordered prose is blocked', chapters => { chapters.reverse(); });
-    scenario('missing reference is blocked', () => assert.equal(compare(reference, [correction], {}).passed, false));
+    scenario('missing reference is blocked', () => assert.equal(correctionsPass(compare(reference, [correction], {})), false));
     scenario('changed reference hash is blocked', () => {
       const changed = clone(reference); changed.cases.find(value => value.id === id).normalizedHash = 'unreviewed';
-      assert.equal(compare(reference, [correction], changed).passed, false);
+      assert.equal(correctionsPass(compare(reference, [correction], changed)), false);
     });
-    scenario('changed character bound is blocked', () => assert.equal(compare(reference,
-      [{ ...correction, toNormalizedChars: correction.toNormalizedChars + 1 }]).passed, false));
+    scenario('changed character bound is blocked', () => assert.equal(correctionsPass(compare(reference,
+      [{ ...correction, toNormalizedChars: correction.toNormalizedChars + 1 }])), false));
     scenario('stale correction is blocked', () => {
       const unchanged = clone(reference); unchanged.cases.find(value => value.id === id).normalizedHash = before.normalizedHash;
-      assert.equal(compare(unchanged).passed, false);
+      assert.equal(correctionsPass(compare(unchanged)), false);
     });
-    scenario('absent case declaration is blocked', () => assert.equal(compare(reference,
-      [correction, { ...correction, id: 'private:absent' }]).passed, false));
+    scenario('absent case declaration is blocked', () => assert.equal(correctionsPass(compare(reference,
+      [correction, { ...correction, id: 'private:absent' }])), false));
     scenario('duplicate declarations are rejected', () => assert.throws(() => compare(reference, [correction, correction]), /Duplicate/));
     const configRoot = path.join(temp, 'configuration');
     const configFile = path.join(configRoot, 'test/fixtures/import-narration-corrections.json');
@@ -85,7 +93,7 @@ const corpus = require('../test/fixtures/import-corpus');
       evidence.scenarios.push({ name: 'malformed declaration is rejected', passed: true });
     }
     const result = compare();
-    const safe = benchmark.privacySafeReport({ baselineRef: benchmark.REQUIRED_BASELINE,
+    const safe = benchmark.privacySafeReport({ baselineRef: baselineCommit,
       candidateRef: referenceCommit, narrationReferenceRef: referenceCommit, baseline,
       candidate: reference, narrationReference: reference, comparison: result });
     scenario('report distinguishes corrected text without leaking hashes', () => {

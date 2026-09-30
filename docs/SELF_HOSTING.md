@@ -326,6 +326,10 @@ the release plan. Require a clean committed tree, an exact private branch mirror
 (`XANDRIO_SOURCE_BRANCH=<branch> node scripts/release/check-source-mirror.mjs`),
 the full local suite, browser smoke and committed-candidate import benchmark.
 Publish through a protected public PR with every required check passing.
+For a personal repository with only its owner as a writer, direct owner review
+applies as described in GOVERNANCE.md. Required CI stays strict, conversations
+must be resolved, and the release environment retains the owner as approver.
+Adding another writer restores independent CODEOWNER approval.
 Verify that the tested source commit is an ancestor of merged public/main and
 that their trees match before using the internal exact-revision deploy script.
 Check the running process revision, service state, internal/external readiness

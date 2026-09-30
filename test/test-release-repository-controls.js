@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Failure modes: sole owner cannot release; an additional writer or organization
+// bypasses independent review; an unrelated release approver is accepted;
+// missing CI strictness or conversation resolution is accepted in owner mode.
 const assert = require('node:assert/strict');
 const { spawnSync } = require('node:child_process');
 const {
@@ -56,14 +59,15 @@ case "$endpoint" in
   repos/Example/xandrio/branches/main/protection) file="protection" ;;
   repos/Example/xandrio/environments/release) file="environment" ;;
   repos/Example/xandrio/actions/permissions/workflow) file="workflow" ;;
+  repos/Example/xandrio/collaborators?per_page=100) file="collaborators" ;;
   *) echo "unexpected endpoint: $endpoint" >&2; exit 2 ;;
 esac
 cat "$GH_FIXTURE_DIR/$file.json"
 `);
   chmodSync(gh, 0o700);
 
-  write('repository', { visibility: 'public', private: false, default_branch: 'main' });
-  write('protection', {
+  const repository = { visibility: 'public', private: false, default_branch: 'main', owner: { login: 'Example', type: 'User' } };
+  const protection = {
     enforce_admins: { enabled: true },
     required_status_checks: { strict: true, contexts: ['verify', 'dependency-review'] },
     required_pull_request_reviews: {
@@ -74,7 +78,13 @@ cat "$GH_FIXTURE_DIR/$file.json"
     required_conversation_resolution: { enabled: true },
     allow_force_pushes: { enabled: false },
     allow_deletions: { enabled: false }
-  });
+  };
+  write('repository', repository);
+  write('protection', protection);
+  write('collaborators', [
+    { login: 'Example', permissions: { admin: true } },
+    { login: 'maintainer', permissions: { push: true } }
+  ]);
   write('environment', {
     protection_rules: [{
       type: 'required_reviewers',
@@ -104,6 +114,43 @@ cat "$GH_FIXTURE_DIR/$file.json"
     const result = invoke();
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /permits self-review/);
+  });
+
+  const ownerEnvironment = { protection_rules: [{ type: 'required_reviewers', prevent_self_review: false,
+    reviewers: [{ type: 'User', reviewer: { login: 'Example' } }] }] };
+  const ownerProtection = { ...protection, required_pull_request_reviews: null };
+  write('collaborators', [{ login: 'Example', permissions: { admin: true } }]);
+  write('protection', ownerProtection);
+  write('environment', ownerEnvironment);
+  check('accepts sole-owner releases with enforced CI and owner approval', () => {
+    const result = invoke();
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.match(result.stdout, /sole-owner/);
+  });
+  check('a second writer restores the independent review requirement', () => {
+    write('collaborators', [{ login: 'Example', permissions: { admin: true } },
+      { login: 'second', permissions: { push: true } }]);
+    assert.notEqual(invoke().status, 0);
+  });
+  write('collaborators', [{ login: 'Example', permissions: { admin: true } }]);
+  check('a release approver must be the sole owner', () => {
+    write('environment', { protection_rules: [{ ...ownerEnvironment.protection_rules[0],
+      reviewers: [{ type: 'User', reviewer: { login: 'unrelated' } }] }] });
+    assert.notEqual(invoke().status, 0);
+  });
+  write('environment', ownerEnvironment);
+  check('organizations cannot use sole-owner release mode', () => {
+    write('repository', { ...repository, owner: { login: 'Example', type: 'Organization' } });
+    assert.notEqual(invoke().status, 0);
+  });
+  write('repository', repository);
+  check('sole-owner mode still requires strict CI', () => {
+    write('protection', { ...ownerProtection, required_status_checks: { strict: false, contexts: ['verify', 'dependency-review'] } });
+    assert.notEqual(invoke().status, 0);
+  });
+  check('sole-owner mode still requires resolved conversations', () => {
+    write('protection', { ...ownerProtection, required_conversation_resolution: { enabled: false } });
+    assert.notEqual(invoke().status, 0);
   });
 
   check('rejects publication from a private repository', () => {
