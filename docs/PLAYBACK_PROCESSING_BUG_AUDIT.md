@@ -153,3 +153,18 @@ All four book-switch scenarios and all 30 prior audit scenarios pass. Existing
 session, player, and shell suites pass 242 checks. The application browser smoke
 also passes. The shell and offline controller use `xandrio-v190`, with `app.js?v=145`.
 This change has browser verification; physical iOS verification remains open.
+
+## Oversized import source conservation
+
+Oversized chapter partitioning called the speech splitter, which expanded
+citation abbreviations, ordinals and currency, and changed lexical casing in
+stored chapter text. Partitioning now uses the boundary splitter directly.
+Speech preparation still applies substitutions when producing narration.
+
+Run `npm run verify:source-partition` on Node 24. It builds and imports a real
+oversized EPUB, checks exact normalized source conservation across all parts,
+checks chapter metadata and ordinary chapters, and verifies that speech
+substitutions still apply to narration. The before/after JSON and logs are
+saved under `output/playback-processing/`. The reproduction changed 208,509
+normalized source characters into 302,109 before the fix. After the fix, the
+imported source hash matches the input hash exactly.
