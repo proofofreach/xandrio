@@ -43,6 +43,7 @@
     "verify:playback-processing": "node scripts/verify-playback-processing-e2e.js",
     "verify:book-switch": "node scripts/verify-book-switch-e2e.js",
     "verify:source-partition": "node scripts/verify-source-partition-e2e.js",
+    "verify:benchmark-corrections": "node scripts/verify-benchmark-corrections-e2e.js",
     "audit:production": "npm audit --omit=dev",
     "audit:release": "npm audit --omit=dev --audit-level=high",
     "audit:imports": "node scripts/audit-private-import-corpus.js",
