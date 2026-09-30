@@ -6,6 +6,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
 const express = require('express');
+const { rateLimit } = require('express-rate-limit');
 const { chromium } = require('playwright');
 
 const root = path.resolve(__dirname, '..');
@@ -57,6 +58,7 @@ function tone(frequency) {
       await fs.writeFile(audioPaths[book.id], tone(220 + index * 220));
     }
     const app = express();
+    const mediaRateLimit = rateLimit({ windowMs: 60_000, limit: 600 });
     app.get('/api/legal/operator-policy', (_req, res) => res.json({ version: 1, acknowledged: true, acknowledgedAt: '2026-09-30T00:00:00Z', unverifiedSourcesEnabled: false }));
     app.get('/api/voices', (_req, res) => res.json({ current: 'edge:andrew', voices: [{ id: 'edge:andrew', name: 'Andrew', provider: 'edge', gender: 'male' }] }));
     app.get('/api/library', (_req, res) => res.json({ books }));
@@ -70,7 +72,7 @@ function tone(frequency) {
     });
     app.get('/api/chunks/:book/:chapter/status', (_req, res) => res.json({ servedTier: 'instant', status: 'ready' }));
     app.all('/api/chunks/:book/:chapter/:action', (_req, res) => res.json({ ready: true, status: 'ready', servedTier: 'instant', totalChunks: 1, readyChunks: 1 }));
-    app.get(['/api/audio/:book/:chapter', '/api/audio-continuous/:book/:chapter'], async (req, res) => {
+    app.get(['/api/audio/:book/:chapter', '/api/audio-continuous/:book/:chapter'], mediaRateLimit, async (req, res) => {
       await gateRequest(`audio:${req.params.book}`);
       res.sendFile(audioPaths[req.params.book]);
     });

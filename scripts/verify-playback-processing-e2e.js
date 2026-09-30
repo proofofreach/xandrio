@@ -4,6 +4,7 @@ const path = require('node:path');
 const os = require('node:os');
 const { execFileSync } = require('node:child_process');
 const express = require('express');
+const { rateLimit } = require('express-rate-limit');
 const { chromium, webkit } = require('playwright');
 const { createBookDocument } = require('../lib/book-document');
 const { buildChapterTransition, remapBookPositions } = require('../lib/chapter-reprocess');
@@ -183,6 +184,7 @@ async function makeEpub(dir, name, body) {
     });
 
     const app = express();
+    const mediaRateLimit = rateLimit({ windowMs: 60_000, limit: 600 });
     const audio = [10, 20, 30, 15].map(wav);
     const audioPaths = await Promise.all(audio.map(async (bytes, index) => {
       const file = path.join(temp, `${index}.wav`); await fs.writeFile(file, bytes); return file;
@@ -199,8 +201,8 @@ async function makeEpub(dir, name, body) {
       const timeline = timelines.get(req.params.session);
       if (timeline) res.json(timeline); else res.sendStatus(404);
     });
-    app.get('/media/:index.wav', (req, res) => res.sendFile(audioPaths[Number(req.params.index)]));
-    app.get(['/api/audio/:book/:chapter', '/api/audio-continuous/:book/:chapter'], async (req, res) => {
+    app.get('/media/:index.wav', mediaRateLimit, (req, res) => res.sendFile(audioPaths[Number(req.params.index)]));
+    app.get(['/api/audio/:book/:chapter', '/api/audio-continuous/:book/:chapter'], mediaRateLimit, async (req, res) => {
       const key = `${req.params.book}:audio:${req.query.offsetSeconds || 0}`;
       const gate = gates.get(key);
       if (gate) { gates.delete(key); gate.hit.resolve(); await gate.release.promise; }
