@@ -15,6 +15,7 @@ const { normalizedNarrationText } = require('../lib/extraction-result');
 const { parseEpub } = require('../lib/epub-parser');
 const { getChapterHtml } = require('../lib/chapter-extraction');
 const { createBookDocument } = require('../lib/book-document');
+const { EntityDecoder, ALL_ENTITIES } = require('@nodable/entities');
 
 const root = path.resolve(__dirname, '..');
 const hash = value => crypto.createHash('sha256').update(value).digest('hex');
@@ -148,7 +149,9 @@ function sourceMarkupText(html) {
     previous = text;
     text = text.replace(/<[^>]*>/g, '');
   } while (text !== previous);
-  return text;
+  // Visible text decodes entities once, after removing markup. It must not
+  // apply narration repair or reinterpret authored escaped brackets as tags.
+  return new EntityDecoder({ namedEntities: ALL_ENTITIES }).decode(text);
 }
 
 async function referenceSourceUnits(source, row, artifact, temporary) {

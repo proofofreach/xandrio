@@ -10,7 +10,9 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
-const { spawnSync } = require('node:child_process');
+const crypto = require('node:crypto');
+const { spawnSync, execFileSync } = require('node:child_process');
+const { parseEpub } = require('../lib/epub-parser');
 
 (async () => {
   const root = path.resolve(__dirname, '..');
@@ -19,7 +21,7 @@ const { spawnSync } = require('node:child_process');
   const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'xandrio-real-corpus-gates-'));
   const frozen = JSON.parse(await fs.readFile(path.join(root, 'test/fixtures/processing-real-corpus.json'), 'utf8'));
   const results = [];
-  async function run(name, id, modify, expectedGate) {
+  async function run(name, id, modify, expectedGate, sourceRoot = root) {
     const manifest = structuredClone(frozen);
     modify(manifest.cases.find(row => row.id === id), manifest);
     const manifestPath = path.join(temporary, `${name}.manifest.json`);
@@ -27,7 +29,11 @@ const { spawnSync } = require('node:child_process');
     await fs.writeFile(manifestPath, JSON.stringify(manifest));
     try {
       const result = spawnSync(process.execPath, [path.join(root, 'scripts/benchmark-real-processing.js'),
-        '--manifest', manifestPath, '--case', id, '--output', reportPath], { cwd: root, encoding: 'utf8', timeout: 120000 });
+        '--manifest', manifestPath, '--source-root', sourceRoot, '--case', id, '--output', reportPath], { cwd: root, encoding: 'utf8', timeout: 120000 });
+      assert.ifError(result.error);
+      assert.equal(result.signal, null, `${result.signal}: ${result.stderr}`);
+      assert.equal(await fs.access(reportPath).then(() => true, () => false), true,
+        `Benchmark omitted its report (exit ${result.status}): ${result.stderr}`);
       const report = JSON.parse(await fs.readFile(reportPath, 'utf8'));
       assert.equal(report.externalCalls, 0);
       if (!expectedGate) {
@@ -81,6 +87,33 @@ const { spawnSync } = require('node:child_process');
   }
   try {
     await run('clean-source-and-persisted-roundtrip', 'kafka-de', () => {}, null);
+    // Derived encoding fixture: the pinned genuine book keeps the same visible
+    // prose and golden narration. Only text-node entity spelling changes.
+    const original = frozen.cases.find(row => row.id === 'kafka-de');
+    const sourceRoot = path.join(temporary, 'encoded-source-root');
+    const expanded = path.join(temporary, 'encoded-epub');
+    const encoded = path.join(sourceRoot, 'data/encoded.epub');
+    await fs.mkdir(path.dirname(encoded), { recursive: true });
+    execFileSync('unzip', ['-q', path.join(root, original.source), '-d', expanded]);
+    const epub = await parseEpub(path.join(root, original.source));
+    for (const id of new Set(original.references.map(reference => reference.sourceUnit.id))) {
+      const filename = path.join(expanded, epub.manifest[id].href);
+      const html = await fs.readFile(filename, 'utf8');
+      const entities = { '"': '&quot;', "'": '&apos;', ' ': '&nbsp;', 'ä': '&auml;', 'ü': '&#252;', 'ö': '&#xF6;' };
+      const changed = html.replace(/>([^<]+)</g, (_match, text) =>
+        `>${text.replace(/["' äüö]/g, character => entities[character])}<`);
+      assert.notEqual(changed, html, 'entity fixture must alter source encoding');
+      await fs.writeFile(filename, changed);
+    }
+    execFileSync('zip', ['-q', '-X0', encoded, 'mimetype'], { cwd: expanded });
+    execFileSync('zip', ['-q', '-Xr', encoded, '.', '-x', 'mimetype'], { cwd: expanded });
+    const encodedBytes = await fs.readFile(encoded);
+    await run('encoded-visible-prose-preserves-source-reference', 'kafka-de', row => {
+      row.source = 'data/encoded.epub';
+      row.sourceBytes = encodedBytes.length;
+      row.sourceSha256 = crypto.createHash('sha256').update(encodedBytes).digest('hex');
+      row.referenceVerification += ' Derived fixture changes entity spelling only; expected narration stays pinned.';
+    }, null, sourceRoot);
     await run('source-checksum-drift', 'kafka-de', row => { row.sourceSha256 = '0'.repeat(64); }, 'source-checksum');
     await run('missing-source', 'kafka-de', row => { row.source = 'data/benchmarks/processing-real/absent.epub'; }, 'source-available');
     await run('missing-provenance', 'kafka-de', row => { delete row.sourceUrl; }, 'manifest-valid');
@@ -115,7 +148,7 @@ const { spawnSync } = require('node:child_process');
     await protectedNewOutput('source-file-alias-protects-its-real-directory', path.join(foreign, 'new-report.json'),
       ['--source-root', path.join(temporary, 'source-root'), '--manifest', linkedManifest]);
   } finally {
-    const report = { passed: results.length === 20 && results.every(row => row.passed), cases: results };
+    const report = { passed: results.length === 21 && results.every(row => row.passed), cases: results };
     await fs.writeFile(path.join(output, `${process.env.REAL_PROCESSING_GATE_PHASE || 'real-processing-gates'}.json`), JSON.stringify(report, null, 2));
     await fs.rm(temporary, { recursive: true, force: true });
     if (!report.passed) process.exitCode = 1;

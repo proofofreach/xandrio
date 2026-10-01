@@ -37,6 +37,12 @@ must satisfy the references. A fresh-process artifact round trip must retain
 the same text and chapter count. Networking is disabled in the runner and its
 artifact reader.
 
+The source reader removes markup completely and decodes named and numeric
+entities once. It preserves visible text and authored line breaks without
+calling production narration repair. A derived encoding fixture changes only
+the entity spelling in the pinned Kafka EPUB; its expected narration hashes
+remain unchanged. This is a separate CLI regression case, not a seventh book.
+
 Whole-book hashes were frozen from deployed source revision
 `38ec736ab87cd62ef8692b75de71aacd9ff9075e` before evaluating this change. They are
 regression fingerprints, not independent proof that every word was extracted
