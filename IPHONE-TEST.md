@@ -72,3 +72,33 @@ Keep the server log visible: it prints `[playback] first HLS segment in …ms`.
     page, and confirm it reloads once under the new worker. Playback of the
     downloaded book must stay local, with no `/api/audio-hls` or unscoped
     `/api/audio` request at any point.
+
+## Playback intent and book identity
+
+21. Play through Bluetooth, lock the phone, then disconnect and reconnect the
+    headphones. Confirm the book title and position remain correct. Repeat,
+    pressing Pause before reconnecting. Audio must stay paused after that
+    explicit Pause. Run this in Safari and the installed Home Screen app.
+22. Interrupt playback with a phone call or another audio app. Return to Xandrio,
+    press Pause, then end the interruption. Audio must remain paused. One manual
+    Play must resume the selected book without jumping to another chapter.
+23. Use two books with distinguishable opening narration. Slow the development
+    server's audio response, open A, then select B before A finishes loading.
+    Press Play while B's saved position is loading. The title and audible book
+    must agree. Repeat rapid A/B/C selection and Lock Screen Play. Only the
+    latest selected book may play. A failed selection must preserve the previous
+    book's resume point. Record the actual response delay used.
+
+## Record physical-device evidence
+
+Copy [the result template](docs/fixtures/iphone-playback-result-template.json)
+to `output/playback-processing/` before running this checklist. Record the
+immutable source and deployed revisions, service-worker/app versions, device
+model, iOS version, Safari versus Home Screen app, audio output and connection.
+Use anonymous book labels. For each playback check, record the observed title,
+audible source, position, user action, expected result and pass/fail. Include a
+screen recording or redacted playback ledger when available.
+
+Keep unrun checks `not-run`. A desktop browser profile, WebKit run or simulated
+lock screen does not count as physical iPhone evidence. The new build remains
+physically unverified until a completed result file names that exact build.
