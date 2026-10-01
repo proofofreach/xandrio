@@ -161,8 +161,8 @@ citation abbreviations, ordinals and currency, and changed lexical casing in
 stored chapter text. Partitioning now uses the boundary splitter directly.
 Speech preparation still applies substitutions when producing narration.
 
-Run `npm run verify:source-partition` on Node 24. It builds and imports a real
-oversized EPUB, checks exact normalized source conservation across all parts,
+Run `npm run verify:source-partition` on Node 24. It builds and imports a valid
+oversized EPUB containing synthetic prose, checks exact normalized source conservation across all parts,
 checks chapter metadata and ordinary chapters, and verifies that speech
 substitutions still apply to narration. The before/after JSON and logs are
 saved under `output/playback-processing/`. The reproduction changed 208,509

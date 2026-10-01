@@ -1,0 +1,196 @@
+{
+  "schemaVersion": 1,
+  "baselineRevision": "38ec736ab87cd62ef8692b75de71aacd9ff9075e",
+  "referenceContract": "Expected hashes are regression fingerprints from the deployed baseline, not independent proof of source completeness. Source assertions are separately verified against authored markup or scanned pages.",
+  "cases": [
+    {
+      "id": "kafka-de",
+      "source": "data/benchmarks/processing-real/kafka-de.epub",
+      "format": "epub",
+      "language": "de",
+      "feature": "prose",
+      "sourceUrl": "https://www.gutenberg.org/ebooks/22367.epub3.images",
+      "rights": "Public domain in the USA",
+      "sourceSha256": "0f87a4651d099229448a499523fd34ba53269430631260ccdc7496d8c3ff1159",
+      "sourceBytes": 99718,
+      "expected": {
+        "normalizedHash": "77b6c76f466c2b0e3f7f4e47c9088fcef782e0b432de345d85181355e48a5606",
+        "exactTextHash": "e42bd0e9711c549cbc5deb3f602c7a91b83061167de35fc868ae2ef1f36df113",
+        "chapterCount": 5
+      },
+      "references": [
+        {
+          "kind": "passage",
+          "text": "Als Gregor Samsa eines Morgens aus unruhigen Träumen erwachte, fand er sich in seinem Bett zu einem ungeheueren Ungeziefer verwandelt.",
+          "sourceUnit": {
+            "kind": "epub-spine",
+            "id": "pg-header"
+          },
+          "occurrences": 1
+        },
+        {
+          "kind": "passage",
+          "text": "Erst in der Abenddämmerung erwachte Gregor aus seinem schweren ohnmachtähnlichen Schlaf.",
+          "sourceUnit": {
+            "kind": "epub-spine",
+            "id": "pg-header"
+          },
+          "occurrences": 1
+        }
+      ],
+      "sourcePage": "https://www.gutenberg.org/ebooks/22367",
+      "referenceVerification": "Passages verified in original pinned source markup. These references prove only their recorded spans."
+    },
+    {
+      "id": "maupassant-fr",
+      "source": "data/benchmarks/processing-real/maupassant-fr.epub",
+      "format": "epub",
+      "language": "fr",
+      "feature": "prose",
+      "sourceUrl": "https://www.gutenberg.org/ebooks/10746.epub3.images",
+      "rights": "Public domain in the USA",
+      "sourceSha256": "1be1250343105e86c0dc963aa9f56d6982b816b07671103a70c5cdd332c94128",
+      "sourceBytes": 232294,
+      "expected": {
+        "normalizedHash": "b26c57928cdb5ad2a1557393d94f2cb4fc863ad31cdef9616bb01d2e613d0eeb",
+        "exactTextHash": "5ca662294cdbd544ed00dc7ebdc55dcb35a47446e49ee350b6db7cb410a91c11",
+        "chapterCount": 18
+      },
+      "references": [
+        {
+          "kind": "passage",
+          "text": "Pendant plusieurs jours de suite des lambeaux d'armée en déroute avaient traversé la ville. Ce n'était point de la troupe, mais des hordes débandées.",
+          "sourceUnit": {
+            "kind": "epub-spine",
+            "id": "pg-header"
+          },
+          "occurrences": 1
+        }
+      ],
+      "sourcePage": "https://www.gutenberg.org/ebooks/10746",
+      "referenceVerification": "Passages verified in original pinned source markup. These references prove only their recorded spans."
+    },
+    {
+      "id": "leaves-en",
+      "source": "data/benchmarks/jev-expanded/leaves.epub",
+      "format": "epub",
+      "language": "en",
+      "feature": "poetry",
+      "sourceUrl": "https://www.gutenberg.org/ebooks/1322.epub3.images",
+      "rights": "Public domain in the USA",
+      "sourceSha256": "aa14a8269abce38808cc3aca86e60821ecf195a5bb783adac64c272e8a384539",
+      "sourceBytes": 851908,
+      "expected": {
+        "normalizedHash": "c6c8c83422c2e6c582d7c9281a8a58ee30dc6a885300a74df4d86a59b11bf41e",
+        "exactTextHash": "8899007f580d9c9d696d553bc629361e56fdcd5b5b85958f2f14adb6ec9b2d46",
+        "chapterCount": 375
+      },
+      "references": [
+        {
+          "kind": "verse",
+          "lines": [
+            "I celebrate myself, and sing myself,",
+            "And what I assume you shall assume,",
+            "For every atom belonging to me as good belongs to you."
+          ],
+          "sourceUnit": {
+            "kind": "epub-spine",
+            "id": "item29"
+          },
+          "occurrences": 1
+        }
+      ],
+      "sourcePage": "https://www.gutenberg.org/ebooks/1322",
+      "referenceVerification": "Passages verified in original pinned source markup. These references prove only their recorded spans."
+    },
+    {
+      "id": "huck-en",
+      "source": "data/benchmarks/jev-expanded/huck.mobi",
+      "format": "mobi",
+      "language": "en",
+      "feature": "authored-chapters",
+      "sourceUrl": "https://www.gutenberg.org/ebooks/76.kindle.images",
+      "rights": "Public domain in the USA",
+      "sourceSha256": "ea000615677e797139ba1af045cb78f968f2c9ff7b428600f9d99e203a974f6f",
+      "sourceBytes": 437456,
+      "expected": {
+        "normalizedHash": "cdc4f8527545c1ee58b2819fa5dd4159fa958df488ad799809c4d711ffae7e4d",
+        "exactTextHash": "5696ca2efeb188e7e90e63d6eeee9e93d4fee7164b6ba5ebece7efe8d133189e",
+        "chapterCount": 51
+      },
+      "references": [
+        {
+          "kind": "passage",
+          "text": "We went tiptoeing along a path amongst the trees back towards the end of the widow’s garden,",
+          "sourceUnit": {
+            "kind": "mobi-spine",
+            "id": "5"
+          },
+          "occurrences": 1,
+          "chapterTitle": "Chapter II"
+        }
+      ],
+      "sourcePage": "https://www.gutenberg.org/ebooks/76",
+      "referenceVerification": "Passages verified in original pinned source markup. These references prove only their recorded spans."
+    },
+    {
+      "id": "meditations-en",
+      "source": "data/benchmarks/jev-expanded/meditations.mobi",
+      "format": "mobi",
+      "language": "en",
+      "feature": "footnotes",
+      "sourceUrl": "https://www.gutenberg.org/ebooks/2680.kindle.images",
+      "rights": "Public domain in the USA",
+      "sourceSha256": "4701c5f015fc0d66518e3ed8bd12477e7d549979e74cb47a30dabc5e06f11a2e",
+      "sourceBytes": 554303,
+      "expected": {
+        "normalizedHash": "5b6838b316470100c8dcf73c33417814584cba585b66434c958170d8c04775e4",
+        "exactTextHash": "9491533820350adeefa9bd9a383fa116074d16468e7d9f3bc8aeb83c225fc06b",
+        "chapterCount": 24
+      },
+      "references": [
+        {
+          "kind": "footnote",
+          "text": "XXX. \"Cut down grapes\" (35): Correct \"ears of corn.\" \"Epictetus\"(36): Arr. 3, 22, 105.",
+          "sourceUnit": {
+            "kind": "mobi-spine",
+            "id": "18"
+          },
+          "occurrences": 1,
+          "chapterTitle": "Notes"
+        }
+      ],
+      "sourcePage": "https://www.gutenberg.org/ebooks/2680",
+      "referenceVerification": "Passages verified in original pinned source markup. These references prove only their recorded spans."
+    },
+    {
+      "id": "walden-en",
+      "source": "data/benchmarks/real-books/walden.pdf",
+      "format": "pdf",
+      "language": "en",
+      "feature": "scanned-pages",
+      "sourceUrl": "https://archive.org/download/waldenorlifeinwo1854thor/waldenorlifeinwo1854thor.pdf",
+      "rights": "Public domain in the USA",
+      "sourceSha256": "6b28dd489b2195279fad38541859d8e1126f6eebff9b07b9d948292c26eb4493",
+      "sourceBytes": 26762912,
+      "expected": {
+        "normalizedHash": "4f0a58a3b97799a0be26eded8c77496ae77e2bbe4c1c46ede04baf93efb2f9e9",
+        "exactTextHash": "2840ecc27c618036675c9cf0eb9cc5a597942f6924f326c89b1fd029b1a2c1ac",
+        "chapterCount": 31
+      },
+      "references": [
+        {
+          "kind": "page",
+          "text": "When I wrote the following pages, or rather the bulk of them, I lived alone, in the woods, a mile from any neighbor, in a house which I had built myself,",
+          "sourceUnit": {
+            "kind": "scanned-page",
+            "pageNumber": 9
+          },
+          "occurrences": 1
+        }
+      ],
+      "sourcePage": "https://archive.org/details/waldenorlifeinwo1854thor",
+      "referenceVerification": "Source page 9 visually inspected; normalized OCR text is a regression fingerprint, not an independent proof of full OCR accuracy."
+    }
+  ]
+}

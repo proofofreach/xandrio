@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "verificationSurface": "physical-iphone",
+  "status": "not-run",
+  "sourceRevision": null,
+  "deployedRevision": null,
+  "serviceWorkerVersion": null,
+  "appVersion": null,
+  "testedAt": null,
+  "deviceModel": null,
+  "iosVersion": null,
+  "surface": null,
+  "connection": null,
+  "audioOutput": null,
+  "cases": [
+    { "checklistStep": 5, "name": "Locked playback and chapter handoff", "status": "not-run" },
+    { "checklistStep": 10, "name": "First Lock Screen resume after 15 minutes", "status": "not-run" },
+    { "checklistStep": 13, "name": "Network interruption and manual recovery", "status": "not-run" },
+    { "checklistStep": 16, "name": "Downloaded playback in airplane mode", "status": "not-run" },
+    { "checklistStep": 21, "name": "Bluetooth reconnect respects Pause", "status": "not-run" },
+    { "checklistStep": 22, "name": "Audio interruption respects Pause", "status": "not-run" },
+    { "checklistStep": 23, "name": "Book selection preserves audible identity", "status": "not-run" }
+  ],
+  "caseEvidenceFields": ["surface", "audioOutput", "connection", "action", "expected", "observedTitleAlias", "observedAudioBookAlias", "positionBeforeSeconds", "positionAfterSeconds", "responseDelayMs", "evidenceFile", "notes"]
+}
