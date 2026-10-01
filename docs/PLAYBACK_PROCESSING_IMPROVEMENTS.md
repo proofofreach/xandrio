@@ -40,7 +40,7 @@ to the exact build.
 The existing repository suite passed all 3,500 tests across 184 suites. Native
 Chromium checks passed 30 playback/processing scenarios and four book-switch
 scenarios. The partition guard passed 34 E2E scenarios; the legacy detector
-passed 22; the real-processing benchmark gate passed 20. All six genuine-book
+passed 22; the real-processing benchmark gate passed 21. All six genuine-book
 imports passed source assertions and fresh-process artifact reads.
 
 An independent `gpt-6-sol` review with `xhigh` reasoning found no remaining
