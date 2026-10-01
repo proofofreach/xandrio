@@ -17,7 +17,7 @@ const { planNarration } = require('../lib/tts-text');
   const output = path.resolve(__dirname, '../output/playback-processing');
   await fs.mkdir(output, { recursive: true });
   const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'xandrio-source-partition-'));
-  const evidence = { passed: false, cases: [] };
+  const evidence = { passed: false, sourceKind: 'synthetic', cases: [] };
   const digest = text => crypto.createHash('sha256').update(text).digest('hex');
   try {
     const epub = await createSyntheticImportEpub(temp);
@@ -33,7 +33,7 @@ const { planNarration } = require('../lib/tts-text');
     evidence.cases.push({ name: 'oversized EPUB source conservation', sourceChapters: source.length,
       importedChapters: imported.length, splitParts: parts.length, sourceChars: before.length,
       importedChars: after.length, sourceHash: digest(before), importedHash: digest(after) });
-    assert(parts.length > 1, 'the real EPUB import must partition its oversized chapter');
+    assert(parts.length > 1, 'the synthetic EPUB import must partition its oversized chapter');
     assert(parts.every(part => part.text.length <= 100000), 'all parts must fit the import chapter limit');
     assert.equal((after.match(/no\. 8/g) || []).length, 2400, 'partitioning must retain source citation abbreviations');
     assert.equal((after.match(/21st/g) || []).length, 2400, 'partitioning must retain source ordinals');
@@ -54,7 +54,7 @@ const { planNarration } = require('../lib/tts-text');
     assert(narration.chunks.length > 0, 'speech preparation must still produce playable chunks');
     evidence.cases.push({ name: 'speech substitutions remain at narration', passed: true });
     evidence.passed = true;
-    console.log('PASS real oversized EPUB import preserves citations, source text, metadata, and narration preparation');
+    console.log('PASS synthetic oversized EPUB import preserves citations, source text, metadata, and narration preparation');
   } finally {
     await fs.writeFile(path.join(output, `${process.env.SOURCE_PARTITION_PHASE || 'source-partition'}.json`), JSON.stringify(evidence, null, 2));
     await fs.rm(temp, { recursive: true, force: true });

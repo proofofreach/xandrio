@@ -31,6 +31,7 @@ certs/
 !package.json
 !package-lock.json
 !scripts/audio-calibration-fixtures.json
+!docs/fixtures/iphone-playback-result-template.json
 !ops/gauntlet/*.json
 
 # Logs
