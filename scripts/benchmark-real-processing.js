@@ -140,6 +140,17 @@ function referencePositions(text, reference) {
   return positions;
 }
 
+function sourceMarkupText(html) {
+  let text = String(html || ''), previous;
+  // Complete markup removal without applying production text repair. A removed
+  // fragment must not leave another tag for a later consumer to interpret.
+  do {
+    previous = text;
+    text = text.replace(/<[^>]*>/g, '');
+  } while (text !== previous);
+  return text;
+}
+
 async function referenceSourceUnits(source, row, artifact, temporary) {
   const units = new Map();
   if (row.format === 'epub') {
@@ -150,7 +161,7 @@ async function referenceSourceUnits(source, row, artifact, temporary) {
       // Preserve authored line breaks. This source oracle removes markup only;
       // it does not invoke extraction repair, partitioning or speech preparation.
       const html = await getChapterHtml(epub, id);
-      units.set(id, html.replace(/<[^>]*>/g, ''));
+      units.set(id, sourceMarkupText(html));
     }
   } else if (row.format === 'mobi') {
     const { initMobiFile } = await import('@lingo-reader/mobi-parser');
@@ -161,7 +172,7 @@ async function referenceSourceUnits(source, row, artifact, temporary) {
       for (const reference of row.references) {
         const id = reference.sourceUnit.id;
         const spine = parser.getSpine().find(item => String(item.id) === id);
-        if (spine) units.set(id, String(parser.loadChapter(spine.id).html || '').replace(/<[^>]*>/g, ''));
+        if (spine) units.set(id, sourceMarkupText(parser.loadChapter(spine.id).html));
       }
     } finally { parser.destroy?.(); }
   } else {
