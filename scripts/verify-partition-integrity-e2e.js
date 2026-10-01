@@ -35,7 +35,7 @@ const faults = [
   const output = path.resolve(__dirname, '../output/playback-processing');
   await fs.mkdir(output, { recursive: true });
   const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'xandrio-partition-integrity-'));
-  const report = { passed: false, scope: 'Real EPUB parsing, disk chapter cache and real XBook store; partition fault injection only', cases: [] };
+  const report = { passed: false, scope: 'Real EPUB and MOBI worker parsing, disk chapter cache and real XBook store; partition fault injection only', cases: [] };
   async function scenario(name, verify) {
     try {
       const evidence = await verify();
@@ -109,6 +109,58 @@ const faults = [
       const extracted = await doc.extractChapters(source);
       assert.equal(digest(normalizedNarrationText(extracted)), sourceHash);
       return { normalizedSourceHash: sourceHash };
+    });
+    // The real Kindle parser partitions inside its worker before BookDocument
+    // sees the chapters. A later snapshot cannot detect those earlier faults.
+    const kindleSource = path.resolve(__dirname, '../data/benchmarks/jev-expanded/huck.mobi');
+    const kindleFaults = [
+      ['speech-rewrite', 'chapters[0].text = "Rewritten narration. " + chapters[0].text'],
+      ['same-length-replacement', 'chapters[0].text = "X".repeat(chapters[0].text.length)'],
+      ['missing-prose', 'chapters = chapters.slice(1)'],
+      ['duplicate-prose', 'chapters = [...chapters, chapters[0]]'],
+      ['reordered-prose', 'chapters = [...chapters].reverse()'],
+      ['empty-result', 'chapters = []'],
+      ['boundary-loss', 'chapters = [{...chapters[0], text: chapters.map(chapter => chapter.text).join("")}]'],
+      ['input-mutation', 'chapters[0].text = "Lost source prose."']
+    ];
+    for (const [name, mutation] of kindleFaults) {
+      await scenario(`Real MOBI worker rejects first-partition ${name} before cache publication`, async () => {
+        const directory = path.join(temporary, `kindle-${name}`);
+        await fs.mkdir(directory);
+        const filename = path.join(directory, 'source.mobi');
+        await fs.copyFile(kindleSource, filename);
+        const preload = path.join(directory, 'partition-fault.cjs');
+        await fs.writeFile(preload, `
+const { isMainThread } = require('node:worker_threads');
+if (!isMainThread) {
+  const utils = require(${JSON.stringify(require.resolve('../lib/chapter-utils'))});
+  utils.splitOversizedChapters = chapters => { ${mutation}; return chapters; };
+}
+`);
+        const invocation = `
+const assert = require('node:assert/strict');
+const fs = require('node:fs/promises');
+const { createBookDocument } = require(${JSON.stringify(require.resolve('../lib/book-document'))});
+(async () => {
+  const doc = createBookDocument({log: {log(){}, warn(){}, error(){}}});
+  await assert.rejects(doc.getChaptersCached(${JSON.stringify(filename)}), error => {
+    assert.equal(error.code, 'KINDLE_EXTRACTION_FAILED');
+    assert(error.kindleExtraction.candidates.some(candidate => /partition.*text/i.test(candidate.error || '')));
+    return true;
+  });
+  await assert.rejects(fs.access(doc.getChapterCachePath(${JSON.stringify(filename)})), {code:'ENOENT'});
+})().catch(error => { console.error(error.stack); process.exitCode = 1; });
+`;
+        execFileSync(process.execPath, ['--require', preload, '-e', invocation], { timeout: 60000, encoding: 'utf8' });
+        return { realParserWorker: true, rejectedBeforePublication: true };
+      });
+    }
+    await scenario('Real MOBI clean retry retains the pinned narration after worker rejection', async () => {
+      const filename = path.join(temporary, 'kindle-speech-rewrite/source.mobi');
+      const chapters = await createBookDocument({log: quiet}).getChaptersCached(filename);
+      const expected = require('../test/fixtures/processing-real-corpus.json').cases.find(row => row.id === 'huck-en').expected.normalizedHash;
+      assert.equal(digest(normalizedNarrationText(chapters)), expected);
+      return { normalizedSourceHash: expected, cleanRetry: true };
     });
     report.passed = report.cases.every(result => result.passed);
   } finally {
