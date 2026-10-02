@@ -203,7 +203,7 @@ const results = [];
         const page = await context.newPage();
         online = false; await request('/api/engines/status?refresh=1');
         await page.goto(`${origin}/#/settings/voice`);
-        await page.locator('.voice-settings-filters summary').click();
+        await page.locator('#voice-filter-bar [data-voice-preset="all"]').click();
         await page.locator('#voice-filter-bar [data-voice-filter="provider"]').selectOption('moss-nano');
         // The selected voice is pinned above the filtered list.
         assert.equal(await page.locator('#voice-list [data-voice-id^="moss-nano:"]').count(), 18);
