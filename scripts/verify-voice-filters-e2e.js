@@ -100,6 +100,14 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
       const targets = await page.locator('#voice-filter-bar select:visible, #voice-filter-bar button:visible').evaluateAll(els => els.map(el => ({ name: el.getAttribute('aria-label') || el.textContent.trim(), height: el.getBoundingClientRect().height })));
       assert(targets.every(t => t.height >= 44), JSON.stringify(targets));
+      if (size.width >= 1200) {
+        const candidates = page.locator('[data-voice-candidates]');
+        const group = await candidates.boundingBox();
+        const hint = await candidates.locator('.settings-hint').boundingBox();
+        const first = await candidates.locator('[data-voice-id]').first().boundingBox();
+        assert(Math.abs(group.width - hint.width) < 2, 'Nano explanation spans the desktop grid');
+        assert(first.y >= hint.y + hint.height, 'Nano cards begin below their explanation');
+      }
       const file = `settings-${size.width}.png`; await page.screenshot({ path: path.join(output, file), fullPage: true }); report.screenshots.push(file);
     }
     assert.equal((await catalog()).current, 'kokoro:am_onyx'); assert.deepEqual(writes, []); assert.deepEqual(errors, []);
