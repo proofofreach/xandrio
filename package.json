@@ -89,6 +89,7 @@
     "gauntlet:compile": "loopc compile ops/gauntlet/xandrio.loop.yaml --target standalone --out output/xandrio-gauntlet",
     "gauntlet:judge": "node scripts/run-xandrio-gauntlet-judge.mjs . artifacts/gauntlet/progress.md",
     "verify:moss-nano": "node scripts/verify-moss-nano-e2e.js",
+    "verify:moss-nano-recovery": "node scripts/verify-moss-nano-recovery.js",
     "verify:voice-filters": "node scripts/verify-voice-filters-e2e.js",
     "verify:narration": "node scripts/verify-narration-workflow-e2e.js",
     "verify:moss-nano-book": "node scripts/verify-moss-nano-book-playback.js"

@@ -92,7 +92,18 @@ Requests are limited to 16 KiB, 1,200 characters, 256 text tokens, 375 frames an
 160 characters, with heading cues attached to nearby prose. This avoids Nano
 dropping later dialogue from a request containing several paragraphs. The split
 policy has its own cache identity. Exhaustion, invalid audio and cancellation never publish a partial
-successful file. Decoder state and the fixed sampling seed reset per request.
+successful file. Decoder state and the sampling seed reset per request.
+The default seed remains 1234. If audio fails the duration or static-noise check,
+the app retries the identical text and voice with seeds 1235 and 1236, then stops
+with an error. Inserted pauses do not count toward the speech-duration minimum;
+missing audio probes also fail validation. Failed and cancelled attempts remove
+their output before it can be reused after restart. HTTP errors stop the current
+attempt sequence. Each request retains its existing timeout and can be cancelled.
+
+This recovery policy extends previously rejected synthesis without changing the
+first take, mastering, or cache namespace. Existing verified audio and persisted
+preparation jobs remain compatible; they do not need to start over. Worker logs
+record the seed, and the app logs when a later seed recovers a failed take.
 Automatic transcription still found possible pronunciation errors and repeated
 sound effects. This model is an optional
 narrator; the trial does not establish word-perfect reading or human-rated quality.
@@ -103,6 +114,7 @@ do not change it in a serving instance without revising cache identity.
 
 ```sh
 npm run verify:moss-nano
+npm run verify:moss-nano-recovery
 npm run verify:narration
 moss-nano-venv/bin/python scripts/verify-moss-nano-worker.py --models moss-nano/models
 ```
