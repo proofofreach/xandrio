@@ -462,6 +462,7 @@ This file is generated from the locked installed Node dependency tree by `npm ru
 | PyTorch 2.13.0 and torchaudio 2.11.0 | BSD-3-Clause (PyTorch); pinned in the hash-checked Linux locks. |
 | Chatterbox 0.1.7 and Resemble Perth 1.0.1 | MIT. Pinned in python/requirements-chatterbox.txt; model-card and model-weight terms must be reviewed before shipping weights. Xandrio does not bundle model weights. |
 | MLX-Audio 0.4.5 and MLX 0.31.2 | MIT. Pinned in python/requirements-chatterbox-mlx.txt. |
+| MOSS-TTS-Nano ONNX runtime | Apache-2.0. Vendored at the revision in moss-nano/models.lock.json; license in moss-nano/vendor/LICENSE. Optional model downloads are pinned and checksum verified, never bundled. Dependency inventory: moss-nano/requirements.txt. |
 | Edge TTS | Remote integration; no Microsoft binaries or voices are bundled. See product documentation for service terms and data flow. |
 | OCR, Poppler, ffmpeg, Playwright/Chromium, and base image | Installed by the container distribution. Container SBOM and image scan are generated for every release; retain their upstream notices with distributed images. |
 

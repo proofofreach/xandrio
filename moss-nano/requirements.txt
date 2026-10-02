@@ -1,0 +1,6 @@
+numpy==2.5.3
+onnxruntime==1.30.0
+sentencepiece==0.2.2
+flatbuffers==25.12.19
+packaging==26.3
+protobuf==7.36.2

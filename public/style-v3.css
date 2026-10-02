@@ -2544,14 +2544,13 @@ button.book-local-state:hover { color: var(--accent); }
 }
 .hq-voice-prep-detail {
   color: var(--text-secondary);
-  font-size: 11px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 .hq-voice-prep-btn {
   flex: 0 0 auto;
-  min-height: 30px;
+  min-height: var(--touch-min);
   padding: 0 10px;
   color: var(--text);
   background: transparent;
@@ -3714,6 +3713,9 @@ body.sheet-open { overflow: hidden; }
   margin-top: 6px;
   color: var(--text-secondary);
   font-weight: var(--weight-semibold);
+  white-space: normal;
+  overflow: visible;
+  line-height: 1.5;
 }
 .audio-activity-dot {
   width: 7px;
@@ -5508,7 +5510,7 @@ body.has-mini-player #stats-view { padding-bottom: calc(80px + env(safe-area-ins
   margin-top: 8px;
   overflow: hidden;
 }
-.voice-progress > div {
+.voice-progress > :is(div, span) {
   height: 100%;
   background: var(--accent);
   border-radius: 2px;
@@ -6146,3 +6148,62 @@ body.login-gate-open { overflow: hidden; }
 .offline-spinner { animation: offline-spin 1s linear infinite; }
 @keyframes offline-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .offline-spinner { animation: none; } }
+
+/* Narrator selection is a native button, with independent save and preview actions. */
+.voice-select-btn {
+  min-height: var(--touch-min);
+  border: 0;
+  padding: 4px 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.voice-select-btn .voice-card-meta { display: block; }
+.voice-select-btn:disabled { cursor: not-allowed; }
+.voice-select-btn:focus-visible,
+.voice-settings-filters summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
+  border-radius: var(--radius);
+}
+.voice-settings-filters summary {
+  display: list-item;
+  min-height: var(--touch-min);
+  padding: 12px 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+  cursor: pointer;
+}
+.voice-filter select,
+.voice-sheet-search input,
+.voice-facet-chip,
+.voice-more-toggle { min-height: var(--touch-min); }
+.voice-save-btn,
+.voice-play-btn { min-width: var(--touch-min); min-height: var(--touch-min); }
+.hq-voice-prep-row { align-items: flex-start; flex-wrap: wrap; }
+.hq-voice-prep-copy { flex: 1 1 200px; }
+
+.narration-fallback-label {
+  display: block;
+  margin-top: var(--space-3, 12px);
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+.narration-fallback {
+  width: 100%;
+  min-height: 45px;
+  margin-top: var(--space-1, 4px);
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-raised);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+}
+.narration-fallback:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.narration-fallback[hidden], .narration-fallback-label[hidden] { display: none; }
+.voice-progress, .voice-card-info > .voice-card-meta { display: block; }
+.audio-activity-preparation { min-height: 45px; padding: 8px 12px; }

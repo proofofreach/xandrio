@@ -56,12 +56,12 @@
 .player-book-progress-text { white-space: normal; color: var(--text-secondary); }
 .player-session-meta .player-voice-status {
   display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 2px var(--space-2);
-  min-width: 0; width: 100%; min-height: 44px; margin: 0; padding: var(--space-2) 0;
+  min-width: 0; width: 100%; min-height: 45px; margin: 0; padding: var(--space-2) 0;
   border: 0; border-radius: var(--radius); text-align: right;
 }
 .player-voice-status-label { display: none; }
 .player-voice-status-name { font-size: 12px; font-weight: var(--weight-regular); }
-.player-voice-status-cache { font-size: 11px; font-weight: var(--weight-regular); }
+.player-voice-status-cache { font-size: 11px; font-weight: var(--weight-regular); white-space: normal; overflow-wrap: anywhere; }
 .player-session-meta .player-voice-status:hover { background: var(--surface-hover); }
 .player-details { background: transparent; border: 0; border-top: 1px solid var(--border); border-radius: 0; padding: 0; }
 .player-details summary { display: flex; align-items: center; justify-content: space-between; min-height: 52px; list-style: none; color: var(--text-secondary); }

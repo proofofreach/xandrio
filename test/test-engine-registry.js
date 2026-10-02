@@ -28,8 +28,8 @@ const registry = createNarrationEngineRegistry({
   chatterboxRefVersion: voice => voice === 'chatterbox:custom' ? 'voice-v2' : null
 });
 
-test('exposes the three real engine adapters', () => {
-  assert.deepStrictEqual(registry.adapters(), ['kokoro', 'chatterbox', 'edge']);
+test('exposes the four real engine adapters', () => {
+  assert.deepStrictEqual(registry.adapters(), ['kokoro', 'chatterbox', 'moss-nano', 'edge']);
 });
 
 test('resolves Kokoro tuning and cache identity', () => {

@@ -37,6 +37,12 @@ export function isPremiumVoiceSelected() {
 // --- Voice selection (moved from modal) ---
 let voices = [];
 let currentVoice = '';
+let defaultVoice = '';
+let bookNarration = null;
+let narrationLoadGeneration = 0;
+let voiceSelectionPending = false;
+let preparationStale = false;
+let unavailableCurrent = null;
 let voiceCache = {};
 let engineStatus = null;
 let sampleAudio = null;
@@ -49,7 +55,6 @@ let hqVoicePrepTimer = null;
 // of network resources.
 let hqVoicePrepPolling = false;
 let hqVoicePrepGeneration = 0;
-let hqVoicePrepHideTimer = null;
 let premiumBookStatus = null;
 let premiumChapterReadiness = [];
 const premiumToastBooks = new Set();
@@ -71,7 +76,7 @@ function loadVoiceSheetFacets() {
   if (saved && typeof saved === 'object') {
     return {
       tier: ['all', 'instant', 'premium'].includes(saved.tier) ? saved.tier : 'all',
-      engine: ['all', 'edge', 'kokoro', 'chatterbox'].includes(saved.engine) ? saved.engine : 'all',
+      engine: ['all', 'edge', 'kokoro', 'chatterbox', 'moss-nano'].includes(saved.engine) ? saved.engine : 'all',
       gender: ['all', 'male', 'female'].includes(saved.gender) ? saved.gender : 'all'
     };
   }
@@ -85,16 +90,19 @@ function saveVoiceSheetFacets() {
 }
 
 function voiceIsPremium(voice) {
-  return String(voice?.provider || '').toLowerCase() === 'chatterbox' ||
+  return voice?.tier === 'premium' || voice?.tier === 'chatterbox' || providerId(voice) === 'chatterbox' ||
     String(voice?.id || '').startsWith('chatterbox:');
 }
+
+function providerId(voice) { return String(voice?.providerId || voice?.provider || '').toLowerCase(); }
+function voiceFilterValue(voice, key) { return key === 'provider' ? providerId(voice) : voice[key]; }
 
 function filterVoicesForSheet(list) {
   const query = voiceSheetQuery.trim().toLowerCase();
   return list.filter(voice => {
     if (voiceSheetFacets.tier === 'premium' && !voiceIsPremium(voice)) return false;
     if (voiceSheetFacets.tier === 'instant' && voiceIsPremium(voice)) return false;
-    if (voiceSheetFacets.engine !== 'all' && String(voice.provider || '').toLowerCase() !== voiceSheetFacets.engine) return false;
+    if (voiceSheetFacets.engine !== 'all' && providerId(voice) !== voiceSheetFacets.engine) return false;
     if (voiceSheetFacets.gender !== 'all' && String(voice.gender || '').toLowerCase() !== voiceSheetFacets.gender) return false;
     if (query) {
       const haystack = [voice.name, voice.provider, voice.accent, voice.depth, ...(voice.tags || [])]
@@ -114,7 +122,8 @@ function renderVoiceFacetChips(filterBarId) {
     <button type="button" class="voice-facet-chip ${active ? 'active' : ''}" data-facet-group="${safeAttr(group)}" data-facet-value="${safeAttr(value)}" aria-pressed="${active ? 'true' : 'false'}">${escapeHTML(label)}</button>
   `;
   const tierChips = [['all', 'All'], ['instant', 'Instant'], ['premium', 'Premium']];
-  const engineChips = [['all', 'All'], ['edge', 'Edge'], ['kokoro', 'Kokoro'], ['chatterbox', 'Chatterbox']];
+  const engineChips = [['all', 'All'], ...[['edge', 'Edge'], ['kokoro', 'Kokoro'], ['chatterbox', 'Chatterbox'], ['moss-nano', 'MOSS Nano']]
+    .filter(([id]) => voices.some(voice => providerId(voice) === id))];
   const genderChips = [['all', 'All'], ['male', 'Male'], ['female', 'Female']];
   const moreActive = voiceSheetFacets.engine !== 'all' || voiceSheetFacets.gender !== 'all';
 
@@ -165,16 +174,20 @@ function renderVoiceFacetChips(filterBarId) {
   });
 }
 
-// Pinned "current voice" card at the top of the sheet: what's playing,
+// Pinned book narrator at the top of the sheet: what's selected,
 // whether it's ready, and a preview button — no select affordance needed.
 function renderCurrentVoiceCard() {
   const voice = voices.find(v => v.id === currentVoice);
-  if (!voice) return '';
+  const unavailableNotice = unavailableCurrent
+    ? `<p class="settings-hint" role="status">${escapeHTML(unavailableVoiceMessage())}</p>` : '';
+  if (!voice) return unavailableNotice;
   const cache = voiceCache[currentVoice];
-  const readiness = getVoiceCacheLabel(cache) || 'Ready when you play';
-  const playing = deps.getChunkPlayer?.()?.isPlaying;
+  const readiness = getVoiceCacheLabel(cache) || (voiceIsPremium(voice)
+    ? (voice.pairedInstantVoice ? 'Prepares in the background' : 'Prepare before listening') : 'Ready when you play');
+  const playing = deps.getChunkPlayer?.()?.isPlaying && deps.getActualVoice?.() === currentVoice;
   return `
-    <div class="voice-card voice-card--current" aria-label="Current voice">
+    ${unavailableNotice}
+    <div class="voice-card voice-card--current" aria-label="Selected narrator for this book">
       <div class="voice-card-info">
         <div class="voice-card-name-row">
           <div class="voice-card-name">${escapeHTML(voice.name)} ${voicePill(voice)}</div>
@@ -196,22 +209,41 @@ function voicePill(voice) {
   return '';
 }
 
+async function loadBookNarration() {
+  const bookId = deps.getCurrentBook()?.id;
+  const generation = ++narrationLoadGeneration;
+  if (bookNarration?.bookId !== bookId) {
+    stopHighQualityPrepPolling();
+    premiumBookStatus = null;
+    premiumChapterReadiness = [];
+    preparationStale = false;
+    bookNarration = null;
+  }
+  if (!bookId) { currentVoice = defaultVoice; return; }
+  const preference = await apiGet(`/api/narration/${encodeURIComponent(bookId)}`);
+  if (generation !== narrationLoadGeneration || deps.getCurrentBook()?.id !== bookId) return;
+  if (currentVoice !== preference.voiceId) {
+    stopHighQualityPrepPolling();
+    premiumBookStatus = null;
+    premiumChapterReadiness = [];
+  }
+  bookNarration = preference;
+  currentVoice = preference.voiceId;
+}
+
 export async function loadVoices() {
   try {
     const [data] = await Promise.all([apiGet('/api/voices'), loadEngineStatus()]);
     voices = data.voices;
-    currentVoice = data.current;
+    defaultVoice = data.current;
+    unavailableCurrent = data.unavailableCurrent || null;
+    await loadBookNarration();
     await loadVoiceCacheStatus();
     renderVoices();
     updatePlayerVoiceStatus();
   } catch {
-    const html = `
-      <div class="empty-state-modern">
-        <div class="empty-icon"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="icon-lg"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z"/></svg></div>
-        <h3>Couldn't load voices</h3>
-        <p>Check your connection and try again.</p>
-        <button class="btn-primary" data-retry-voices>Retry</button>
-      </div>`;
+    const html = `<div class="empty-state-modern"><h3>Couldn't load narrators</h3>
+      <p>Check your connection and try again.</p><button class="btn-primary" data-retry-voices>Retry</button></div>`;
     document.querySelectorAll('#voice-list, #player-voice-list').forEach(list => {
       list.innerHTML = html;
       list.querySelector('[data-retry-voices]')?.addEventListener('click', () => loadVoices());
@@ -219,44 +251,71 @@ export async function loadVoices() {
   }
 }
 
-async function loadEngineStatus() {
+let engineStatusTimer = null;
+async function loadEngineStatus(refresh = false) {
   try {
-    engineStatus = await apiGet('/api/engines/status');
+    engineStatus = await apiGet(`/api/engines/status${refresh ? '?refresh=1' : ''}`);
   } catch {
     engineStatus = null;
   }
 }
 
+function refreshStartingEngine() {
+  clearTimeout(engineStatusTimer);
+  if (!voices.some(v => providerId(v) === 'moss-nano') || engineStatus?.engines?.['moss-nano']?.up) return;
+  engineStatusTimer = setTimeout(async () => {
+    const visible = [...document.querySelectorAll('#voice-list, #player-voice-list')].some(list => list.offsetParent !== null);
+    if (!visible || document.hidden) return;
+    const previous = JSON.stringify(engineStatus);
+    await loadEngineStatus(true);
+    if (JSON.stringify(engineStatus) !== previous) {
+      // Update cards without replacing the focused search/filter controls.
+      renderVoiceSurface('voice-filter-bar', 'voice-list', false);
+      renderVoiceSheetSections('player-voice-list');
+      updatePlayerVoiceStatus();
+    }
+    refreshStartingEngine();
+  }, 5000);
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) refreshStartingEngine();
+});
+
 function getVoiceName(voiceId) {
   const voice = voices.find(v => v.id === voiceId);
-  return voice ? voice.name : voiceId;
+  return voice?.name || (bookNarration?.voiceId === voiceId ? bookNarration.voiceName : null) || voiceId;
+}
+
+function unavailableVoiceMessage() {
+  if (!unavailableCurrent) return '';
+  const reason = unavailableCurrent.status === 'disabled' ? 'disabled' : 'unavailable';
+  return `${unavailableCurrent.name} is ${reason}. ` + (unavailableCurrent.fallback
+    ? `Using ${getVoiceName(unavailableCurrent.fallback)} until it is available.` : 'Choose another voice to listen.');
 }
 
 async function loadVoiceCacheStatus() {
-  voiceCache = {};
-  if (!deps.getCurrentBook() || !deps.getChapters()[deps.getCurrentChapter()]) return;
-
+  const bookId = deps.getCurrentBook()?.id;
+  const chapterIndex = deps.getCurrentChapter();
+  if (!bookId || !deps.getChapters()[chapterIndex]) { voiceCache = {}; return; }
   try {
-    const data = await apiGet(`/api/voice-cache/${encodeURIComponent(deps.getCurrentBook().id)}/${deps.getCurrentChapter()}`);
+    const data = await apiGet(`/api/voice-cache/${encodeURIComponent(bookId)}/${chapterIndex}`);
+    if (deps.getCurrentBook()?.id !== bookId || deps.getCurrentChapter() !== chapterIndex) return;
     voiceCache = Object.fromEntries((data.voices || []).map(item => [item.voiceId, item]));
-  } catch (err) {
-    console.warn('Failed to load voice cache status:', err);
-  }
+  } catch { /* Preparation status communicates a stale connection. */ }
 }
 
 function renderVoices() {
   const summary = document.getElementById('settings-voice-summary');
-  if (summary) summary.textContent = getVoiceName(currentVoice);
-  const selectedVoice = voices.find(v => v.id === currentVoice);
+  if (summary) summary.textContent = getVoiceName(defaultVoice);
   const hint = document.getElementById('settings-voice-hint');
-  if (hint) hint.textContent = selectedVoice?.provider
-    ? `Narration engine: ${selectedVoice.provider}. Preview a voice before selecting it.`
-    : 'Preview a voice before selecting it.';
+  if (hint) hint.textContent = 'Choose the default narrator. Books with their own narrator keep that choice.';
   renderVoiceSurface('voice-filter-bar', 'voice-list');
   renderVoiceSurface('player-voice-filter-bar', 'player-voice-list');
+  refreshStartingEngine();
 }
 
-function renderVoiceSurface(filterBarId, listId) {
+function renderVoiceSurface(filterBarId, listId, refreshFilters = true) {
   const voiceList = document.getElementById(listId);
   if (!voiceList) return;
 
@@ -268,26 +327,26 @@ function renderVoiceSurface(filterBarId, listId) {
     return;
   }
 
-  renderVoiceFilters(filterBarId);
-  const filteredVoices = filterVoices(voices).filter(v => v.id !== currentVoice);
+  if (refreshFilters) renderVoiceFilters(filterBarId);
+  const filteredVoices = filterVoices(voices).filter(v => v.id !== defaultVoice);
   const savedVoices = filteredVoices.filter(v => savedVoiceIds.includes(v.id));
   const savedSet = new Set(savedVoices.map(v => v.id));
   const topVoices = filteredVoices.filter(v => !savedSet.has(v.id) && (v.top || v.custom));
   const shownSet = new Set([...savedVoices, ...topVoices].map(v => v.id));
   const otherVoices = filteredVoices.filter(v => !shownSet.has(v.id));
-  const current = voices.find(v => v.id === currentVoice);
-  const voiceSections = current ? [renderVoiceSection('Current voice', [current])] : [];
+  const current = voices.find(v => v.id === defaultVoice);
+  const voiceSections = current ? [renderVoiceSection('Default narrator', [current], defaultVoice)] : [];
 
   if (savedVoices.length > 0) {
-    voiceSections.push(renderVoiceSection('My voices', savedVoices));
+    voiceSections.push(renderVoiceSection('My voices', savedVoices, defaultVoice));
   }
 
   if (topVoices.length > 0) {
-    voiceSections.push(renderVoiceSection('Top voices', topVoices));
+    voiceSections.push(renderVoiceSection('Top voices', topVoices, defaultVoice));
   }
 
   if (otherVoices.length > 0) {
-    voiceSections.push(renderVoiceSection('All voices', otherVoices));
+    voiceSections.push(renderVoiceSection('All voices', otherVoices, defaultVoice));
   }
 
   if (filteredVoices.length === 0) {
@@ -377,7 +436,7 @@ function renderCloneVoicePanel() {
 
 function filterVoices(list) {
   return list.filter(voice =>
-    matchesVoiceFilter(voice.provider, voiceFilters.provider) &&
+    matchesVoiceFilter(providerId(voice), voiceFilters.provider) &&
     matchesVoiceFilter(voice.gender, voiceFilters.gender) &&
     matchesVoiceFilter(voice.accent, voiceFilters.accent) &&
     matchesVoiceFilter(voice.depth, voiceFilters.depth)
@@ -396,7 +455,7 @@ function renderVoiceFilters(filterBarId = 'voice-filter-bar') {
     { key: 'gender', label: 'Voice', values: getVoiceFilterValues('gender', ['male', 'female']) },
     { key: 'accent', label: 'Accent', values: getVoiceFilterValues('accent', ['us', 'uk']) },
     { key: 'depth', label: 'Tone', values: getVoiceFilterValues('depth', ['warm', 'clear', 'deep', 'expressive', 'lively', 'classic']) },
-    { key: 'provider', label: 'Source', values: getVoiceFilterValues('provider', ['chatterbox', 'kokoro', 'edge']) }
+    { key: 'provider', label: 'Source', values: getVoiceFilterValues('provider', ['chatterbox', 'moss-nano', 'kokoro', 'edge']) }
   ];
 
   normalizeVoiceFilters(groups);
@@ -424,7 +483,7 @@ function getVoiceFilterValues(key, preferredOrder = []) {
   const values = new Set(
     voices
       .filter(voice => voiceMatchesOtherFilters(voice, key))
-      .map(voice => String(voice[key] || '').toLowerCase())
+      .map(voice => String(voiceFilterValue(voice, key) || '').toLowerCase())
       .filter(Boolean)
   );
   const preferred = preferredOrder.filter(value => values.has(value));
@@ -434,7 +493,7 @@ function getVoiceFilterValues(key, preferredOrder = []) {
 
 function voiceMatchesOtherFilters(voice, ignoredKey) {
   return Object.entries(voiceFilters).every(([key, value]) =>
-    key === ignoredKey || matchesVoiceFilter(voice[key], value)
+    key === ignoredKey || matchesVoiceFilter(voiceFilterValue(voice, key), value)
   );
 }
 
@@ -451,6 +510,7 @@ function formatVoiceFilterLabel(value) {
   if (value === 'all') return 'All';
   if (value === 'us' || value === 'uk') return value.toUpperCase();
   if (value === 'chatterbox') return 'Chatterbox';
+  if (value === 'moss-nano') return 'MOSS Nano';
   if (value === 'kokoro') return 'Local';
   if (value === 'edge') return 'Cloud';
   return value.charAt(0).toUpperCase() + value.slice(1);
@@ -500,26 +560,22 @@ function getVoiceCacheClass(cache) {
 
 function updatePlayerVoiceStatus() {
   if (!playerVoiceName || !playerVoiceCache) return;
-  const voice = voices.find(v => v.id === currentVoice);
-  const cache = voiceCache[currentVoice];
-  if (voice && isHighQualityVoice()) {
-    // Premium voice: the status line speaks in tiers, not engines.
-    const servedTier = deps.getServedTier ? deps.getServedTier() : null;
-    playerVoiceName.textContent = servedTier === 'instant'
-      ? `${voice.name} · Instant (premium preparing)`
-      : `${voice.name} · Premium`;
-  } else {
-    playerVoiceName.textContent = voice ? voice.name : 'Voice not selected';
-  }
-  playerVoiceCache.textContent = getVoiceCacheLabel(cache) || 'Cache status unavailable';
-  playerVoiceStatus.dataset.cache = getVoiceCacheClass(cache);
+  const actualVoice = deps.getActualVoice?.();
+  const chosenName = getVoiceName(currentVoice) || 'Choose narrator';
+  const actualName = actualVoice ? getVoiceName(actualVoice) : chosenName;
+  const differs = actualVoice && actualVoice !== currentVoice;
+  const actualLabel = deps.getChunkPlayer()?.isPlaying ? 'Playing now' : 'Audio narrator';
+  playerVoiceName.textContent = actualName;
+  playerVoiceCache.textContent = differs
+    ? `${actualLabel} · ${chosenName} selected for this book`
+    : bookNarration?.inherited ? 'Library default · Change for this book' : 'Narrator for this book';
+  playerVoiceStatus.dataset.cache = getVoiceCacheClass(voiceCache[actualVoice || currentVoice]);
   updateHighQualityPrepPanel();
 }
 
 function isHighQualityVoice(voiceId = currentVoice) {
   const voice = voices.find(v => v.id === voiceId);
-  return String(voiceId || '').startsWith('chatterbox:') ||
-    String(voice?.provider || '').toLowerCase() === 'chatterbox';
+  return voiceIsPremium(voice) || (bookNarration?.voiceId === voiceId && bookNarration?.premiumActive === true);
 }
 
 function stopHighQualityPrepPolling() {
@@ -534,162 +590,151 @@ function stopHighQualityPrepPolling() {
   }
 }
 
-// Book-level premium prep panel (progressive premium audio). The panel
-// shows book-wide upgrade progress; playback always starts instantly on
-// the paired instant voice while premium chapters render in the background.
+function listeningTime(seconds) {
+  if (seconds <= 0) return 'No audio ready from here';
+  if (seconds < 60) return 'Under 1 minute ready from here';
+  return `${Math.floor(seconds / 60)} minutes ready from here`;
+}
+
 function updateHighQualityPrepPanel() {
   if (!hqVoicePrep) return;
   const visible = Boolean(deps.getCurrentBook() && deps.getChapters()[deps.getCurrentChapter()] && isHighQualityVoice());
-  if (!visible) {
-    hqVoicePrep.hidden = true;
-    stopHighQualityPrepPolling();
-    return;
-  }
-
+  hqVoicePrep.hidden = !visible;
+  if (!visible) { stopHighQualityPrepPolling(); return; }
   startHighQualityPrepPolling();
-
   const status = premiumBookStatus;
+  const name = getVoiceName(currentVoice);
+  const state = status?.status || 'loading';
   const total = Number(status?.totalChapters) || 0;
   const ready = Number(status?.readyChapters) || 0;
-  const percent = total > 0 ? Math.round((ready / total) * 100) : 0;
-  const allReady = total > 0 && ready >= total;
-
-  let state = 'idle';
-  if (allReady) state = 'ready';
-  else if (status?.status === 'error') state = 'error';
-  else if (status?.status === 'paused' || status?.status === 'engineOffline') state = 'generating';
-  else if (status?.status === 'generating') state = 'generating';
-
-  // Auto-hide shortly after the whole book is premium-ready.
-  if (state === 'ready') {
-    if (!hqVoicePrepHideTimer) {
-      hqVoicePrepHideTimer = setTimeout(() => {
-        if (hqVoicePrep) hqVoicePrep.hidden = true;
-      }, 4000);
-    }
-  } else if (hqVoicePrepHideTimer) {
-    clearTimeout(hqVoicePrepHideTimer);
-    hqVoicePrepHideTimer = null;
-    hqVoicePrep.hidden = false;
-  }
-  if (state !== 'ready') hqVoicePrep.hidden = false;
-
+  const speed = Number(deps.getChunkPlayer()?.playbackRate) || 1;
+  const position = deps.getChunkPlayer()?.getPosition?.();
+  const samePosition = status?.chapterIndex === deps.getCurrentChapter();
+  const moved = samePosition ? Math.max(0, Number(position?.currentTime) || 0) - status.offsetSeconds : 0;
+  const seconds = samePosition ? Math.max(0, status.readyAudioSeconds - moved) / speed : 0;
   hqVoicePrep.dataset.state = state;
-  if (hqVoicePrepTitle) hqVoicePrepTitle.textContent = 'Premium audio';
-  if (hqVoicePrepDetail) {
-    let detail;
-    if (state === 'ready') detail = 'Premium audio ready';
-    else if (state === 'error') detail = 'Premium generation failed — Retry';
-    else if (status?.status === 'engineOffline') detail = 'Premium engine offline — instant voice continues';
-    else if (status?.status === 'paused') detail = 'Paused while playing — resumes when idle';
-    else if (status?.status === 'generating') detail = `Preparing premium audio — ${ready} of ${total} chapters`;
-    else detail = 'Premium audio prepares in the background.';
-    hqVoicePrepDetail.textContent = detail;
+  hqVoicePrepTitle.textContent = status
+    ? `${name} · ${status.durationEstimated ? 'About ' : ''}${listeningTime(seconds)}`
+    : 'Checking preparation…';
+  const labels = {
+    loading: 'Checking audio for this book.',
+    disabled: 'Background preparation is off in Settings.',
+    userPaused: 'Preparation paused. Saved audio is kept.',
+    paused: 'Waiting for active playback to finish. Preparation resumes automatically.',
+    engineOffline: 'Narration service offline. Preparation resumes when it returns.',
+    generating: 'Preparing this book in the background.',
+    error: 'Preparation stopped. Retry to continue from saved audio.',
+    ready: 'The full book is prepared.',
+    idle: status?.enabled === false ? 'Background preparation is off in Settings.' : 'Prepare this book before listening.'
+  };
+  let detail = labels[state] || labels.idle;
+  if (status && status.firstUnreadyChapter !== null && state !== 'loading') {
+    detail += ` Chapter ${status.firstUnreadyChapter + 1} is next to prepare.`;
   }
-  if (hqVoicePrepFill) hqVoicePrepFill.style.width = `${percent}%`;
-  if (hqVoicePrepCount) hqVoicePrepCount.textContent = total > 0 ? `${ready}/${total}` : 'Not started';
-  if (hqVoicePrepBtn) {
-    hqVoicePrepBtn.disabled = state === 'ready' || state === 'generating';
-    hqVoicePrepBtn.textContent = state === 'ready'
-      ? 'Prepared'
-      : (state === 'error' ? 'Retry' : (state === 'generating' ? 'Preparing...' : 'Prepare book'));
+  if (preparationStale) detail = `Reconnecting… Last checked: ${detail}`;
+  hqVoicePrepDetail.textContent = detail;
+  hqVoicePrepFill.style.width = `${total ? Math.round(ready / total * 100) : 0}%`;
+  hqVoicePrepCount.textContent = status ? `${ready} of ${total} chapters · listening time at ${speed}×` : '';
+  const canPause = ['generating', 'paused', 'engineOffline'].includes(state);
+  hqVoicePrepBtn.disabled = state === 'loading' || state === 'ready' || status?.enabled === false || voiceSelectionPending;
+  hqVoicePrepBtn.textContent = canPause ? 'Pause' : state === 'userPaused' ? 'Resume' : state === 'error' ? 'Retry' : state === 'ready' ? 'Prepared' : 'Prepare book';
+  hqVoicePrepBtn.dataset.action = canPause ? 'pause' : state === 'userPaused' ? 'resume' : 'start';
+  const fallback = document.getElementById('narration-fallback');
+  const fallbackLabel = document.getElementById('narration-fallback-label');
+  if (fallback) {
+    fallback.hidden = !status?.instantVoice;
+    if (fallbackLabel) fallbackLabel.hidden = !status?.instantVoice;
+    fallback.disabled = !status || voiceSelectionPending;
+    fallback.options[0].textContent = `Wait for ${name}`;
+    fallback.options[1].textContent = `Use ${getVoiceName(status?.instantVoice)}`;
+    fallback.value = bookNarration?.fallbackPolicy || 'wait';
   }
 }
 
 async function refreshHighQualityPrepPanel() {
-  await loadVoiceCacheStatus();
-  renderVoices();
-  updatePlayerVoiceStatus();
+  try {
+    await loadBookNarration();
+    await loadVoiceCacheStatus();
+    renderVoices();
+    updatePlayerVoiceStatus();
+  } catch { preparationStale = true; updateHighQualityPrepPanel(); }
 }
 
 async function fetchHighQualityPrepStatus() {
   const book = deps.getCurrentBook();
   if (!book) return null;
-  try {
-    return await apiGet(`/api/premium-prep/${encodeURIComponent(book.id)}/status`);
-  } catch (err) {
-    if (err.status === 404) return null;
-    throw err;
-  }
+  const player = deps.getChunkPlayer();
+  const position = player?.getPosition?.();
+  const query = new URLSearchParams({ chapterIndex: deps.getCurrentChapter() || 0,
+    offsetSeconds: Math.max(0, Number(position?.currentTime) || 0), speed: Number(player?.playbackRate) || 1 });
+  return apiGet(`/api/premium-prep/${encodeURIComponent(book.id)}/status?${query}`);
 }
 
 async function prepareCurrentHighQualityChapter() {
   const book = deps.getCurrentBook();
   if (!book || !isHighQualityVoice()) return;
-  const retry = premiumBookStatus?.status === 'error';
+  const action = hqVoicePrepBtn.dataset.action || 'start';
+  hqVoicePrepBtn.disabled = true;
   try {
-    await apiSend('POST', `/api/premium-prep/${encodeURIComponent(book.id)}/start`, {
-      fromChapter: deps.getCurrentChapter() || 0,
-      retry
+    await apiSend('POST', `/api/premium-prep/${encodeURIComponent(book.id)}/${action}`, {
+      fromChapter: deps.getCurrentChapter() || 0, retry: premiumBookStatus?.status === 'error'
     });
-    premiumBookStatus = { ...(premiumBookStatus || {}), status: 'generating' };
-    updateHighQualityPrepPanel();
-  } catch (err) {
-    console.error('Premium prep start failed:', err);
-    showToast('Premium audio prep failed', 'error');
-  }
+    if (deps.getCurrentBook()?.id !== book.id) return;
+    premiumBookStatus = await fetchHighQualityPrepStatus();
+    preparationStale = false;
+  } catch (err) { showToast(`Could not ${action} preparation: ${err.message}`, 'error'); }
+  updateHighQualityPrepPanel();
+}
+
+async function changeFallbackPolicy(event) {
+  const book = deps.getCurrentBook();
+  if (!book || voiceSelectionPending) return;
+  const value = event.target.value;
+  event.target.disabled = true;
+  try {
+    const saved = await apiSend('POST', `/api/narration/${encodeURIComponent(book.id)}`, { fallbackPolicy: value });
+    if (deps.getCurrentBook()?.id !== book.id) return;
+    bookNarration = saved;
+    showToast('Choice saved. It applies when audio next loads.');
+  } catch (error) { showToast(`Could not save choice: ${error.message}`, 'error'); }
+  updateHighQualityPrepPanel();
 }
 
 function startHighQualityPrepPolling() {
   if (hqVoicePrepPolling) return;
   hqVoicePrepPolling = true;
   const generation = hqVoicePrepGeneration;
-
   const tick = async () => {
     if (generation !== hqVoicePrepGeneration) return;
     hqVoicePrepTimer = null;
-    const book = deps.getCurrentBook();
-    if (!book || !isHighQualityVoice()) {
-      hqVoicePrepPolling = false;
-      updateHighQualityPrepPanel();
-      return;
-    }
-
+    const bookId = deps.getCurrentBook()?.id;
+    const voiceId = currentVoice;
+    if (!bookId || !isHighQualityVoice()) { stopHighQualityPrepPolling(); return; }
     try {
       const status = await fetchHighQualityPrepStatus();
-      if (status && status.premiumActive) {
-        premiumBookStatus = status;
-        premiumChapterReadiness = Array.isArray(status.chapters) ? status.chapters : [];
-        maybeAnnouncePremiumSwitchover();
+      if (generation !== hqVoicePrepGeneration || deps.getCurrentBook()?.id !== bookId || currentVoice !== voiceId) return;
+      premiumBookStatus = status;
+      premiumChapterReadiness = Array.isArray(status?.chapters) ? status.chapters : [];
+      preparationStale = false;
+      const next = (deps.getCurrentChapter() || 0) + 1;
+      if (deps.getServedTier?.() === 'instant' && premiumChapterReadiness[next] && !premiumToastBooks.has(bookId)) {
+        premiumToastBooks.add(bookId);
+        showToast(`${getVoiceName(currentVoice)} is ready for the next chapter.`);
       }
-    } catch (err) {
-      console.error('Premium prep polling failed:', err);
-    }
-
-    updateHighQualityPrepPanel();
-    const allReady = premiumBookStatus &&
-      premiumBookStatus.totalChapters > 0 &&
-      premiumBookStatus.readyChapters >= premiumBookStatus.totalChapters;
+    } catch { if (generation === hqVoicePrepGeneration) preparationStale = true; }
     if (generation !== hqVoicePrepGeneration) return;
-    if (!allReady) {
-      hqVoicePrepTimer = setTimeout(tick, HIGH_QUALITY_PREP_POLL_MS);
-    } else {
-      hqVoicePrepPolling = false;
-    }
+    updatePlayerVoiceStatus();
+    hqVoicePrepTimer = setTimeout(tick, HIGH_QUALITY_PREP_POLL_MS);
   };
-
-  hqVoicePrepTimer = setTimeout(tick, 700);
-}
-
-// One-time quiet toast per book, the first time the premium variant is
-// ready to take over at the next chapter boundary while the instant voice
-// is playing.
-function maybeAnnouncePremiumSwitchover() {
-  const book = deps.getCurrentBook();
-  if (!book || premiumToastBooks.has(book.id)) return;
-  const servedTier = deps.getServedTier ? deps.getServedTier() : null;
-  if (servedTier !== 'instant') return;
-  const nextChapter = (deps.getCurrentChapter() || 0) + 1;
-  if (premiumChapterReadiness[nextChapter]) {
-    premiumToastBooks.add(book.id);
-    showToast('Premium voice starts next chapter');
-  }
+  hqVoicePrepTimer = setTimeout(tick, 0);
 }
 
 async function openVoiceSheet() {
-  await loadVoices();
   if (!voiceSheet) return;
   voiceSheetController?.open();
+  voiceSheet.setAttribute('aria-busy', 'true');
+  try { await loadVoices(); }
+  finally { voiceSheet.removeAttribute('aria-busy'); }
 }
 
 export function closeVoiceSheetDirect() {
@@ -700,25 +745,26 @@ function closeVoiceSheet() {
   voiceSheetController?.dismiss();
 }
 
-function renderVoiceSection(title, sectionVoices) {
+function renderVoiceSection(title, sectionVoices, selectedVoice = currentVoice) {
   return `
     <div class="voice-section">
       <div class="voice-section-title">${escapeHTML(title)}</div>
-      ${sectionVoices.map(renderVoiceCard).join('')}
+      ${sectionVoices.map(voice => renderVoiceCard(voice, selectedVoice)).join('')}
     </div>
   `;
 }
 
-function renderVoiceCard(v) {
-    const isActive = v.id === currentVoice;
+function renderVoiceCard(v, selectedVoice = currentVoice) {
+    const isActive = v.id === selectedVoice;
     const isSaved = savedVoiceIds.includes(v.id);
-    const provider = String(v.provider || '').toLowerCase();
+    const provider = providerId(v);
     const status = engineStatus?.engines?.[provider];
-    const isLocalEngine = provider === 'kokoro' || provider === 'chatterbox';
+    const isLocalEngine = Boolean(v.local) || provider === 'kokoro' || provider === 'chatterbox';
     const isStarting = status?.status === 'starting';
     const isEngineDown = isLocalEngine && status && !status.up && !isStarting;
     // Selection is the recovery path for local engines: /api/voice starts the provider.
-    const selectionDisabled = !isLocalEngine && status && !status.up;
+    const selectionDisabled = voiceSelectionPending || status?.status === 'models-uninstalled' || status?.status === 'disabled' ||
+      (!isLocalEngine && status && !status.up);
     const cache = voiceCache[v.id];
     // Only surface readiness when it says something ("Ready now",
     // "12/60 ready") — "Generates on play" is the default for every voice
@@ -733,25 +779,29 @@ function renderVoiceCard(v) {
     const summaryTags = (v.tags && v.tags.length ? v.tags : [v.gender, v.accent, v.depth].filter(Boolean))
       .filter(tag => !['local', 'chatterbox', 'kokoro', 'edge'].includes(String(tag).toLowerCase())).slice(0, 3);
     const tagSummary = summaryTags.map(t => escapeHTML(t)).join(' · ');
+    const availability = status?.status === 'models-uninstalled' ? 'Voice model not installed'
+      : isEngineDown ? (provider === 'moss-nano' ? 'Narration service offline' : 'Starts when selected')
+      : isStarting ? 'Narration service starting'
+      : provider === 'moss-nano' ? `MOSS Nano · ${tagSummary}` : tagSummary;
     const checkIcon = isActive
       ? '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" class="voice-card-check" aria-hidden="true"><path d="M5 13l4 4L19 7"/></svg>'
       : '';
 
     return `
-      <div class="voice-card ${isActive ? 'active' : ''} ${selectionDisabled ? 'voice-card--offline' : ''} ${isEngineDown ? 'voice-card--engine-down' : ''}" data-voice-id="${safeAttr(v.id)}" data-offline="${selectionDisabled ? '1' : '0'}" role="option" aria-selected="${isActive ? 'true' : 'false'}" aria-disabled="${selectionDisabled ? 'true' : 'false'}">
+      <div class="voice-card ${isActive ? 'active' : ''} ${selectionDisabled ? 'voice-card--offline' : ''} ${isEngineDown ? 'voice-card--engine-down' : ''}" data-voice-id="${safeAttr(v.id)}" data-offline="${selectionDisabled ? '1' : '0'}">
         <button class="voice-save-btn ${isSaved ? 'saved' : ''}" data-voice-action="save" data-save-voice-id="${safeAttr(v.id)}" aria-label="${isSaved ? 'Remove' : 'Save'} ${safeAttr(v.name)} ${isSaved ? 'from' : 'to'} My voices" aria-pressed="${isSaved ? 'true' : 'false'}">
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" ${isSaved ? 'fill="currentColor"' : 'fill="none"'} stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px">
             <path d="M11.48 3.5a.6.6 0 011.04 0l2.35 4.76a.6.6 0 00.45.33l5.25.76a.6.6 0 01.33 1.02l-3.8 3.7a.6.6 0 00-.17.53l.9 5.22a.6.6 0 01-.87.63l-4.7-2.47a.6.6 0 00-.56 0L7 20.45a.6.6 0 01-.87-.63l.9-5.22a.6.6 0 00-.17-.53l-3.8-3.7a.6.6 0 01.33-1.02l5.25-.76a.6.6 0 00.45-.33l2.35-4.76z" />
           </svg>
         </button>
-        <div class="voice-card-info" data-voice-action="select">
-          <div class="voice-card-name-row">
-            <div class="voice-card-name">${checkIcon}${escapeHTML(v.name)} ${voicePill(v)}</div>
+        <button type="button" class="voice-card-info voice-select-btn" data-voice-action="select" aria-label="Use ${safeAttr(v.name)}" aria-pressed="${isActive ? 'true' : 'false'}" ${selectionDisabled ? 'disabled' : ''}>
+          <span class="voice-card-name-row">
+            <span class="voice-card-name">${checkIcon}${escapeHTML(v.name)} ${voicePill(v)}</span>
             <span class="voice-readiness ${cacheClass}">${escapeHTML(cacheLabel)}</span>
-          </div>
-          <div class="voice-card-meta" title="${safeAttr(v.provider || '')}">${selectionDisabled ? 'Local engine offline' : (isEngineDown ? 'Starts when selected' : (isStarting ? 'Local engine starting' : tagSummary))}</div>
-          ${partialPercent !== null ? `<div class="voice-progress" role="progressbar" aria-valuenow="${partialPercent}" aria-valuemin="0" aria-valuemax="100"><div style="width:${partialPercent}%"></div></div>` : ''}
-        </div>
+          </span>
+          <span class="voice-card-meta" title="${safeAttr(v.provider || '')}">${availability}</span>
+          ${partialPercent !== null ? `<span class="voice-progress" aria-hidden="true"><span style="width:${partialPercent}%"></span></span>` : ''}
+        </button>
         ${v.custom ? `<button class="voice-delete-btn" data-voice-action="delete" data-delete-voice-id="${safeAttr(v.id)}" aria-label="Delete ${safeAttr(v.name)}">
           <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="width:16px;height:16px"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
         </button>` : ''}
@@ -764,34 +814,44 @@ function renderVoiceCard(v) {
     `;
 }
 
-async function selectVoice(voiceId) {
+async function selectVoice(voiceId, scope = 'book') {
+  if (voiceSelectionPending) return;
+  const book = deps.getCurrentBook();
+  const forBook = scope === 'book' && Boolean(book);
+  const previousVoice = currentVoice;
+  const shouldSwitchPlayback = book && deps.getChunkPlayer() && previousVoice !== voiceId && (forBook || bookNarration?.inherited);
+  const position = shouldSwitchPlayback ? deps.getChunkPlayer().getPosition() : null;
+  const wasPlaying = shouldSwitchPlayback ? deps.getChunkPlayer().isPlaying : false;
+  voiceSelectionPending = true;
+  renderVoices();
+  updateHighQualityPrepPanel();
   try {
-    const previousVoice = currentVoice;
-    const shouldSwitchPlayback = deps.getCurrentBook() && deps.getChunkPlayer() && deps.getChapters()[deps.getCurrentChapter()] && previousVoice !== voiceId;
-    const position = shouldSwitchPlayback ? deps.getChunkPlayer().getPosition() : null;
-    const wasPlaying = shouldSwitchPlayback ? deps.getChunkPlayer().isPlaying : false;
-
-    const data = await apiSend('POST', '/api/voice', { voiceId });
-    if (data.success) {
-      currentVoice = voiceId;
-      renderVoices();
-      updatePlayerVoiceStatus();
-      if (voiceSheet && voiceSheet.classList.contains('active')) {
-        closeVoiceSheet();
-      }
-      if (shouldSwitchPlayback) {
-        await switchCurrentChapterToVoice(voiceId, position, wasPlaying);
-      }
+    if (forBook) {
+      const saved = await apiSend('POST', `/api/narration/${encodeURIComponent(book.id)}`, { voiceId });
+      if (deps.getCurrentBook()?.id !== book.id) return;
+      bookNarration = saved;
+      currentVoice = saved.voiceId;
+    } else {
+      await apiSend('POST', '/api/voice', { voiceId });
+      defaultVoice = voiceId;
+      if (!book || bookNarration?.inherited) currentVoice = voiceId;
+    }
+    stopHighQualityPrepPolling();
+    premiumBookStatus = null;
+    premiumChapterReadiness = [];
+    unavailableCurrent = null;
+    updatePlayerVoiceStatus();
+    if (forBook) closeVoiceSheet();
+    if (shouldSwitchPlayback && deps.getCurrentBook()?.id === book.id) {
+      await switchCurrentChapterToVoice(voiceId, position, wasPlaying);
     }
   } catch (err) {
-    console.error('Failed to set voice:', err);
     deps.hideAudioLoading();
-    // Timeout/failure leaves playback paused — offer a one-tap retry rather
-    // than a passive dead-end toast.
-    showToast('Voice change failed: ' + err.message, 'error', {
-      actionLabel: 'Retry',
-      onAction: () => selectVoice(voiceId)
-    });
+    showToast(`Narrator change failed: ${err.message}`, 'error', { actionLabel: 'Retry', onAction: () => selectVoice(voiceId, scope) });
+  } finally {
+    voiceSelectionPending = false;
+    renderVoices();
+    updatePlayerVoiceStatus();
   }
 }
 
@@ -833,8 +893,9 @@ function handleVoiceListClick(e) {
 
   const voiceCard = e.target.closest('.voice-card[data-voice-id]');
   if (!voiceCard || !e.currentTarget.contains(voiceCard)) return;
+  if (!e.target.closest('[data-voice-action="select"]')) return;
   if (voiceCard.dataset.offline === '1') return;
-  selectVoice(voiceCard.dataset.voiceId);
+  selectVoice(voiceCard.dataset.voiceId, e.currentTarget.id === 'voice-list' ? 'default' : 'book');
 }
 
 async function deleteCustomVoice(voiceId) {
@@ -1050,6 +1111,7 @@ export function initVoices(options = {}) {
   document.getElementById('voice-list')?.addEventListener('submit', handleCloneVoiceSubmit);
   document.getElementById('player-voice-list')?.addEventListener('submit', handleCloneVoiceSubmit);
   document.getElementById('hq-voice-prep-btn')?.addEventListener('click', prepareCurrentHighQualityChapter);
+  document.getElementById('narration-fallback')?.addEventListener('change', changeFallbackPolicy);
   document.getElementById('voice-btn')?.addEventListener('click', openVoiceSheet);
   playerVoiceStatus?.addEventListener('click', openVoiceSheet);
 }

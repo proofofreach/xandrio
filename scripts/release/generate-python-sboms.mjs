@@ -8,6 +8,7 @@ const outputDir = resolve(root, 'artifacts');
 const command = process.env.CYCLONEDX_PYTHON || 'cyclonedx-py';
 const engines = [
   ['kokoro', 'python/requirements-kokoro.txt'],
+  ['moss-nano', 'moss-nano/requirements.txt'],
   ['chatterbox', 'python/requirements-chatterbox.txt'],
   ['kokoro-macos-arm64', 'python/requirements-kokoro-macos-arm64.txt'],
   ['chatterbox-mlx', 'python/requirements-chatterbox-mlx.txt']

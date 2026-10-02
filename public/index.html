@@ -11,8 +11,8 @@
   <title>Xandrio - Audiobook Library</title>
   <link rel="preload" href="/fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin>
   <!-- ?v= values must match ASSET_VERSIONS in sw.js (single source of truth) -->
-  <link rel="stylesheet" href="style-v3.css?v=116">
-  <link rel="stylesheet" href="composition.css?v=6">
+  <link rel="stylesheet" href="style-v3.css?v=117">
+  <link rel="stylesheet" href="composition.css?v=7">
   <link rel="stylesheet" href="library-composition.css?v=4">
   <script src="/js/ios-focus-zoom.js?v=1" defer></script>
   <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=2">
@@ -511,7 +511,7 @@
               <label class="settings-row settings-row-switch">
                 <span class="settings-label">
                   <span class="settings-label-text">Prepare premium audio in background</span>
-                  <span class="settings-label-hint">With a premium voice, playback starts instantly and chapters upgrade as they're ready.</span>
+                  <span class="settings-label-hint">Prepare premium chapters in the background. A compatible instant voice can play while you wait.</span>
                 </span>
                 <input id="premium-prep-control" class="switch" type="checkbox" role="switch">
               </label>
@@ -560,8 +560,11 @@
               <a class="btn-back settings-pane-back" href="#/settings">← Settings</a>
               <h2 id="settings-pane-title-voice">Voice</h2>
             </header>
-            <p id="settings-voice-hint" class="settings-lead">Choose a voice for audiobook narration.</p>
-            <div id="voice-filter-bar" class="voice-filter-bar" aria-label="Voice filters"></div>
+            <p id="settings-voice-hint" class="settings-lead">Choose the default narrator. Books with their own narrator keep that choice.</p>
+            <details class="voice-settings-filters">
+              <summary>More filters</summary>
+              <div id="voice-filter-bar" class="voice-filter-bar" aria-label="Voice filters"></div>
+            </details>
             <div id="voice-list" class="voice-list"></div>
           </section>
 
@@ -1156,14 +1159,19 @@
             <div class="hq-voice-prep-row">
               <div class="hq-voice-prep-copy">
                 <span id="hq-voice-prep-title" class="hq-voice-prep-title">High-quality audio</span>
-                <span id="hq-voice-prep-detail" class="hq-voice-prep-detail">Ready to prepare this chapter.</span>
+                <span id="hq-voice-prep-detail" class="hq-voice-prep-detail">Checking preparation…</span>
               </div>
-              <button id="hq-voice-prep-btn" class="hq-voice-prep-btn" type="button">Prepare chapter</button>
+              <button id="hq-voice-prep-btn" class="hq-voice-prep-btn" type="button">Prepare book</button>
             </div>
             <div class="hq-voice-prep-track" aria-hidden="true">
               <div id="hq-voice-prep-fill" class="hq-voice-prep-fill"></div>
             </div>
-            <div id="hq-voice-prep-count" class="hq-voice-prep-count">0%</div>
+            <div id="hq-voice-prep-count" class="hq-voice-prep-count"></div>
+            <label id="narration-fallback-label" class="narration-fallback-label" for="narration-fallback" hidden>When a chapter is not ready</label>
+            <select id="narration-fallback" class="narration-fallback" hidden>
+              <option value="wait">Wait for this narrator</option>
+              <option value="instant">Use an instant narrator</option>
+            </select>
           </div>
 
           <div id="playback-reliability" class="playback-reliability" data-state="hidden" hidden aria-live="polite">
@@ -1412,8 +1420,8 @@
         <div class="voice-sheet-handle" aria-hidden="true"></div>
         <div class="voice-sheet-header">
           <div>
-            <h3 id="voice-sheet-title">Narration Voice</h3>
-            <p>Switch voices without losing your place.</p>
+            <h3 id="voice-sheet-title">Narrator for this book</h3>
+            <p>This choice applies to this book. Prepared narrators may need time before playback.</p>
           </div>
           <button id="voice-sheet-close" class="btn-icon" type="button" aria-label="Close voice selector">
             <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="icon"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>

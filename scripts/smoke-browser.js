@@ -452,6 +452,10 @@ async function installBrowserFixtures(page) {
     if (pathname === '/api/position/smoke') return json(route, { position: null });
     if (pathname === '/api/position') return json(route, { success: true });
     if (pathname === '/api/bookmarks/smoke') return json(route, { bookmarks: [] });
+    if (pathname === '/api/narration/smoke') return json(route, {
+      bookId: 'smoke', voiceId: 'edge:andrew', voiceName: 'Andrew',
+      premiumActive: false, fallbackPolicy: 'wait'
+    });
     if (pathname === '/api/voices') return json(route, {
       current: 'edge:andrew',
       voices: [
@@ -576,7 +580,15 @@ async function verifyPlayback(page, fixtureState) {
   await page.evaluate(() => window.__setSmokeOnline(false));
   await page.waitForFunction(() => !document.getElementById('offline-banner').hidden);
   await page.selectOption('#chapter-select', '1');
-  await page.waitForFunction(() => document.getElementById('audio-loading')?.dataset.status === 'offline');
+  await page.waitForFunction(() => document.getElementById('audio-loading')?.dataset.status === 'offline').catch(async error => {
+    const state = await page.evaluate(() => ({
+      online: navigator.onLine,
+      chapter: document.getElementById('chapter-select')?.value,
+      loading: document.getElementById('audio-loading')?.outerHTML,
+      playback: window.xandrioPlaybackReport?.()
+    }));
+    throw new Error(`${error.message}\nOffline chapter evidence: ${JSON.stringify(state)}`);
+  });
   const offlineMessage = await page.textContent('#loading-text');
   if (!offlineMessage.includes("You're offline")) throw new Error('Offline chapter state was not surfaced');
 }
@@ -1775,7 +1787,10 @@ async function main() {
     browser = await chromium.launch({ headless: true });
     const page = await browser.newPage();
     const pageErrors = [];
-    page.on('pageerror', err => pageErrors.push(err.message));
+    page.on('pageerror', err => {
+      pageErrors.push(err.message);
+      traceSmoke(`page error: ${err.stack || err.message}`);
+    });
     const fixtureState = await installBrowserFixtures(page);
     traceSmoke('fixtures installed');
     await verifyLibraryLoadStates(page, fixtureState);

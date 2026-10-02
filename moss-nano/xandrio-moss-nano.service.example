@@ -1,0 +1,30 @@
+[Unit]
+Description=Xandrio MOSS Nano narration (CPU, loopback)
+After=network.target
+PartOf=xandrio-web.service
+ConditionPathExists=/opt/xandrio/current/moss-nano/server.py
+
+[Service]
+User=xandrio
+Group=xandrio
+WorkingDirectory=/opt/xandrio/current
+Environment=MOSS_NANO_HOST=127.0.0.1
+Environment=MOSS_NANO_PORT=8768
+Environment=MOSS_NANO_THREADS=4
+Environment=MOSS_NANO_MODEL_DIR=/opt/xandrio/shared/moss-nano/models
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/opt/xandrio/shared/moss-nano/venv/bin/python /opt/xandrio/current/moss-nano/server.py
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=15
+Nice=10
+CPUQuota=400%
+MemoryMax=2G
+MemorySwapMax=0
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

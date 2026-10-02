@@ -16,3 +16,11 @@ condition = "AND"
 regexTarget = "line"
 regexes = ['''^\s*structureKey:\s*'v1-[0-9a-f]{20}',?\s*$''']
 paths = ['''^test/fixtures/import-corpus\.js$''']
+
+[[allowlists]]
+description = "Pinned public MOSS audio-tokenizer model commit is not a credential"
+targetRules = ["generic-api-key"]
+condition = "AND"
+regexTarget = "line"
+regexes = ['''^\s*"MOSS-Audio-Tokenizer-Nano-ONNX": "ceff0d0749bfb3fa2d61149794ec6feef0d1e1ae"\s*$''']
+paths = ['''^moss-nano/(calibration|models\.lock)\.json$''']

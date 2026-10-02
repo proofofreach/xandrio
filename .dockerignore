@@ -20,6 +20,10 @@ node_modules
 kokoro-venv
 chatterbox-venv
 mlx-venv
+moss-nano-venv
+moss-nano/models
+moss-nano/vendor/__pycache__
+moss-nano/__pycache__
 *-venv
 .venv
 venv

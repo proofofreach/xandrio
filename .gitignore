@@ -30,6 +30,9 @@ certs/
 *.json
 !package.json
 !package-lock.json
+!moss-nano/models.lock.json
+!moss-nano/voices.json
+!moss-nano/calibration.json
 !scripts/audio-calibration-fixtures.json
 !docs/fixtures/iphone-playback-result-template.json
 !ops/gauntlet/*.json
@@ -104,6 +107,8 @@ build/
 
 # Local model weights and scratch output
 /models/
+/moss-nano/models/
+/moss-nano-venv/
 /tmp/
 /public/comparisons/
 

@@ -20,18 +20,9 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
-const { getKokoroVariantKey, isKokoroVoice } = require('../lib/kokoro-tuning');
-const { getChatterboxVariantKey, isChatterboxVoice } = require('../lib/chatterbox-tuning');
-const { AUDIO_PIPELINE_VERSION } = require('../lib/tts-engine-profile');
-const { getMasteringBitrate } = require('../lib/audio-quality');
-const { getTtsOutputFormatForVoice } = require('../lib/tts-output-format');
-
 const ROOT = path.join(__dirname, '..');
-const CACHE_DIR = path.join(ROOT, 'cache');
-const CUSTOM_VOICES_FILE = path.join(ROOT, 'data', 'custom-voices.json');
+const CACHE_DIR = process.env.CACHE_DIR || path.join(ROOT, 'cache');
 const SERVER_URL = process.env.XANDRIO_URL || 'http://localhost:8181';
-const PROFILES = ['quality', 'balanced', 'fast'];
-const EDGE_DEFAULT_CHUNK_SIZE = 4000; // DEFAULT_CHUNK_SIZE in lib/chunked-tts.js
 
 const doDelete = process.argv.includes('--delete');
 
@@ -40,37 +31,20 @@ function segmentFor(variantKey) {
   return `_tts${crypto.createHash('sha1').update(String(variantKey)).digest('hex').slice(0, 10)}`;
 }
 
-function customRefVersion(voiceId) {
-  // Mirrors server.js getChatterboxRefVersionSync()
-  try {
-    const registry = JSON.parse(fs.readFileSync(CUSTOM_VOICES_FILE, 'utf8'));
-    const localId = String(voiceId).slice('chatterbox:'.length);
-    return (registry.voices || []).find(v => v?.id === localId)?.refVersion || null;
-  } catch {
-    return null;
-  }
-}
-
 async function collectValidSegments() {
-  const res = await fetch(`${SERVER_URL}/api/voices`);
-  if (!res.ok) throw new Error(`GET /api/voices failed: ${res.status}`);
+  const res = await fetch(`${SERVER_URL}/api/voices/variants`, {
+    headers: process.env.XANDRIO_TOKEN ? { Authorization: `Bearer ${process.env.XANDRIO_TOKEN}` } : {}
+  });
+  if (!res.ok) throw new Error(`GET /api/voices/variants failed: ${res.status}`);
   const { voices } = await res.json();
   if (!Array.isArray(voices) || voices.length === 0) throw new Error('No voices returned');
 
   const keys = new Set();
   for (const v of voices) {
-    const id = v.id;
-    if (isKokoroVoice(id)) {
-      keys.add(getKokoroVariantKey(id)); // server calls with no profile option
-      for (const profile of PROFILES) keys.add(getKokoroVariantKey(id, { profile }));
-    } else if (isChatterboxVoice(id)) {
-      const ref = customRefVersion(id);
-      const base = [getChatterboxVariantKey(id), ...PROFILES.map(p => getChatterboxVariantKey(id, { profile: p }))];
-      for (const key of base) keys.add(ref ? `${key}:ref${ref}` : key);
-    } else {
-      // Edge voices: server.js getTTSVariantKeyForVoice fallback
-      keys.add(`${id}:chunk${EDGE_DEFAULT_CHUNK_SIZE}:out${getTtsOutputFormatForVoice(id)}:audio${AUDIO_PIPELINE_VERSION}:br${getMasteringBitrate()}`);
-    }
+    // Use the running server's registry and configuration. Refuse cleanup
+    // against an older server rather than guessing identities and deleting audio.
+    if (typeof v.variantKey !== 'string' || !v.variantKey) throw new Error('Server did not supply narration variant identities; update it before cleanup');
+    keys.add(v.variantKey);
   }
   return new Set([...keys].map(segmentFor));
 }
