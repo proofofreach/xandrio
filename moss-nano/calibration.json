@@ -1,0 +1,122 @@
+{
+  "renderRevision": "stream8-fixed-seed1234-v1",
+  "targetLufs": -18,
+  "sources": {
+    "runtime_commit": "8b7bcc9341b3b4ef3a3a58ba1338a7d85ff133eb",
+    "model_revisions": {
+      "MOSS-TTS-Nano-100M-ONNX": "f52645cb467506d8e18e746ddd59482685b74e58",
+      "MOSS-Audio-Tokenizer-Nano-ONNX": "ceff0d0749bfb3fa2d61149794ec6feef0d1e1ae"
+    }
+  },
+  "voices": {
+    "Junhao": {
+      "text": "清晨的阳光照进图书馆，照亮了整齐的书架。她打开一本书，开始安静地阅读。窗外传来了鸟儿的歌声。",
+      "rawMonoLufs": -15.04,
+      "gainDb": -3,
+      "rawSha256": "18000943c2e6b52a62e20d3cf8704cd329b1c6bef58843a465311fd96f1f3cd8"
+    },
+    "Zhiming": {
+      "text": "清晨的阳光照进图书馆，照亮了整齐的书架。她打开一本书，开始安静地阅读。窗外传来了鸟儿的歌声。",
+      "rawMonoLufs": -15.13,
+      "gainDb": -2.9,
+      "rawSha256": "901e385fd4bd4f65d168718096f0f4ed29e134ee7f7b019dadd9b19fffe09049"
+    },
+    "Weiguo": {
+      "text": "清晨的阳光照进图书馆，照亮了整齐的书架。她打开一本书，开始安静地阅读。窗外传来了鸟儿的歌声。",
+      "rawMonoLufs": -22.45,
+      "gainDb": 5.9,
+      "rawSha256": "00aef88afe5387aaf02c81c1234b41b5968f48c6f45e995e206a29032555c946",
+      "masteringAdjustment": "Added 1.5 dB after measured 24 kHz mono peak limiting; the raw-only gain was too quiet."
+    },
+    "Xiaoyu": {
+      "text": "清晨的阳光照进图书馆，照亮了整齐的书架。她打开一本书，开始安静地阅读。窗外传来了鸟儿的歌声。",
+      "rawMonoLufs": -17.87,
+      "gainDb": -0.1,
+      "rawSha256": "bab744e38011fac8396f4b32057ca762c5735cddcea3809be5afe2a37e5f7e50"
+    },
+    "Yuewen": {
+      "text": "清晨的阳光照进图书馆，照亮了整齐的书架。她打开一本书，开始安静地阅读。窗外传来了鸟儿的歌声。",
+      "rawMonoLufs": -14.58,
+      "gainDb": -3.4,
+      "rawSha256": "d77a3126203ead15924663861bd31a8db75100b2a0ba58ea01e8643aee28c2ef"
+    },
+    "Lingyu": {
+      "text": "清晨的阳光照进图书馆，照亮了整齐的书架。她打开一本书，开始安静地阅读。窗外传来了鸟儿的歌声。",
+      "rawMonoLufs": -21.82,
+      "gainDb": 3.8,
+      "rawSha256": "b73610bd134400005d38d8b6d23df83bdac3a8c76ff1b221929464412344c07b"
+    },
+    "Trump": {
+      "text": "The morning sun cast golden light through the library windows, illuminating rows of books. She opened a book and began to read.",
+      "rawMonoLufs": -19.29,
+      "gainDb": 1.3,
+      "rawSha256": "949a636cc043433a89cac394900ef3230c318e42181fda900cd39f34b06ff1cc"
+    },
+    "Ava": {
+      "text": "The morning sun cast golden light through the library windows, illuminating rows of books. She opened a book and began to read.",
+      "rawMonoLufs": -17.92,
+      "gainDb": -0.1,
+      "rawSha256": "78088c0728a7a904cbbb0d3227d3153192b8bdb3431c975292a3f3c148c3ef43"
+    },
+    "Bella": {
+      "text": "The morning sun cast golden light through the library windows, illuminating rows of books. She opened a book and began to read.",
+      "rawMonoLufs": -16.87,
+      "gainDb": -1.1,
+      "rawSha256": "744095b536c062be4e6a22adb622253a8a3d0422d963acd9433063b87b8192df"
+    },
+    "Adam": {
+      "text": "The morning sun cast golden light through the library windows, illuminating rows of books. She opened a book and began to read.",
+      "rawMonoLufs": -16.37,
+      "gainDb": -1.6,
+      "rawSha256": "642712bbf9d9de025e8ddb6af639668825f0ce8041fb7452273bd9bd4953371a"
+    },
+    "Nathan": {
+      "text": "The morning sun cast golden light through the library windows, illuminating rows of books. She opened a book and began to read.",
+      "rawMonoLufs": -26.82,
+      "gainDb": 8.8,
+      "rawSha256": "9ad15e509ec3392324b03e9ba1f1b867c41664cc23fea5b33e0c2db252529d7d"
+    },
+    "Soyo": {
+      "text": "朝の光が図書館の窓から差し込みました。彼女は静かに本を開きました。窓の外から鳥の声が聞こえました。",
+      "rawMonoLufs": -30.86,
+      "gainDb": 12.9,
+      "rawSha256": "5adf6971918c146b663658012bbd45148cd2621ae6971d2b043935f0e44b2093"
+    },
+    "Saki": {
+      "text": "朝の光が図書館の窓から差し込みました。彼女は静かに本を開きました。窓の外から鳥の声が聞こえました。",
+      "rawMonoLufs": -17.22,
+      "gainDb": -0.8,
+      "rawSha256": "f27b925fb75f62a80e6612a18f6bae4eda04d3a032df74bcec9100bc0e4006cb"
+    },
+    "Mortis": {
+      "text": "朝の光が図書館の窓から差し込みました。彼女は静かに本を開きました。窓の外から鳥の声が聞こえました。",
+      "rawMonoLufs": -19.48,
+      "gainDb": 1.5,
+      "rawSha256": "4062c45caf42424c2febef760bd6868060a5ba2a43a2a0ddcb08dd2c335233d1"
+    },
+    "Umiri": {
+      "text": "朝の光が図書館の窓から差し込みました。彼女は静かに本を開きました。窓の外から鳥の声が聞こえました。",
+      "rawMonoLufs": -13.75,
+      "gainDb": -4.2,
+      "rawSha256": "d5f2314924bd315b12990082c7395792389679b60af9927f5c7a5b21da9cf9d7"
+    },
+    "Mei": {
+      "text": "朝の光が図書館の窓から差し込みました。彼女は静かに本を開きました。窓の外から鳥の声が聞こえました。",
+      "rawMonoLufs": -19.37,
+      "gainDb": 1.4,
+      "rawSha256": "2a84b59e2c08a9365ad669c4507543558729066ab614a11ce50e333dd778b468"
+    },
+    "Anon": {
+      "text": "朝の光が図書館の窓から差し込みました。彼女は静かに本を開きました。窓の外から鳥の声が聞こえました。",
+      "rawMonoLufs": -23.99,
+      "gainDb": 6,
+      "rawSha256": "d7097f59c9e05309808c67aedaa5b569303e87f30ad72f90c06979923402c77a"
+    },
+    "Arisa": {
+      "text": "朝の光が図書館の窓から差し込みました。彼女は静かに本を開きました。窓の外から鳥の声が聞こえました。",
+      "rawMonoLufs": -26.3,
+      "gainDb": 8.3,
+      "rawSha256": "73889650a18a70e1994a1d300263095bc6b63c8782d7658465f7512e58924a87"
+    }
+  }
+}

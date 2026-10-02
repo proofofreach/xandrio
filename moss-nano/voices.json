@@ -1,0 +1,308 @@
+[
+  {
+    "id": "moss-nano:Junhao",
+    "name": "Junhao",
+    "gender": "Male",
+    "language": "Chinese",
+    "languageCode": "zh",
+    "accent": "Chinese",
+    "depth": "Natural",
+    "provider": "MOSS Nano",
+    "providerId": "moss-nano",
+    "tier": "premium",
+    "local": true,
+    "tags": [
+      "Chinese",
+      "Prepare ahead"
+    ]
+  },
+  {
+    "id": "moss-nano:Zhiming",
+    "name": "Zhiming",
+    "gender": "Male",
+    "language": "Chinese",
+    "languageCode": "zh",
+    "accent": "Chinese",
+    "depth": "Natural",
+    "provider": "MOSS Nano",
+    "providerId": "moss-nano",
+    "tier": "premium",
+    "local": true,
+    "tags": [
+      "Chinese",
+      "Prepare ahead"
+    ]
+  },
+  {
+    "id": "moss-nano:Weiguo",
+    "name": "Weiguo",
+    "gender": "Male",
+    "language": "Chinese",
+    "languageCode": "zh",
+    "accent": "Chinese",
+    "depth": "Natural",
+    "provider": "MOSS Nano",
+    "providerId": "moss-nano",
+    "tier": "premium",
+    "local": true,
+    "tags": [
+      "Chinese",
+      "Prepare ahead"
+    ]
+  },
+  {
+    "id": "moss-nano:Xiaoyu",
+    "name": "Xiaoyu",
+    "gender": "Female",
+    "language": "Chinese",
+    "languageCode": "zh",
+    "accent": "Chinese",
+    "depth": "Natural",
+    "provider": "MOSS Nano",
+    "providerId": "moss-nano",
+    "tier": "premium",
+    "local": true,
+    "tags": [
+      "Chinese",
+      "Prepare ahead"
+    ]
+  },
+  {
+    "id": "moss-nano:Yuewen",
+    "name": "Yuewen",
+    "gender": "Female",
+    "language": "Chinese",
+    "languageCode": "zh",
+    "accent": "Chinese",
+    "depth": "Natural",
+    "provider": "MOSS Nano",
+    "providerId": "moss-nano",
+    "tier": "premium",
+    "local": true,
+    "tags": [
+      "Chinese",
+      "Prepare ahead"
+    ]
+  },
+  {
+    "id": "moss-nano:Lingyu",
+    "name": "Lingyu",
+    "gender": "Female",
+    "language": "Chinese",
+    "languageCode": "zh",
+    "accent": "Chinese",
+    "depth": "Natural",
+    "provider": "MOSS Nano",
+    "providerId": "moss-nano",
+    "tier": "premium",
+    "local": true,
+    "tags": [
+      "Chinese",
+      "Prepare ahead"
+    ]
+  },
+  {
+    "id": "moss-nano:Trump",
+    "name": "Trump",
+    "gender": "Male",
+    "language": "English",
+    "languageCode": "en",
+    "accent": "English",
+    "depth": "Natural",
+    "provider": "MOSS Nano",
+    "providerId": "moss-nano",
+    "tier": "premium",
+    "local": true,
+    "tags": [
+      "English",
+      "Prepare ahead"
+    ]
+  },
+  {
+    "id": "moss-nano:Ava",
+    "name": "Ava",
+    "gender": "Female",
+    "language": "English",
+    "languageCode": "en",
+    "accent": "English",
+    "depth": "Natural",
+    "provider": "MOSS Nano",
+    "providerId": "moss-nano",
+    "tier": "premium",
+    "local": true,
+    "tags": [
+      "English",
+      "Prepare ahead"
+    ]
+  },
+  {
+    "id": "moss-nano:Bella",
+    "name": "Bella",
+    "gender": "Female",
+    "language": "English",
+    "languageCode": "en",
+    "accent": "English",
+    "depth": "Natural",
+    "provider": "MOSS Nano",
+    "providerId": "moss-nano",
+    "tier": "premium",
+    "local": true,
+    "tags": [
+      "English",
+      "Prepare ahead"
+    ]
+  },
+  {
+    "id": "moss-nano:Adam",
+    "name": "Adam",
+    "gender": "Male",
+    "language": "English",
+    "languageCode": "en",
+    "accent": "English",
+    "depth": "Natural",
+    "provider": "MOSS Nano",
+    "providerId": "moss-nano",
+    "tier": "premium",
+    "local": true,
+    "tags": [
+      "English",
+      "Prepare ahead"
+    ]
+  },
+  {
+    "id": "moss-nano:Nathan",
+    "name": "Nathan",
+    "gender": "Male",
+    "language": "English",
+    "languageCode": "en",
+    "accent": "English",
+    "depth": "Natural",
+    "provider": "MOSS Nano",
+    "providerId": "moss-nano",
+    "tier": "premium",
+    "local": true,
+    "tags": [
+      "English",
+      "Prepare ahead"
+    ]
+  },
+  {
+    "id": "moss-nano:Soyo",
+    "name": "Soyo",
+    "gender": "Female",
+    "language": "Japanese",
+    "languageCode": "ja",
+    "accent": "Japanese",
+    "depth": "Natural",
+    "provider": "MOSS Nano",
+    "providerId": "moss-nano",
+    "tier": "premium",
+    "local": true,
+    "tags": [
+      "Japanese",
+      "Prepare ahead"
+    ]
+  },
+  {
+    "id": "moss-nano:Saki",
+    "name": "Saki",
+    "gender": "Female",
+    "language": "Japanese",
+    "languageCode": "ja",
+    "accent": "Japanese",
+    "depth": "Natural",
+    "provider": "MOSS Nano",
+    "providerId": "moss-nano",
+    "tier": "premium",
+    "local": true,
+    "tags": [
+      "Japanese",
+      "Prepare ahead"
+    ]
+  },
+  {
+    "id": "moss-nano:Mortis",
+    "name": "Mortis",
+    "gender": "Female",
+    "language": "Japanese",
+    "languageCode": "ja",
+    "accent": "Japanese",
+    "depth": "Natural",
+    "provider": "MOSS Nano",
+    "providerId": "moss-nano",
+    "tier": "premium",
+    "local": true,
+    "tags": [
+      "Japanese",
+      "Prepare ahead"
+    ]
+  },
+  {
+    "id": "moss-nano:Umiri",
+    "name": "Umiri",
+    "gender": "Female",
+    "language": "Japanese",
+    "languageCode": "ja",
+    "accent": "Japanese",
+    "depth": "Natural",
+    "provider": "MOSS Nano",
+    "providerId": "moss-nano",
+    "tier": "premium",
+    "local": true,
+    "tags": [
+      "Japanese",
+      "Prepare ahead"
+    ]
+  },
+  {
+    "id": "moss-nano:Mei",
+    "name": "Mei",
+    "gender": "Female",
+    "language": "Japanese",
+    "languageCode": "ja",
+    "accent": "Japanese",
+    "depth": "Natural",
+    "provider": "MOSS Nano",
+    "providerId": "moss-nano",
+    "tier": "premium",
+    "local": true,
+    "tags": [
+      "Japanese",
+      "Prepare ahead"
+    ]
+  },
+  {
+    "id": "moss-nano:Anon",
+    "name": "Anon",
+    "gender": "Female",
+    "language": "Japanese",
+    "languageCode": "ja",
+    "accent": "Japanese",
+    "depth": "Natural",
+    "provider": "MOSS Nano",
+    "providerId": "moss-nano",
+    "tier": "premium",
+    "local": true,
+    "tags": [
+      "Japanese",
+      "Prepare ahead"
+    ]
+  },
+  {
+    "id": "moss-nano:Arisa",
+    "name": "Arisa",
+    "gender": "Female",
+    "language": "Japanese",
+    "languageCode": "ja",
+    "accent": "Japanese",
+    "depth": "Natural",
+    "provider": "MOSS Nano",
+    "providerId": "moss-nano",
+    "tier": "premium",
+    "local": true,
+    "tags": [
+      "Japanese",
+      "Prepare ahead"
+    ]
+  }
+]

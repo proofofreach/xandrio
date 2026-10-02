@@ -87,7 +87,8 @@
     "gauntlet:verify": "loopc verify ops/gauntlet/xandrio.loop.yaml --fixtures ops/gauntlet/verify-fixtures.json",
     "gauntlet:score": "loopc score ops/gauntlet/xandrio.loop.yaml --fixtures ops/gauntlet/verify-fixtures.json",
     "gauntlet:compile": "loopc compile ops/gauntlet/xandrio.loop.yaml --target standalone --out output/xandrio-gauntlet",
-    "gauntlet:judge": "node scripts/run-xandrio-gauntlet-judge.mjs . artifacts/gauntlet/progress.md"
+    "gauntlet:judge": "node scripts/run-xandrio-gauntlet-judge.mjs . artifacts/gauntlet/progress.md",
+    "verify:moss-nano": "node scripts/verify-moss-nano-e2e.js"
   },
   "dependencies": {
     "@lingo-reader/mobi-parser": "^0.4.6",

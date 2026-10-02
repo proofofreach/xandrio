@@ -37,6 +37,7 @@ export function isPremiumVoiceSelected() {
 // --- Voice selection (moved from modal) ---
 let voices = [];
 let currentVoice = '';
+let unavailableCurrent = null;
 let voiceCache = {};
 let engineStatus = null;
 let sampleAudio = null;
@@ -71,7 +72,7 @@ function loadVoiceSheetFacets() {
   if (saved && typeof saved === 'object') {
     return {
       tier: ['all', 'instant', 'premium'].includes(saved.tier) ? saved.tier : 'all',
-      engine: ['all', 'edge', 'kokoro', 'chatterbox'].includes(saved.engine) ? saved.engine : 'all',
+      engine: ['all', 'edge', 'kokoro', 'chatterbox', 'moss-nano'].includes(saved.engine) ? saved.engine : 'all',
       gender: ['all', 'male', 'female'].includes(saved.gender) ? saved.gender : 'all'
     };
   }
@@ -85,16 +86,19 @@ function saveVoiceSheetFacets() {
 }
 
 function voiceIsPremium(voice) {
-  return String(voice?.provider || '').toLowerCase() === 'chatterbox' ||
+  return voice?.tier === 'premium' || voice?.tier === 'chatterbox' || providerId(voice) === 'chatterbox' ||
     String(voice?.id || '').startsWith('chatterbox:');
 }
+
+function providerId(voice) { return String(voice?.providerId || voice?.provider || '').toLowerCase(); }
+function voiceFilterValue(voice, key) { return key === 'provider' ? providerId(voice) : voice[key]; }
 
 function filterVoicesForSheet(list) {
   const query = voiceSheetQuery.trim().toLowerCase();
   return list.filter(voice => {
     if (voiceSheetFacets.tier === 'premium' && !voiceIsPremium(voice)) return false;
     if (voiceSheetFacets.tier === 'instant' && voiceIsPremium(voice)) return false;
-    if (voiceSheetFacets.engine !== 'all' && String(voice.provider || '').toLowerCase() !== voiceSheetFacets.engine) return false;
+    if (voiceSheetFacets.engine !== 'all' && providerId(voice) !== voiceSheetFacets.engine) return false;
     if (voiceSheetFacets.gender !== 'all' && String(voice.gender || '').toLowerCase() !== voiceSheetFacets.gender) return false;
     if (query) {
       const haystack = [voice.name, voice.provider, voice.accent, voice.depth, ...(voice.tags || [])]
@@ -114,7 +118,8 @@ function renderVoiceFacetChips(filterBarId) {
     <button type="button" class="voice-facet-chip ${active ? 'active' : ''}" data-facet-group="${safeAttr(group)}" data-facet-value="${safeAttr(value)}" aria-pressed="${active ? 'true' : 'false'}">${escapeHTML(label)}</button>
   `;
   const tierChips = [['all', 'All'], ['instant', 'Instant'], ['premium', 'Premium']];
-  const engineChips = [['all', 'All'], ['edge', 'Edge'], ['kokoro', 'Kokoro'], ['chatterbox', 'Chatterbox']];
+  const engineChips = [['all', 'All'], ...[['edge', 'Edge'], ['kokoro', 'Kokoro'], ['chatterbox', 'Chatterbox'], ['moss-nano', 'MOSS Nano']]
+    .filter(([id]) => voices.some(voice => providerId(voice) === id))];
   const genderChips = [['all', 'All'], ['male', 'Male'], ['female', 'Female']];
   const moreActive = voiceSheetFacets.engine !== 'all' || voiceSheetFacets.gender !== 'all';
 
@@ -169,11 +174,15 @@ function renderVoiceFacetChips(filterBarId) {
 // whether it's ready, and a preview button — no select affordance needed.
 function renderCurrentVoiceCard() {
   const voice = voices.find(v => v.id === currentVoice);
-  if (!voice) return '';
+  const unavailableNotice = unavailableCurrent
+    ? `<p class="settings-hint" role="status">${escapeHTML(unavailableVoiceMessage())}</p>` : '';
+  if (!voice) return unavailableNotice;
   const cache = voiceCache[currentVoice];
-  const readiness = getVoiceCacheLabel(cache) || 'Ready when you play';
+  const readiness = getVoiceCacheLabel(cache) || (voiceIsPremium(voice)
+    ? (voice.pairedInstantVoice ? 'Prepares in the background' : 'Prepare before listening') : 'Ready when you play');
   const playing = deps.getChunkPlayer?.()?.isPlaying;
   return `
+    ${unavailableNotice}
     <div class="voice-card voice-card--current" aria-label="Current voice">
       <div class="voice-card-info">
         <div class="voice-card-name-row">
@@ -201,6 +210,7 @@ export async function loadVoices() {
     const [data] = await Promise.all([apiGet('/api/voices'), loadEngineStatus()]);
     voices = data.voices;
     currentVoice = data.current;
+    unavailableCurrent = data.unavailableCurrent || null;
     await loadVoiceCacheStatus();
     renderVoices();
     updatePlayerVoiceStatus();
@@ -219,17 +229,47 @@ export async function loadVoices() {
   }
 }
 
-async function loadEngineStatus() {
+let engineStatusTimer = null;
+async function loadEngineStatus(refresh = false) {
   try {
-    engineStatus = await apiGet('/api/engines/status');
+    engineStatus = await apiGet(`/api/engines/status${refresh ? '?refresh=1' : ''}`);
   } catch {
     engineStatus = null;
   }
 }
 
+function refreshStartingEngine() {
+  clearTimeout(engineStatusTimer);
+  if (!voices.some(v => providerId(v) === 'moss-nano') || engineStatus?.engines?.['moss-nano']?.up) return;
+  engineStatusTimer = setTimeout(async () => {
+    const visible = [...document.querySelectorAll('#voice-list, #player-voice-list')].some(list => list.offsetParent !== null);
+    if (!visible || document.hidden) return;
+    const previous = JSON.stringify(engineStatus);
+    await loadEngineStatus(true);
+    if (JSON.stringify(engineStatus) !== previous) {
+      // Update cards without replacing the focused search/filter controls.
+      renderVoiceSurface('voice-filter-bar', 'voice-list', false);
+      renderVoiceSheetSections('player-voice-list');
+      updatePlayerVoiceStatus();
+    }
+    refreshStartingEngine();
+  }, 5000);
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) refreshStartingEngine();
+});
+
 function getVoiceName(voiceId) {
   const voice = voices.find(v => v.id === voiceId);
   return voice ? voice.name : voiceId;
+}
+
+function unavailableVoiceMessage() {
+  if (!unavailableCurrent) return '';
+  const reason = unavailableCurrent.status === 'disabled' ? 'disabled' : 'unavailable';
+  return `${unavailableCurrent.name} is ${reason}. ` + (unavailableCurrent.fallback
+    ? `Using ${getVoiceName(unavailableCurrent.fallback)} until it is available.` : 'Choose another voice to listen.');
 }
 
 async function loadVoiceCacheStatus() {
@@ -249,14 +289,15 @@ function renderVoices() {
   if (summary) summary.textContent = getVoiceName(currentVoice);
   const selectedVoice = voices.find(v => v.id === currentVoice);
   const hint = document.getElementById('settings-voice-hint');
-  if (hint) hint.textContent = selectedVoice?.provider
+  if (hint) hint.textContent = unavailableCurrent ? unavailableVoiceMessage() : selectedVoice?.provider
     ? `Narration engine: ${selectedVoice.provider}. Preview a voice before selecting it.`
     : 'Preview a voice before selecting it.';
   renderVoiceSurface('voice-filter-bar', 'voice-list');
   renderVoiceSurface('player-voice-filter-bar', 'player-voice-list');
+  refreshStartingEngine();
 }
 
-function renderVoiceSurface(filterBarId, listId) {
+function renderVoiceSurface(filterBarId, listId, refreshFilters = true) {
   const voiceList = document.getElementById(listId);
   if (!voiceList) return;
 
@@ -268,7 +309,7 @@ function renderVoiceSurface(filterBarId, listId) {
     return;
   }
 
-  renderVoiceFilters(filterBarId);
+  if (refreshFilters) renderVoiceFilters(filterBarId);
   const filteredVoices = filterVoices(voices).filter(v => v.id !== currentVoice);
   const savedVoices = filteredVoices.filter(v => savedVoiceIds.includes(v.id));
   const savedSet = new Set(savedVoices.map(v => v.id));
@@ -377,7 +418,7 @@ function renderCloneVoicePanel() {
 
 function filterVoices(list) {
   return list.filter(voice =>
-    matchesVoiceFilter(voice.provider, voiceFilters.provider) &&
+    matchesVoiceFilter(providerId(voice), voiceFilters.provider) &&
     matchesVoiceFilter(voice.gender, voiceFilters.gender) &&
     matchesVoiceFilter(voice.accent, voiceFilters.accent) &&
     matchesVoiceFilter(voice.depth, voiceFilters.depth)
@@ -396,7 +437,7 @@ function renderVoiceFilters(filterBarId = 'voice-filter-bar') {
     { key: 'gender', label: 'Voice', values: getVoiceFilterValues('gender', ['male', 'female']) },
     { key: 'accent', label: 'Accent', values: getVoiceFilterValues('accent', ['us', 'uk']) },
     { key: 'depth', label: 'Tone', values: getVoiceFilterValues('depth', ['warm', 'clear', 'deep', 'expressive', 'lively', 'classic']) },
-    { key: 'provider', label: 'Source', values: getVoiceFilterValues('provider', ['chatterbox', 'kokoro', 'edge']) }
+    { key: 'provider', label: 'Source', values: getVoiceFilterValues('provider', ['chatterbox', 'moss-nano', 'kokoro', 'edge']) }
   ];
 
   normalizeVoiceFilters(groups);
@@ -424,7 +465,7 @@ function getVoiceFilterValues(key, preferredOrder = []) {
   const values = new Set(
     voices
       .filter(voice => voiceMatchesOtherFilters(voice, key))
-      .map(voice => String(voice[key] || '').toLowerCase())
+      .map(voice => String(voiceFilterValue(voice, key) || '').toLowerCase())
       .filter(Boolean)
   );
   const preferred = preferredOrder.filter(value => values.has(value));
@@ -434,7 +475,7 @@ function getVoiceFilterValues(key, preferredOrder = []) {
 
 function voiceMatchesOtherFilters(voice, ignoredKey) {
   return Object.entries(voiceFilters).every(([key, value]) =>
-    key === ignoredKey || matchesVoiceFilter(voice[key], value)
+    key === ignoredKey || matchesVoiceFilter(voiceFilterValue(voice, key), value)
   );
 }
 
@@ -451,6 +492,7 @@ function formatVoiceFilterLabel(value) {
   if (value === 'all') return 'All';
   if (value === 'us' || value === 'uk') return value.toUpperCase();
   if (value === 'chatterbox') return 'Chatterbox';
+  if (value === 'moss-nano') return 'MOSS Nano';
   if (value === 'kokoro') return 'Local';
   if (value === 'edge') return 'Cloud';
   return value.charAt(0).toUpperCase() + value.slice(1);
@@ -502,6 +544,12 @@ function updatePlayerVoiceStatus() {
   if (!playerVoiceName || !playerVoiceCache) return;
   const voice = voices.find(v => v.id === currentVoice);
   const cache = voiceCache[currentVoice];
+  if (unavailableCurrent && !unavailableCurrent.fallback) {
+    playerVoiceName.textContent = unavailableCurrent.name;
+    playerVoiceCache.textContent = 'Voice disabled — choose another voice';
+    updateHighQualityPrepPanel();
+    return;
+  }
   if (voice && isHighQualityVoice()) {
     // Premium voice: the status line speaks in tiers, not engines.
     const servedTier = deps.getServedTier ? deps.getServedTier() : null;
@@ -518,8 +566,7 @@ function updatePlayerVoiceStatus() {
 
 function isHighQualityVoice(voiceId = currentVoice) {
   const voice = voices.find(v => v.id === voiceId);
-  return String(voiceId || '').startsWith('chatterbox:') ||
-    String(voice?.provider || '').toLowerCase() === 'chatterbox';
+  return voiceIsPremium(voice);
 }
 
 function stopHighQualityPrepPolling() {
@@ -580,7 +627,8 @@ function updateHighQualityPrepPanel() {
     let detail;
     if (state === 'ready') detail = 'Premium audio ready';
     else if (state === 'error') detail = 'Premium generation failed — Retry';
-    else if (status?.status === 'engineOffline') detail = 'Premium engine offline — instant voice continues';
+    else if (status?.status === 'engineOffline') detail = status?.instantVoice
+      ? 'Narration service offline — instant voice continues' : 'Narration service offline — preparation will resume when available';
     else if (status?.status === 'paused') detail = 'Paused while playing — resumes when idle';
     else if (status?.status === 'generating') detail = `Preparing premium audio — ${ready} of ${total} chapters`;
     else detail = 'Premium audio prepares in the background.';
@@ -712,13 +760,14 @@ function renderVoiceSection(title, sectionVoices) {
 function renderVoiceCard(v) {
     const isActive = v.id === currentVoice;
     const isSaved = savedVoiceIds.includes(v.id);
-    const provider = String(v.provider || '').toLowerCase();
+    const provider = providerId(v);
     const status = engineStatus?.engines?.[provider];
-    const isLocalEngine = provider === 'kokoro' || provider === 'chatterbox';
+    const isLocalEngine = Boolean(v.local) || provider === 'kokoro' || provider === 'chatterbox';
     const isStarting = status?.status === 'starting';
     const isEngineDown = isLocalEngine && status && !status.up && !isStarting;
     // Selection is the recovery path for local engines: /api/voice starts the provider.
-    const selectionDisabled = !isLocalEngine && status && !status.up;
+    const selectionDisabled = status?.status === 'models-uninstalled' || status?.status === 'disabled' ||
+      (!isLocalEngine && status && !status.up);
     const cache = voiceCache[v.id];
     // Only surface readiness when it says something ("Ready now",
     // "12/60 ready") — "Generates on play" is the default for every voice
@@ -733,6 +782,10 @@ function renderVoiceCard(v) {
     const summaryTags = (v.tags && v.tags.length ? v.tags : [v.gender, v.accent, v.depth].filter(Boolean))
       .filter(tag => !['local', 'chatterbox', 'kokoro', 'edge'].includes(String(tag).toLowerCase())).slice(0, 3);
     const tagSummary = summaryTags.map(t => escapeHTML(t)).join(' · ');
+    const availability = status?.status === 'models-uninstalled' ? 'Voice model not installed'
+      : isEngineDown ? (provider === 'moss-nano' ? 'Narration service offline' : 'Starts when selected')
+      : isStarting ? 'Narration service starting'
+      : provider === 'moss-nano' ? `MOSS Nano · ${tagSummary}` : tagSummary;
     const checkIcon = isActive
       ? '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" class="voice-card-check" aria-hidden="true"><path d="M5 13l4 4L19 7"/></svg>'
       : '';
@@ -749,7 +802,7 @@ function renderVoiceCard(v) {
             <div class="voice-card-name">${checkIcon}${escapeHTML(v.name)} ${voicePill(v)}</div>
             <span class="voice-readiness ${cacheClass}">${escapeHTML(cacheLabel)}</span>
           </div>
-          <div class="voice-card-meta" title="${safeAttr(v.provider || '')}">${selectionDisabled ? 'Local engine offline' : (isEngineDown ? 'Starts when selected' : (isStarting ? 'Local engine starting' : tagSummary))}</div>
+          <div class="voice-card-meta" title="${safeAttr(v.provider || '')}">${availability}</div>
           ${partialPercent !== null ? `<div class="voice-progress" role="progressbar" aria-valuenow="${partialPercent}" aria-valuemin="0" aria-valuemax="100"><div style="width:${partialPercent}%"></div></div>` : ''}
         </div>
         ${v.custom ? `<button class="voice-delete-btn" data-voice-action="delete" data-delete-voice-id="${safeAttr(v.id)}" aria-label="Delete ${safeAttr(v.name)}">
@@ -774,6 +827,8 @@ async function selectVoice(voiceId) {
     const data = await apiSend('POST', '/api/voice', { voiceId });
     if (data.success) {
       currentVoice = voiceId;
+      unavailableCurrent = null;
+      await loadEngineStatus(true);
       renderVoices();
       updatePlayerVoiceStatus();
       if (voiceSheet && voiceSheet.classList.contains('active')) {
