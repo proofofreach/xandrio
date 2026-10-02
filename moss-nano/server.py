@@ -103,12 +103,15 @@ class Handler(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(length))
             text = body.get('text')
             voice = body.get('voice')
+            seed = body.get('seed', 1234)
             if not isinstance(text, str) or not text.strip() or len(text) > 1200:
                 raise ValueError('Text must contain 1 to 1200 characters')
             if voice not in [v['id'].split(':')[1] for v in VOICES]:
                 raise ValueError('Unknown built-in voice')
             if body.get('format', 'wav') != 'wav':
                 raise ValueError('Only WAV output is supported')
+            if type(seed) is not int or not 0 <= seed <= 4294967295:
+                raise ValueError('Seed must be an unsigned 32-bit integer')
         except (ValueError, TypeError, AttributeError):
             self.close_connection = True
             return self.json(400, {'error': 'Invalid synthesis request'})
@@ -136,7 +139,7 @@ class Handler(BaseHTTPRequestHandler):
             reference = next(v for v in runtime.list_builtin_voices() if v['voice'] == voice)
             rows = runtime.build_voice_clone_request_rows(reference['prompt_audio_codes'], tokens)
             runtime.codec_streaming_session.reset()
-            runtime.rng = np.random.default_rng(1234)
+            runtime.rng = np.random.default_rng(seed)
             pending = []
             samples = 0
             # Anonymous scratch audio is removed by the OS even if the worker
@@ -176,7 +179,7 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError('Empty generated audio')
             checkpoint()
             duration = time.monotonic() - started
-            print(json.dumps({'voice': voice, 'frames': len(frames), 'seconds': duration,
+            print(json.dumps({'voice': voice, 'seed': seed, 'frames': len(frames), 'seconds': duration,
                               'decodeSeconds': decode_seconds, 'audioSeconds': samples / wav.getframerate()}), flush=True)
             self.send_response(200)
             self.send_header('Content-Type', 'audio/wav')

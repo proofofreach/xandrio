@@ -1,6 +1,6 @@
 """Actual-model HTTP smoke checks. Run with the installed Nano Python runtime.
 
-Failure cases: invalid input accepted; health blocked by inference; cancellation
+Failure cases: invalid input/seed accepted; recovery seed ignored; health blocked by inference; cancellation
 leaks a temp WAV/slot; decoder state leaks between voices; frame exhaustion
 publishes truncated success; missing models trigger an implicit download.
 Produces a JSON receipt, worker logs and repeatable first-take WAV files.
@@ -73,6 +73,8 @@ def main():
             assert request('/tts', {'text': 'Hello', 'voice': 'unknown'})[0] == 400
             assert request('/tts', {'text': 'Hello', 'voice': 'Nathan', 'format': 'mp3'})[0] == 400
             assert request('/tts', [])[0] == 400
+            for seed in (True, 1.5, -1, 4294967296, '1236', None):
+                assert request('/tts', {'text': 'Hello', 'voice': 'Nathan', 'seed': seed})[0] == 400
             report.append({'check': 'invalid-input', 'passed': True})
             payload = json.dumps({'text': 'The rain stopped before dawn. Elena opened the window and listened to the quiet street.', 'voice': 'Nathan'}).encode()
             connection = socket.create_connection(('127.0.0.1', port))
@@ -101,6 +103,17 @@ def main():
                 (args.output / f'{index}-{voice}.wav').write_bytes(audio)
                 hashes.append(hashlib.sha256(audio).hexdigest())
             assert hashes[0] == hashes[2], 'decoder/RNG state leaked across requests'
+            recovery_hashes = []
+            for index in range(2):
+                status, audio = request('/tts', {'text': 'She opened the window. A bird sang in the garden.',
+                                               'voice': 'Nathan', 'seed': 1236})
+                assert status == 200 and audio[:4] == b'RIFF'
+                (args.output / f'recovery-{index}-Nathan.wav').write_bytes(audio)
+                recovery_hashes.append(hashlib.sha256(audio).hexdigest())
+            assert recovery_hashes[0] == recovery_hashes[1], 'recovery seed must remain repeatable'
+            assert recovery_hashes[0] != hashes[0], 'recovery seed was ignored'
+            report.append({'check': 'validated-recovery-seed-and-repeatability', 'passed': True,
+                           'sha256': recovery_hashes})
             assert not list(Path(scratch).glob('xandrio-nano-*'))
             report.append({'check': 'voice-isolation-and-repeatability', 'passed': True, 'sha256': hashes})
 
