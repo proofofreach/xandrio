@@ -120,7 +120,7 @@ exit 0
 
   check('allows only generated structure fingerprints in the synthetic import corpus', () => {
     const config = readFileSync(gitleaksConfig, 'utf8');
-    assert.equal((config.match(/\[\[allowlists\]\]/g) || []).length, 2);
+    assert.equal((config.match(/\[\[allowlists\]\]/g) || []).length, 3);
     const expectedAllowlist = String.raw`[[allowlists]]
 description = "Synthetic chapter structure fingerprints are not credentials"
 targetRules = ["generic-api-key"]
