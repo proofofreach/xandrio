@@ -6,6 +6,12 @@ import { confirmSheet } from '../ui/confirm.js';
 import { readJSON, writeJSON } from '../util/storage.js';
 
 const SAVED_VOICES_KEY = 'xandrio_saved_voices';
+const VOICE_FILTERS_KEY = 'xandrio_voice_filters';
+const VOICE_FILTER_PRESETS = {
+  'us-deep-male': { language: 'english', gender: 'male', accent: 'us', depth: 'deep' },
+  english: { language: 'english', gender: 'all', accent: 'all', depth: 'all' },
+  all: { language: 'all', gender: 'all', accent: 'all', depth: 'all' }
+};
 
 let deps = {};
 let playerVoiceStatus = null;
@@ -59,12 +65,7 @@ let premiumBookStatus = null;
 let premiumChapterReadiness = [];
 const premiumToastBooks = new Set();
 let savedVoiceIds = [];
-let voiceFilters = {
-  gender: 'all',
-  accent: 'all',
-  depth: 'all',
-  provider: 'all'
-};
+let voiceFilters = { ...VOICE_FILTER_PRESETS['us-deep-male'], provider: 'all' };
 const HIGH_QUALITY_PREP_POLL_MS = 2500;
 
 // --- Voice sheet controls (player sheet only; settings page keeps its dropdown filters) ---
@@ -329,6 +330,7 @@ function renderVoiceSurface(filterBarId, listId, refreshFilters = true) {
 
   if (refreshFilters) renderVoiceFilters(filterBarId);
   const filteredVoices = filterVoices(voices).filter(v => v.id !== defaultVoice);
+  const nanoCandidates = nanoVoicesToPreview().filter(v => v.id !== defaultVoice);
   const savedVoices = filteredVoices.filter(v => savedVoiceIds.includes(v.id));
   const savedSet = new Set(savedVoices.map(v => v.id));
   const topVoices = filteredVoices.filter(v => !savedSet.has(v.id) && (v.top || v.custom));
@@ -336,6 +338,12 @@ function renderVoiceSurface(filterBarId, listId, refreshFilters = true) {
   const otherVoices = filteredVoices.filter(v => !shownSet.has(v.id));
   const current = voices.find(v => v.id === defaultVoice);
   const voiceSections = current ? [renderVoiceSection('Default narrator', [current], defaultVoice)] : [];
+
+  if (nanoCandidates.length > 0) {
+    voiceSections.push(renderVoiceSection('MOSS Nano · English male', nanoCandidates, defaultVoice, {
+      candidates: true, hint: 'Accent and depth are not rated. Preview these voices to compare.'
+    }));
+  }
 
   if (savedVoices.length > 0) {
     voiceSections.push(renderVoiceSection('My voices', savedVoices, defaultVoice));
@@ -349,11 +357,16 @@ function renderVoiceSurface(filterBarId, listId, refreshFilters = true) {
     voiceSections.push(renderVoiceSection('All voices', otherVoices, defaultVoice));
   }
 
-  if (filteredVoices.length === 0) {
-    voiceSections.push('<p class="voice-empty">No other voices match those filters.</p>');
+  if (filteredVoices.length === 0 && nanoCandidates.length === 0) {
+    voiceSections.push('<div class="voice-empty">No other voices match these filters. <button type="button" class="voice-clear-filters" data-voice-action="browse-english">Browse English voices</button></div>');
   }
 
   voiceList.innerHTML = [...voiceSections, renderCloneVoicePanel()].join('');
+  const count = document.getElementById('voice-filter-count');
+  if (count) {
+    const total = filterVoices(voices).length;
+    count.textContent = `${total} matching ${total === 1 ? 'voice' : 'voices'}${nanoCandidates.length ? ` · ${nanoCandidates.length} Nano voices to preview` : ''}`;
+  }
 }
 
 // Player-sheet list: My voices / Recommended / Explore (or flat search
@@ -437,10 +450,21 @@ function renderCloneVoicePanel() {
 function filterVoices(list) {
   return list.filter(voice =>
     matchesVoiceFilter(providerId(voice), voiceFilters.provider) &&
+    matchesVoiceFilter(voice.language, voiceFilters.language) &&
     matchesVoiceFilter(voice.gender, voiceFilters.gender) &&
     matchesVoiceFilter(voice.accent, voiceFilters.accent) &&
     matchesVoiceFilter(voice.depth, voiceFilters.depth)
   );
+}
+
+function nanoVoicesToPreview() {
+  // Upstream identifies language/gender only. Keep every English male Nano
+  // candidate discoverable without inventing a US accent or deep-voice rating.
+  if (!Object.entries(VOICE_FILTER_PRESETS['us-deep-male']).every(([key, value]) => voiceFilters[key] === value)) return [];
+  return voices.filter(voice => providerId(voice) === 'moss-nano' &&
+    matchesVoiceFilter(providerId(voice), voiceFilters.provider) &&
+    matchesVoiceFilter(voice.language, 'english') && matchesVoiceFilter(voice.gender, 'male') &&
+    filterVoices([voice]).length === 0);
 }
 
 function matchesVoiceFilter(value, filter) {
@@ -452,58 +476,74 @@ function renderVoiceFilters(filterBarId = 'voice-filter-bar') {
   if (!filterBar) return;
 
   const groups = [
+    { key: 'provider', label: 'Model', values: getVoiceFilterValues('provider', ['kokoro', 'moss-nano', 'edge', 'chatterbox']) },
+    { key: 'language', label: 'Language', values: getVoiceFilterValues('language', ['english']) },
     { key: 'gender', label: 'Voice', values: getVoiceFilterValues('gender', ['male', 'female']) },
     { key: 'accent', label: 'Accent', values: getVoiceFilterValues('accent', ['us', 'uk']) },
-    { key: 'depth', label: 'Tone', values: getVoiceFilterValues('depth', ['warm', 'clear', 'deep', 'expressive', 'lively', 'classic']) },
-    { key: 'provider', label: 'Source', values: getVoiceFilterValues('provider', ['chatterbox', 'moss-nano', 'kokoro', 'edge']) }
+    { key: 'depth', label: 'Tone', values: getVoiceFilterValues('depth', ['deep', 'warm', 'clear', 'expressive', 'lively', 'classic']) }
   ];
-
-  normalizeVoiceFilters(groups);
-
-  filterBar.innerHTML = groups.map(group => `
+  const focused = filterBar.contains(document.activeElement) ? document.activeElement : null;
+  const focusKey = focused?.dataset.voiceFilter;
+  const focusPreset = focused?.dataset.voicePreset;
+  const moreOpen = filterBar.querySelector('details')?.open;
+  const control = group => `
     <label class="voice-filter">
       <span>${escapeHTML(group.label)}</span>
-      <select data-voice-filter="${safeAttr(group.key)}" aria-label="${safeAttr(group.label)} filter">
+      <select name="voice-${safeAttr(group.key)}" data-voice-filter="${safeAttr(group.key)}" aria-label="${safeAttr(group.label)} filter">
         ${group.values.map(value => `
           <option value="${safeAttr(value)}" ${voiceFilters[group.key] === value ? 'selected' : ''}>${escapeHTML(formatVoiceFilterLabel(value))}</option>
         `).join('')}
       </select>
     </label>
-  `).join('');
+  `;
+  const activeDetails = ['gender', 'accent', 'depth'].map(key => voiceFilters[key]).filter(value => value !== 'all').map(formatVoiceFilterLabel);
+  filterBar.innerHTML = `
+    <div class="voice-browse-presets" role="group" aria-label="Voice preferences">
+      ${[['us-deep-male', 'US deep male'], ['english', 'English voices'], ['all', 'All voices']].map(([key, label]) => {
+        const active = Object.entries(VOICE_FILTER_PRESETS[key]).every(([field, value]) => voiceFilters[field] === value);
+        return `<button type="button" class="voice-facet-chip ${active ? 'active' : ''}" data-voice-preset="${key}" aria-pressed="${active}">${label}</button>`;
+      }).join('')}
+    </div>
+    ${groups.slice(0, 2).map(control).join('')}
+    <details class="voice-settings-filters" ${moreOpen ? 'open' : ''}>
+      <summary>More filters${activeDetails.length ? ` · ${escapeHTML(activeDetails.join(' · '))}` : ''}</summary>
+      <div class="voice-filter-bar">${groups.slice(2).map(control).join('')}</div>
+    </details>
+    <p id="voice-filter-count" class="settings-hint" role="status" aria-live="polite"></p>
+  `;
 
   filterBar.querySelectorAll('[data-voice-filter]').forEach(select => {
     select.addEventListener('change', () => {
       voiceFilters[select.dataset.voiceFilter] = select.value;
-      renderVoices();
+      saveAndRenderVoiceFilters();
     });
   });
+  filterBar.querySelectorAll('[data-voice-preset]').forEach(button => {
+    button.addEventListener('click', () => {
+      Object.assign(voiceFilters, VOICE_FILTER_PRESETS[button.dataset.voicePreset]);
+      saveAndRenderVoiceFilters();
+    });
+  });
+  if (focusKey) filterBar.querySelector(`[data-voice-filter="${focusKey}"]`)?.focus();
+  else if (focusPreset) filterBar.querySelector(`[data-voice-preset="${focusPreset}"]`)?.focus();
+}
+
+function saveAndRenderVoiceFilters() {
+  writeJSON(VOICE_FILTERS_KEY, voiceFilters);
+  renderVoiceSurface('voice-filter-bar', 'voice-list');
 }
 
 function getVoiceFilterValues(key, preferredOrder = []) {
   const values = new Set(
     voices
-      .filter(voice => voiceMatchesOtherFilters(voice, key))
       .map(voice => String(voiceFilterValue(voice, key) || '').toLowerCase())
       .filter(Boolean)
   );
+  // Keep options stable across combinations and temporary provider outages.
+  if (voiceFilters[key] !== 'all') values.add(voiceFilters[key]);
   const preferred = preferredOrder.filter(value => values.has(value));
   const rest = Array.from(values).filter(value => !preferred.includes(value)).sort();
   return ['all', ...preferred, ...rest];
-}
-
-function voiceMatchesOtherFilters(voice, ignoredKey) {
-  return Object.entries(voiceFilters).every(([key, value]) =>
-    key === ignoredKey || matchesVoiceFilter(voiceFilterValue(voice, key), value)
-  );
-}
-
-function normalizeVoiceFilters(groups) {
-  groups.forEach(group => {
-    if (!group.values.includes(voiceFilters[group.key])) {
-      voiceFilters[group.key] = 'all';
-      group.values = getVoiceFilterValues(group.key);
-    }
-  });
 }
 
 function formatVoiceFilterLabel(value) {
@@ -511,8 +551,8 @@ function formatVoiceFilterLabel(value) {
   if (value === 'us' || value === 'uk') return value.toUpperCase();
   if (value === 'chatterbox') return 'Chatterbox';
   if (value === 'moss-nano') return 'MOSS Nano';
-  if (value === 'kokoro') return 'Local';
-  if (value === 'edge') return 'Cloud';
+  if (value === 'kokoro') return 'Kokoro';
+  if (value === 'edge') return 'Edge';
   return value.charAt(0).toUpperCase() + value.slice(1);
 }
 
@@ -745,10 +785,11 @@ function closeVoiceSheet() {
   voiceSheetController?.dismiss();
 }
 
-function renderVoiceSection(title, sectionVoices, selectedVoice = currentVoice) {
+function renderVoiceSection(title, sectionVoices, selectedVoice = currentVoice, { candidates = false, hint = '' } = {}) {
   return `
-    <div class="voice-section">
+    <div class="voice-section" ${candidates ? 'data-voice-candidates' : ''}>
       <div class="voice-section-title">${escapeHTML(title)}</div>
+      ${hint ? `<p class="settings-hint">${escapeHTML(hint)}</p>` : ''}
       ${sectionVoices.map(voice => renderVoiceCard(voice, selectedVoice)).join('')}
     </div>
   `;
@@ -856,6 +897,12 @@ async function selectVoice(voiceId, scope = 'book') {
 }
 
 function handleVoiceListClick(e) {
+  if (e.target.closest('[data-voice-action="browse-english"]')) {
+    Object.assign(voiceFilters, VOICE_FILTER_PRESETS.english);
+    saveAndRenderVoiceFilters();
+    document.querySelector('#voice-filter-bar [data-voice-preset="english"]')?.focus();
+    return;
+  }
   const saveBtn = e.target.closest('.voice-save-btn[data-save-voice-id]');
   if (saveBtn) {
     e.preventDefault();
@@ -1103,6 +1150,12 @@ export function initVoices(options = {}) {
 
   savedVoiceIds = loadSavedVoiceIds();
   voiceSheetFacets = loadVoiceSheetFacets();
+  const savedFilters = readJSON(VOICE_FILTERS_KEY, null);
+  if (savedFilters && typeof savedFilters === 'object' && !Array.isArray(savedFilters)) {
+    for (const key of Object.keys(voiceFilters)) {
+      if (typeof savedFilters[key] === 'string' && /^[a-z][a-z -]{0,39}$/.test(savedFilters[key])) voiceFilters[key] = savedFilters[key];
+    }
+  }
 
   document.getElementById('voice-list')?.addEventListener('click', handleVoiceListClick);
   document.getElementById('player-voice-list')?.addEventListener('click', handleVoiceListClick);

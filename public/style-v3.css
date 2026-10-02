@@ -6128,6 +6128,7 @@ body.login-gate-open { overflow: hidden; }
 
   #voice-list .voice-section { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
   #voice-list .voice-section-title,
+  #voice-list .voice-section > .settings-hint,
   #voice-list .clone-voice-form { grid-column: 1 / -1; }
 }
 
@@ -6180,6 +6181,21 @@ body.login-gate-open { overflow: hidden; }
 .voice-sheet-search input,
 .voice-facet-chip,
 .voice-more-toggle { min-height: var(--touch-min); }
+.voice-settings-browse { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-3); }
+.voice-settings-browse > .voice-settings-filters,
+.voice-settings-browse > .settings-hint,
+.voice-browse-presets { grid-column: 1 / -1; }
+.voice-browse-presets { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.voice-settings-browse .voice-filter span {
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: var(--weight-semibold);
+  text-transform: none;
+  letter-spacing: normal;
+}
+.voice-settings-browse .voice-filter select { font-size: 16px; }
+.voice-settings-browse .voice-settings-filters .voice-filter-bar { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.voice-settings-browse .settings-hint { margin: 0; }
 .voice-save-btn,
 .voice-play-btn { min-width: var(--touch-min); min-height: var(--touch-min); }
 .hq-voice-prep-row { align-items: flex-start; flex-wrap: wrap; }
