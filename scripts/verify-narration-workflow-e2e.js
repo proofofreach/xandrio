@@ -328,7 +328,7 @@ const results = [];
       try {
         const page = await context.newPage();
         await page.goto(`${origin}/#/settings/voice`);
-        await page.locator('.voice-settings-filters summary').click();
+        await page.locator('#voice-filter-bar [data-voice-preset="all"]').click();
         await page.locator('#voice-filter-bar [data-voice-filter="provider"]').selectOption('moss-nano');
         const select = page.locator('#voice-list [data-voice-id="moss-nano:Adam"] [data-voice-action="select"]');
         assert.equal(await select.evaluate(el => el.tagName), 'BUTTON'); await select.focus(); await page.keyboard.press('Enter');
