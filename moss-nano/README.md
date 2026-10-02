@@ -4,6 +4,13 @@ Optional local CPU narration with 18 built-in voices: five English, six Chinese,
 and seven Japanese. The application offers them in both voice pickers when
 explicitly enabled. The existing default voice stays unchanged.
 
+The built-in English male voices are **Adam, Nathan, and Trump**. The
+[upstream voice catalog](https://github.com/OpenMOSS/MOSS-TTS-Nano-Reader/blob/main/assets/voice_browser_metadata.json)
+identifies language and gender, but does not rate accent or depth. Settings
+therefore shows all three in a separate Nano preview group beside confirmed
+US deep male matches. They remain visible when filtering to MOSS Nano. This
+does not classify them as verified US or deep voices; use their previews to compare.
+
 Select a Nano narrator for a book and use **Prepare book**. Each book keeps its
 own narrator; Settings changes the library default. Preparation saves completed
 chapters and resumes after restart. **Pause** keeps saved audio and survives

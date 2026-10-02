@@ -56,8 +56,12 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
     assert(await filter('language').isVisible());
     assert.equal(await preset('us-deep-male').getAttribute('aria-pressed'), 'true');
     const deep = available.voices.filter(v => v.language === 'English' && v.accent === 'US' && v.gender === 'Male' && v.depth === 'Deep');
-    assert(deep.length >= 4); await expectIds(deep.map(v => v.id));
-    report.checks.push('Default browse results contain only catalog-confirmed US deep male voices');
+    const nanoMale = available.voices.filter(v => v.providerId === 'moss-nano' && v.language === 'English' && v.gender === 'Male');
+    assert.deepEqual(nanoMale.map(v => v.id).sort(), ['moss-nano:Adam', 'moss-nano:Nathan', 'moss-nano:Trump']);
+    assert(deep.length >= 4); await expectIds([...deep, ...nanoMale].map(v => v.id));
+    assert.deepEqual((await page.locator('[data-voice-candidates] [data-voice-id]').evaluateAll(els => els.map(el => el.dataset.voiceId))).sort(), nanoMale.map(v => v.id).sort());
+    assert.match(await page.locator('[data-voice-candidates]').innerText(), /Accent and depth are not rated/);
+    report.checks.push('US deep male matches plus all three separately labeled English male Nano candidates are visible, without other languages');
     for (const [model, label] of [['edge', 'Edge'], ['kokoro', 'Kokoro'], ['moss-nano', 'MOSS Nano']]) {
       assert.equal(await filter('provider').locator(`option[value="${model}"]`).textContent(), label);
     }
@@ -65,6 +69,11 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
     assert.equal(await filter('provider').evaluate(el => el === document.activeElement), true);
     assert.equal(await filter('provider').inputValue(), 'moss-nano');
     assert.equal(await filter('language').inputValue(), 'english');
+    await expectIds(nanoMale.map(v => v.id));
+    assert.equal(await page.locator('[data-voice-candidates] [data-voice-action="preview"]').count(), 3);
+    await page.locator('.voice-settings-filters summary').click();
+    await filter('gender').selectOption('female');
+    assert.equal(await page.locator('[data-voice-candidates]').count(), 0);
     assert.match(await page.locator('#voice-list').innerText(), /No.*voices.*match/i);
     await page.locator('#voice-list [data-voice-action="browse-english"]').click();
     await expectIds(available.voices.filter(v => v.providerId === 'moss-nano' && v.language === 'English').map(v => v.id));

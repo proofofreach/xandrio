@@ -330,6 +330,7 @@ function renderVoiceSurface(filterBarId, listId, refreshFilters = true) {
 
   if (refreshFilters) renderVoiceFilters(filterBarId);
   const filteredVoices = filterVoices(voices).filter(v => v.id !== defaultVoice);
+  const nanoCandidates = nanoVoicesToPreview().filter(v => v.id !== defaultVoice);
   const savedVoices = filteredVoices.filter(v => savedVoiceIds.includes(v.id));
   const savedSet = new Set(savedVoices.map(v => v.id));
   const topVoices = filteredVoices.filter(v => !savedSet.has(v.id) && (v.top || v.custom));
@@ -337,6 +338,12 @@ function renderVoiceSurface(filterBarId, listId, refreshFilters = true) {
   const otherVoices = filteredVoices.filter(v => !shownSet.has(v.id));
   const current = voices.find(v => v.id === defaultVoice);
   const voiceSections = current ? [renderVoiceSection('Default narrator', [current], defaultVoice)] : [];
+
+  if (nanoCandidates.length > 0) {
+    voiceSections.push(renderVoiceSection('MOSS Nano · English male', nanoCandidates, defaultVoice, {
+      candidates: true, hint: 'Accent and depth are not rated. Preview these voices to compare.'
+    }));
+  }
 
   if (savedVoices.length > 0) {
     voiceSections.push(renderVoiceSection('My voices', savedVoices, defaultVoice));
@@ -350,7 +357,7 @@ function renderVoiceSurface(filterBarId, listId, refreshFilters = true) {
     voiceSections.push(renderVoiceSection('All voices', otherVoices, defaultVoice));
   }
 
-  if (filteredVoices.length === 0) {
+  if (filteredVoices.length === 0 && nanoCandidates.length === 0) {
     voiceSections.push('<div class="voice-empty">No other voices match these filters. <button type="button" class="voice-clear-filters" data-voice-action="browse-english">Browse English voices</button></div>');
   }
 
@@ -358,7 +365,7 @@ function renderVoiceSurface(filterBarId, listId, refreshFilters = true) {
   const count = document.getElementById('voice-filter-count');
   if (count) {
     const total = filterVoices(voices).length;
-    count.textContent = `${total} matching ${total === 1 ? 'voice' : 'voices'}`;
+    count.textContent = `${total} matching ${total === 1 ? 'voice' : 'voices'}${nanoCandidates.length ? ` · ${nanoCandidates.length} Nano voices to preview` : ''}`;
   }
 }
 
@@ -448,6 +455,16 @@ function filterVoices(list) {
     matchesVoiceFilter(voice.accent, voiceFilters.accent) &&
     matchesVoiceFilter(voice.depth, voiceFilters.depth)
   );
+}
+
+function nanoVoicesToPreview() {
+  // Upstream identifies language/gender only. Keep every English male Nano
+  // candidate discoverable without inventing a US accent or deep-voice rating.
+  if (!Object.entries(VOICE_FILTER_PRESETS['us-deep-male']).every(([key, value]) => voiceFilters[key] === value)) return [];
+  return voices.filter(voice => providerId(voice) === 'moss-nano' &&
+    matchesVoiceFilter(providerId(voice), voiceFilters.provider) &&
+    matchesVoiceFilter(voice.language, 'english') && matchesVoiceFilter(voice.gender, 'male') &&
+    filterVoices([voice]).length === 0);
 }
 
 function matchesVoiceFilter(value, filter) {
@@ -768,10 +785,11 @@ function closeVoiceSheet() {
   voiceSheetController?.dismiss();
 }
 
-function renderVoiceSection(title, sectionVoices, selectedVoice = currentVoice) {
+function renderVoiceSection(title, sectionVoices, selectedVoice = currentVoice, { candidates = false, hint = '' } = {}) {
   return `
-    <div class="voice-section">
+    <div class="voice-section" ${candidates ? 'data-voice-candidates' : ''}>
       <div class="voice-section-title">${escapeHTML(title)}</div>
+      ${hint ? `<p class="settings-hint">${escapeHTML(hint)}</p>` : ''}
       ${sectionVoices.map(voice => renderVoiceCard(voice, selectedVoice)).join('')}
     </div>
   `;
