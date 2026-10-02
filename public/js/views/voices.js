@@ -575,7 +575,7 @@ function updatePlayerVoiceStatus() {
 
 function isHighQualityVoice(voiceId = currentVoice) {
   const voice = voices.find(v => v.id === voiceId);
-  return voiceIsPremium(voice) || (bookNarration?.voiceId === voiceId && bookNarration.premiumActive === true);
+  return voiceIsPremium(voice) || (bookNarration?.voiceId === voiceId && bookNarration?.premiumActive === true);
 }
 
 function stopHighQualityPrepPolling() {

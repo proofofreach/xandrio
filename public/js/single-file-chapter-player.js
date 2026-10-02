@@ -626,7 +626,11 @@ export class SingleFileChapterPlayer {
         throw error;
       }
       if (!response.ok) {
-        const detail = await response.json().catch(() => ({}));
+        const detail = await response.json().catch(error => {
+          if (cancelled() || error?.name === 'AbortError') throw cancellationError();
+          return {};
+        });
+        if (cancelled()) throw cancellationError();
         const error = new Error(detail.error || `Playback runway preparation failed (${response.status})`);
         error.status = response.status;
         const retryAfter = Number(response.headers?.get?.('Retry-After'));
@@ -635,7 +639,14 @@ export class SingleFileChapterPlayer {
         }
         throw error;
       }
-      return response.json();
+      // A replacement chapter can abort after headers arrive but before the
+      // JSON body is read. It owns the same lifecycle as the fetch above.
+      try {
+        return await response.json();
+      } catch (error) {
+        if (cancelled() || error?.name === 'AbortError') throw cancellationError();
+        throw error;
+      }
     };
 
     try {
