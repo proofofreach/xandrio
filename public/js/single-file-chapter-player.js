@@ -128,6 +128,7 @@ export class SingleFileChapterPlayer {
     this.backend = 'single-file';
     this.activeSource = null;
     this.servedTier = null;
+    this.voiceId = null;
     this.supportsChunkPositionRestore = false;
     this.supportsNativeMediaSession = true;
     this.bookId = null;
@@ -296,6 +297,7 @@ export class SingleFileChapterPlayer {
     const standardUrl = this._standardChapterUrl(bookId, chapterIndex);
     let tierQuery = '';
     this.servedTier = null;
+    this.voiceId = null;
     // A recovery snapshot pins the tier it captured, so a retry cannot drift on
     // to a different one and thereby request a different canonical tuple.
     const pinnedTier = options.servedTier === 'instant' || options.servedTier === 'premium'
@@ -303,14 +305,17 @@ export class SingleFileChapterPlayer {
       : null;
     if (pinnedTier) {
       this.servedTier = pinnedTier;
-      tierQuery = `?tier=${encodeURIComponent(pinnedTier)}`;
+      this.voiceId = options.voiceId || null;
+      tierQuery = this._narrationQuery();
     } else if (!this.preferStandardAudio && this.resolveServedTier) {
       try {
-        const tier = await this.resolveServedTier(bookId, chapterIndex);
+        const resolution = await this.resolveServedTier(bookId, chapterIndex);
+        const tier = typeof resolution === 'string' ? resolution : resolution?.servedTier;
         if (gen !== this._generation) return;
         if (tier === 'instant' || tier === 'premium') {
           this.servedTier = tier;
-          tierQuery = `?tier=${encodeURIComponent(tier)}`;
+          this.voiceId = resolution?.voiceId || null;
+          tierQuery = this._narrationQuery();
         }
       } catch {
         // The stream can still resolve its own default tier.
@@ -332,7 +337,8 @@ export class SingleFileChapterPlayer {
           && (runway?.servedTier === 'instant' || runway?.servedTier === 'premium')
         ) {
           this.servedTier = runway.servedTier;
-          tierQuery = `?tier=${encodeURIComponent(runway.servedTier)}`;
+          this.voiceId = runway.voiceId || this.voiceId;
+          tierQuery = this._narrationQuery();
         }
       } catch (error) {
         if (gen === this._generation) {
@@ -1021,11 +1027,18 @@ export class SingleFileChapterPlayer {
    * quietly streaming a chapter the listener believes is on the device is a
    * decision that belongs to loadChapter, with its own messaging.
    */
+  _narrationQuery() {
+    const params = new URLSearchParams();
+    if (this.servedTier) params.set('tier', this.servedTier);
+    if (this.voiceId) params.set('voiceId', this.voiceId);
+    return params.size ? `?${params}` : '';
+  }
+
   _prewarmFallbackUrl(chapterIndex) {
     if (this.preferStandardAudio || this.isContinuous) return null;
     if (globalThis.navigator && globalThis.navigator.onLine === false) return null;
     const url = this._standardChapterUrl(this.bookId, chapterIndex);
-    return this.servedTier ? `${url}?tier=${encodeURIComponent(this.servedTier)}` : url;
+    return `${url}${this._narrationQuery()}`;
   }
 
   /** Whether a sleep timer means playback must stop at the current chapter. */
@@ -1606,9 +1619,7 @@ export class SingleFileChapterPlayer {
     const generation = ++this._generation;
     this._invalidateReadySource();
     const encodedBookId = encodeURIComponent(this.bookId);
-    const tierQuery = this.servedTier
-      ? `?tier=${encodeURIComponent(this.servedTier)}`
-      : '';
+    const tierQuery = this._narrationQuery();
     const candidate = this._continuousCandidates(
       encodedBookId,
       this.chapterIndex,
@@ -1706,6 +1717,7 @@ export class SingleFileChapterPlayer {
       backend: this.backend,
       source: this.activeSource,
       servedTier: this.servedTier,
+      voiceId: this.voiceId,
       chapterIndex: this.chapterIndex,
       streamTime: Number(this.audio.currentTime) || 0,
       continuous: this.isContinuous

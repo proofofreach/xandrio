@@ -482,6 +482,7 @@ function recoverySourceTuple(snapshot, chapterIndex) {
     tuple.startOffsetSeconds = Number(snapshot.startOffsetSeconds);
   }
   if (snapshot.servedTier) tuple.servedTier = snapshot.servedTier;
+  if (snapshot.voiceId) tuple.voiceId = snapshot.voiceId;
   if (Number.isInteger(snapshot.endChapterIndex)) tuple.endChapterIndex = snapshot.endChapterIndex;
   return Object.keys(tuple).length ? tuple : null;
 }
@@ -579,6 +580,7 @@ function retainRecoverySnapshot(snapshot) {
     chapterIndex: snapshot.chapterIndex,
     startOffsetSeconds: Math.max(0, Number(snapshot.startOffsetSeconds) || 0),
     servedTier: snapshot.servedTier || null,
+    voiceId: snapshot.voiceId || null,
     endChapterIndex: Number.isInteger(snapshot.endChapterIndex)
       ? snapshot.endChapterIndex
       : null
@@ -729,6 +731,7 @@ function handleChunkError(error) {
       chapterIndex: currentChapter,
       startOffsetSeconds: resumeAt,
       servedTier: chunkPlayer?.servedTier || null,
+      voiceId: chunkPlayer?.voiceId || null,
       endChapterIndex: Number.isInteger(chunkPlayer?.endChapterIndex)
         ? chunkPlayer.endChapterIndex
         : null
@@ -845,7 +848,7 @@ function createSingleFileChapterEngine(options = {}) {
     },
     resolveServedTier: async (bookId, chapterIndex) => {
       const status = await apiGet(`/api/chunks/${encodeURIComponent(bookId)}/${chapterIndex}/status`);
-      return status?.servedTier || null;
+      return status ? { servedTier: status.servedTier, voiceId: status.voiceId } : null;
     },
     resolveOfflineAudioUrl: offlinePlaybackUrl,
     ...options
@@ -995,6 +998,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     onSpeedChange: () => {
       updateMediaSessionPosition();
       refreshPlaybackTimes();
+      refreshVoicePrepPanel();
     }
   });
   initSettings({
@@ -1004,6 +1008,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     getChunkPlayer: () => chunkPlayer,
     // Which tier the current chapter is actually playing (instant vs premium)
     getServedTier: () => chunkPlayer?.servedTier || chunkedPlayer?.servedTier || null,
+    getActualVoice: () => chunkPlayer?.bookId === currentBook?.id ? chunkPlayer?.voiceId || null : null,
     loadChapter,
     showAudioLoading,
     hideAudioLoading,
@@ -2335,6 +2340,7 @@ function recoverIdleUnreadyPlayback() {
     chapterIndex: currentChapter,
     startOffsetSeconds: Math.max(0, Number(chunkPlayer.getCurrentTime?.()) || 0),
     servedTier: chunkPlayer.servedTier || null,
+    voiceId: chunkPlayer.voiceId || null,
     endChapterIndex: Number.isInteger(chunkPlayer.endChapterIndex)
       ? chunkPlayer.endChapterIndex
       : null

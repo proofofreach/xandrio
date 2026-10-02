@@ -142,6 +142,7 @@ class ChunkPlayer {
     this._manifestRefreshFailures = 0;
     this._pendingSkipSeconds = 0;
     this.servedTier = null; // re-resolve tier at every chapter boundary
+    this.voiceId = null;
 
     this._resetAudioElement(this.audio);
 
@@ -202,6 +203,7 @@ class ChunkPlayer {
     // the next chapter load, where the server picks the best available tier.
     const params = new URLSearchParams();
     if (this.servedTier) params.set('tier', this.servedTier);
+    if (this.voiceId) params.set('voiceId', this.voiceId);
     if (Number.isInteger(targetChunk) && targetChunk > 0) params.set('targetChunk', String(targetChunk));
     const query = params.size ? `?${params}` : '';
     const url = `/api/chunks/${encodeURIComponent(this.bookId)}/${this.chapterIndex}/manifest${query}`;
@@ -238,6 +240,7 @@ class ChunkPlayer {
   _applyManifest(manifest) {
     this.manifest = manifest;
     if (manifest && manifest.servedTier) this.servedTier = manifest.servedTier;
+    if (manifest?.voiceId) this.voiceId = manifest.voiceId;
   }
 
   /**
@@ -267,7 +270,7 @@ class ChunkPlayer {
     if (!this.bookId || this.chapterIndex === null || this.chapterIndex === undefined) return;
 
     try {
-      const tierPin = this.servedTier ? `?tier=${encodeURIComponent(this.servedTier)}` : '';
+      const tierPin = this.servedTier ? `?tier=${encodeURIComponent(this.servedTier)}${this.voiceId ? `&voiceId=${encodeURIComponent(this.voiceId)}` : ''}` : '';
       await fetch(`/api/chunks/${encodeURIComponent(this.bookId)}/${this.chapterIndex}/${chunkIndex}/prioritize${tierPin}`, {
         method: 'POST'
       });
@@ -388,7 +391,7 @@ class ChunkPlayer {
     // surface as a media "Format error".
     const manifestUrl = this.manifest?.chunks?.[chunkIndex]?.url;
     if (manifestUrl) return manifestUrl;
-    const tierPin = this.servedTier ? `?tier=${encodeURIComponent(this.servedTier)}` : '';
+    const tierPin = this.servedTier ? `?tier=${encodeURIComponent(this.servedTier)}${this.voiceId ? `&voiceId=${encodeURIComponent(this.voiceId)}` : ''}` : '';
     return `/api/chunks/${encodeURIComponent(this.bookId)}/${this.chapterIndex}/${chunkIndex}${tierPin}`;
   }
 

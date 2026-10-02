@@ -13,7 +13,8 @@ An operator who wants an iPhone-first PWA audiobook library from files they may 
 - Direct EPUB, MOBI, AZW, AZW3, PRC, and PDF import.
 - Provider search/import: Anna's Archive, Z-Library, Project Gutenberg, Internet Archive, Standard Ebooks, and operator-configured OPDS.
 - Provider visibility: upload, reported rights metadata, unverified rights status, and operator-configured catalog labels.
-- Edge narration, local Kokoro, local Chatterbox, saved voices, and operator-authorized voice references.
+- Edge narration, local Kokoro, local Chatterbox, optional MOSS Nano, saved voices, and operator-authorized voice references.
+- Book-specific narrators preserve the library default. Prepared narrators wait by default; the listener can explicitly choose an available instant narrator for unprepared audio. Book preparation retains completed audio and a manual pause across restarts. The player shows the voice actually loaded and continuous ready listening time at the selected speed.
 - Chunked audio generation and caching, resumable playback, seeking, speed, sleep timer, bookmarks, offline use, and sync state.
 - Library management, source credential controls, provider health state, deletion, and cache management.
 - Experimental Book Guides: admin-started, evidence-linked study guides for explicitly tagged English nonfiction, with an on-demand TTS playlist in the active voice. Disabled by default; the admin acknowledges external processing once when configuring the write-only PPQ.ai key.

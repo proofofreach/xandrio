@@ -1111,7 +1111,7 @@ const DEFAULT_INSTANT_VOICE = process.env.PREMIUM_INSTANT_VOICE || 'kokoro:am_on
 
 function getInstantVoiceFor(voiceId) {
   const catalog = availableVoiceEntries();
-  const entry = catalog.find(v => v.id === voiceId);
+  const entry = registeredVoiceEntries().find(v => v.id === voiceId);
   if (!isPreparedVoice(entry)) return null;
   const language = v => v.languageCode || ({ English: 'en', Chinese: 'zh', Japanese: 'ja' }[v.language]) || v.language;
   const candidates = catalog.filter(v => !isPreparedVoice(v) && language(v) === language(entry));
@@ -1121,14 +1121,14 @@ function getInstantVoiceFor(voiceId) {
     candidates.find(v => v.gender === entry.gender)?.id || candidates[0]?.id || null;
 }
 
-function isPremiumVoiceActive() {
-  return isPreparedVoice(availableVoiceEntries().find(v => v.id === getActiveVoice()));
+function isPremiumVoiceActive(bookId) {
+  return isPreparedVoice(registeredVoiceEntries().find(v => v.id === getActiveVoice(bookId)));
 }
 
 function isPreparedVoice(voice) { return voice?.tier === 'premium' || voice?.tier === 'chatterbox'; }
 
-function getActiveInstantVoice() {
-  return getInstantVoiceFor(getActiveVoice());
+function getActiveInstantVoice(bookId) {
+  return getInstantVoiceFor(getActiveVoice(bookId));
 }
 
 function isPremiumPrepEnabled() {
@@ -1204,8 +1204,8 @@ function invalidateFileIdentity(filePath) {
   if (filePath) fileIdentityCache.delete(filePath);
 }
 
-function getTTSVariantKey() {
-  return narrationEngines.forVoice(getActiveVoice()).variantKey;
+function getTTSVariantKey(bookId) {
+  return narrationEngines.forVoice(getActiveVoice(bookId)).variantKey;
 }
 
 function getTTSVariantKeyForVoice(voice) {
@@ -1228,8 +1228,24 @@ let mossNanoModelsUnavailable = false;
 function mossNanoKnownUninstalled() {
   return mossNanoModelsUnavailable || narrationRuntime.mossNanoStatusHint() === 'models-uninstalled';
 }
-function getActiveVoice() {
-  const selected = readSettingsSync().voice || DEFAULT_VOICE;
+function getBookNarration(bookId) {
+  const settings = readSettingsSync();
+  const saved = settings.bookNarration?.[bookId];
+  const voiceId = saved?.voiceId || getActiveVoice();
+  const voice = registeredVoiceEntries().find(entry => entry.id === voiceId);
+  return {
+    bookId,
+    voiceId, voiceName: voice?.name || voiceId, premiumActive: isPreparedVoice(voice),
+    fallbackPolicy: saved?.fallbackPolicy || 'wait',
+    inherited: !saved?.voiceId
+  };
+}
+
+function getActiveVoice(bookId) {
+  const settings = readSettingsSync();
+  // A book choice is intent. Disabled providers must not silently change it.
+  if (bookId && settings.bookNarration?.[bookId]?.voiceId) return settings.bookNarration[bookId].voiceId;
+  const selected = settings.voice || DEFAULT_VOICE;
   if (!mossNano.isMossNanoVoice(selected)) return selected;
   const uninstalled = mossNanoKnownUninstalled();
   const available = availableVoiceEntries().filter(v => !uninstalled || !mossNano.isMossNanoVoice(v.id));
@@ -1838,12 +1854,46 @@ pronunciationService = createPronunciationService({
   invalidateCache: invalidateChapterAudioCache
 });
 
-function ttsForTier(tier) {
-  return tier === 'instant' ? instantChunkedTTS : chunkedTTS;
+function fixedNarrationWorker(voice) {
+  const variantKey = getTTSVariantKeyForVoice(voice);
+  const worker = chunkedTTS.workerForVariant(variantKey, { voice, chunkSize: getChunkSizeForVoice(voice) });
+  premiumVariantTtsWorkers.set(variantKey, worker);
+  return worker;
 }
 
-function voiceForTier(tier) {
-  return tier === 'instant' ? (getActiveInstantVoice() || getActiveVoice()) : getActiveVoice();
+function ttsForTier(tier, bookId) {
+  return bookId ? fixedNarrationWorker(voiceForTier(tier, bookId)) : (tier === 'instant' ? instantChunkedTTS : chunkedTTS);
+}
+
+function voiceForTier(tier, bookId) {
+  return tier === 'instant' ? (getActiveInstantVoice(bookId) || getActiveVoice(bookId)) : getActiveVoice(bookId);
+}
+
+async function resolveNarrationContext(bookId, chapterIndex, request = null) {
+  const preference = getBookNarration(bookId);
+  const pinnedVoice = typeof request === 'object' ? request?.voiceId : null;
+  const requestedTier = typeof request === 'object' ? request?.tier : request;
+  if (pinnedVoice && !registeredVoiceEntries().some(v => v.id === pinnedVoice)) {
+    throw Object.assign(new Error('Invalid narrator'), { statusCode: 400 });
+  }
+  const requestedVoiceId = preference.voiceId;
+  const voice = pinnedVoice || requestedVoiceId;
+  const premiumActive = isPreparedVoice(registeredVoiceEntries().find(v => v.id === voice));
+  const instantVoice = getInstantVoiceFor(voice);
+  const premiumTts = fixedNarrationWorker(voice);
+  // Capture both possible identities before the readiness await.
+  const instantTts = instantVoice ? fixedNarrationWorker(instantVoice) : null;
+  const ready = premiumActive && await premiumChapterReady(bookId, chapterIndex, premiumTts);
+  let tier = 'active';
+  if (premiumActive && !pinnedVoice && instantVoice && (requestedTier === 'instant' ||
+      (!['premium', 'active'].includes(requestedTier) && preference.fallbackPolicy === 'instant' && !ready))) tier = 'instant';
+  const actualVoiceId = tier === 'instant' ? instantVoice : voice;
+  const tts = tier === 'instant' ? instantTts : premiumTts;
+  if (premiumActive && !ready && !pinnedVoice && !['premium', 'active', 'instant'].includes(requestedTier)) kickPremiumPrep(bookId, chapterIndex);
+  return Object.freeze({ bookId, requestedVoiceId, actualVoiceId, voiceId: actualVoiceId, voice: actualVoiceId,
+    variantKey: String(tts.variantKeyProvider()), fallbackPolicy: preference.fallbackPolicy,
+    requestedTier: requestedTier || null, tier, servedTier: premiumActive ? (tier === 'instant' ? 'instant' : 'premium') : 'instant',
+    premiumActive, premiumReady: ready, instantVoice, tts });
 }
 
 // A cached manifest with error chunks can only recover through generateChapter
@@ -1871,9 +1921,9 @@ function chapterPreparationAbortError(signal) {
   return error;
 }
 
-function consumeChapterPreparation(record, signal, setup = async () => {}) {
+function consumeChapterPreparation(record, signal, setup = async () => {}, claim = null) {
   if (signal?.aborted) return Promise.reject(chapterPreparationAbortError(signal));
-  const token = {};
+  const token = { claim, signal };
   record.consumers.add(token);
   let removeAbort = () => {};
   const aborted = new Promise((_, reject) => {
@@ -2025,8 +2075,8 @@ async function ensureChapterAudioPrepared(bookId, chapterIndex, options = {}) {
   const clean = Boolean(options.clean);
   const priority = options.priority || 'background';
   const tier = options.tier === 'instant' ? 'instant' : 'active';
-  const tts = options.tts || ttsForTier(tier);
-  const voice = options.voice || voiceForTier(tier);
+  const tts = options.tts || ttsForTier(tier, bookId);
+  const voice = options.voice || voiceForTier(tier, bookId);
   const generationOrigin = options.origin || (
     priority === GENERATION_PRIORITY.DOWNLOAD
       ? GENERATION_ORIGIN.OFFLINE_DOWNLOAD
@@ -2041,6 +2091,9 @@ async function ensureChapterAudioPrepared(bookId, chapterIndex, options = {}) {
     priority,
     completeChapter
   });
+  const consumerClaim = { priority, origin: generationOrigin, requestId: options.requestId || null,
+    sessionId: options.sessionId || null, chunkIndexes: playbackChunkIndexes,
+    priorityForChunk: uniformPriority ? (() => priority) : getChapterGenerationPriority(0) };
   const jobs = clean ? cleanChapterAudioPrepareJobs : chapterAudioPrepareJobs;
   const key = `${bookId}:${chapterIndex}:${tts.variantKeyProvider()}`;
   if (jobs.has(key)) {
@@ -2063,7 +2116,7 @@ async function ensureChapterAudioPrepared(bookId, chapterIndex, options = {}) {
           }
         });
       }
-    });
+    }, consumerClaim);
   }
 
   const controller = new AbortController();
@@ -2105,7 +2158,8 @@ async function ensureChapterAudioPrepared(bookId, chapterIndex, options = {}) {
         requestId: options.requestId || null,
         sessionId: options.sessionId || null,
         chunkIndexes: playbackChunkIndexes,
-        signal: jobSignal
+        signal: jobSignal,
+        claimsProvider: () => [...record.consumers].filter(owner => !owner.signal?.aborted).map(owner => owner.claim).filter(Boolean)
       });
     } else {
       throwIfJobAborted();
@@ -2144,13 +2198,13 @@ async function ensureChapterAudioPrepared(bookId, chapterIndex, options = {}) {
     record.settled = true;
     if (jobs.get(key) === record) jobs.delete(key);
   });
-  return consumeChapterPreparation(record, options.signal);
+  return consumeChapterPreparation(record, options.signal, undefined, consumerClaim);
 }
 
 /** The completed chapter file is the playback/preparation readiness contract. */
-async function premiumChapterReady(bookId, chapterIndex) {
+async function premiumChapterReady(bookId, chapterIndex, tts = ttsForTier('active', bookId)) {
   try {
-    const stat = await fs.stat(chunkedTTS.chapterPath(bookId, chapterIndex));
+    const stat = await fs.stat(tts.chapterPath(bookId, chapterIndex));
     return stat.size > 0;
   } catch {
     // Recovered chunks still need assembly. Returning false makes preparation
@@ -2194,10 +2248,13 @@ function createPremiumVariantWorker(variantKey) {
   });
   premiumVariantTtsWorkers.set(variantKey, fixedTts);
   return {
+    voiceId: voice,
     getBookInfo: getPremiumBookInfo,
-    prepareChapter: (bookId, chapterIndex) => {
+    releaseClaims: state => fixedTts.releaseRequestClaims(state.bookId, state.jobId),
+    prepareChapter: (bookId, chapterIndex, options = {}) => {
       narrationEngines.start(voice);
       return ensureChapterAudioPrepared(bookId, chapterIndex, {
+        ...options,
         priority: 'background',
         tts: fixedTts,
         voice,
@@ -2218,6 +2275,8 @@ function createPremiumVariantWorker(variantKey) {
 }
 
 const premiumPrep = new PremiumAudioPrep({
+  resolveBookVariant: bookId => isPremiumVoiceActive(bookId)
+    ? { voiceId: getActiveVoice(bookId), variantKey: getTTSVariantKey(bookId) } : null,
   isEnabled: isPremiumPrepEnabled,
   isPremiumActive: isPremiumVoiceActive,
   variantKey: getTTSVariantKey,
@@ -2257,43 +2316,43 @@ const ENGINE_RESUME_POLL_MS = 15000;
 // pre-existing error at startup) still gets one resume sweep.
 const lastEngineUp = new Map();
 
-async function resumeChapterErrors(tts, tier, bookId, chapterIndex) {
+async function resumeChapterErrors(tts, voice, bookId, chapterIndex) {
   const books = await loadJSON(BOOKS_FILE, {});
   const book = books[bookId];
   if (!book || deletedBookIds.has(bookId)) return;
   const chapters = await getChaptersCached(book.path);
   const chapter = chapters[chapterIndex];
   if (!chapter) return;
+  // Preserve the manifest's remaining owners; user-paused jobs own no claims.
+  const claims = tts.getChapterManifest(bookId, chapterIndex)?._generation?.claims || [];
+  if (claims.length === 0) return;
   await tts.generateChapter(bookId, chapterIndex, chapter.text, book.language || 'en', 'background', {
-    priorityForChunk: () => 'background',
-    voice: voiceForTier(tier)
+    priorityForChunk: () => 'background', voice, claims
   });
 }
 
 async function engineResumeTick() {
-  const errorWork = [
-    ...chunkedTTS.listChaptersWithErrors().map(entry => ({ ...entry, tts: chunkedTTS, tier: 'active' })),
-    ...instantChunkedTTS.listChaptersWithErrors().map(entry => ({ ...entry, tts: instantChunkedTTS, tier: 'instant' }))
-  ];
+  const workers = new Set([chunkedTTS, instantChunkedTTS, ...premiumVariantTtsWorkers.values(),
+    ...chunkedTTS.variantWorkers()]);
+  const errorWork = [...workers].flatMap(tts => tts.listChaptersWithErrors().map(entry => ({
+    ...entry, tts, voice: tts.getChapterManifest(entry.bookId, entry.chapterIndex)?._generation?.voice || tts.voiceProvider()
+  })));
   if (errorWork.length === 0) return;
-
   const recovered = new Set();
-  for (const { tier } of errorWork) {
-    const voice = voiceForTier(tier);
+  const checked = new Set();
+  for (const { voice } of errorWork) {
     const engine = narrationEngines.forVoice(voice);
-    if (recovered.has(engine.id)) continue;
+    if (checked.has(engine.id)) continue;
+    checked.add(engine.id);
     engine.start();
     const up = await engine.health();
     if (up && !lastEngineUp.get(engine.id)) recovered.add(engine.id);
     lastEngineUp.set(engine.id, up);
   }
-  for (const { tts, tier, bookId, chapterIndex } of errorWork) {
-    if (!recovered.has(narrationEngines.forVoice(voiceForTier(tier)).id)) continue;
-    try {
-      await resumeChapterErrors(tts, tier, bookId, chapterIndex);
-    } catch (err) {
-      console.warn(`Auto-resume failed for ${bookId}:${chapterIndex}: ${err.message}`);
-    }
+  for (const { tts, voice, bookId, chapterIndex } of errorWork) {
+    if (!recovered.has(narrationEngines.forVoice(voice).id)) continue;
+    try { await resumeChapterErrors(tts, voice, bookId, chapterIndex); }
+    catch (err) { console.warn(`Auto-resume failed for ${bookId}:${chapterIndex}: ${err.message}`); }
   }
 }
 
@@ -2306,9 +2365,105 @@ setInterval(() => {
  * listening position. No-op unless a premium voice is active and the
  * "Prepare premium audio in background" setting is on.
  */
+const narrationChanges = new Map();
+function withNarrationLock(bookId, operation) {
+  const previous = narrationChanges.get(bookId) || Promise.resolve();
+  const next = previous.catch(() => {}).then(operation);
+  narrationChanges.set(bookId, next);
+  return next.finally(() => { if (narrationChanges.get(bookId) === next) narrationChanges.delete(bookId); });
+}
+
+async function setBookNarration(bookId, patch) {
+  return withNarrationLock(bookId, async () => {
+    const before = getBookNarration(bookId);
+    const voiceId = patch.voiceId ?? before.voiceId;
+    if (patch.voiceId !== undefined && voiceId !== before.voiceId && !availableVoiceEntries().some(voice => voice.id === voiceId)) {
+      throw Object.assign(new Error('This narrator is not available'), { statusCode: 400 });
+    }
+    if (patch.voiceId !== undefined && voiceId !== before.voiceId && mossNano.isMossNanoVoice(voiceId) && mossNanoKnownUninstalled()) {
+      throw Object.assign(new Error('Install the Nano voice models before selecting this narrator'), { statusCode: 503 });
+    }
+    const fallbackPolicy = patch.fallbackPolicy ?? (voiceId === before.voiceId ? before.fallbackPolicy : 'wait');
+    if (!['wait', 'instant'].includes(fallbackPolicy)) throw Object.assign(new Error('Invalid fallback policy'), { statusCode: 400 });
+    const paused = premiumPrep.getState(bookId)?.desiredState === 'paused';
+    const settings = await updateJSON(SETTINGS_FILE, current => {
+      current.bookNarration ||= {};
+      current.bookNarration[bookId] = { voiceId, fallbackPolicy };
+      return current;
+    });
+    updateSettingsCache(settings);
+    if (before.voiceId !== voiceId) {
+      await premiumPrep.stopBook(bookId, { preserveJournal: isPremiumVoiceActive(bookId) });
+      // Old foreground requests keep their captured worker and are not cancelled.
+      const state = premiumPrep.ensureBookPrep(bookId, 0, { desiredState: paused ? 'paused' : 'running' });
+      await state?.persisted;
+    }
+    return getBookNarration(bookId);
+  });
+}
+
+const narrationDurations = new Map();
+const narrationProbeLanes = [Promise.resolve(), Promise.resolve()];
+let narrationProbeLane = 0;
+function probeNarrationDuration(audioPath) {
+  const lane = narrationProbeLane++ % narrationProbeLanes.length;
+  const pending = narrationProbeLanes[lane].catch(() => {}).then(() => probeAudioDurationSeconds(audioPath));
+  narrationProbeLanes[lane] = pending;
+  return pending;
+}
+async function getPreparationStatus(bookId, book, query = {}) {
+  const preference = getBookNarration(bookId);
+  const voiceId = preference.voiceId;
+  const tts = fixedNarrationWorker(voiceId);
+  const variantKey = String(tts.variantKeyProvider());
+  const chapters = await getChaptersCached(book.path);
+  const playable = chapters.map(chapter => !chapter.empty && chapter.type !== 'part' && Boolean(chapter.text?.trim()));
+  const durations = await Promise.all(chapters.map(async (chapter, index) => {
+    if (!playable[index]) return { ready: true, seconds: 0, estimated: false };
+    const audioPath = tts.chapterPath(bookId, index);
+    try {
+      const stat = await fs.stat(audioPath);
+      if (!stat.size) throw new Error('Empty audio');
+      const key = `${audioPath}:${stat.size}:${stat.mtimeMs}`;
+      let pending = narrationDurations.get(key);
+      if (!pending) {
+        pending = probeNarrationDuration(audioPath);
+        narrationDurations.set(key, pending);
+        if (narrationDurations.size > 10000) narrationDurations.delete(narrationDurations.keys().next().value);
+      }
+      const measured = await pending;
+      return { ready: true, seconds: measured ?? Math.max(0, Number(chapter.estimatedDuration) || 0), estimated: measured === null };
+    } catch { return { ready: false, seconds: 0, estimated: false }; }
+  }));
+  const chapterIndex = Math.min(chapters.length - 1, Math.max(0, parseInt(query.chapterIndex, 10) || 0));
+  const offset = Math.max(0, Number(query.offsetSeconds) || 0);
+  const speed = Math.min(4, Math.max(0.5, Number(query.speed) || 1));
+  let readyAudioSeconds = 0, firstUnreadyChapter = null, durationEstimated = false;
+  for (let index = chapterIndex; index < chapters.length; index++) {
+    if (!playable[index]) continue;
+    if (!durations[index].ready) { firstUnreadyChapter = index; break; }
+    readyAudioSeconds += Math.max(0, durations[index].seconds - (index === chapterIndex ? offset : 0));
+    durationEstimated ||= durations[index].estimated;
+  }
+  const state = premiumPrep.getState(bookId);
+  const selectedState = state?.variantKey === variantKey ? state : null;
+  const readyChapters = durations.filter((item, index) => playable[index] && item.ready).length;
+  const totalChapters = playable.filter(Boolean).length;
+  const premiumActive = isPreparedVoice(registeredVoiceEntries().find(voice => voice.id === voiceId));
+  return { ...preference, voiceId, voiceName: registeredVoiceEntries().find(voice => voice.id === voiceId)?.name || voiceId, requestedVoiceId: voiceId, variantKey,
+    enabled: isPremiumPrepEnabled(), premiumActive, instantVoice: getInstantVoiceFor(voiceId),
+    status: selectedState?.desiredState === 'paused' ? 'userPaused' :
+      (totalChapters > 0 && readyChapters === totalChapters ? 'ready' : selectedState?.status === 'ready' ? 'idle' : selectedState?.status || 'idle'),
+    jobId: selectedState?.jobId || null, readyChapters, totalChapters,
+    currentChapter: selectedState?.currentChapter ?? null, error: selectedState?.error || null,
+    chapters: durations.map(item => item.ready), chapterDurations: durations,
+    readyAudioSeconds, readyListeningSeconds: readyAudioSeconds / speed, firstUnreadyChapter,
+    durationEstimated, chapterIndex, offsetSeconds: offset, speed };
+}
+
 function kickPremiumPrep(bookId, fromChapter) {
   try {
-    if (deletedBookIds.has(bookId)) return;
+    if (deletedBookIds.has(bookId) || narrationChanges.has(bookId)) return;
     premiumPrep.ensureBookPrep(bookId, fromChapter);
   } catch (err) {
     console.warn(`Premium prep kick failed for ${bookId}:`, err.message);
@@ -2316,6 +2471,7 @@ function kickPremiumPrep(bookId, fromChapter) {
 }
 
 const playbackOrchestrator = createPlaybackOrchestrator({
+  resolveNarrationContext,
   isPremiumVoiceActive,
   premiumChapterReady,
   kickPremiumPrep,
@@ -2391,10 +2547,10 @@ const playbackPrefetch = createPlaybackPrefetchCoordinator({
   }
 });
 
-function observePlaybackHorizon({ bookId, chapterIndex, sessionId, tier: requestedTier = 'active' }) {
+function observePlaybackHorizon({ bookId, chapterIndex, sessionId, voiceId, tier: requestedTier = 'active' }) {
   const tier = requestedTier === 'instant' ? 'instant' : 'active';
-  const voice = voiceForTier(tier);
-  const tts = ttsForTier(tier);
+  const voice = voiceId || voiceForTier(tier, bookId);
+  const tts = fixedNarrationWorker(voice);
   return playbackPrefetch.observe({
     bookId,
     chapterIndex,
@@ -2423,7 +2579,7 @@ const hlsAudioStreamer = createHlsAudioStreamer({
 async function inspectChapterAudio(bookId, chapterIndex, options = {}) {
   const clean = Boolean(options.clean);
   const tier = options.tier === 'instant' ? 'instant' : 'active';
-  const tts = options.tts || ttsForTier(tier);
+  const tts = options.tts || ttsForTier(tier, bookId);
   const outputPath = clean ? tts.cleanChapterPath(bookId, chapterIndex) : tts.chapterPath(bookId, chapterIndex);
   let ready = false;
   let size = 0;
@@ -3721,8 +3877,8 @@ const offlineReadinessNotifications = createOfflineReadinessNotifications({
   vapidSubject: process.env.WEB_PUSH_SUBJECT
 });
 
-function offlinePreparationIdentity() {
-  const sourceVoice = voiceForTier('active');
+function offlinePreparationIdentity(bookId) {
+  const sourceVoice = voiceForTier('active', bookId);
   const sourceVariantKey = String(getTTSVariantKeyForVoice(sourceVoice) || 'default');
   return {
     sourceVoice,
@@ -3733,7 +3889,7 @@ function offlinePreparationIdentity() {
   };
 }
 
-async function offlinePackageInput(bookId, identity = offlinePreparationIdentity()) {
+async function offlinePackageInput(bookId, identity = offlinePreparationIdentity(bookId)) {
   const target = await getOfflineBookChapters(bookId);
   const rules = effectiveRules(await loadJSON(PRONUNCIATIONS_FILE, {}), bookId);
   return { bookId, ...target, rules, identity };
@@ -3763,7 +3919,7 @@ async function rememberReadyOfflinePackage({ record, signal, beforePublish }) {
 }
 
 function pinnedOfflinePreparationIdentity(request = {}) {
-  if (!request.sourceVariantKey || !request.sourceVoice) return offlinePreparationIdentity();
+  if (!request.sourceVariantKey || !request.sourceVoice) return offlinePreparationIdentity(request.bookId);
   return {
     sourceVoice: request.sourceVoice,
     sourceVariantKey: request.sourceVariantKey,
@@ -4262,6 +4418,7 @@ registerPlaybackRoutes(app, {
     bookId,
     chapterIndex,
     sessionId: `${positionUserId(req)}:${syncDeviceId(req)}`,
+    voiceId: prepared?.voiceId,
     tier: prepared?.servedTier === 'instant' ? 'instant' : 'active'
   }),
   offlinePreparationOwner: req =>
@@ -4304,6 +4461,7 @@ const {
   recordPosition
 } = userLibraryState;
 registerAudioPrepRoutes(app, {
+  getBookNarration, setBookNarration, getPreparationStatus, withNarrationLock,
   requireAdmin,
   booksFile: BOOKS_FILE,
   shelvesFile: SHELVES_FILE,
@@ -4391,6 +4549,7 @@ async function warmImportedBookAudio(bookId, bookPath) {
       await ensureChapterAudioPrepared(bookId, chapterIndex, {
         priority,
         voice,
+        tts: fixedNarrationWorker(voice),
         origin: GENERATION_ORIGIN.IMPORT_WARMUP,
         tier: 'active'
       });
@@ -4418,7 +4577,7 @@ async function warmImportedBookAudio(bookId, bookPath) {
     bookId,
     bookPath,
     language: book.language || 'en',
-    voice: getActiveVoice()
+    voice: getActiveVoice(bookId)
   });
 }
 
@@ -4557,7 +4716,7 @@ async function backfillChapterDurations() {
         const have = Number(durations[i]);
         if (Number.isFinite(have) && have > 0) continue; // already measured
         let filePath;
-        try { filePath = chunkedTTS.chapterPath(bookId, i); } catch { continue; }
+        try { filePath = ttsForTier('active', bookId).chapterPath(bookId, i); } catch { continue; }
         try { await fs.access(filePath); } catch { continue; } // no complete audio on disk
         targets.push({ bookId, chapterIndex: i, filePath });
       }
@@ -4615,16 +4774,13 @@ async function backfillChapterDurations() {
 async function backfillNarrationArtifacts() {
   try {
     const books = await loadJSON(BOOKS_FILE, {});
-    const variants = [
-      { tts: chunkedTTS, voice: getActiveVoice() },
-      { tts: instantChunkedTTS, voice: getActiveInstantVoice() || getActiveVoice() }
-    ].filter((entry, index, source) => source.findIndex(candidate =>
-      candidate.tts.currentVariantSegment() === entry.tts.currentVariantSegment()
-    ) === index);
     let indexed = 0;
     let chaptersVisited = 0;
     for (const [bookId, book] of Object.entries(books)) {
       if (!book?.path || deletedBookIds.has(bookId)) continue;
+      const variants = [getActiveVoice(bookId), getActiveInstantVoice(bookId)]
+        .filter((voice, index, all) => voice && all.indexOf(voice) === index)
+        .map(voice => ({ voice, tts: fixedNarrationWorker(voice) }));
       let chapters;
       try {
         chapters = await getChaptersCached(book.path);
@@ -4865,7 +5021,7 @@ if (require.main === module) {
     }
     await premiumPrep.restore().catch(err => console.warn(`Premium prep recovery failed: ${err.message}`));
     const ordinaryRecovery = await Promise.all([
-      chunkedTTS.resumePendingChapters({ recoverAllVariants: true })
+      chunkedTTS.resumePendingChapters({ recoverAllVariants: true, fixedWorkers: true })
     ]).catch(err => {
       console.warn(`Chapter generation recovery failed: ${err.message}`);
       return [];

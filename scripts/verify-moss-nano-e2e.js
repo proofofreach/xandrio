@@ -130,6 +130,7 @@ const results = [];
     });
     await check('idle preparation, fallback, and disable/re-enable preserve completed chapters', async () => {
       holdSecond = true;
+      assert.equal((await request(`/api/narration/${bookId}`, { method: 'POST', body: JSON.stringify({ fallbackPolicy: 'instant' }) })).status, 200);
       assert.equal((await request(`/api/premium-prep/${bookId}/start`, { method: 'POST', body: '{}' })).status, 200);
       await until(async () => (await prepStatus()).readyChapters >= 1, 'first prepared chapter');
       await until(() => held.size > 0, 'second chapter in flight before repositioning');
@@ -189,6 +190,7 @@ const results = [];
     });
     await check('non-English Nano without a compatible instant voice stays truthfully premium', async () => {
       assert.equal((await request('/api/voice', { method: 'POST', body: JSON.stringify({ voiceId: 'moss-nano:Soyo' }) })).status, 200);
+      assert.equal((await request(`/api/narration/${bookId}`, { method: 'POST', body: JSON.stringify({ voiceId: 'moss-nano:Soyo' }) })).status, 200);
       assert.equal((await prepStatus()).instantVoice, null);
       const manifest = await (await request(`/api/chunks/${bookId}/0/manifest?tier=instant`)).json();
       assert.equal(manifest.servedTier, 'premium');
@@ -201,6 +203,7 @@ const results = [];
         const page = await context.newPage();
         online = false; await request('/api/engines/status?refresh=1');
         await page.goto(`${origin}/#/settings/voice`);
+        await page.locator('.voice-settings-filters summary').click();
         await page.locator('#voice-filter-bar [data-voice-filter="provider"]').selectOption('moss-nano');
         // The selected voice is pinned above the filtered list.
         assert.equal(await page.locator('#voice-list [data-voice-id^="moss-nano:"]').count(), 18);

@@ -63,7 +63,7 @@ const { startScenarioEnvironment } = require('./fixtures/scenarios/lib/environme
         await page.waitForURL('**/#/settings/voice');
         const firstVoice = page.locator('[data-settings-pane="voice"]:not([hidden]) #voice-list .voice-card').first();
         await firstVoice.waitFor();
-        assert.equal(await firstVoice.getAttribute('aria-selected'), 'true', 'the selected voice is first');
+        assert.equal(await firstVoice.locator('[data-voice-action="select"]').getAttribute('aria-pressed'), 'true', 'the selected voice is first');
         for (const button of [firstVoice.locator('.voice-save-btn'), firstVoice.locator('.voice-play-btn')]) {
           const target = await button.boundingBox();
           assert(target.width >= 44 && target.height >= 44, 'voice actions have full touch targets');

@@ -36,7 +36,7 @@ function normalizedBooks(status) {
   if (!Array.isArray(status?.books)) return [];
   return status.books.filter(book =>
     book && typeof book.id === 'string' &&
-    (Number(book.active || 0) > 0 || Number(book.queued || 0) > 0 || book.failed === true)
+    (Number(book.active || 0) > 0 || Number(book.queued || 0) > 0 || book.failed === true || Boolean(book.preparationStatus))
   );
 }
 
@@ -138,6 +138,13 @@ function activityStateLabel(book) {
   if (book.kind === 'preparation') {
     return `Preparing audio · ${book.readyChapters}/${book.totalChapters}`;
   }
+  if (book.preparationStatus) {
+    const states = { userPaused: 'Paused', generating: 'Preparing', paused: 'Waiting for playback',
+      engineOffline: 'Narration service offline', error: 'Preparation stopped', idle: 'Not preparing', ready: 'Prepared' };
+    const seconds = Math.max(0, Number(book.readyAudioSeconds) || 0);
+    const buffer = seconds >= 60 ? `${Math.floor(seconds / 60)} min ready at 1×` : seconds > 0 ? 'Under 1 min ready at 1×' : 'No audio ready from the preparation start';
+    return `${book.narratorName || 'Book narrator'} · ${states[book.preparationStatus] || 'Preparing'} · ${buffer}`;
+  }
   if (book.failed) {
     return book.error ? `Audio preparation failed · ${book.error}` : 'Audio preparation failed';
   }
@@ -154,6 +161,7 @@ function activityStructureFor(books) {
     coverPath: book.coverPath || '',
     coverUrl: book.coverUrl || '',
     failed: book.failed === true,
+    preparationStatus: book.preparationStatus || null,
     error: book.error || '',
     retryChapterIndex: Number.isInteger(book.retryChapterIndex) ? book.retryChapterIndex : null
   })));
@@ -281,6 +289,11 @@ function renderActivityDetails(status = currentStatus) {
           ${isDownload || isPreparation ? `
             <button type="button" class="audio-activity-cancel"
                     data-cancel-offline-book="${escapeHTML(book.id)}">Cancel</button>
+          ` : ''}
+          ${book.preparationStatus && book.preparationStatus !== 'ready' ? `
+            <button type="button" class="audio-activity-cancel audio-activity-preparation"
+                    data-narration-book="${escapeHTML(book.id)}"
+                    data-narration-action="${['userPaused', 'error', 'idle'].includes(book.preparationStatus) ? 'resume' : 'pause'}">${book.preparationStatus === 'userPaused' ? 'Resume preparation' : ['error', 'idle'].includes(book.preparationStatus) ? 'Retry preparation' : 'Pause preparation'}</button>
           ` : ''}
           ${canRetry ? `
             <button type="button" class="audio-activity-retry"
@@ -487,6 +500,16 @@ export function initQueueStatus(options = {}) {
     renderQueueStatus(currentServerStatus);
   });
   scope.listen(activityListEl, 'click', event => {
+    const preparationButton = event.target.closest?.('[data-narration-book]');
+    if (preparationButton?.dataset?.narrationBook && !preparationButton.disabled) {
+      preparationButton.disabled = true;
+      const { narrationBook, narrationAction } = preparationButton.dataset;
+      apiSend('POST', `/api/premium-prep/${encodeURIComponent(narrationBook)}/${narrationAction}`, {})
+        .then(() => pollQueueStatus(scope))
+        .catch(error => showToast(`Preparation could not change: ${error.message}`, 'error'))
+        .finally(() => { preparationButton.disabled = false; });
+      return;
+    }
     const moveButton = event.target.closest?.('[data-move-queue-book]');
     const moveBookId = moveButton?.dataset?.moveQueueBook;
     const moveDirection = moveButton?.dataset?.moveDirection;

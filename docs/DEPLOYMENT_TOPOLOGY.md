@@ -14,14 +14,21 @@ Enabled:
 - Library, import/upload, search providers, Anna's/Z-Library (with
   `BOOK_PROXY_URL` egress proxy), covers, playback, PWA/offline.
 - Edge TTS (network engine; no local model runtime needed).
+- Kokoro and MOSS Nano CPU workers on loopback. Nano is an explicit per-book
+  prepared narrator; it does not replace the library's saved default. Its
+  supervised worker uses a 2 GiB memory limit, four CPU threads, no swap, and
+  low scheduling priority. See `moss-nano/README.md` for setup and measurements.
 
-Disabled (must stay off in production `.env`):
-- `XANDRIO_VOICE_PROVIDERS=edge,kokoro` — the voice catalog (picker, voice
+Provider configuration:
+- `XANDRIO_VOICE_PROVIDERS=edge,kokoro,moss-nano` — the voice catalog (picker, voice
   selection, voice cloning) only offers providers listed here; Chatterbox
   voices and the cloning UI never appear on the web host.
 - `CHATTERBOX_AUTO_START=false` (and `KOKORO_AUTO_START` as appropriate) —
   disabled model engines never spawn. The `m4-server/` and `python/` trees
   ship with the code but are inert without these flags and a local runtime.
+- `MOSS_NANO_ENABLED=true`, `MOSS_NANO_AUTO_START=false`, and
+  `MOSS_NANO_TTS_URL=http://127.0.0.1:8768` connect the app to the separately
+  supervised worker. Models and its Python environment live in shared state.
 
 ## Local (Apple-Silicon M4 — launchd `com.xandrio.server`, port 8181, trusted LAN)
 
