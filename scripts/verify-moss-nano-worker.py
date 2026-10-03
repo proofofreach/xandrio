@@ -120,6 +120,7 @@ def main():
         def exhausted(request, _port):
             status, body = request('/tts', {'text': 'The library was quiet.', 'voice': 'Nathan'})
             assert status == 422 and b'no audio was published' in body
+            assert json.loads(body)['code'] == 'NANO_FRAME_LIMIT', 'frame exhaustion must be distinguishable from other failures'
             assert not json.loads(request('/health')[1])['busy']
             assert not list(Path(scratch).glob('xandrio-nano-*'))
             report.append({'check': 'frame-exhaustion-does-not-publish', 'passed': True})

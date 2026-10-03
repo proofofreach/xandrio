@@ -2,6 +2,9 @@
 // a failed later request leaves short audio that restart adopts; exhausted retries
 // or cancellation publish audio; inserted silence hides truncation; unavailable probes count as validation; a retry
 // policy invalidates already verified audio or changes the narrator/text.
+// Frame-limit recovery cases, specified before implementation: a typed worker
+// failure bypasses alternate seeds; mixed short/frame failures reset the budget;
+// exhausted or cancelled retries publish partial audio; unknown errors retry.
 // Real HTTP app and real mastering/cache/restart. Speech service is a fixture.
 // --baseline saves old-version verified audio; --reuse-baseline verifies reuse.
 const assert = require('node:assert/strict');
@@ -27,7 +30,8 @@ const token = 'nano-recovery-fixture';
   const data = baseline?.data || await fs.mkdtemp(path.join(os.tmpdir(), 'nano-recovery-e2e-'));
   const cache = path.join(data, 'cache');
   await fs.mkdir(cache, { recursive: true });
-  const cases = ['cached', 'recover', 'exhausted', 'http-error', 'padded', 'cancel', 'duration-probe', 'noise-probe'];
+  const cases = ['cached', 'recover', 'exhausted', 'http-error', 'padded', 'cancel', 'duration-probe', 'noise-probe',
+    'frame-recover', 'frame-mixed', 'frame-exhausted', 'frame-cancel', 'unknown-error', 'invalid-request'];
   const textFor = id => `The ${id} passage continues through the quiet garden. Every sentence must remain present when the narrator finishes this short scene.`;
   const tail = 'The final scene closes quietly after everyone has returned home.';
   if (reuse) {
@@ -74,13 +78,25 @@ const token = 'nano-recovery-fixture';
     const input = JSON.parse(body);
     const id = cases.find(candidate => input.text.includes(`The ${candidate} passage`));
     calls.push({ id, ...input });
-    if (id === 'cancel' && input.seed === 1235) {
+    if (['cancel', 'frame-cancel'].includes(id) && input.seed === 1235) {
       res.once('close', () => { cancellationClosed = true; }); return;
+    }
+    if (id?.startsWith('frame-') && (input.seed === 1234 && id !== 'frame-mixed'
+        || id === 'frame-mixed' && input.seed === 1235 || id === 'frame-exhausted')) {
+      res.writeHead(422, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ error: 'Synthesis failed; no audio was published', code: 'NANO_FRAME_LIMIT' }));
+    }
+    if (['unknown-error', 'invalid-request'].includes(id)) {
+      res.writeHead(id === 'invalid-request' ? 400 : 422, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ error: 'Synthesis failed; no audio was published',
+        code: id === 'invalid-request' ? 'NANO_FRAME_LIMIT' : 'UNKNOWN_FAILURE' }));
     }
     if (id === 'http-error' && calls.filter(call => call.id === id).length > 1) {
       res.writeHead(422, { 'Content-Type': 'application/json' }); return res.end('{"error":"Synthesis failed; no audio was published"}');
     }
-    const valid = input.text === tail || ['cached', 'duration-probe', 'noise-probe'].includes(id) || (id === 'recover' && input.seed === 1236);
+    const valid = input.text === tail || ['cached', 'duration-probe', 'noise-probe'].includes(id)
+      || (id === 'recover' && input.seed === 1236) || (id === 'frame-recover' && input.seed === 1235)
+      || (id === 'frame-mixed' && input.seed === 1236);
     res.writeHead(200, { 'Content-Type': 'audio/wav' }); res.end(audio[valid ? 'valid' : 'short']);
   });
   service.listen(0, '127.0.0.1'); await once(service, 'listening');
@@ -145,6 +161,25 @@ const token = 'nano-recovery-fixture';
         const progress = await status('recover'); assert.equal(progress.readyChunks, progress.totalChunks);
         return { seeds: used.map(c => c.seed), readyChunks: progress.readyChunks };
       });
+      for (const id of ['frame-recover', 'frame-mixed']) await check(`${id} completes with one shared seed budget`, async () => {
+        const response = await request(`/api/audio/${id}/0`); assert.equal(response.status, 200); await response.arrayBuffer();
+        const used = calls.filter(c => c.id === id);
+        assert.deepEqual(used.map(c => c.seed), id === 'frame-recover' ? [1234, 1235] : [1234, 1235, 1236]);
+        assert(used.every(c => c.voice === 'Adam' && c.text === textFor(id)));
+        const progress = await status(id); assert.equal(progress.readyChunks, progress.totalChunks);
+        const responseAudio = await request(`/api/chunks/${id}/0/0?tier=premium`);
+        assert.equal(responseAudio.status, 200); assert.equal(responseAudio.headers.get('x-voice-id'), 'moss-nano:Adam');
+        await responseAudio.arrayBuffer();
+        return { seeds: used.map(c => c.seed), readyChunks: progress.readyChunks };
+      });
+      for (const id of ['frame-exhausted', 'unknown-error', 'invalid-request']) await check(`${id} fails closed with bounded requests`, async () => {
+        const response = await request(`/api/audio/${id}/0`); assert.equal(response.status, 500); await response.text();
+        assert.deepEqual(calls.filter(c => c.id === id).map(c => c.seed), id === 'frame-exhausted' ? [1234, 1235, 1236] : [1234]);
+        assert(!(await filesFor(id)).some(name => /_chunk0\.mp3(?:\.narration-artifact\.json)?$/.test(name)));
+        await start(); await status(id);
+        assert(!(await filesFor(id)).some(name => /_chunk0\.mp3(?:\.narration-artifact\.json)?$/.test(name)));
+        return { rejectedFirstChunkAbsent: true };
+      });
       for (const id of ['exhausted', 'http-error', 'padded']) await check(`${id} leaves no rejected audio for restart to adopt`, async () => {
         const response = await request(`/api/audio/${id}/0`); assert.equal(response.status, 500); await response.text();
         assert(!(await filesFor(id)).some(name => /_chunk0\.mp3(?:\.narration-artifact\.json)?$/.test(name)));
@@ -152,13 +187,14 @@ const token = 'nano-recovery-fixture';
         assert(!(await filesFor(id)).some(name => /_chunk0\.mp3(?:\.narration-artifact\.json)?$/.test(name)));
         return { readyChunksAfterRestart: progress.readyChunks, rejectedFirstChunkAbsent: true };
       });
-      await check('pause aborts a later seed and removes rejected audio', async () => {
-        const response = await request('/api/premium-prep/cancel/start', { method: 'POST', body: '{"fromChapter":0}' }); assert(response.ok);
-        await until(() => calls.some(c => c.id === 'cancel' && c.seed === 1235), 'second seed');
-        assert((await request('/api/premium-prep/cancel/pause', { method: 'POST', body: '{}' })).ok);
+      for (const id of ['cancel', 'frame-cancel']) await check(`${id}: pause aborts a later seed and removes rejected audio`, async () => {
+        cancellationClosed = false;
+        const response = await request(`/api/premium-prep/${id}/start`, { method: 'POST', body: '{"fromChapter":0}' }); assert(response.ok);
+        await until(() => calls.some(c => c.id === id && c.seed === 1235), 'second seed');
+        assert((await request(`/api/premium-prep/${id}/pause`, { method: 'POST', body: '{}' })).ok);
         await until(() => cancellationClosed, 'worker request cancelled');
-        await until(async () => !(await filesFor('cancel')).some(name => /_chunk0\.mp3(?:\.narration-artifact\.json)?$/.test(name)), 'invalid output cleanup');
-        assert.deepEqual(calls.filter(call => call.id === 'cancel').map(call => call.seed), [1234, 1235]);
+        await until(async () => !(await filesFor(id)).some(name => /_chunk0\.mp3(?:\.narration-artifact\.json)?$/.test(name)), 'invalid output cleanup');
+        assert.deepEqual(calls.filter(call => call.id === id).map(call => call.seed), [1234, 1235]);
         return { workerCancelled: true };
       });
       for (const probe of ['duration', 'noise']) await check(`${probe} probe failure cannot publish Nano audio`, async () => {
