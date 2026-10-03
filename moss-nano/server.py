@@ -23,6 +23,10 @@ slot = threading.Lock()
 state = {'status': 'starting', 'runtime': None, 'tokenizer': None}
 
 
+class FrameLimitError(ValueError):
+    """A sampled take failed to reach EOS; another seed may finish it."""
+
+
 def load_runtime():
     try:
         spec = importlib.util.spec_from_file_location('model_installer', ROOT / 'install-models.py')
@@ -173,7 +177,7 @@ class Handler(BaseHTTPRequestHandler):
 
                 frames = runtime.generate_audio_frames(rows, on_frame=on_frame)
                 if len(frames) >= MAX_FRAMES:
-                    raise ValueError('Generation exhausted the frame limit without natural EOS')
+                    raise FrameLimitError('Generation exhausted the frame limit without natural EOS')
                 decode()
                 if samples == 0:
                     raise ValueError('Empty generated audio')
@@ -191,8 +195,11 @@ class Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             self.close_connection = True
         except Exception as error:
-            print(f'Nano synthesis failed: {type(error).__name__}: {error}', file=sys.stderr, flush=True)
-            self.json(504 if isinstance(error, TimeoutError) else 422, {'error': 'Synthesis failed; no audio was published'})
+            print(f'Nano synthesis failed (voice={voice}, seed={seed}): {type(error).__name__}: {error}', file=sys.stderr, flush=True)
+            failure = {'error': 'Synthesis failed; no audio was published'}
+            if isinstance(error, FrameLimitError):
+                failure['code'] = 'NANO_FRAME_LIMIT'
+            self.json(504 if isinstance(error, TimeoutError) else 422, failure)
         finally:
             runtime.codec_streaming_session.reset()
             if temp:

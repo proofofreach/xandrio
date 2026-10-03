@@ -93,11 +93,14 @@ Requests are limited to 16 KiB, 1,200 characters, 256 text tokens, 375 frames an
 dropping later dialogue from a request containing several paragraphs. The split
 policy has its own cache identity. Exhaustion, invalid audio and cancellation never publish a partial
 successful file. Decoder state and the sampling seed reset per request.
-The default seed remains 1234. If audio fails the duration or static-noise check,
+The default seed remains 1234. If a take reaches the frame limit without natural
+EOS, the worker discards it and returns HTTP 422 with code `NANO_FRAME_LIMIT`.
+For that specific failure, or audio that fails the duration or static-noise check,
 the app retries the identical text and voice with seeds 1235 and 1236, then stops
 with an error. Inserted pauses do not count toward the speech-duration minimum;
 missing audio probes also fail validation. Failed and cancelled attempts remove
-their output before it can be reused after restart. HTTP errors stop the current
+their output before it can be reused after restart. Frame-limit and audio-check
+failures share a maximum of three takes; other HTTP errors stop the current
 attempt sequence. Each request retains its existing timeout and can be cancelled.
 
 This recovery policy extends previously rejected synthesis without changing the
