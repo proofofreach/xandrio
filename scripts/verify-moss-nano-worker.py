@@ -121,7 +121,14 @@ def main():
             status, body = request('/tts', {'text': 'The library was quiet.', 'voice': 'Nathan'})
             assert status == 422 and b'no audio was published' in body
             assert json.loads(body)['code'] == 'NANO_FRAME_LIMIT', 'frame exhaustion must be distinguishable from other failures'
-            assert not json.loads(request('/health')[1])['busy']
+            # The client can receive the error before the server's finally
+            # block releases its slot. Verify bounded cleanup, not that race.
+            for _ in range(100):
+                if not json.loads(request('/health')[1])['busy']:
+                    break
+                time.sleep(.01)
+            else:
+                raise AssertionError('frame-exhausted worker kept its slot')
             assert not list(Path(scratch).glob('xandrio-nano-*'))
             report.append({'check': 'frame-exhaustion-does-not-publish', 'passed': True})
 
