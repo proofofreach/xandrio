@@ -41,6 +41,18 @@ const unicode = '雪が静かに降り積もる山道を旅人たちはゆっく
   // keep the production deadline path fast. No serving configuration is added.
   const preload = path.join(output, 'deadline.cjs');
   await fs.writeFile(preload, `
+if (['enqueue-outside', 'enqueue-cancel'].includes(process.env.NANO_E2E_FAULT)) {
+ const Q = require(${JSON.stringify(path.join(root, 'lib/tts-queue'))}); const enqueue = Q.prototype.enqueue;
+ Q.prototype.enqueue = async function (params) {
+  const id = await enqueue.call(this, { ...params, outputPath: require('node:path').resolve(process.env.CACHE_DIR, '../escaped.mp3'), reuseExistingOutput: process.env.NANO_E2E_FAULT !== 'enqueue-cancel' });
+  if (process.env.NANO_E2E_FAULT === 'enqueue-cancel') this.cancel(id);
+  return id;
+ };
+}
+if (['outside-cache', 'symlink-escape'].includes(process.env.NANO_E2E_FAULT)) {
+ const Q = require(${JSON.stringify(path.join(root, 'lib/tts-queue'))}); const original = Q.prototype._generateHttpTTS;
+ Q.prototype._generateHttpTTS = function (...args) { args[2] = require('node:path').resolve(process.env.CACHE_DIR, process.env.NANO_E2E_FAULT === 'outside-cache' ? '../escaped.mp3' : 'escape/escaped.mp3'); return original.apply(this, args); };
+}
 if (process.env.NANO_E2E_FAULT === 'marker-false') require(${JSON.stringify(path.join(root, 'lib/narration-artifact-cache'))}).NarrationArtifactCache.prototype.publishVerified = async () => false;
 if (process.env.NANO_E2E_FAULT === 'recipe-failure') require(${JSON.stringify(path.join(root, 'lib/tts-queue'))}).prototype._artifactDescriptor = () => { throw new Error('Injected recipe failure'); };
 if (process.env.NANO_E2E_FAULT.includes('deadline')) try { const p = require(${JSON.stringify(path.join(root, 'lib/nano-synthesis-recovery'))}); p.RECOVERY_LIMITS.deadlineMs = 1000; } catch (e) { if (e.code !== 'MODULE_NOT_FOUND') throw e; }\n`);
@@ -90,6 +102,8 @@ if (process.env.NANO_E2E_FAULT.includes('deadline')) try { const p = require(${J
     await stop(); held = closed = false;
     if (!restart) {
       data = await fs.mkdtemp(path.join(os.tmpdir(), 'nano-adaptive-e2e-')); cache = path.join(data, 'cache'); await fs.mkdir(cache);
+      if (mode.startsWith('enqueue-')) await fs.writeFile(path.join(data, 'escaped.mp3'), fixtures.long);
+      if (mode === 'symlink-escape') { const external = path.join(data, 'external'); await fs.mkdir(external); await fs.symlink(external, path.join(cache, 'escape')); }
       const bookPath = path.join(cache, 'fixture.xbook.json');
       await fs.writeFile(bookPath, JSON.stringify({ _xbookVersion: 2, metadata: { title: 'Fixture', language: 'en' }, chapters: [{ id: 'one', title: 'One', type: 'chapter', text: sourceText }] }));
       await fs.writeFile(path.join(data, 'books.json'), JSON.stringify({ fixture: { id: 'fixture', title: 'Fixture', author: 'Fixture', path: bookPath, language: 'en', chapterCount: 1 } }));
@@ -113,6 +127,8 @@ if (process.env.NANO_E2E_FAULT.includes('deadline')) try { const p = require(${J
   const status = async () => (await request('/api/chunks/fixture/0/status?tier=premium')).json();
   async function absent() { assert.deepEqual(await files(), []); await until(async () => !(await fs.readdir(cache)).some(n => n.startsWith('.nano-recovery-')), 'scratch cleanup'); }
   async function check(name, fn) {
+    const only = process.argv.find(arg => arg.startsWith('--only='))?.slice(7).split(',');
+    if (only && !only.some(label => name.startsWith(label + ':'))) return;
     try { const evidence = await fn(); results.push({ name, passed: true, evidence }); console.log(`PASS ${name}`); }
     catch (e) { results.push({ name, passed: false, error: e.message }); console.error(`FAIL ${name}: ${e.message}`); }
     finally { await stop(); }
@@ -157,10 +173,21 @@ if (process.env.NANO_E2E_FAULT.includes('deadline')) try { const p = require(${J
         assert(!(await fs.readdir(cache)).some(n => n.startsWith('.nano-recovery-')));
         return { attempts: used.length, leaves: valid.length, duration, format: scenario === 'wav' ? 'wav' : 'mp3' };
       });
-      for (const scenario of ['bad-child', 'exhausted', 'budget', 'marker-false', 'recipe-failure', 'unknown', 'malformed', 'duration', 'noise', 'join', 'final-probe']) await check(`${scenario}: failure cannot publish or be adopted`, async () => {
+      for (const scenario of ['bad-child', 'exhausted', 'budget', 'enqueue-outside', 'enqueue-cancel', 'outside-cache', 'symlink-escape', 'marker-false', 'recipe-failure', 'unknown', 'malformed', 'duration', 'noise', 'join', 'final-probe']) await check(`${scenario}: failure cannot publish or be adopted`, async () => {
         mode = scenario; sourceText = mode === 'budget' ? recursive : original; const before = calls.length; await start();
         const response = await request('/api/audio/fixture/0'); assert.equal(response.status, 500); const error = await response.text();
-        const used = calls.slice(before); assert(used.length <= 15); if (mode === 'budget') assert.equal(used.length, 15); await absent();
+        const used = calls.slice(before);
+        if (mode.startsWith('enqueue-')) {
+          assert.equal(used.length, 0);
+          await delay(100);
+          assert.equal(hash(await fs.readFile(path.join(data, 'escaped.mp3'))), hash(fixtures.long), 'external audio changed');
+          assert.equal(await fs.stat(path.join(data, 'escaped.mp3.narration-artifact.json')).then(() => true, () => false), false, 'external marker written');
+        }
+        if (['outside-cache', 'symlink-escape'].includes(mode)) {
+          assert.equal(used.length, 0, 'out-of-cache request reached synthesis');
+          for (const file of [path.join(data, 'escaped.mp3'), path.join(data, 'external/escaped.mp3')]) assert.equal(await fs.stat(file).then(() => true, () => false), false, 'wrote outside cache');
+        }
+        assert(used.length <= 15); if (mode === 'budget') assert.equal(used.length, 15); await absent();
         if (['unknown', 'malformed', 'duration', 'noise'].includes(mode)) assert.equal(used.length, 1);
         if (['bad-child', 'exhausted'].includes(mode)) assert(used.length > 3);
         await start(true); const progress = await status(); assert.equal(progress.readyChunks, 0); await absent();
