@@ -41,6 +41,16 @@ const unicode = '雪が静かに降り積もる山道を旅人たちはゆっく
   // keep the production deadline path fast. No serving configuration is added.
   const preload = path.join(output, 'deadline.cjs');
   await fs.writeFile(preload, `
+if (process.env.NANO_E2E_FAULT.startsWith('crash-cleanup')) {
+ const fs = require('node:fs'), path = require('node:path');
+ const stale = path.join(process.env.CACHE_DIR, '.nano-recovery-' + process.pid + '-stale');
+ fs.mkdirSync(stale); fs.writeFileSync(path.join(stale, 'old.wav'), 'stale fixture');
+ const old = new Date(Date.now() - 600000); fs.utimesSync(stale, old, old);
+}
+if (process.env.NANO_E2E_FAULT === 'crash-cleanup-nested') {
+ const Q = require(${JSON.stringify(path.join(root, 'lib/tts-queue'))}); const enqueue = Q.prototype.enqueue;
+ Q.prototype.enqueue = function (params) { return enqueue.call(this, { ...params, outputPath: require('node:path').join(this.cacheDir, 'voice-samples/fixture.mp3') }); };
+}
 if (['enqueue-outside', 'enqueue-cancel'].includes(process.env.NANO_E2E_FAULT)) {
  const Q = require(${JSON.stringify(path.join(root, 'lib/tts-queue'))}); const enqueue = Q.prototype.enqueue;
  Q.prototype.enqueue = async function (params) {
@@ -68,7 +78,7 @@ if (process.env.NANO_E2E_FAULT.includes('deadline')) try { const p = require(${J
     if (mode === 'malformed') { res.writeHead(200, { 'Content-Type': 'text/plain' }); return res.end('not audio'); }
     if (mode === 'frame' && isRoot) { res.writeHead(422, { 'Content-Type': 'application/json' }); return res.end('{"code":"NANO_FRAME_LIMIT"}'); }
     const leafIndex = sourceText.indexOf(input.text);
-    if (['cancel', 'kill', 'deadline', 'body-deadline'].includes(mode) && !isRoot && leafIndex > 0) {
+    if (['cancel', 'kill', 'crash-cleanup', 'crash-cleanup-nested', 'deadline', 'body-deadline'].includes(mode) && !isRoot && leafIndex > 0) {
       held = true; res.once('close', () => { closed = true; });
       if (mode === 'body-deadline') { res.writeHead(200, { 'Content-Type': 'audio/wav' }); res.write(fixtures.a.subarray(0, 44)); }
       return;
@@ -102,6 +112,7 @@ if (process.env.NANO_E2E_FAULT.includes('deadline')) try { const p = require(${J
     await stop(); held = closed = false;
     if (!restart) {
       data = await fs.mkdtemp(path.join(os.tmpdir(), 'nano-adaptive-e2e-')); cache = path.join(data, 'cache'); await fs.mkdir(cache);
+      if (mode === 'crash-cleanup-nested') await fs.mkdir(path.join(cache, 'voice-samples'), { recursive: true });
       if (mode.startsWith('enqueue-')) await fs.writeFile(path.join(data, 'escaped.mp3'), fixtures.long);
       if (mode === 'symlink-escape') { const external = path.join(data, 'external'); await fs.mkdir(external); await fs.symlink(external, path.join(cache, 'escape')); }
       const bookPath = path.join(cache, 'fixture.xbook.json');
@@ -198,6 +209,26 @@ if (process.env.NANO_E2E_FAULT.includes('deadline')) try { const p = require(${J
         const response = await request('/api/audio/fixture/0'); assert.equal(response.status, 500); const error = await response.text();
         assert.match(log.slice(logOffset), /recovery deadline exceeded/i); assert(Date.now() - time < 5000); assert(held); await until(() => closed, 'body abort'); await absent();
         return { attempts: calls.length - before, elapsedMs: Date.now() - time };
+      });
+      for (const scenario of ['crash-cleanup', 'crash-cleanup-nested']) await check(`${scenario}: removes dead-process scratch and preserves active owners`, async () => {
+        mode = scenario; sourceText = original; await start();
+        await until(async () => !(await fs.readdir(cache)).includes(`.nano-recovery-${child.pid}-stale`), 'same PID from an earlier process removed');
+        const activeName = `.nano-recovery-${process.pid}-active`;
+        const activeDir = path.join(cache, activeName); await fs.mkdir(activeDir);
+        await fs.writeFile(path.join(activeDir, 'keep.wav'), fixtures.a);
+        const protectedFile = path.join(cache, 'protected.mp3'); await fs.writeFile(protectedFile, fixtures.long);
+        const pending = request('/api/audio/fixture/0').catch(() => null);
+        await until(() => held, 'later fragment before process death');
+        const abandoned = (await fs.readdir(cache)).filter(name => name.startsWith('.nano-recovery-') && name !== activeName);
+        assert.equal(abandoned.length, 1); const before = calls.length;
+        await stop('SIGKILL'); await pending;
+        assert.equal((await fs.stat(path.join(cache, abandoned[0]))).isDirectory(), true, 'must reproduce an orphan');
+        await start(true);
+        await until(async () => !(await fs.readdir(cache)).some(name => abandoned.includes(name)), 'startup orphan cleanup');
+        assert.equal(hash(await fs.readFile(path.join(activeDir, 'keep.wav'))), hash(fixtures.a));
+        assert.equal(hash(await fs.readFile(protectedFile)), hash(fixtures.long));
+        assert.deepEqual(await files(), []); assert.equal((await status()).readyChunks, 0);
+        return { removedOrphans: abandoned.length, activeOwnerPreserved: true, reusedPidCleaned: true, existingAudioPreserved: true, resumedRequests: calls.length - before };
       });
       for (const scenario of ['cancel', 'kill']) await check(`${scenario}: an interrupted recovery is never adopted`, async () => {
         mode = scenario; sourceText = original; await start();

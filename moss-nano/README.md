@@ -105,7 +105,9 @@ levels and 180 seconds. Fragments use lossless PCM; the final output is encoded
 once with one end pause and no second gain/limiter pass. Unsplittable text or
 exhausted subdivision reports a terminal failure instead of replaying the same
 deterministic recipe at chapter level. Probe/transport/conversion failures do
-not trigger subdivision. All Nano attempts are staged privately until validated. Inserted pauses do not count toward the speech-duration minimum;
+not trigger subdivision. All Nano attempts are staged privately until validated.
+On startup, the queue removes recovery directories owned by dead processes;
+live owners, symlinks and unrecognized directories are preserved. Inserted pauses do not count toward the speech-duration minimum;
 missing audio probes also fail validation. Failed and cancelled attempts remove
 their output before it can be reused after restart. Frame-limit and audio-check
 failures share a maximum of three takes; other HTTP errors stop the current

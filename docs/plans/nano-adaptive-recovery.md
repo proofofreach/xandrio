@@ -71,3 +71,9 @@ Final bounded containment amendment independently ratified: ENDORSED. All 26 ada
 A second public CodeQL scan located the remaining tainted read at parent `realpath`, before the real-root containment check. Accepted-verified: normalize and check the configured lexical cache boundary first, then resolve and check the real parent boundary. This rejects traversal before filesystem access while retaining symlink protection. No scan rule is suppressed.
 
 The lexical-before-realpath amendment was independently ratified ENDORSED. All 26 adaptive HTTP/E2E checks and 11 Nano application checks pass again.
+
+## Crash cleanup review
+
+The next public scan passed, but the required review identified abandoned scratch after a hard process kill. Accepted-verified: startup now sweeps only recognized Nano scratch directories in the configured cache root. Names record the owner PID; live owners, symlinks and unknown names are preserved. A stale directory belonging to this process's reused PID is recognized by its modification time before process startup. All Nano renders await the sweep and stage at the cache root, including nested voice-sample outputs.
+
+Two real HTTP crash/restart cases were written and observed failing before the repair. They cover chapter and nested sample output, a reused PID, preservation of active-owner scratch and existing audio, and rejection of partial logical audio. All 28 adaptive checks, 11 Nano app checks and 14 seed-recovery checks pass. Independent bounded review: ENDORSED for the documented single-instance deployment. Concurrent containers sharing writable cache and a PID namespace identity remain unsupported; unknown historical directory names are deliberately preserved.
