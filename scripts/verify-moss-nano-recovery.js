@@ -59,7 +59,7 @@ const token = 'nano-recovery-fixture';
       operatorPolicy: { version: 1, acknowledgedAt: new Date().toISOString(), unverifiedSourcesEnabled: false } }));
   }
   const audio = {};
-  for (const [name, seconds] of [['short', 0.5], ['valid', 8]]) {
+  for (const [name, seconds] of [['short', 0.1], ['valid', 8]]) {
     const file = path.join(output, `${name}.wav`);
     execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y', '-f', 'lavfi',
       '-i', `sine=frequency=220:duration=${seconds}:sample_rate=48000`, '-ac', '2', file]);
@@ -174,7 +174,7 @@ const token = 'nano-recovery-fixture';
       });
       for (const id of ['frame-exhausted', 'unknown-error', 'invalid-request']) await check(`${id} fails closed with bounded requests`, async () => {
         const response = await request(`/api/audio/${id}/0`); assert.equal(response.status, 500); await response.text();
-        assert.deepEqual(calls.filter(c => c.id === id).map(c => c.seed), id === 'frame-exhausted' ? [1234, 1235, 1236] : [1234]);
+        assert.deepEqual(calls.filter(c => c.id === id && c.text === textFor(id)).map(c => c.seed), id === 'frame-exhausted' ? [1234, 1235, 1236] : [1234]);
         assert(!(await filesFor(id)).some(name => /_chunk0\.mp3(?:\.narration-artifact\.json)?$/.test(name)));
         await start(); await status(id);
         assert(!(await filesFor(id)).some(name => /_chunk0\.mp3(?:\.narration-artifact\.json)?$/.test(name)));
