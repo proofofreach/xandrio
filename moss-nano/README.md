@@ -96,8 +96,16 @@ successful file. Decoder state and the sampling seed reset per request.
 The default seed remains 1234. If a take reaches the frame limit without natural
 EOS, the worker discards it and returns HTTP 422 with code `NANO_FRAME_LIMIT`.
 For that specific failure, or audio that fails the duration or static-noise check,
-the app retries the identical text and voice with seeds 1235 and 1236, then stops
-with an error. Inserted pauses do not count toward the speech-duration minimum;
+the app retries the identical text and voice with seeds 1235 and 1236. If all
+three fail, it subdivides the already prepared text at sentence boundaries or
+whitespace and validates every smaller fragment. Exact text order and the voice
+are preserved. New fragments try seeds 1235, 1236, then 1234; the normal
+request sequence stays unchanged. Recovery has a shared limit of 12 additional takes, three split
+levels and 180 seconds. Fragments use lossless PCM; the final output is encoded
+once with one end pause and no second gain/limiter pass. Unsplittable text or
+exhausted subdivision reports a terminal failure instead of replaying the same
+deterministic recipe at chapter level. Probe/transport/conversion failures do
+not trigger subdivision. All Nano attempts are staged privately until validated. Inserted pauses do not count toward the speech-duration minimum;
 missing audio probes also fail validation. Failed and cancelled attempts remove
 their output before it can be reused after restart. Frame-limit and audio-check
 failures share a maximum of three takes; other HTTP errors stop the current
@@ -118,6 +126,7 @@ do not change it in a serving instance without revising cache identity.
 ```sh
 npm run verify:moss-nano
 npm run verify:moss-nano-recovery
+node scripts/verify-moss-nano-adaptive.js
 npm run verify:narration
 moss-nano-venv/bin/python scripts/verify-moss-nano-worker.py --models moss-nano/models
 ```
