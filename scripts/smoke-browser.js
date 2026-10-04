@@ -568,7 +568,14 @@ async function verifyPlayback(page, fixtureState) {
   // starts at native time zero while the player keeps the logical position.
   await page.waitForFunction(() => (
     Number(window.xandrioPlaybackReport?.().position?.currentTime) >= 14
-  ));
+  )).catch(async error => {
+    const evidence = await page.evaluate(() => ({
+      playback: window.xandrioPlaybackReport?.(),
+      loading: document.getElementById('audio-loading')?.outerHTML,
+      source: document.getElementById('audio-player')?.src
+    }));
+    throw new Error(`${error.message}\nForward skip evidence: ${JSON.stringify(evidence)}`);
+  });
   await page.click('#play-pause-btn');
   await page.waitForFunction(() => document.getElementById('audio-player')?.paused);
 

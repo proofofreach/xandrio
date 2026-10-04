@@ -7,7 +7,7 @@
 // (backgrounded iOS tab, silently stalled response) would otherwise leave
 // loadChapter() pending forever with the loading overlay stuck up.
 //
-// This is the single client-side abandonment deadline. The server's HLS
+// This is the client-side media-load abandonment deadline. The server's HLS
 // readiness timeout is derived from it (see lib/hls-audio-stream.js) so that a
 // still-connected client never has its in-flight encoder killed underneath it.
 export const CLIENT_LOAD_DEADLINE_MS = 30000;
@@ -113,6 +113,16 @@ export class SingleFileChapterPlayer {
       ? Number(options.runwayPollIntervalMs)
       : 1000;
     this.loadTimeoutMs = Number(options.loadTimeoutMs) > 0 ? Number(options.loadTimeoutMs) : LOAD_TIMEOUT_MS;
+    // Allow slow local synthesis, but bound both silent HTTP requests and a
+    // preparation job that keeps answering without ever producing audio.
+    this.preparationTimeoutMs = Number(options.preparationTimeoutMs) > 0
+      ? Number(options.preparationTimeoutMs) : 120000;
+    this.preparationRequestTimeoutMs = Number(options.preparationRequestTimeoutMs) > 0
+      ? Number(options.preparationRequestTimeoutMs) : 10000;
+    this.timelineRequestTimeoutMs = Number(options.timelineRequestTimeoutMs) > 0
+      ? Number(options.timelineRequestTimeoutMs) : 5000;
+    this.loadFailureProbeTimeoutMs = Number(options.loadFailureProbeTimeoutMs) > 0
+      ? Number(options.loadFailureProbeTimeoutMs) : 2000;
     this.playTimeoutMs = Number(options.playTimeoutMs) > 0 ? Number(options.playTimeoutMs) : 10000;
     this.playProgressTimeoutMs = Number(options.playProgressTimeoutMs) > 0
       ? Number(options.playProgressTimeoutMs)
@@ -167,6 +177,8 @@ export class SingleFileChapterPlayer {
     // Tears down the in-flight loadChapter() wait, if any.
     this._loadWait = null;
     this._runwayController = null;
+    this._timelineController = null;
+    this._loadFailureProbeController = null;
     this._isLoading = false;
     this._eventScope = null;
     this._playWait = null;
@@ -264,6 +276,9 @@ export class SingleFileChapterPlayer {
     // would have followed the one being left behind.
     this._releasePrewarm();
     this.pause('source-change');
+    // Only an explicit automatic chapter handoff may retain native autoplay.
+    // Ordinary selections must not inherit it from an abandoned boundary.
+    this.audio.autoplay = options.autoplay === true;
     const requestedOffset = Number(options.startOffsetSeconds);
     const startOffsetSeconds = Number.isFinite(requestedOffset) && requestedOffset > 0
       ? requestedOffset
@@ -290,7 +305,7 @@ export class SingleFileChapterPlayer {
     this._detach();
     this.audio.preload = 'auto';
     this.audio.volume = this._volume;
-    this.audio.playbackRate = this.playbackRate;
+    this._applyPlaybackRate();
     this._isLoading = true;
     this.onWaiting?.('Loading audio…');
     const encodedBookId = encodeURIComponent(bookId);
@@ -307,7 +322,8 @@ export class SingleFileChapterPlayer {
       this.servedTier = pinnedTier;
       this.voiceId = options.voiceId || null;
       tierQuery = this._narrationQuery();
-    } else if (!this.preferStandardAudio && this.resolveServedTier) {
+    } else if (!this.preferStandardAudio && this.resolveServedTier &&
+        (!this.preparePlaybackRunway || !this.fetch)) {
       try {
         const resolution = await this.resolveServedTier(bookId, chapterIndex);
         const tier = typeof resolution === 'string' ? resolution : resolution?.servedTier;
@@ -390,7 +406,12 @@ export class SingleFileChapterPlayer {
         });
         try {
           this.audio.load();
+          this._applyPlaybackRate();
           await wait.promise;
+          // WebKit and Chromium can reset the effective rate while committing
+          // a new media resource, even when the player-level preference did
+          // not change during the load.
+          this._applyPlaybackRate();
           this.activeSource = candidate.url;
           this.isContinuous = candidate.continuous;
           this.streamStartOffset = candidate.startOffset || 0;
@@ -444,6 +465,10 @@ export class SingleFileChapterPlayer {
 
   _detach() {
     this._stopStallWatchdog();
+    this._timelineController?.abort();
+    this._timelineController = null;
+    this._loadFailureProbeController?.abort();
+    this._loadFailureProbeController = null;
     this._loadWait?.cancel();
     this._loadWait = null;
     this._playWait?.cancel();
@@ -554,8 +579,22 @@ export class SingleFileChapterPlayer {
     if (error.status !== undefined) return;
     const continuous = sourceCandidates.find(candidate => candidate.continuous);
     if (!continuous) return;
+    const controller = new AbortController();
+    this._loadFailureProbeController = controller;
+    let timer;
+    let abortListener;
     try {
-      const response = await this.fetch(continuous.url, { cache: 'no-store' });
+      // This request is diagnostic only. Never let a silent stream response
+      // extend the bounded media-load failure or keep an extra encoder open.
+      const aborted = new Promise(resolve => {
+        abortListener = () => resolve(null);
+        controller.signal.addEventListener('abort', abortListener, { once: true });
+      });
+      timer = setTimeout(() => controller.abort(), this.loadFailureProbeTimeoutMs);
+      const response = await Promise.race([
+        this.fetch(continuous.url, { cache: 'no-store', signal: controller.signal }),
+        aborted
+      ]);
       if (!response || response.ok) return;
       error.status = response.status;
       const retryAfter = Number(response.headers?.get?.('Retry-After'));
@@ -564,6 +603,11 @@ export class SingleFileChapterPlayer {
       }
     } catch {
       // The probe is diagnostic only; its failure must not mask the real error.
+    } finally {
+      clearTimeout(timer);
+      controller.signal.removeEventListener('abort', abortListener);
+      controller.abort();
+      if (this._loadFailureProbeController === controller) this._loadFailureProbeController = null;
     }
   }
 
@@ -606,46 +650,74 @@ export class SingleFileChapterPlayer {
   }) {
     const controller = new AbortController();
     this._runwayController = controller;
-    const query = tierQuery || '';
+    let timedOut = false;
+    const deadline = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, this.preparationTimeoutMs);
+    let query = tierQuery || '';
     const runwayUrl = action => {
       const separator = query ? '&' : '?';
       const endChapter = Number.isInteger(endChapterIndex)
         ? `&endChapter=${endChapterIndex}`
         : '';
-      return `/api/chunks/${encodedBookId}/${chapterIndex}/${action}${query}${separator}purpose=playback-runway${endChapter}`;
+      return `/api/chunks/${encodedBookId}/${chapterIndex}/${action}${query}${separator}purpose=playback-runway&offsetSeconds=${startOffsetSeconds}${endChapter}`;
     };
     const cancelled = () => controller.signal.aborted || generation !== this._generation;
-    const cancellationError = () => new LifecycleCancelledError('Chapter runway preparation cancelled');
+    const cancellationError = () => timedOut
+      ? Object.assign(new Error('Audio preparation timed out. Try again to resume.'), {
+          code: 'PLAYBACK_PREPARATION_TIMEOUT', recoverable: true
+        })
+      : new LifecycleCancelledError('Chapter runway preparation cancelled');
     const readStatus = async (url, options = {}) => {
-      if (cancelled()) throw cancellationError();
-      let response;
-      try {
-        response = await this.fetch(url, { cache: 'no-store', signal: controller.signal, ...options });
-      } catch (error) {
-        if (cancelled() || error?.name === 'AbortError') throw cancellationError();
-        throw error;
-      }
-      if (!response.ok) {
-        const detail = await response.json().catch(error => {
-          if (cancelled() || error?.name === 'AbortError') throw cancellationError();
-          return {};
-        });
+      for (let attempt = 0; ; attempt++) {
         if (cancelled()) throw cancellationError();
-        const error = new Error(detail.error || `Playback runway preparation failed (${response.status})`);
-        error.status = response.status;
-        const retryAfter = Number(response.headers?.get?.('Retry-After'));
-        if (Number.isFinite(retryAfter) && retryAfter > 0) {
-          error.retryAfterSeconds = retryAfter;
+        const request = new AbortController();
+        const abort = () => request.abort();
+        controller.signal.addEventListener('abort', abort, { once: true });
+        const timer = setTimeout(abort, this.preparationRequestTimeoutMs);
+        let retryDelay;
+        try {
+          const response = await this.fetch(url, { cache: 'no-store', signal: request.signal, ...options });
+          const detail = response.ok
+            ? await response.json()
+            : await response.json().catch(() => ({}));
+          if (cancelled()) throw cancellationError();
+          if (!response.ok) {
+            const error = new Error(detail.error || `Playback runway preparation failed (${response.status})`);
+            error.status = response.status;
+            const retryAfter = Number(response.headers?.get?.('Retry-After'));
+            if (Number.isFinite(retryAfter) && retryAfter > 0) error.retryAfterSeconds = retryAfter;
+            throw error;
+          }
+          // Pin all subsequent polls to the tier selected by preparation. A
+          // premium chapter finishing in the background must not move the gate.
+          if (!query && ['instant', 'premium'].includes(detail?.servedTier)) {
+            const params = new URLSearchParams({ tier: detail.servedTier });
+            if (detail.voiceId) params.set('voiceId', detail.voiceId);
+            query = `?${params}`;
+          }
+          return detail;
+        } catch (error) {
+          if (cancelled()) throw cancellationError();
+          const transient = !error?.status || [408, 500, 502, 503, 504].includes(error.status);
+          if (!transient || attempt >= 2) {
+            if (request.signal.aborted) {
+              throw Object.assign(new Error('Audio preparation request timed out. Try again to resume.'), {
+                code: 'PLAYBACK_PREPARATION_TIMEOUT', recoverable: true
+              });
+            }
+            throw error;
+          }
+          retryDelay = Math.max(
+            this.runwayPollIntervalMs * (attempt + 1),
+            (Number(error.retryAfterSeconds) || 0) * 1000
+          );
+        } finally {
+          clearTimeout(timer);
+          controller.signal.removeEventListener('abort', abort);
         }
-        throw error;
-      }
-      // A replacement chapter can abort after headers arrive but before the
-      // JSON body is read. It owns the same lifecycle as the fetch above.
-      try {
-        return await response.json();
-      } catch (error) {
-        if (cancelled() || error?.name === 'AbortError') throw cancellationError();
-        throw error;
+        await this._waitForRunwayPoll(controller.signal, cancellationError, retryDelay);
       }
     };
 
@@ -665,7 +737,7 @@ export class SingleFileChapterPlayer {
           throw new Error('Narration generation failed while preparing playback runway');
         }
         this.onPreparing?.({
-          targetChunk: 0,
+          targetChunk: Math.max(0, Number(status?.targetChunk) || 0),
           targetStatus: 'generating',
           readyChunks: Math.max(0, Number(status?.readyChunks) || 0),
           totalChunks: Math.max(0, Number(status?.totalChunks) || 0),
@@ -675,7 +747,7 @@ export class SingleFileChapterPlayer {
         status = await readStatus(runwayUrl('chapter-audio-status'));
       }
       this.onPreparing?.({
-        targetChunk: 0,
+        targetChunk: Math.max(0, Number(status?.targetChunk) || 0),
         targetStatus: 'ready',
         readyChunks: Math.max(0, Number(status?.readyChunks) || 0),
         totalChunks: Math.max(0, Number(status?.totalChunks) || 0),
@@ -683,11 +755,12 @@ export class SingleFileChapterPlayer {
       });
       return status;
     } finally {
+      clearTimeout(deadline);
       if (this._runwayController === controller) this._runwayController = null;
     }
   }
 
-  _waitForRunwayPoll(signal, cancellationError) {
+  _waitForRunwayPoll(signal, cancellationError, delayMs = this.runwayPollIntervalMs) {
     return new Promise((resolve, reject) => {
       let timer = null;
       const onAbort = () => {
@@ -700,7 +773,7 @@ export class SingleFileChapterPlayer {
       timer = setTimeout(() => {
         signal.removeEventListener('abort', onAbort);
         resolve();
-      }, this.runwayPollIntervalMs);
+      }, delayMs);
     });
   }
 
@@ -759,14 +832,19 @@ export class SingleFileChapterPlayer {
     if (!this.fetch || !this.playbackSessionId || !this._eventScope) return;
     const sessionId = this.playbackSessionId;
     const refresh = async () => {
-      if (sessionId !== this.playbackSessionId) return;
+      // Timeline data is best effort. A stalled read must not queue a fresh
+      // request on every tick and exhaust the browser's per-origin connections.
+      if (sessionId !== this.playbackSessionId || this._timelineController) return;
+      const controller = new AbortController();
+      this._timelineController = controller;
+      const timer = setTimeout(() => controller.abort(), this.timelineRequestTimeoutMs);
       try {
         const response = await this.fetch(`/api/audio-timeline/${encodeURIComponent(sessionId)}`, {
-          cache: 'no-store'
+          cache: 'no-store', signal: controller.signal
         });
         if (!response.ok) return;
         const timeline = await response.json();
-        if (sessionId !== this.playbackSessionId || !Array.isArray(timeline.durations)) return;
+        if (controller.signal.aborted || sessionId !== this.playbackSessionId || !Array.isArray(timeline.durations)) return;
         const mappedStartOffset = Number(timeline.startOffsetSeconds);
         if (Number.isFinite(mappedStartOffset) && mappedStartOffset >= 0) {
           this.streamStartOffset = mappedStartOffset;
@@ -780,6 +858,9 @@ export class SingleFileChapterPlayer {
         this._syncContinuousChapter();
       } catch {
         // Playback remains valid when diagnostics/timeline polling is offline.
+      } finally {
+        clearTimeout(timer);
+        if (this._timelineController === controller) this._timelineController = null;
       }
     };
     void refresh();
@@ -1289,8 +1370,15 @@ export class SingleFileChapterPlayer {
     this.audio.autoplay = true;
     this.audio.src = prewarmed.objectUrl;
     this.audio.load();
+    this._applyPlaybackRate();
+    const generation = this._generation;
+    const playRevision = this._playRevision;
     const started = Promise.resolve(this.audio.play());
     started.catch(error => {
+      // A pause, explicit load, or subsequent handoff owns the media element
+      // now. A late rejection cannot change its state or arm recovery for it.
+      if (generation !== this._generation || playRevision !== this._playRevision
+          || this.activeSource !== prewarmed.objectUrl) return;
       // A backgrounded page often rejects play() after `ended`. That is why
       // autoplay is armed: the element may still start once the blob is
       // decodable. Disarming on NotAllowedError cancelled that handoff.
@@ -1460,6 +1548,7 @@ export class SingleFileChapterPlayer {
     this._playReason = 'app';
     this._isPlaying = true;
     const startTime = Number(this.audio.currentTime) || 0;
+    const alreadyPlaying = !this.audio.paused && this.audio.readyState >= 3;
     const wait = waitForMediaEvents(this.audio, {
       resolveEvents: ['playing'],
       rejectEvents: ['error'],
@@ -1481,7 +1570,10 @@ export class SingleFileChapterPlayer {
       const nativePlay = Promise.resolve(this.audio.play());
       nativePlay.catch(() => {});
       await Promise.race([nativePlay, wait.promise]);
-      await wait.promise;
+      // Native play() also resolves when audio is already running, in which
+      // case no new `playing` event is required. Progress below still confirms
+      // that the successful start actually produces advancing audio.
+      if (!alreadyPlaying) await wait.promise;
       if (playRevision !== this._playRevision) throw new LifecycleCancelledError('Playback start cancelled');
       progressWait = this._waitForPlaybackProgress(startTime);
       this._playProgressWait = progressWait;
@@ -1519,6 +1611,7 @@ export class SingleFileChapterPlayer {
     this.audio.pause();
   }
   get isPlaying() { return this._isPlaying && !this.audio.paused; }
+  get isAwaitingChapterAdvance() { return this._awaitingBoundaryPrewarm && this._isPlaying; }
   _streamTimeForChapterTime(seconds) {
     // Estimates describe the UI timeline; they cannot bound an actual seek.
     // Only measured chapter duration or finite media metadata can do that.
@@ -1627,74 +1720,188 @@ export class SingleFileChapterPlayer {
 
   async _reloadContinuousAtOffset(chapterTime) {
     const wasPlaying = this.isPlaying || !this.audio.paused;
+    const resumeRevision = this._playRevision;
     const generation = ++this._generation;
     this._invalidateReadySource();
+    this._cancelRunwayPreparation();
     const encodedBookId = encodeURIComponent(this.bookId);
-    const tierQuery = this._narrationQuery();
-    const candidate = this._continuousCandidates(
-      encodedBookId,
-      this.chapterIndex,
-      tierQuery,
-      chapterTime,
-      this.endChapterIndex
-    )[0];
+    let tierQuery = this._narrationQuery();
+    let wait = null;
+    let relocated = false;
     this._detach();
     this.audio.pause();
-    this.startChapterIndex = this.chapterIndex;
-    this.streamStartOffset = chapterTime;
-    this.requestedStartOffset = chapterTime;
-    this.playbackSessionId = candidate.sessionId;
-    this._timelineDurations.clear();
-    this._attach();
-    const wait = waitForMediaEvents(this.audio, {
-      resolveEvents: ['loadedmetadata', 'canplay'],
-      rejectEvents: ['error'],
-      timeoutMs: this.loadTimeoutMs,
-      timeoutError: () => Object.assign(new Error('Seek transport timed out'), {
-        code: 'MEDIA_LOAD_TIMEOUT'
-      }),
-      eventError: () => this._audioError(),
-      cancelledError: () => new LifecycleCancelledError('Seek cancelled')
-    });
-    this._loadWait = wait;
     this._isLoading = true;
-    this.audio.src = candidate.url;
-    this.activeSource = candidate.url;
-    this._emitDiagnostic('source-reload', {
-      sourceKind: candidate.transport,
-      reason: 'nonseekable-offset',
-      chapterTime
-    });
-    this.audio.load();
-    const nativePlay = wasPlaying ? Promise.resolve(this.audio.play()) : null;
-    nativePlay?.catch(() => {});
     try {
+      // A seek outside the native buffer opens a new server-side transport.
+      // Prepare the exact offset first; otherwise a cold target correctly
+      // returns 425 and the app has to recover from a failure it could avoid.
+      if (this.preparePlaybackRunway && this.fetch) {
+        const runway = await this._waitForPlaybackRunway({
+          encodedBookId,
+          chapterIndex: this.chapterIndex,
+          tierQuery,
+          startOffsetSeconds: chapterTime,
+          endChapterIndex: this.endChapterIndex,
+          generation
+        });
+        if (generation !== this._generation) {
+          throw new LifecycleCancelledError('Seek preparation cancelled');
+        }
+        if (runway?.servedTier === 'instant' || runway?.servedTier === 'premium') {
+          this.servedTier = runway.servedTier;
+          this.voiceId = runway.voiceId || this.voiceId;
+          tierQuery = this._narrationQuery();
+        }
+      }
+
+      const candidate = this._continuousCandidates(
+        encodedBookId,
+        this.chapterIndex,
+        tierQuery,
+        chapterTime,
+        this.endChapterIndex
+      )[0];
+      this.startChapterIndex = this.chapterIndex;
+      this.streamStartOffset = chapterTime;
+      this.requestedStartOffset = chapterTime;
+      this.playbackSessionId = candidate.sessionId;
+      this._timelineDurations.clear();
+      this._attach();
+      wait = waitForMediaEvents(this.audio, {
+        resolveEvents: ['loadedmetadata', 'canplay'],
+        rejectEvents: ['error'],
+        timeoutMs: this.loadTimeoutMs,
+        timeoutError: () => Object.assign(new Error('Seek transport timed out'), {
+          code: 'MEDIA_LOAD_TIMEOUT'
+        }),
+        eventError: () => this._audioError(),
+        cancelledError: () => new LifecycleCancelledError('Seek cancelled')
+      });
+      this._loadWait = wait;
+      this.audio.src = candidate.url;
+      this.activeSource = candidate.url;
+      this._emitDiagnostic('source-reload', {
+        sourceKind: candidate.transport,
+        reason: 'nonseekable-offset',
+        chapterTime
+      });
+      this.audio.load();
+      this._applyPlaybackRate();
+
+      // Re-read the captured intent after preparation. A user pause owns a
+      // newer revision and must prevent this replacement from auto-resuming.
+      const resumeAfterLoad = wasPlaying && resumeRevision === this._playRevision;
+      const nativePlay = resumeAfterLoad ? Promise.resolve(this.audio.play()) : null;
+      nativePlay?.catch(() => {});
       await wait.promise;
-      if (nativePlay) await nativePlay;
-      if (generation !== this._generation) return;
+      if (generation !== this._generation) {
+        throw new LifecycleCancelledError('Seek cancelled');
+      }
+      this._applyPlaybackRate();
+      // A user can pause while the replacement resource is still loading.
+      // The play() issued above belongs to the old intent. Do not await or
+      // revive it after pause; keep the newly loaded source ready and paused.
+      if (nativePlay && resumeRevision === this._playRevision) {
+        const playWait = waitForMediaEvents(this.audio, {
+          timeoutMs: this.playTimeoutMs,
+          timeoutError: () => Object.assign(new Error('Seek playback did not start in time'), {
+            code: 'MEDIA_PLAY_TIMEOUT'
+          }),
+          cancelledError: () => new LifecycleCancelledError('Seek playback cancelled')
+        });
+        this._playWait = playWait;
+        playWait.promise.catch(() => {});
+        try {
+          await Promise.race([nativePlay, playWait.promise]);
+        } catch (error) {
+          // pause() owns a newer playback intent. A rejected pending play()
+          // from that pause must not turn a loaded seek into a source error.
+          if (generation === this._generation && resumeRevision === this._playRevision) {
+            // A timed-out native play() may still settle later. Stop its media
+            // element now so it cannot start after recovery reports failure.
+            this.audio.autoplay = false;
+            this.pause('source-change');
+            throw error;
+          }
+        } finally {
+          playWait.cancel();
+          if (this._playWait === playWait) this._playWait = null;
+        }
+      }
+      // A replacement chapter may have started while play() was pending.
+      // Do not pause its media element or publish the old seek as ready.
+      if (generation !== this._generation) {
+        throw new LifecycleCancelledError('Seek cancelled');
+      }
+      if (resumeRevision !== this._playRevision) {
+        this.audio.pause();
+        this._isPlaying = false;
+      }
       this._commitReadySource();
       this._startTimelinePolling();
       this._handleTimeUpdate();
+      relocated = true;
     } catch (error) {
       if (generation === this._generation && !error?.cancelled) {
-        error.code = error.code || 'MEDIA_RELOCATE_FAILED';
-        error.recoverable = true;
-        error.chapterIndex = this.chapterIndex;
-        error.chapterTime = chapterTime;
+        const failure = this._relocationFailure(error, chapterTime);
         this._emitDiagnostic('source-reload-failed', {
           chapterTime,
-          reason: error.code
+          reason: failure.code
         });
-        this.onError?.(error);
+        this.onError?.(failure);
+        throw failure;
       }
       throw error;
     } finally {
-      if (this._loadWait === wait) this._loadWait = null;
+      if (wait && this._loadWait === wait) this._loadWait = null;
       if (generation === this._generation) this._isLoading = false;
     }
+    if (relocated && generation === this._generation) this.onReady?.();
   }
   async seekToPercent(percent) { await this.seek((Math.max(0, Math.min(100, percent)) / 100) * this.getTotalTime()); }
-  setSpeed(rate) { this.playbackRate = rate; this.audio.playbackRate = rate; }
+  _relocationFailure(error, chapterTime) {
+    const nativeCode = error?.code;
+    const wrap = () => {
+      const failure = new Error(error?.message || 'Audio seek failed', { cause: error });
+      // Preserve AbortError and other native identities for callers that use
+      // the name, while retaining the stable recovery code used by the app.
+      failure.name = error?.name || 'Error';
+      failure.code = typeof nativeCode === 'string' && nativeCode
+        ? nativeCode
+        : 'MEDIA_RELOCATE_FAILED';
+      if (nativeCode !== undefined && nativeCode !== failure.code) {
+        failure.nativeCode = nativeCode;
+      }
+      if (error?.cancelled) failure.cancelled = true;
+      failure.recoverable = true;
+      failure.chapterIndex = this.chapterIndex;
+      failure.chapterTime = chapterTime;
+      return failure;
+    };
+
+    // DOMException.code is a read-only numeric legacy value. Assigning the
+    // app's recovery code to it throws and hides the original media failure.
+    if (!error || typeof error !== 'object' || typeof nativeCode === 'number') {
+      return wrap();
+    }
+    try {
+      error.code = nativeCode || 'MEDIA_RELOCATE_FAILED';
+      error.recoverable = true;
+      error.chapterIndex = this.chapterIndex;
+      error.chapterTime = chapterTime;
+      return error;
+    } catch {
+      return wrap();
+    }
+  }
+  _applyPlaybackRate() {
+    const rate = Number(this.playbackRate);
+    if (!Number.isFinite(rate) || rate <= 0) return;
+    // defaultPlaybackRate is what a newly committed resource inherits.
+    this.audio.defaultPlaybackRate = rate;
+    this.audio.playbackRate = rate;
+  }
+  setSpeed(rate) { this.playbackRate = rate; this._applyPlaybackRate(); }
   setVolume(volume) { this._volume = Math.max(0, Math.min(1, volume)); this.audio.volume = this._volume; }
   getVolume() { return this._volume; }
   getBufferRunway() { return this._bufferRunway(); }

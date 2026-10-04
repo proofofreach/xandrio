@@ -19,9 +19,16 @@ async function test(name, fn) {
 function harness(overrides = {}) {
   const calls = [];
   const manifest = { totalChunks: 2, textLength: 80, chunks: [{ index: 0, status: 'pending' }, { index: 1, status: 'pending' }] };
+  const generatedManifests = new Map();
   const tts = Object.assign(new EventEmitter(), {
-    getChapterManifest: () => overrides.manifest === undefined ? null : overrides.manifest,
-    generateChapter: async (...args) => { calls.push(['generate', ...args]); return manifest; },
+    getChapterManifest: (bookId, chapterIndex) => generatedManifests.get(`${bookId}:${chapterIndex}`)
+      || (overrides.manifest === undefined ? null : overrides.manifest),
+    generateChapter: async (...args) => {
+      calls.push(['generate', ...args]);
+      // The real ChunkedTTS retains the manifest before generation resolves.
+      generatedManifests.set(`${args[0]}:${args[1]}`, manifest);
+      return manifest;
+    },
     claimChapter: async (...args) => { calls.push(['claim', ...args]); return 1; },
     prioritizeChunk: (...args) => { calls.push(['prioritize', ...args]); return true; },
     reconstructChapterManifest: async (...args) => {

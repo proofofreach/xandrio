@@ -110,6 +110,7 @@ function fakeAudio() {
               return {
                 ready,
                 status: ready ? 'ready' : 'generating',
+                servedTier: 'instant',
                 readyChunks: ready ? 8 : polls,
                 totalChunks: 8
               };
@@ -126,7 +127,7 @@ function fakeAudio() {
 
       const preparations = requests.filter(request => request.options.method === 'POST');
       assert.strictEqual(preparations.length, 1, 'the server owns the complete runway');
-      assert.match(preparations[0].url, /\/api\/chunks\/book1\/2\/prepare-chapter-audio\?tier=/);
+      assert.match(preparations[0].url, /\/api\/chunks\/book1\/2\/prepare-chapter-audio\?purpose=playback-runway/);
       assert.deepStrictEqual(JSON.parse(preparations[0].options.body), {
         purpose: 'playback-runway',
         playbackRate: 1.25,
