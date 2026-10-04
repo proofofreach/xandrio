@@ -10,6 +10,7 @@ export const OFFLINE_TITLE_CACHE = 'xandrio-offline-titles';
 const OFFLINE_BOOKS_KEY = 'xandrio_offline_books';
 const OFFLINE_DELETION_CURSOR_KEY = 'xandrio_offline_deletion_cursor';
 const OFFLINE_LEGACY_CACHE_OWNER_KEY = 'xandrio_offline_legacy_cache_owner';
+const PENDING_POSITIONS_KEY = 'xandrio_pending_positions';
 const OFFLINE_SCOPE_PARAM = 'xandrio-offline-scope';
 const OFFLINE_CONTENT_HASH_HEADER = 'X-Xandrio-Content-SHA256';
 const OFFLINE_BODY_VERIFICATION_VERSION = 1;
@@ -26,7 +27,7 @@ const OFFLINE_CONTRACT_MARKER = 'x-xandrio-offline-contract';
  * with OFFLINE_ROUTE_CONTRACT_VERSION instead of tying downloads to a build id.
  * This value MUST equal CACHE_VERSION in public/sw.js.
  */
-export const EXPECTED_OFFLINE_SW_VERSION = 'xandrio-v193';
+export const EXPECTED_OFFLINE_SW_VERSION = 'xandrio-v195';
 export const MINIMUM_OFFLINE_ROUTE_CONTRACT = 1;
 const BLOCK_OFFLINE_ROUTE_CONTRACT = 2;
 // A chapter is only ever invalidated after this many playback failures whose
@@ -68,6 +69,8 @@ let preparationPollTimer = null;
 const rollingCompletions = new Map();
 const legacyCacheMigrations = new Map();
 const deletionReconciliations = new Map();
+const pendingPositionFlushes = new Map();
+const pendingPositionFlushControllers = new Map();
 let certifiedOfflineController = null;
 let certifiedOfflineContract = 0;
 let offlineDevice = null;
@@ -221,6 +224,14 @@ export function initOffline(options = {}) {
   window.addEventListener('xandrio:authscopechange', event => {
     const fromScope = String(event?.detail?.fromScope || 'default');
     const toScope = String(event?.detail?.toScope || 'default');
+    const legacyWaits = [
+      activeDownloadCompletion,
+      ...rollingCompletions.values(),
+      pendingPositionFlushes.get(fromScope)
+    ].filter(Boolean);
+    downloadAbort?.abort();
+    rollingAbort?.abort();
+    pendingPositionFlushControllers.get(fromScope)?.abort();
     // transitionScope aborts writers synchronously before its first await.
     const transition = offlineDevice
       ? offlineDevice.transitionScope(fromScope, toScope, readLegacyOfflineManifest(toScope))
@@ -229,7 +240,9 @@ export function initOffline(options = {}) {
           toScope,
           readLegacyOfflineManifest(toScope)
         ));
-    event?.detail?.waitUntil?.(transition);
+    // Cancelled legacy writers may reject, but a failed durable scope fence
+    // must stop setCurrentUser from exposing the incoming account.
+    event?.detail?.waitUntil?.(Promise.all([transition, Promise.allSettled(legacyWaits)]));
   });
   const isLocalOfflineMedia = media => {
     try {
@@ -313,8 +326,8 @@ export async function prepareOfflineStorage({ waitForAudio = false } = {}) {
       console.warn('Offline cover migration failed:', error);
     });
   }
-  // Audio can be large. Keep the first render responsive; playback awaits
-  // this same migration promise before declaring a chapter unavailable.
+  // Audio can be large. Keep the first render responsive; playback migrates
+  // only its requested chapter if that chapter is still in the legacy cache.
   const audioMigration = migrateLegacyOfflineCaches().catch(error => {
     console.warn('Offline cache migration failed:', error);
   });
@@ -793,27 +806,36 @@ export function isBookDownloadedForOffline(bookId, chapterIndex = 0) {
 }
 
 export async function isChapterAvailableOffline(bookId, chapterIndex = 0) {
-  await migrateLegacyOfflineCaches().catch(() => false);
   if (!isBookDownloadedForOffline(bookId, chapterIndex)) return false;
   const blockEntry = offlineEntryForBook(bookId);
   if (blockEntry?.storageBackend === 'idb') {
     return Boolean(blockEntry.chapterEntries?.[chapterIndex]?.artifactId);
   }
   if (!('caches' in window)) return false;
-  const cache = await caches.open(offlineCacheName(OFFLINE_AUDIO_CACHE));
-  const manifest = getOfflineManifest();
+  const scope = offlineScopeId();
+  const cache = await caches.open(offlineCacheName(OFFLINE_AUDIO_CACHE, scope));
+  const manifest = getOfflineManifest(scope);
   const entry = manifest[bookId];
-  const request = offlineAudioRequest(bookId, chapterIndex);
-  const cached = await cache.match(request);
+  const request = offlineAudioRequest(bookId, chapterIndex, scope);
+  let cached;
+  try {
+    cached = await matchLocalChapterCache(cache, request, scope);
+  } catch {
+    // A failed legacy copy is not evidence that the original audio is missing.
+    // Keep its manifest pointer so a later migration can retry.
+    return false;
+  }
+  if (offlineScopeId() !== scope) return false;
   const expected = entry?.chapterEntries?.[chapterIndex];
   if (cached && expected) {
     if (expected.bodyVerificationVersion === OFFLINE_BODY_VERIFICATION_VERSION) return true;
     const identity = await contentIdentity(cached, { verifyBody: true }).catch(() => null);
+    if (offlineScopeId() !== scope) return false;
     if (identity && canReuseChapter(expected, identity, expected.variantKey)) {
       expected.bodyVerificationVersion = OFFLINE_BODY_VERIFICATION_VERSION;
-      saveOfflineManifest(manifest);
+      saveOfflineManifest(manifest, scope);
       await backfillContentIdentity(cache, request, cached, identity).catch(() => {});
-      return true;
+      return offlineScopeId() === scope;
     }
     await cache.delete(request).catch(() => {});
   }
@@ -822,7 +844,7 @@ export async function isChapterAvailableOffline(bookId, chapterIndex = 0) {
   entry.chapterEntries[chapterIndex] = null;
   entry.bytes = entry.chapterEntries.reduce((sum, chapter) => sum + (Number(chapter?.size) || 0), 0);
   if (entry.mode !== 'rolling') entry.state = 'incomplete';
-  saveOfflineManifest(manifest);
+  saveOfflineManifest(manifest, scope);
   return false;
 }
 
@@ -1060,7 +1082,6 @@ export async function localChapterSource(bookId, chapterIndex = 0) {
   if (suspectChapters.get(suspectKey(bookId, chapterIndex))?.distrusted) return unavailable;
   const entry = offlineEntryForBook(bookId);
   if (entry?.storageBackend !== 'idb' && !('caches' in globalThis)) return unavailable;
-  await migrateLegacyOfflineCaches().catch(() => false);
   if (!isBookDownloadedForOffline(bookId, chapterIndex)) {
     return { ...unavailable, reason: 'not-downloaded' };
   }
@@ -1074,8 +1095,11 @@ export async function localChapterSource(bookId, chapterIndex = 0) {
     }
     return { available: true, url: chapter.localUrl, mode: entry.mode || null };
   }
-  const cache = await caches.open(offlineCacheName(OFFLINE_AUDIO_CACHE));
-  const cached = await cache.match(offlineAudioRequest(bookId, chapterIndex));
+  const scope = offlineScopeId();
+  const cache = await caches.open(offlineCacheName(OFFLINE_AUDIO_CACHE, scope));
+  const request = offlineAudioRequest(bookId, chapterIndex, scope);
+  const cached = await matchLocalChapterCache(cache, request, scope).catch(() => null);
+  if (offlineScopeId() !== scope) return unavailable;
   if (!cached) return { ...unavailable, reason: 'cache-miss' };
   // The scoped URL only means anything to the service worker. Handed to a media
   // element on an uncontrolled page it reaches the server instead, which serves
@@ -1092,7 +1116,7 @@ export async function localChapterSource(bookId, chapterIndex = 0) {
   }
   return {
     available: true,
-    url: offlinePlaybackUrl(bookId, chapterIndex),
+    url: request.url,
     mode: entry?.mode || null
   };
 }
@@ -2407,6 +2431,32 @@ function scopedCopyOfLegacyRequest(request, scopeId) {
   });
 }
 
+async function matchLocalChapterCache(cache, request, scopeId) {
+  const cached = await cache.match(request);
+  if (cached) return cached;
+  if (localStorage.getItem(OFFLINE_LEGACY_CACHE_OWNER_KEY) !== scopeId) {
+    // Bulk migration may have finished since the first lookup.
+    return cache.match(request);
+  }
+
+  // First Play must not wait for unrelated books or covers. Copy only the
+  // requested chapter; the background pass retains ownership of bulk cleanup.
+  // Keep the original until the scoped copy is confirmed, including on failure.
+  const url = new URL(request.url);
+  url.searchParams.delete(OFFLINE_SCOPE_PARAM);
+  const legacyRequest = new Request(url);
+  const legacy = await caches.open(OFFLINE_AUDIO_CACHE);
+  const response = await legacy.match(legacyRequest);
+  if (response && offlineScopeId() === scopeId &&
+      localStorage.getItem(OFFLINE_LEGACY_CACHE_OWNER_KEY) === scopeId) {
+    await cache.put(request, response);
+    if (await cache.match(request)) await legacy.delete(legacyRequest);
+  }
+  // The background migration can have moved this chapter while we looked for
+  // its legacy response. Recheck the destination before reporting a cache miss.
+  return cache.match(request);
+}
+
 async function migrateLegacyCache(baseName, scopeId, manifest) {
   const legacy = await caches.open(baseName);
   if (typeof legacy.keys !== 'function') return;
@@ -2985,6 +3035,7 @@ export async function removeOfflineBook(bookId, options = {}) {
     if (options.removePlaybackState) {
       localStorage.removeItem(`xandrio_book_meta:${id}`);
       localStorage.removeItem(`xandrio_playback_checkpoint:${id}`);
+      removePendingPositionsForBook(id);
     }
     if (options.render !== false) renderOfflineState();
     return { removed: Boolean(removed), audioEntries: 0, titleEntries };
@@ -3004,33 +3055,98 @@ export async function removeOfflineBook(bookId, options = {}) {
   if (options.removePlaybackState) {
     localStorage.removeItem(`xandrio_book_meta:${id}`);
     localStorage.removeItem(`xandrio_playback_checkpoint:${id}`);
-    const pending = readJSON('xandrio_pending_positions', []);
-    if (Array.isArray(pending)) {
-      writeJSON('xandrio_pending_positions', pending.filter(position => String(position?.bookId || '') !== id));
-    }
+    removePendingPositionsForBook(id);
   }
   if (options.render !== false) renderOfflineState();
   return { removed, audioEntries, titleEntries };
 }
 
-export function queuePendingPosition(payload) {
-  const pending = readJSON('xandrio_pending_positions', []);
-  if (!Array.isArray(pending)) return;
-  pending.push(payload);
-  writeJSON('xandrio_pending_positions', pending.slice(-100));
+function pendingPositionsKey(scopeId = offlineScopeId()) {
+  return `${PENDING_POSITIONS_KEY}:${scopeId}`;
 }
 
-export async function flushPendingPositions() {
-  if (!navigator.onLine) return;
-  const pending = readJSON('xandrio_pending_positions', []);
-  if (!Array.isArray(pending) || pending.length === 0) return;
-  const remaining = [];
-  for (const payload of pending) {
-    try {
-      await apiSend('POST', '/api/position', payload);
-    } catch {
-      remaining.push(payload);
+function removePendingPositionsForBook(bookId, scopeId = offlineScopeId()) {
+  for (const key of [pendingPositionsKey(scopeId), PENDING_POSITIONS_KEY]) {
+    const pending = readJSON(key, []);
+    if (Array.isArray(pending)) {
+      writeJSON(key, pending.filter(position => String(position?.bookId || '') !== String(bookId)));
     }
   }
-  writeJSON('xandrio_pending_positions', remaining);
+}
+
+function readPendingPositions(scopeId) {
+  const key = pendingPositionsKey(scopeId);
+  const scoped = readJSON(key, null);
+  const existing = Array.isArray(scoped) ? scoped : [];
+
+  // The old queue had no account partition. Migrate only records whose saved
+  // identity proves they belong to this scope. Unknown and other-account rows
+  // stay quarantined instead of being replayed through the active session.
+  const legacy = readJSON(PENDING_POSITIONS_KEY, []);
+  if (!Array.isArray(legacy) || legacy.length === 0) return existing;
+  const owned = legacy.filter(position => String(position?.userId || '') === String(scopeId));
+  const quarantined = legacy.filter(position => String(position?.userId || '') !== String(scopeId));
+  if (owned.length === 0) return existing;
+  const merged = [...existing, ...owned].slice(-100);
+  if (!writeJSON(key, merged)) return existing;
+  if (quarantined.length > 0) writeJSON(PENDING_POSITIONS_KEY, quarantined.slice(-100));
+  else localStorage.removeItem(PENDING_POSITIONS_KEY);
+  return merged;
+}
+
+function pendingPositionId() {
+  return globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`;
+}
+
+export function queuePendingPosition(payload, scopeId = offlineScopeId()) {
+  const scope = String(scopeId || offlineScopeId());
+  const pending = readPendingPositions(scope);
+  if (!Array.isArray(pending)) return false;
+  pending.push({ ...payload, __pendingQueueId: pendingPositionId(), __pendingQueueScope: scope });
+  return writeJSON(pendingPositionsKey(scope), pending.slice(-100));
+}
+
+export function flushPendingPositions() {
+  if (!navigator.onLine) return;
+  const scope = offlineScopeId();
+  if (pendingPositionFlushes.has(scope)) return pendingPositionFlushes.get(scope);
+  const flush = (async () => {
+    const key = pendingPositionsKey(scope);
+    const pending = readPendingPositions(scope);
+    if (!Array.isArray(pending) || pending.length === 0) return;
+    const durable = pending.map(position => ({
+      ...position,
+      __pendingQueueId: position?.__pendingQueueId || pendingPositionId()
+    }));
+    if (!writeJSON(key, durable)) return;
+    const controller = new AbortController();
+    pendingPositionFlushControllers.set(scope, controller);
+    const eligible = [];
+    for (const position of durable) {
+      const owner = String(position?.__pendingQueueScope || position?.userId || '');
+      if (!owner || owner === scope) eligible.push(position);
+    }
+    for (const position of eligible) {
+      if (offlineScopeId() !== scope || controller.signal.aborted) {
+        break;
+      }
+      try {
+        const { __pendingQueueId, __pendingQueueScope, ...payload } = position;
+        await apiSend('POST', '/api/position', payload, { signal: controller.signal });
+        // Read the current queue after acknowledgement. A new position or
+        // removal during the request must retain its own result.
+        const current = readJSON(key, []);
+        if (Array.isArray(current)) {
+          writeJSON(key, current.filter(item => item?.__pendingQueueId !== __pendingQueueId));
+        }
+      } catch {
+        // Failed and aborted requests remain durable for a later retry.
+      }
+    }
+  })().finally(() => {
+    pendingPositionFlushControllers.delete(scope);
+    pendingPositionFlushes.delete(scope);
+  });
+  pendingPositionFlushes.set(scope, flush);
+  return flush;
 }

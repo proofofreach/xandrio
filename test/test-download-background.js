@@ -199,6 +199,8 @@ async function testRoutePurpose() {
     readyChunks: 2,
     totalChunks: 4,
     runwayRequiredChunks: 2,
+    runwayReadyChunks: 2,
+    targetChunk: 0,
     servedTier: 'instant',
     runwayChapterIndexes: [2, 4],
     runwayPolicy: 'buffer-current-lookahead-next-playable',

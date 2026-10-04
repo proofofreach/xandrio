@@ -99,8 +99,12 @@ async function fixture(onStep = null, serviceOptions = {}) {
       await assert.rejects(fs.access(`${value.artifactPath}.rebuild-journal.json`), { code: 'ENOENT' });
       assert.deepStrictEqual(
         (await fs.readdir(value.dir)).filter(name => name.includes('.rebuild-')),
-        ['book.xbook.json.rebuild-backup.json'],
-        'a committed rebuild retains exactly one bounded prior artifact and no transaction history'
+        [
+          'book.xbook.json.rebuild-backup.json',
+          'book.xbook.json.rebuild-candidate.json.lock.sqlite',
+          'book.xbook.json.rebuild-journal.json.lock.sqlite'
+        ],
+        'a committed rebuild retains one prior artifact and persistent mutexes, but no transaction history'
       );
     } finally {
       await fs.rm(value.dir, { recursive: true, force: true });
