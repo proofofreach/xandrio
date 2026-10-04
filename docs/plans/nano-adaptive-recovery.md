@@ -67,3 +67,7 @@ The first release passed all 3,500 tests and browser/import checks, then public 
 The follow-up reviewer identified an earlier queue boundary: artifact reuse and cancellation cleanup can run before synthesis. Accepted-verified. One shared Nano destination validator now runs before enqueue deduplication/cache lookup/job registration, and again for direct HTTP renders. It resolves the real root and parent, rejects output symlinks, and preserves the caller's already validated path spelling for existing queue lookups. Two enqueue-level HTTP fault fixtures verify that existing external audio and its absent marker remain untouched, including cancellation. Both were observed failing before the amendment and pass afterward.
 
 Final bounded containment amendment independently ratified: ENDORSED. All 26 adaptive HTTP/E2E checks, 11 Nano application checks and 14 seed-recovery checks pass.
+
+A second public CodeQL scan located the remaining tainted read at parent `realpath`, before the real-root containment check. Accepted-verified: normalize and check the configured lexical cache boundary first, then resolve and check the real parent boundary. This rejects traversal before filesystem access while retaining symlink protection. No scan rule is suppressed.
+
+The lexical-before-realpath amendment was independently ratified ENDORSED. All 26 adaptive HTTP/E2E checks and 11 Nano application checks pass again.
