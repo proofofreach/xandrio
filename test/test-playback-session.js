@@ -431,7 +431,7 @@ function fakeAudio() {
       setPlaybackBuffering() {},
       setResumePromptVisible(visible) { appImports.resumePromptStates.push(visible); },
       showToast(...args) { appImports.toasts.push(args); },
-      syncMiniPlayerIcon() {},
+      syncPlaybackControls(isPlaying) { appImports.controlStates.push(isPlaying); },
       getCurrentPlaybackSpeed: () => 1,
       offlineWorkerControllerState: () => ({ controlled: true, compatible: false }),
       certifyOfflineWorkerController: async () => ({ controlled: true, compatible: false })
@@ -457,6 +457,7 @@ function fakeAudio() {
     appImports.localSourceQueries = [];
     appImports.suspectMarks = [];
     appImports.chapterTimePaints = [];
+    appImports.controlStates = [];
     appImports.localSource = { available: false, url: null, mode: null };
     const appTestSource = appSource
       .replace(/^import \{([^}]+)\} from ['"][^'"]+['"];$/gm, 'const {$1} = globalThis.__playbackAppImports;')
@@ -485,6 +486,7 @@ function fakeAudio() {
         skip,
         estimateChapterPlaybackDuration,
         togglePlayPause,
+        chapterLoadPending() { return Boolean(chapterLoadIntent); },
         pausePlaybackForUser,
         handleChunkError,
         cancelPlaybackRecovery,
@@ -620,6 +622,9 @@ function fakeAudio() {
       );
       chapterLoadingPlayer.ownsReadySource = (bookId, chapterIndex) =>
         String(bookId) === 'book-a' && chapterIndex === 1;
+      for (let i = 0; i < 12 && globalThis.__playbackAppHarness.chapterLoadPending(); i++) {
+        await new Promise(resolve => setImmediate(resolve));
+      }
       await globalThis.__playbackAppHarness.togglePlayPause(true);
       assert.strictEqual(
         chapterLoadingPlayer.calls.filter(call => call[0] === 'play').length,
@@ -877,7 +882,11 @@ function fakeAudio() {
       assert.strictEqual(appImports.transitionRequests[0].backend, 'audio-stream');
       assert(player.calls.some(call => call[0] === 'play'));
       assert.strictEqual(appImports.rollingCalls, 0, 'live streaming must not compete with rolling offline downloads');
-      assert(uiElement.innerHTML.includes('M4.5 5.653'));
+      assert.strictEqual(appImports.controlStates.at(-1), false,
+        'a failed chapter resume sends the paused state to the shared controls');
+      const playerUiSource = fs.readFileSync(path.join(__dirname, '..', 'public', 'js', 'views', 'player-ui.js'), 'utf8');
+      assert(/button\.innerHTML = preparing \? ICON_PREPARING : isPlaying \? deps\.iconPause : deps\.iconPlay/.test(playerUiSource),
+        'the shared controls render the Play icon for a paused ready source');
 
       // Local-first. A chapter already on this device is played from this
       // device while online — connectivity used to gate the check entirely, so
@@ -1142,11 +1151,12 @@ function fakeAudio() {
         'the source was prepared before Resume was offered, not after the tap'
       );
 
-      // The exact captured tuple reaches the engine verbatim.
+      // The captured recovery fields reach the engine unchanged, and a manual
+      // Resume must not inherit automatic chapter-handoff autoplay.
       assert.deepStrictEqual(
         manualTransitions.at(-1).sourceTuple,
-        { startOffsetSeconds: 412.5, servedTier: 'premium', endChapterIndex: 4 },
-        'the immutable recovery snapshot is replayed verbatim'
+        { startOffsetSeconds: 412.5, servedTier: 'premium', endChapterIndex: 4, autoplay: false },
+        'the immutable recovery snapshot is replayed with explicit non-autoplay'
       );
 
       // Now the tap. play() must be reached without any intervening await.

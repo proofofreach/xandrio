@@ -186,8 +186,10 @@ assert(
 }
 
 {
-  const body = functionBody('loadChapter');
-  assert(body.length > 0, 'loadChapter is present in app.js');
+  const wrapper = functionBody('loadChapter');
+  const body = functionBody('loadChapterWithIntent');
+  assert(wrapper.includes('loadChapterWithIntent(index, options)') && body.length > 0,
+    'loadChapter delegates to its intent-owned implementation in app.js');
   assert(
     !appSource.includes('ONLINE_LOCAL_FIRST_ENABLED'),
     'the online local-first soak flag is gone'

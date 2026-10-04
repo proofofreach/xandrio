@@ -8,6 +8,7 @@ import { getPremiumChapterReadiness, isPremiumVoiceSelected } from './voices.js'
 import { bookTimelinePosition, bookTimelineSeekTarget } from '../util/book-timeline.mjs';
 import { chapterListItemState, chapterListOrdinal, chapterProgressContext, expandNumericChapterTitle, findPreferredStartChapterIndex, firstDisplaySentence } from '../util/chapter-labels.mjs';
 
+const ICON_PREPARING = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" class="icon" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M7 3h10M7 21h10M8 3v4l4 5-4 5v4M16 3v4l-4 5 4 5v4"/></svg>';
 const TIME_DISPLAY_KEY = 'xandrio_time_display';
 const ICON_NOW_PLAYING = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="now-playing-mark" aria-hidden="true"><rect x="1.5" y="7" width="3" height="7" rx="1"/><rect x="6.5" y="3" width="3" height="11" rx="1"/><rect x="11.5" y="9" width="3" height="5" rx="1"/></svg>';
 
@@ -342,9 +343,9 @@ export function handleChunkPreparing(info) {
 }
 
 function narrationPreparationDetail() {
-  if (!narrationPreparingStartedAt) return 'Playback starts automatically.';
+  if (!narrationPreparingStartedAt) return 'Play is available when audio is ready.';
   const elapsedSeconds = Math.floor((Date.now() - narrationPreparingStartedAt) / 1000);
-  if (elapsedSeconds < 8) return 'Playback starts automatically.';
+  if (elapsedSeconds < 8) return 'Play is available when audio is ready.';
   return `Still preparing. ${formatElapsed(elapsedSeconds)} elapsed.`;
 }
 
@@ -667,10 +668,7 @@ export function showAudioLoading(text, options = {}) {
       audioLoadingFill.style.width = `${percent}%`;
     }
     audioLoading.style.display = 'flex';
-    if (playPauseBtn) {
-      playPauseBtn.disabled = false;
-      playPauseBtn.style.opacity = '1';
-    }
+    syncPlaybackControls();
 
     if (status === 'preparing' || status === 'generating') {
       startAudioLoadingPoll();
@@ -691,10 +689,7 @@ export function hideAudioLoading() {
     renderOverlayActions(null);
     if (loadingDetail) loadingDetail.textContent = '';
     if (audioLoadingFill) audioLoadingFill.style.width = '0%';
-    if (playPauseBtn) {
-      playPauseBtn.disabled = false;
-      playPauseBtn.style.opacity = '1';
-    }
+    syncPlaybackControls();
   }
 }
 
@@ -721,10 +716,7 @@ export function setChunkOverlayState(state, options = {}) {
     if (loadingDetail) loadingDetail.textContent = options.detail || '';
     if (audioLoadingFill) audioLoadingFill.style.width = '0%';
     audioLoading.style.display = 'flex';
-    if (playPauseBtn) {
-      playPauseBtn.disabled = false;
-      playPauseBtn.style.opacity = '1';
-    }
+    syncPlaybackControls();
     renderOverlayActions(state === 'offline' ? { dismissOnly: true } : options);
     return;
   }
@@ -804,8 +796,21 @@ export function syncMiniPlayerInfo() {
   }
 }
 
+export function syncPlaybackControls(forcePlaying = null) {
+  const state = deps.getPlaybackControlState?.() || {};
+  const isPlaying = forcePlaying ?? state.isPlaying ?? Boolean(deps.getChunkPlayer?.()?.isPlaying);
+  const preparing = !isPlaying && Boolean(state.preparing);
+  for (const button of [playPauseBtn, document.getElementById('mini-player-play')]) {
+    if (!button) continue;
+    button.disabled = preparing;
+    button.setAttribute('aria-busy', String(preparing));
+    button.setAttribute('aria-label', preparing ? 'Preparing audio' : isPlaying ? 'Pause' : 'Play');
+    button.title = preparing ? 'Preparing audio' : isPlaying ? 'Pause' : 'Play';
+    button.style.opacity = preparing ? '0.55' : '1';
+    button.innerHTML = preparing ? ICON_PREPARING : isPlaying ? deps.iconPause : deps.iconPlay;
+  }
+}
+
 export function syncMiniPlayerIcon() {
-  const btn = document.getElementById('mini-player-play');
-  if (!btn) return;
-  btn.innerHTML = (deps.getChunkPlayer() && deps.getChunkPlayer().isPlaying) ? deps.iconPause : deps.iconPlay;
+  syncPlaybackControls();
 }

@@ -398,7 +398,7 @@ function zeroCrossingRate(pcm) {
       }
     });
 
-    await test('the transport gate admits buffered current audio and skips structural look-ahead chapters', async () => {
+    await test('the transport gate admits buffered current audio without waiting for look-ahead status', async () => {
       const statusChecks = [];
       const tierChecks = [];
       const currentPath = path.join(dir, 'structural-runway-current.mp3');
@@ -430,10 +430,9 @@ function zeroCrossingRate(pcm) {
         assert.strictEqual(response.status, 200);
         assert.strictEqual(response.headers.get('x-served-tier'), 'premium');
         await response.arrayBuffer();
-        assert.deepStrictEqual(statusChecks, [0, 2]);
+        assert.deepStrictEqual(statusChecks, [0]);
         assert.deepStrictEqual(tierChecks, [
-          { chapterIndex: 0, requestedTier: undefined },
-          { chapterIndex: 2, requestedTier: 'premium' }
+          { chapterIndex: 0, requestedTier: undefined }
         ]);
       } finally {
         await new Promise(resolve => server.close(resolve));
