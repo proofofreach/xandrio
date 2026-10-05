@@ -106,7 +106,14 @@
     "verify:moss-nano-recovery": "node scripts/verify-moss-nano-recovery.js",
     "verify:voice-filters": "node scripts/verify-voice-filters-e2e.js",
     "verify:narration": "node scripts/verify-narration-workflow-e2e.js",
-    "verify:moss-nano-book": "node scripts/verify-moss-nano-book-playback.js"
+    "verify:moss-nano-book": "node scripts/verify-moss-nano-book-playback.js",
+    "verify:voice-switch-races": "node scripts/verify-voice-switch-races-e2e.js",
+    "verify:native-interruption": "node scripts/verify-native-interruption-e2e.js",
+    "verify:audio-cache-recovery": "node scripts/verify-audio-cache-recovery-e2e.js",
+    "verify:library-interactions": "node scripts/verify-library-interactions-e2e.js",
+    "verify:library-data-lifecycle": "node scripts/verify-library-data-lifecycle-e2e.js",
+    "verify:settings-ordering": "node scripts/verify-settings-ordering-e2e.js",
+    "verify:book-speed-races": "node scripts/verify-book-speed-races-e2e.js"
   },
   "dependencies": {
     "@lingo-reader/mobi-parser": "^0.4.6",

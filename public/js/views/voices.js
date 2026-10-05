@@ -858,11 +858,10 @@ function renderVoiceCard(v, selectedVoice = currentVoice) {
 async function selectVoice(voiceId, scope = 'book') {
   if (voiceSelectionPending) return;
   const book = deps.getCurrentBook();
+  const chapterAtSelection = deps.getCurrentChapter();
   const forBook = scope === 'book' && Boolean(book);
   const previousVoice = currentVoice;
   const shouldSwitchPlayback = book && deps.getChunkPlayer() && previousVoice !== voiceId && (forBook || bookNarration?.inherited);
-  const position = shouldSwitchPlayback ? deps.getChunkPlayer().getPosition() : null;
-  const wasPlaying = shouldSwitchPlayback ? deps.getChunkPlayer().isPlaying : false;
   voiceSelectionPending = true;
   renderVoices();
   updateHighQualityPrepPanel();
@@ -883,10 +882,11 @@ async function selectVoice(voiceId, scope = 'book') {
     unavailableCurrent = null;
     updatePlayerVoiceStatus();
     if (forBook) closeVoiceSheet();
-    if (shouldSwitchPlayback && deps.getCurrentBook()?.id === book.id) {
-      await switchCurrentChapterToVoice(voiceId, position, wasPlaying);
+    if (shouldSwitchPlayback && deps.getCurrentBook() === book && deps.getCurrentChapter() === chapterAtSelection) {
+      await switchCurrentChapterToVoice(voiceId, book, chapterAtSelection);
     }
   } catch (err) {
+    if (err?.cancelled || deps.getCurrentBook() !== book || deps.getCurrentChapter() !== chapterAtSelection) return;
     deps.hideAudioLoading();
     showToast(`Narrator change failed: ${err.message}`, 'error', { actionLabel: 'Retry', onAction: () => selectVoice(voiceId, scope) });
   } finally {
@@ -1002,22 +1002,21 @@ async function handleCloneVoiceSubmit(e) {
 
 let voiceSwitchToken = 0;
 
-async function switchCurrentChapterToVoice(voiceId, position, wasPlaying) {
+async function switchCurrentChapterToVoice(voiceId, book, chapterAtStart) {
   // Latest-wins: picking another voice (or chapter) mid-switch abandons
   // this run instead of letting two polling loops fight over the player.
   const token = ++voiceSwitchToken;
-  const chapterAtStart = deps.getCurrentChapter();
-  const bookAtStart = deps.getCurrentBook()?.id;
+  const bookAtStart = book.id;
   const isStale = () =>
     token !== voiceSwitchToken ||
     deps.getCurrentChapter() !== chapterAtStart ||
-    deps.getCurrentBook()?.id !== bookAtStart;
+    deps.getCurrentBook() !== book ||
+    deps.isPlaybackSelectionPending?.();
+  if (isStale()) return;
 
   const voiceName = getVoiceName(voiceId);
-  const targetChunk = Math.max(0, position?.chunk || 0);
-  const seekTo = Math.max(0, position?.totalEstimatedTime || 0);
 
-  deps.showAudioLoading(`Switching to ${voiceName}. Preparing this chapter in the new voice.`, {
+  deps.showAudioLoading(`Switching to ${voiceName}…`, {
     detail: 'Preparing the selected voice for this chapter.',
     percent: 0,
     status: 'generating'
@@ -1025,13 +1024,14 @@ async function switchCurrentChapterToVoice(voiceId, position, wasPlaying) {
 
   let targetReady = false;
   for (let attempt = 0; attempt < 90; attempt++) {
+    const targetChunk = Math.max(0, deps.getChunkPlayer()?.getPosition()?.chunk || 0);
     const data = await apiSend('POST', `/api/chunks/${encodeURIComponent(bookAtStart)}/${chapterAtStart}/prepare`, { targetChunk });
     if (isStale()) return;
     const ready = data.readyChunks ?? 0;
     const total = data.totalChunks ?? 0;
     const cache = total > 0 ? `Chapter cache: ${ready}/${total} ready.` : 'Preparing chapter cache.';
     const voiceStatus = data.targetStatus === 'ready' ? 'Ready to play' : 'Preparing audio';
-    deps.showAudioLoading(`Switching to ${voiceName}. Preparing this chapter in the new voice.`, {
+    deps.showAudioLoading(`Switching to ${voiceName}…`, {
       detail: `${voiceStatus}. ${cache}`,
       percent: total > 0 ? Math.round((ready / total) * 100) : 0,
       status: data.targetStatus === 'ready' ? 'ready' : 'generating'
@@ -1049,19 +1049,18 @@ async function switchCurrentChapterToVoice(voiceId, position, wasPlaying) {
     throw new Error(`Timed out preparing ${voiceName}`);
   }
 
-  const stillPlaying = deps.getChunkPlayer().isPlaying;
-  await deps.getChunkPlayer().loadChapter(bookAtStart, chapterAtStart);
-  if (isStale()) return;
-  if (seekTo) {
-    await deps.getChunkPlayer().seek(seekTo);
-    if (isStale()) return;
-  }
-  if (wasPlaying || stillPlaying) {
-    await deps.getChunkPlayer().play();
-    deps.updatePlaybackUI(true);
-  } else {
-    deps.updatePlaybackUI(false);
-  }
+  // Playback can keep advancing, pause, or seek while the narrator prepares.
+  // Capture its latest position only when replacing the source. The app owns
+  // the reload so later Pause and navigation can cancel it as usual.
+  const position = deps.getChunkPlayer().getPosition();
+  const seekTo = Math.max(0, position?.currentTime ?? position?.totalEstimatedTime ?? 0);
+  const loaded = await deps.loadChapter(chapterAtStart, {
+    reason: 'voice-change',
+    bypassLocalSource: true,
+    seekToSeconds: seekTo,
+    sourceTuple: { bookId: bookAtStart, chapterIndex: chapterAtStart, startOffsetSeconds: seekTo }
+  });
+  if (loaded?.loaded === false || isStale()) return;
   deps.checkpointPlayback();
   await loadVoiceCacheStatus();
   renderVoices();

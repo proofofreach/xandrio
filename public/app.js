@@ -1012,6 +1012,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   initSettings({
     getCurrentBook: () => currentBook,
     getCurrentChapter: () => currentChapter,
+    isPlaybackSelectionPending: () => Boolean(chapterLoadIntent || openingBookId),
     getChapters: () => chapters,
     getChunkPlayer: () => chunkPlayer,
     // Which tier the current chapter is actually playing (instant vs premium)
@@ -1971,6 +1972,10 @@ async function loadChapter(index, options = {}) {
 }
 
 async function loadChapterWithIntent(index, options) {
+  // Cancelling the previous source also pauses its adapter. Preserve the
+  // listening intent before cancellation so chapter and narrator changes can
+  // continue playback; a later user Pause still invalidates loadChapterToken.
+  const wasPlaying = chunkPlayer ? chunkPlayer.isPlaying : false;
   clearBlockedWorkerOnlineRetry();
   offlineUnavailableOnlineRetry.clear();
   if (!['automatic-recovery', 'manual-recovery'].includes(options.reason)) {
@@ -1982,7 +1987,6 @@ async function loadChapterWithIntent(index, options) {
   const token = ++loadChapterToken;
   const previousChapter = currentChapter;
 
-  const wasPlaying = chunkPlayer ? chunkPlayer.isPlaying : false;
   recordPlaybackEvent({
     type: 'load-chapter',
     reason: options.reason || (index === currentChapter ? 'reload' : 'navigation'),
@@ -2263,8 +2267,10 @@ function smartRewindIsEnabled() {
 }
 
 async function saveCurrentBookPlaybackSettings(bookId, settings) {
+  const userId = getCurrentUserId();
+  const book = currentBook;
   const saved = await saveBookPlaybackSettings(bookId, settings);
-  if (currentBook?.id === bookId) {
+  if (getCurrentUserId() === userId && currentBook === book && currentBook?.id === bookId) {
     currentBookPlaybackSettings = { ...saved };
   }
   return saved;

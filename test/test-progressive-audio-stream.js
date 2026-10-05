@@ -971,44 +971,39 @@ function zeroCrossingRate(pcm) {
     });
 
     await test('HLS storage maintenance evicts completed sessions above the byte budget', async () => {
-      const pendingSource = deferred();
-      const app = routeHarness(pendingSource.promise, {
+      const tonePath = path.join(dir, 'hls-storage.mp3');
+      await createTone(tonePath, 5, 880);
+      let clock = 10_000;
+      const app = routeHarness({
+        chapterIndex: 0,
+        format: 'mp3',
+        async *iterateInputs() {
+          yield { path: tonePath, chapterIndex: 0, lastInChapter: true };
+        }
+      }, {
         hlsRootDir: path.join(dir, 'hls-storage'),
+        hlsSegmentSeconds: 1,
         hlsOptions: {
           maxStorageBytes: 1,
-          maintenanceIntervalMs: 0
+          maintenanceIntervalMs: 0,
+          now: () => clock
         }
       });
       const server = await listen(app);
-      const request = http.get(
-        `http://127.0.0.1:${server.address().port}/api/audio-hls/storage_book/0/index.m3u8?session=storage-session-1&owner=storage-owner-1`
-      );
-      request.on('error', () => {});
       try {
-        await waitUntil(
-          () => app.locals.hlsAudioStreamer.sessionsById.size === 1,
-          'the stored HLS session was never registered',
-          10_000
+        const response = await fetch(
+          `http://127.0.0.1:${server.address().port}/api/audio-hls/storage_book/0/index.m3u8?session=storage-session-1&owner=storage-owner-1`,
+          { signal: AbortSignal.timeout(10_000) }
         );
+        assert.strictEqual(response.status, 200);
+        await response.text();
         const session = [...app.locals.hlsAudioStreamer.sessionsById.values()][0];
-        await waitUntil(
-          async () => {
-            try {
-              await fsp.access(session.directory);
-              return true;
-            } catch {
-              return false;
-            }
-          },
-          'the HLS session directory was never created',
-          10_000
-        );
-        await fsp.writeFile(path.join(session.directory, 'retained.bin'), Buffer.alloc(2));
-        session.running = false;
+        await session.runPromise;
+        // Quota eviction applies after the listener's access lease ends.
+        clock += app.locals.hlsAudioStreamer.limits.storageAccessLeaseMs + 1;
         await app.locals.hlsAudioStreamer.maintain();
         assert.strictEqual(app.locals.hlsAudioStreamer.sessionsById.size, 0);
       } finally {
-        request.destroy();
         await app.locals.hlsAudioStreamer.dispose();
         await new Promise(resolve => server.close(resolve));
       }
