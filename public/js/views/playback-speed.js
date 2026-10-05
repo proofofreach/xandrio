@@ -1,3 +1,4 @@
+import { getCurrentUserId } from '../api.js';
 import { getDefaultSpeed, getSkipInterval, setClientSetting } from '../client-settings.js';
 import { announceToScreenReader, showToast } from '../ui/toast.js';
 import { registerSheet } from '../ui/sheets.js';
@@ -13,6 +14,8 @@ const PLAYBACK_SPEED_KEY = 'xandrio_playback_speed';
 
 let deps = {};
 let currentPlaybackSpeed = 1.0;
+let playbackSpeedRevision = 0;
+const pendingBookSaves = new Map();
 let speedBtn = null;
 let skipBackBtn = null;
 let skipForwardBtn = null;
@@ -59,64 +62,84 @@ export function initPlaybackSpeed(options = {}) {
     ).join('');
   }
   speedSheet?.querySelectorAll('.speed-preset').forEach(btn => {
-    btn.addEventListener('click', () => setSpeedFromSheet(parseFloat(btn.dataset.speed)));
+    btn.addEventListener('click', () => setPlaybackSpeed(parseFloat(btn.dataset.speed)));
   });
-  speedStepperDown?.addEventListener('click', () => setSpeedFromSheet(currentPlaybackSpeed - 0.05));
-  speedStepperUp?.addEventListener('click', () => setSpeedFromSheet(currentPlaybackSpeed + 0.05));
+  speedStepperDown?.addEventListener('click', () => setPlaybackSpeed(currentPlaybackSpeed - 0.05));
+  speedStepperUp?.addEventListener('click', () => setPlaybackSpeed(currentPlaybackSpeed + 0.05));
   setDefaultSpeedBtn?.addEventListener('click', () => {
     setClientSetting('defaultSpeed', currentPlaybackSpeed);
     showToast(`Default speed set to ${currentPlaybackSpeed.toFixed(2)}x`);
   });
-  setBookSpeedBtn?.addEventListener('click', async () => {
-    const book = deps.getCurrentBook?.();
-    if (!book) return;
-    try {
-      await deps.saveBookPlaybackSettings?.(book.id, { playbackSpeed: currentPlaybackSpeed });
-      showToast(`Using ${currentPlaybackSpeed.toFixed(2)}x for this book`);
-    } catch {
-      showToast('Could not save book speed', 'error');
-    }
+  setBookSpeedBtn?.addEventListener('click', () => {
+    const speed = currentPlaybackSpeed;
+    void saveBookSetting('playbackSpeed', speed, {
+      errorMessage: 'Could not save book speed',
+      onSaved: () => showToast(`Using ${speed.toFixed(2)}x for this book`)
+    });
   });
-  clearBookSpeedBtn?.addEventListener('click', async () => {
-    const book = deps.getCurrentBook?.();
-    if (!book) return;
-    try {
-      await deps.saveBookPlaybackSettings?.(book.id, { playbackSpeed: null });
-      loadPlaybackSpeed();
-      updateSpeedSheetState();
-      showToast('Using global speed for this book');
-    } catch {
-      showToast('Could not reset book speed', 'error');
-    }
+  clearBookSpeedBtn?.addEventListener('click', () => {
+    const revision = playbackSpeedRevision;
+    void saveBookSetting('playbackSpeed', null, {
+      errorMessage: 'Could not reset book speed',
+      onSaved: () => {
+        // A later speed choice or book load owns the player now.
+        if (revision !== playbackSpeedRevision) return;
+        loadPlaybackSpeed();
+        updateSpeedSheetState();
+        showToast('Using global speed for this book');
+      }
+    });
   });
-  bookSmartRewindControl?.addEventListener('click', async event => {
+  bookSmartRewindControl?.addEventListener('click', event => {
     const button = event.target.closest('[data-book-smart-rewind]');
-    const book = deps.getCurrentBook?.();
-    if (!button || !book) return;
-    try {
-      const value = button.dataset.bookSmartRewind;
-      await deps.saveBookPlaybackSettings?.(book.id, {
-        smartRewindEnabled: value === 'default' ? null : value === 'on'
-      });
-      updateSpeedSheetState();
-    } catch {
-      showToast('Could not save book settings', 'error');
-    }
+    if (!button) return;
+    const value = button.dataset.bookSmartRewind;
+    void saveBookSetting('smartRewindEnabled', value === 'default' ? null : value === 'on');
   });
-  bookRollingOfflineControl?.addEventListener('click', async event => {
+  bookRollingOfflineControl?.addEventListener('click', event => {
     const button = event.target.closest('[data-book-rolling-offline]');
-    const book = deps.getCurrentBook?.();
-    if (!button || !book) return;
-    try {
-      const value = button.dataset.bookRollingOffline;
-      await deps.saveBookPlaybackSettings?.(book.id, {
-        rollingOfflineEnabled: value === 'default' ? null : value === 'on'
-      });
-      updateSpeedSheetState();
-    } catch {
-      showToast('Could not save book settings', 'error');
-    }
+    if (!button) return;
+    const value = button.dataset.bookRollingOffline;
+    void saveBookSetting('rollingOfflineEnabled', value === 'default' ? null : value === 'on');
   });
+}
+
+// Serialize writes per book so the persisted settings follow click order in
+// every browser. Feedback belongs only to the same book instance and its latest
+// choice for that setting; other books can save independently.
+async function saveBookSetting(key, value, {
+  errorMessage = 'Could not save book settings',
+  onSaved = updateSpeedSheetState
+} = {}) {
+  const book = deps.getCurrentBook?.();
+  if (!book || !deps.saveBookPlaybackSettings) return;
+  const userId = getCurrentUserId();
+  const queueKey = `${userId}:${book.id}`;
+  let pending = pendingBookSaves.get(queueKey);
+  if (!pending) {
+    pending = { tail: Promise.resolve(), latest: new Map() };
+    pendingBookSaves.set(queueKey, pending);
+  }
+  const intent = Symbol(key);
+  pending.latest.set(key, intent);
+  const isCurrent = () => getCurrentUserId() === userId &&
+    deps.getCurrentBook?.() === book && pending.latest.get(key) === intent;
+  const request = pending.tail.then(() => {
+    // Queued work still belongs to the profile that made the choice.
+    if (getCurrentUserId() !== userId) return;
+    return deps.saveBookPlaybackSettings(book.id, { [key]: value });
+  });
+  // A failed write must not prevent the next explicit choice from being saved.
+  const settled = request.catch(() => undefined);
+  pending.tail = settled;
+  try {
+    await request;
+    if (isCurrent()) onSaved();
+  } catch {
+    if (isCurrent()) showToast(errorMessage, 'error');
+  } finally {
+    if (pending.tail === settled) pendingBookSaves.delete(queueKey);
+  }
 }
 
 export function getCurrentPlaybackSpeed() {
@@ -139,6 +162,7 @@ export function applySkipIntervalLabels() {
 }
 
 export function loadPlaybackSpeed(bookSpeed = null) {
+  playbackSpeedRevision += 1;
   const preferredBookSpeed = Number(bookSpeed);
   if (Number.isFinite(preferredBookSpeed) && preferredBookSpeed >= SPEED_MIN && preferredBookSpeed <= SPEED_MAX) {
     currentPlaybackSpeed = preferredBookSpeed;
@@ -163,17 +187,8 @@ export function loadPlaybackSpeed(bookSpeed = null) {
 }
 
 function cyclePlaybackSpeed() {
-  let currentIndex = PLAYBACK_SPEEDS.indexOf(currentPlaybackSpeed);
-  if (currentIndex === -1) {
-    currentIndex = PLAYBACK_SPEEDS.findIndex(speed => speed > currentPlaybackSpeed) - 1;
-    if (currentIndex < 0) currentIndex = 0;
-  }
-  currentIndex = (currentIndex + 1) % PLAYBACK_SPEEDS.length;
-  currentPlaybackSpeed = PLAYBACK_SPEEDS[currentIndex];
-  applyPlaybackSpeed();
-  updateSpeedButton();
-  writeJSON(PLAYBACK_SPEED_KEY, currentPlaybackSpeed);
-  announceToScreenReader(`Playback speed set to ${currentPlaybackSpeed} times normal`);
+  const next = PLAYBACK_SPEEDS.find(speed => speed > currentPlaybackSpeed) ?? PLAYBACK_SPEEDS[0];
+  setPlaybackSpeed(next);
 }
 
 export function applyPlaybackSpeed() {
@@ -182,18 +197,12 @@ export function applyPlaybackSpeed() {
 }
 
 export function stepPlaybackSpeed(direction) {
-  let currentIndex = PLAYBACK_SPEEDS.indexOf(currentPlaybackSpeed);
-  if (currentIndex === -1) {
-    currentIndex = PLAYBACK_SPEEDS.reduce((best, speed, index) =>
-      Math.abs(speed - currentPlaybackSpeed) < Math.abs(PLAYBACK_SPEEDS[best] - currentPlaybackSpeed) ? index : best, 0);
-  }
-  const nextIndex = Math.min(PLAYBACK_SPEEDS.length - 1, Math.max(0, currentIndex + direction));
-  if (nextIndex === currentIndex) return;
-  currentPlaybackSpeed = PLAYBACK_SPEEDS[nextIndex];
-  applyPlaybackSpeed();
-  updateSpeedButton();
-  writeJSON(PLAYBACK_SPEED_KEY, currentPlaybackSpeed);
-  announceToScreenReader(`Playback speed set to ${currentPlaybackSpeed} times normal`);
+  const next = direction > 0
+    ? PLAYBACK_SPEEDS.find(speed => speed > currentPlaybackSpeed)
+    : direction < 0
+      ? PLAYBACK_SPEEDS.findLast(speed => speed < currentPlaybackSpeed)
+      : undefined;
+  if (next !== undefined) setPlaybackSpeed(next);
 }
 
 function updateSpeedButton() {
@@ -232,7 +241,8 @@ function updateSpeedSheetState() {
   });
 }
 
-function setSpeedFromSheet(value) {
+function setPlaybackSpeed(value) {
+  playbackSpeedRevision += 1;
   currentPlaybackSpeed = Math.min(SPEED_MAX, Math.max(SPEED_MIN, Math.round(value * 100) / 100));
   applyPlaybackSpeed();
   updateSpeedButton();

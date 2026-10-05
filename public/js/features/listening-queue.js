@@ -1,4 +1,4 @@
-import { apiGet, apiSend } from '../api.js';
+import { apiGet, apiSend, getCurrentUserId } from '../api.js';
 import { escapeHTML, safeAttr } from '../util/format.js';
 import { showToast } from '../ui/toast.js';
 
@@ -85,9 +85,12 @@ export async function getBookPlaybackSettings(bookId) {
 
 export async function saveBookPlaybackSettings(bookId, settings) {
   if (!bookId) return {};
+  const userId = getCurrentUserId();
   const result = await apiSend('PUT', `/api/listening-queue/books/${encodeURIComponent(bookId)}/settings`, { settings });
-  state.queue.bookSettings = state.queue.bookSettings || {};
-  state.queue.bookSettings[bookId] = { ...(result.settings || {}) };
+  if (getCurrentUserId() === userId) {
+    state.queue.bookSettings = state.queue.bookSettings || {};
+    state.queue.bookSettings[bookId] = { ...(result.settings || {}) };
+  }
   return result.settings || {};
 }
 

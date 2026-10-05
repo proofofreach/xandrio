@@ -1,4 +1,4 @@
-import { apiGet, apiSend } from './api.js';
+import { apiGet, apiSend, getCurrentUserId } from './api.js';
 import { showToast } from './ui/toast.js';
 import { readJSON, writeJSON } from './util/storage.js';
 
@@ -18,6 +18,10 @@ const ALLOWED_SEARCH_SOURCES = new Set(['standardebooks', 'gutenberg', 'annas', 
 
 let settings = { ...DEFAULTS, ...readLocalSettings() };
 let loadPromise = null;
+let loadGeneration = 0;
+let editRevision = 0;
+const editedAt = new Map();
+const pendingSaves = new Map();
 
 function sanitize(source = {}) {
   const next = {};
@@ -63,11 +67,21 @@ function emitChange(key) {
 export async function loadClientSettings(options = {}) {
   if (options.force) loadPromise = null;
   if (loadPromise) return loadPromise;
+  const generation = ++loadGeneration;
+  const startedAtRevision = editRevision;
+  const userId = getCurrentUserId();
   loadPromise = (async () => {
     settings = options.preferLocal === false ? { ...DEFAULTS } : { ...DEFAULTS, ...readLocalSettings() };
     try {
       const data = await apiGet('/api/settings/client');
-      settings = { ...settings, ...sanitize(data.settings || {}) };
+      if (generation !== loadGeneration || userId !== getCurrentUserId()) return { ...settings };
+      const remote = sanitize(data.settings || {});
+      // Profile loading may finish after the listener has made a new choice.
+      // Merge untouched preferences while preserving every newer local edit.
+      for (const key of Object.keys(remote)) {
+        if ((editedAt.get(key) || 0) > startedAtRevision) delete remote[key];
+      }
+      settings = { ...settings, ...remote };
       writeLocalSettings();
       emitChange('*');
     } catch (err) {
@@ -111,11 +125,22 @@ export function isRollingOfflineEnabled() {
 export function setClientSetting(key, value) {
   const sanitized = sanitize({ [key]: value });
   if (!(key in sanitized)) return;
+  editedAt.set(key, ++editRevision);
   settings = { ...settings, ...sanitized };
   writeLocalSettings();
   emitChange(key);
-  apiSend('PUT', '/api/settings/client', { settings: { [key]: sanitized[key] } }).catch(err => {
+  const userId = getCurrentUserId();
+  // Preserve the order of choices on the server, including after a failed save.
+  // A queued write must never follow the browser into a different profile.
+  const previous = pendingSaves.get(userId) || Promise.resolve();
+  const save = previous.then(() => {
+    if (userId !== getCurrentUserId()) return;
+    return apiSend('PUT', '/api/settings/client', { settings: sanitized });
+  }).catch(err => {
     console.warn('Failed to save client setting:', err);
-    showToast('Setting saved on this device only', 'error');
+    if (userId === getCurrentUserId()) showToast('Setting saved on this device only', 'error');
+  }).finally(() => {
+    if (pendingSaves.get(userId) === save) pendingSaves.delete(userId);
   });
+  pendingSaves.set(userId, save);
 }

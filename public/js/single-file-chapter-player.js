@@ -1047,7 +1047,10 @@ export class SingleFileChapterPlayer {
     const bufferedEnd = this._bufferedEnd();
     const mark = this._stallMark;
     const advanced = !mark
-      || currentTime - mark.currentTime > PROGRESS_EPSILON_SECONDS
+      // A backward seek starts a new liveness window too. Comparing only
+      // forward movement keeps the sample ahead of healthy playback and
+      // reports a false stall until the listener reaches the old position.
+      || Math.abs(currentTime - mark.currentTime) > PROGRESS_EPSILON_SECONDS
       || bufferedEnd - mark.bufferedEnd > PROGRESS_EPSILON_SECONDS;
     if (advanced) {
       this._stallMark = { currentTime, bufferedEnd, since: this.now() };
@@ -1544,6 +1547,7 @@ export class SingleFileChapterPlayer {
     }
     this._cancelPlaybackStart();
     const playRevision = this._playRevision;
+    const generation = this._generation;
     this._pauseReason = null;
     this._playReason = 'app';
     this._isPlaying = true;
@@ -1580,8 +1584,12 @@ export class SingleFileChapterPlayer {
       progressWait.promise.catch(() => {});
       await progressWait.promise;
     } catch (error) {
-      if (playRevision === this._playRevision) {
-        this._isPlaying = false;
+      if (playRevision === this._playRevision && generation === this._generation) {
+        // A deadline only settles our promise; the native play request can
+        // still start when delayed media arrives. Cancel that request before
+        // reporting failure so it cannot revive audio behind recovery or Pause.
+        this.pause();
+        this._playReason = null;
         this.onPlaybackChange?.(false, { reason: 'app', error });
       }
       throw error;

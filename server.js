@@ -4887,7 +4887,8 @@ registerListeningQueueRoutes(app, {
   booksFile: BOOKS_FILE,
   positionsFile: POSITIONS_FILE,
   loadJSON,
-  updateJSON
+  updateJSON,
+  withBookStateLock: bookMutationLocks.withBookStateLock
 });
 
 registerOperatorPolicyRoutes(app, {
