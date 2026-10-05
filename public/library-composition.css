@@ -221,9 +221,13 @@
   }
 }
 
-/* An open menu may extend past the last compact row's paint boundary. */
-#library-view .book-list:has(.menu-open) {
+/* Keep rows painted after a viewport change and let menus escape the list. */
+#library-view .book-list {
   content-visibility: visible;
+}
+
+#library-view .book-overflow-menu button {
+  min-height: var(--touch-min);
 }
 
 #library-view .rail-meta { font-size: 13px; color: var(--text-secondary); }

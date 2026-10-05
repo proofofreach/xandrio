@@ -53,7 +53,10 @@ function tone() {
   async function fixture(name, maintenanceIntervalMs, work) {
     const hls = createHlsAudioStreamer({
       serveAudioFile, rootDir: path.join(temp, name),
-      maxStorageBytes: 1024 * 1024, maintenanceIntervalMs
+      maxStorageBytes: 1024 * 1024, maintenanceIntervalMs,
+      // These checks exercise immediate quota enforcement. Access-lease
+      // behavior has its own real HTTP fixture.
+      storageAccessLeaseMs: 0
     });
     let sourceCount = 0;
     const app = express();

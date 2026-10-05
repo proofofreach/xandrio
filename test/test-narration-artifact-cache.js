@@ -509,7 +509,8 @@ function recipe(adapter, overrides = {}) {
         voiceProvider: () => 'kokoro:am_onyx'
       });
       const text = 'This existing Onyx narration is long enough to be a valid reusable audio chunk.';
-      await fs.writeFile(oldTts.chunkPath('book', 0, 0), Buffer.from('existing-onyx-audio'));
+      const legacyAudio = await fs.readFile(path.join(__dirname, '../tts-benchmark-samples/edge-andrew-reference.mp3'));
+      await fs.writeFile(oldTts.chunkPath('book', 0, 0), legacyAudio);
       const oldManifest = await oldTts.reconstructChapterManifest('book', 0, text, 'en');
       assert.strictEqual(oldManifest.chunks[0].status, 'ready');
 
@@ -532,9 +533,9 @@ function recipe(adapter, overrides = {}) {
       assert.strictEqual(newManifest.chunks[0].status, 'pending');
       assert.strictEqual(generated, 0);
       await assert.rejects(fs.stat(newTts.chunkPath('book', 0, 0)), error => error.code === 'ENOENT');
-      assert.strictEqual(
-        (await fs.readFile(oldTts.chunkPath('book', 0, 0))).toString(),
-        'existing-onyx-audio',
+      assert.deepStrictEqual(
+        await fs.readFile(oldTts.chunkPath('book', 0, 0)),
+        legacyAudio,
         'legacy audio must remain usable in its original namespace'
       );
     } finally {

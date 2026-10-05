@@ -40,6 +40,8 @@ let continueRail = null;
 let currentViewMode = 'list';
 let continueRailHasEntries = false;
 let swipeListenersInstalled = false;
+let libraryLoadGeneration = 0;
+let libraryContentState = 'loading';
 const pendingBookDownloads = new Set();
 
 function libraryTabStorageKey() {
@@ -225,7 +227,7 @@ function bookMenuHTML(book, onShelf) {
   const admin = !getCurrentUser() || getCurrentUser()?.role === 'admin';
   return `
     <div class="book-overflow">
-      <button class="book-overflow-trigger" type="button" data-book-menu-toggle aria-expanded="false"
+      <button class="book-overflow-trigger" type="button" data-book-menu-toggle aria-expanded="false" aria-haspopup="menu"
               aria-label="More actions for ${safeAttr(title)}">
         <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg>
       </button>
@@ -371,8 +373,13 @@ function renderContinueRail(entries) {
 export async function loadLibrary() {
   const libraryList = document.getElementById('library-list');
   if (!libraryList) return;
+  const generation = ++libraryLoadGeneration;
   const hasRenderedBooks = !!libraryList?.querySelector('.book-item:not(.skeleton)');
-  if (!hasRenderedBooks) libraryList.innerHTML = skeletonCardsHTML(6);
+  if (!hasRenderedBooks) {
+    libraryContentState = 'loading';
+    libraryList.innerHTML = skeletonCardsHTML(6);
+    filterLibrary();
+  }
   libraryList.setAttribute('aria-busy', 'true');
 
   try {
@@ -393,8 +400,10 @@ export async function loadLibrary() {
       data = libraryData;
       positions = posData.positions || {};
     } catch (err) {
+      if (generation !== libraryLoadGeneration) return;
       console.error('Failed to load library:', err);
       const offlineBooks = await verifiedOfflineBooks;
+      if (generation !== libraryLoadGeneration) return;
       if (offlineBooks.length > 0) {
         offlineFallback = true;
         data = { books: offlineBooks, shelf: [] };
@@ -403,6 +412,7 @@ export async function loadLibrary() {
           readJSON(`xandrio_playback_checkpoint:${book.id}`, null)
         ]));
       } else {
+        libraryContentState = 'error';
         renderContinueRail([]);
         libraryList.classList.remove('offline-library-fallback');
         libraryList.innerHTML = `
@@ -414,10 +424,19 @@ export async function loadLibrary() {
           </div>
         `;
         libraryList.querySelector('[data-retry-library]')?.addEventListener('click', () => loadLibrary());
+        filterLibrary();
         return;
       }
     }
 
+    if (generation !== libraryLoadGeneration) return;
+    libraryContentState = data.books.length ? 'ready' : 'empty';
+    currentShelf = new Set(Array.isArray(data.shelf) ? data.shelf : []);
+    // A new account opens on its own shelf. Preserve an explicit tab choice.
+    const storedTab = readText(libraryTabStorageKey(), 'shelf');
+    currentTab = ['shelf', 'downloaded', 'all'].includes(storedTab) ? storedTab : 'shelf';
+    if (offlineFallback) currentTab = 'downloaded';
+    syncLibraryTabs();
     if (data.books.length === 0) {
       renderContinueRail([]);
       libraryList.classList.remove('offline-library-fallback');
@@ -429,17 +448,11 @@ export async function loadLibrary() {
           <button class="btn-primary" data-add-book-empty>+ Add Book</button>
         </div>
       `;
+      filterLibrary();
       return;
     }
 
     if ('ontouchstart' in window || navigator.maxTouchPoints > 0) document.body.classList.add('touch-device');
-    currentShelf = new Set(Array.isArray(data.shelf) ? data.shelf : []);
-    // A new account opens on its own shelf, even when the shared library
-    // already contains books. Preserve an explicit tab choice on later visits.
-    const storedTab = readText(libraryTabStorageKey(), 'shelf');
-    currentTab = ['shelf', 'downloaded', 'all'].includes(storedTab) ? storedTab : 'shelf';
-    if (offlineFallback) currentTab = 'downloaded';
-    syncLibraryTabs();
     libraryList.innerHTML = data.books.map(book => renderBookCard(book, positions[book.id] || null, currentShelf.has(book.id))).join('');
     libraryList.classList.toggle('offline-library-fallback', offlineFallback);
     const continueEntries = data.books
@@ -454,7 +467,7 @@ export async function loadLibrary() {
     filterLibrary();
     setupSwipeDelete();
   } finally {
-    libraryList.setAttribute('aria-busy', 'false');
+    if (generation === libraryLoadGeneration) libraryList.setAttribute('aria-busy', 'false');
   }
 }
 
@@ -502,7 +515,7 @@ function updateFilterEmptyState(query, visibleCount) {
   const libraryList = document.getElementById('library-list');
   if (!libraryList) return;
   let emptyState = libraryList.querySelector('[data-library-filter-empty]');
-  const shouldShow = Boolean(query) && visibleCount === 0;
+  const shouldShow = libraryContentState === 'ready' && Boolean(query) && visibleCount === 0;
   if (shouldShow && !emptyState) {
     libraryList.insertAdjacentHTML('beforeend', filterEmptyStateHTML());
     emptyState = libraryList.querySelector('[data-library-filter-empty]');
@@ -528,9 +541,9 @@ function filterLibrary() {
   });
   if (continueRail) continueRail.hidden = currentTab === 'downloaded' || query.length > 0 || !continueRailHasEntries;
   const emptyShelfHint = document.getElementById('shelf-empty-hint');
-  if (emptyShelfHint) emptyShelfHint.hidden = !(currentTab === 'shelf' && visibleCount === 0 && !query);
+  if (emptyShelfHint) emptyShelfHint.hidden = !(libraryContentState === 'ready' && currentTab === 'shelf' && visibleCount === 0 && !query);
   const emptyDownloadedHint = document.getElementById('downloaded-empty-hint');
-  if (emptyDownloadedHint) emptyDownloadedHint.hidden = !(currentTab === 'downloaded' && visibleCount === 0 && !query);
+  if (emptyDownloadedHint) emptyDownloadedHint.hidden = !(libraryContentState === 'ready' && currentTab === 'downloaded' && visibleCount === 0 && !query);
   updateFilterEmptyState(query, visibleCount);
 }
 
@@ -702,9 +715,11 @@ async function removeDownloadedBookFromLibrary(bookId) {
 function closeBookMenus(except = null) {
   document.querySelectorAll('.book-overflow-menu:not([hidden])').forEach(menu => {
     if (menu === except) return;
+    const trigger = menu.closest('.book-overflow')?.querySelector('[data-book-menu-toggle]');
+    if (menu.contains(document.activeElement)) trigger?.focus();
     menu.hidden = true;
     menu.closest('.book-item')?.classList.remove('menu-open');
-    menu.closest('.book-overflow')?.querySelector('[data-book-menu-toggle]')?.setAttribute('aria-expanded', 'false');
+    trigger?.setAttribute('aria-expanded', 'false');
   });
 }
 
@@ -745,16 +760,23 @@ async function deleteBook(id) {
         localCleanupFailed = true;
         console.warn('Deleted title but could not remove its local download:', error);
       }
+      // Retire refreshes that may still contain the deleted book, then remove
+      // every library representation rather than only the first rail card.
+      ++libraryLoadGeneration;
+      const libraryList = document.getElementById('library-list');
+      libraryList?.setAttribute('aria-busy', 'false');
       const escapedId = cssEscape(id);
-      const bookElement = document.querySelector(`[data-book-id="${escapedId}"]`);
-      if (bookElement) {
-        bookElement.style.transition = 'all 300ms ease';
-        bookElement.style.opacity = '0';
-        bookElement.style.transform = 'translateX(-100%)';
-        setTimeout(() => {
-          bookElement.remove();
-          if (document.querySelectorAll('.book-item').length === 0) loadLibrary();
-        }, 300);
+      const card = libraryList?.querySelector(`.book-item[data-book-id="${escapedId}"]`);
+      const hadFocus = card?.contains(document.activeElement);
+      card?.remove();
+      continueRail?.querySelector(`.rail-card[data-book-id="${escapedId}"]`)?.remove();
+      currentShelf.delete(id);
+      continueRailHasEntries = Boolean(continueRail?.querySelector('.rail-card'));
+      if (!libraryList?.querySelector('.book-item')) await loadLibrary();
+      else filterLibrary();
+      if (hadFocus) {
+        (libraryList?.querySelector('.book-item:not(.hidden) [data-open-book]')
+          || document.querySelector(`[data-library-tab="${currentTab}"]`))?.focus();
       }
       showToast(
         localCleanupFailed ? 'Book deleted; local download cleanup needs retry' : 'Book and local download deleted',
@@ -903,6 +925,34 @@ export function initLibrary(options = {}) {
   document.getElementById('view-toggle-btn')?.addEventListener('click', toggleView);
 
   const libraryList = document.getElementById('library-list');
+  libraryList?.addEventListener('keydown', (e) => {
+    const trigger = e.target.closest('[data-book-menu-toggle]');
+    if (trigger && ['ArrowDown', 'ArrowUp'].includes(e.key)) {
+      e.preventDefault();
+      const menu = trigger.closest('.book-overflow')?.querySelector('.book-overflow-menu');
+      if (menu?.hidden) toggleBookMenu(trigger);
+      const items = menu?.querySelectorAll('[role="menuitem"]:not(:disabled)');
+      (e.key === 'ArrowUp' ? items?.[items.length - 1] : items?.[0])?.focus();
+      return;
+    }
+    const menu = e.target.closest('.book-overflow-menu');
+    if (menu && e.key === 'Tab') {
+      closeBookMenus();
+      return;
+    }
+    if (!menu || !['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(e.key)) return;
+    const items = [...menu.querySelectorAll('[role="menuitem"]:not(:disabled)')];
+    if (!items.length) return;
+    e.preventDefault();
+    const index = items.indexOf(document.activeElement);
+    const next = e.key === 'Home' ? 0 : e.key === 'End' ? items.length - 1
+      : (index + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
+    items[next].focus();
+  });
+  libraryList?.addEventListener('focusout', (e) => {
+    const overflow = e.target.closest('.book-overflow');
+    if (overflow && e.relatedTarget && !overflow.contains(e.relatedTarget)) closeBookMenus();
+  });
   libraryList?.addEventListener('click', (e) => {
     const emptyAddBtn = e.target.closest('[data-add-book-empty]');
     if (emptyAddBtn) {
