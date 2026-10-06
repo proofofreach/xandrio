@@ -117,37 +117,151 @@ export function chapterListItemState(index, currentIndex) {
   return Number(index) === Number(currentIndex) ? 'active' : 'available';
 }
 
+// ---- The one chapter numbering rule ----------------------------------------
+// Every surface that numbers chapters (the player's chapter row, the chapter
+// sheet, the mini player, the Recent sheet, the Continue strip and library
+// rows) uses chapterNumbering(), so a book never reads "Section 8 of 62" in
+// one place and "50 chapters" in another.
+//
+//   1. Authored numbers win when they are trustworthy: at least one narrative
+//      chapter carries a number in its title ("Chapter Two", "12", "XX ...")
+//      and those numbers strictly increase through the book. The number is
+//      the authored one and the total is the highest authored number.
+//      Unnumbered narrative pieces (Prologue, Interlude) keep their own name.
+//   2. Otherwise (no authored numbers, or numbering that restarts per part,
+//      as in "Part II — Chapter 1"), chapters are counted in reading order:
+//      the items typed `chapter` when the book has any, else every narrative
+//      item. The total is that count.
+//   3. Front and back matter, contents, dividers and empty sections never get
+//      a number; they are shown by name.
+//
+// Returns { mode: 'authored' | 'ordinal', total, numbers } where numbers[i]
+// is the displayed number for index i, or null.
+const numberingCache = new WeakMap();
+
+export function chapterNumbering(chapters) {
+  const list = Array.isArray(chapters) ? chapters : [];
+  const cached = numberingCache.get(list);
+  if (cached && cached.length === list.length) return cached.result;
+  const numbers = new Array(list.length).fill(null);
+  const narrative = [];
+  list.forEach((chapter, index) => { if (isNarrativeChapter(chapter)) narrative.push(index); });
+
+  const authored = narrative
+    .map(index => ({ index, number: chapterNumberFromTitle(list[index]?.title) }))
+    .filter(entry => Number.isFinite(entry.number) && entry.number > 0);
+  const increasing = authored.length > 0 &&
+    authored.every((entry, position) => position === 0 || entry.number > authored[position - 1].number);
+
+  let result;
+  if (increasing) {
+    authored.forEach(entry => { numbers[entry.index] = entry.number; });
+    result = { mode: 'authored', total: authored[authored.length - 1].number, numbers };
+  } else {
+    const typed = narrative.filter(index => list[index]?.type === 'chapter');
+    const counted = typed.length ? typed : narrative;
+    counted.forEach((index, position) => { numbers[index] = position + 1; });
+    result = { mode: 'ordinal', total: counted.length, numbers };
+  }
+  if (list.length) numberingCache.set(list, { length: list.length, result });
+  return result;
+}
+
+// The book's chapter count under the same rule: a library row says
+// "34 chapters" where the player says "Chapter 12 of 34".
+export function chapterTotal(chapters) {
+  return chapterNumbering(chapters).total;
+}
+
+// The position label for one index under the rule above.
+//   "Chapter 12 of 50"  (default: the player's chapter row)
+//   "Ch 12 of 50"       ({ short: true }: mini player)
+//   "Ch 12"             ({ short: true, withTotal: false }: Continue, Recent)
+// An unnumbered section returns its own name ("Prologue", "Copyright").
+export function chapterPositionLabel(chapters, currentIndex, { short = false, withTotal = true } = {}) {
+  const list = Array.isArray(chapters) ? chapters : [];
+  if (!list.length) return '';
+  const index = Math.max(0, Math.min(list.length - 1, Number(currentIndex) || 0));
+  const { numbers, total } = chapterNumbering(list);
+  const number = numbers[index];
+  if (number) {
+    const word = short ? 'Ch' : 'Chapter';
+    return withTotal ? `${word} ${number} of ${total}` : `${word} ${number}`;
+  }
+  return expandNumericChapterTitle(list[index]?.title) || `Section ${index + 1}`;
+}
+
+// The chapter sheet's number column ("01"), same rule.
 export function chapterListOrdinal(chapters, currentIndex) {
   const list = Array.isArray(chapters) ? chapters : [];
   const index = Number(currentIndex);
   if (!Number.isInteger(index) || index < 0 || index >= list.length) return '';
-  const chapter = list[index];
-  if (!chapter || chapter.empty || chapter.type !== 'chapter') return '';
-  const authoredNumber = chapterNumberFromTitle(chapter.title);
-  if (authoredNumber) return String(authoredNumber).padStart(2, '0');
-  const ordinal = list.slice(0, index + 1)
-    .filter(item => item && !item.empty && item.type === 'chapter')
-    .length;
-  return ordinal ? String(ordinal).padStart(2, '0') : '';
+  const number = chapterNumbering(list).numbers[index];
+  return number ? String(number).padStart(2, '0') : '';
 }
 
 export function chapterProgressContext(chapters, currentIndex) {
-  const list = Array.isArray(chapters) ? chapters : [];
-  if (!list.length) return '';
-  const index = Math.max(0, Math.min(list.length - 1, Number(currentIndex) || 0));
-  const current = list[index];
-  const currentNumber = isNarrativeChapter(current) ? chapterNumberFromTitle(current?.title) : null;
+  return chapterPositionLabel(chapters, currentIndex);
+}
 
-  if (currentNumber) {
-    const authoredNumbers = list
-      .filter(isNarrativeChapter)
-      .map(chapter => chapterNumberFromTitle(chapter?.title))
-      .filter(Number.isFinite);
-    const finalNumber = Math.max(currentNumber, ...authoredNumbers);
-    return `Chapter ${currentNumber} of ${finalNumber}`;
+// The resume-point label every compact surface uses (Continue strip,
+// Recent sheet): the mini player's "Ch 12 of 50" without the total.
+export function chapterResumeLabel(chapters, currentIndex) {
+  return chapterPositionLabel(chapters, currentIndex, { short: true, withTotal: false });
+}
+
+// ---- Shared part prefixes ------------------------------------------------------
+// "Part I: Sick Kids — Chapter 1", "Part I: Sick Kids — Chapter 2": when
+// neighbouring listed rows start with the same name followed by a separator
+// (" — ", " – ", " - " or ": "), the chapter sheet shows that name once as a
+// group heading and each row keeps only the rest. Returns, per index,
+// { heading, rest } or null. Empty sections are skipped when finding
+// neighbours; a heading needs at least two rows.
+const TITLE_SEPARATOR = /\s+[—–-]\s+|:\s+/g;
+
+function titlePrefixCandidates(title) {
+  const raw = String(title || '').replace(/\s+/g, ' ').trim();
+  const candidates = [];
+  for (const match of raw.matchAll(TITLE_SEPARATOR)) {
+    const heading = raw.slice(0, match.index).trim();
+    const rest = raw.slice(match.index + match[0].length).trim();
+    if (heading && rest) candidates.push({ heading, rest });
   }
+  return candidates.reverse(); // longest heading first
+}
 
-  return expandNumericChapterTitle(current?.title) || `Section ${index + 1} of ${list.length}`;
+export function sharedTitlePrefixes(chapters) {
+  const list = Array.isArray(chapters) ? chapters : [];
+  const result = new Array(list.length).fill(null);
+  const listed = [];
+  list.forEach((chapter, index) => { if (chapter && !chapter.empty) listed.push(index); });
+  const candidates = listed.map(index => titlePrefixCandidates(list[index]?.title));
+  const shares = (position, heading) => Boolean(candidates[position]?.some(candidate => candidate.heading === heading));
+  const chosen = candidates.map((own, position) => own.find(candidate =>
+    shares(position - 1, candidate.heading) || shares(position + 1, candidate.heading)) || null);
+  // A row keeps its heading only when a neighbour chose the same one, so a
+  // lone "Part I: Y" next to a "Part I: X" run does not open a one-row group.
+  let changed = true;
+  while (changed) {
+    changed = false;
+    chosen.forEach((match, position) => {
+      if (!match) return;
+      const paired = chosen[position - 1]?.heading === match.heading || chosen[position + 1]?.heading === match.heading;
+      if (!paired) { chosen[position] = null; changed = true; }
+    });
+  }
+  listed.forEach((index, position) => { result[index] = chosen[position]; });
+  return result;
+}
+
+// Labels for every index, trimmed for storage in the per-book meta cache
+// so the library can label resume points without loading the book.
+export function chapterResumeLabels(chapters, maxLength = 28) {
+  const list = Array.isArray(chapters) ? chapters : [];
+  return list.map((_, index) => {
+    const label = chapterResumeLabel(list, index);
+    return label.length > maxLength ? `${label.slice(0, maxLength - 1).trimEnd()}…` : label;
+  });
 }
 
 function isChapterOneTitle(title = '') {
@@ -174,4 +288,23 @@ export function findPreferredStartChapterIndex(chapters) {
   if (firstContent !== -1) return firstContent;
   if (firstNamedChapter !== -1) return firstNamedChapter;
   return 0;
+}
+
+const CHAPTER_TYPE_LABELS = {
+  frontmatter: 'Front matter',
+  backmatter: 'Back matter',
+  copyright: 'Copyright',
+  toc: 'Contents',
+  divider: 'Divider',
+  cover: 'Cover',
+  author: 'About the author',
+  'pdf-page-group': 'Pages'
+};
+
+export function friendlyChapterType(type) {
+  const key = String(type || '').trim().toLowerCase();
+  if (!key) return '';
+  if (CHAPTER_TYPE_LABELS[key]) return CHAPTER_TYPE_LABELS[key];
+  const words = key.replace(/[-_]+/g, ' ');
+  return words.charAt(0).toUpperCase() + words.slice(1);
 }

@@ -13,6 +13,7 @@ let sleepTimerInterval = null;
 let sleepTimerEndTime = null;
 let sleepTimerMode = null;
 let sleepTimerChapterTarget = null;
+let sleepTimerPreset = null;
 let timerBtnInline = null;
 let closeTimerModalBtn = null;
 let cancelTimerBtn = null;
@@ -111,7 +112,10 @@ export function initSleepTimer(options = {}) {
   closeTimerModalBtn = document.getElementById('close-timer-modal-btn');
   cancelTimerBtn = document.getElementById('cancel-timer-btn');
   extendTimerBtn = document.getElementById('extend-timer-btn');
-  timerModalController = registerSheet(timerModal);
+  timerModalController = registerSheet(timerModal, {
+    backdrop: document.getElementById('timer-sheet-backdrop'),
+    initialFocus: el => el.querySelector('#timer-modal-title')
+  });
 
   const openTimerModal = () => {
     updateTimerExtendButtonVisibility();
@@ -152,6 +156,7 @@ export function isSleepTimerChapterTarget(bookId, chapterIndex) {
 function setSleepTimer(minutes) {
   clearSleepTimer('replace');
   sleepTimerMode = 'time';
+  sleepTimerPreset = Number.isInteger(minutes) ? minutes : null;
   sleepTimerChapterTarget = null;
 
   const milliseconds = minutes * 60 * 1000;
@@ -229,6 +234,7 @@ export function clearSleepTimer(reason = 'cancelled', notify = true) {
 
   sleepTimerEndTime = null;
   sleepTimerMode = null;
+  sleepTimerPreset = null;
   sleepTimerChapterTarget = null;
   removeStorage('xandrio_sleep_timer_end');
   removeStorage('xandrio_sleep_timer_mode');
@@ -304,6 +310,27 @@ function updateTimerDisplay() {
 function updateTimerExtendButtonVisibility() {
   if (extendTimerBtn) extendTimerBtn.hidden = !(sleepTimerMode === 'time' && sleepTimerEndTime);
   if (cancelTimerBtn) cancelTimerBtn.hidden = !sleepTimerMode;
+  updateTimerSheetStatus();
+}
+
+// The sheet says what the timer is doing in words, and marks the chosen
+// option with a check as well as a tint.
+function updateTimerSheetStatus() {
+  const status = document.getElementById('timer-sheet-status');
+  if (status) {
+    if (sleepTimerMode === 'chapter') status.textContent = 'Playback stops at the end of this chapter.';
+    else if (sleepTimerMode === 'time' && sleepTimerEndTime) {
+      const minutes = Math.max(1, Math.ceil((sleepTimerEndTime - Date.now()) / 60000));
+      status.textContent = `Playback stops in about ${minutes} ${minutes === 1 ? 'minute' : 'minutes'}.`;
+    } else status.textContent = 'Timer is off.';
+  }
+  document.querySelectorAll('.timer-option').forEach(btn => {
+    const on = sleepTimerMode === 'chapter'
+      ? btn.dataset.mode === 'chapter'
+      : sleepTimerMode === 'time' && sleepTimerPreset !== null && Number(btn.dataset.minutes) === sleepTimerPreset;
+    btn.classList.toggle('active', on);
+    btn.setAttribute('aria-pressed', String(on));
+  });
 }
 
 function extendSleepTimer(minutes) {

@@ -113,7 +113,14 @@
     "verify:library-interactions": "node scripts/verify-library-interactions-e2e.js",
     "verify:library-data-lifecycle": "node scripts/verify-library-data-lifecycle-e2e.js",
     "verify:settings-ordering": "node scripts/verify-settings-ordering-e2e.js",
-    "verify:book-speed-races": "node scripts/verify-book-speed-races-e2e.js"
+    "verify:book-speed-races": "node scripts/verify-book-speed-races-e2e.js",
+    "verify:search-request-lifecycle": "node scripts/verify-search-request-lifecycle-e2e.js",
+    "verify:search-resource-lifecycle": "node scripts/verify-search-resource-lifecycle-e2e.js",
+    "verify:server-read-efficiency": "node scripts/verify-server-read-efficiency-e2e.js",
+    "verify:readable-ui": "node scripts/verify-readable-ui-e2e.js",
+    "verify:shell-versions": "node scripts/verify-shell-version-e2e.js",
+    "verify:chapter-summaries": "node scripts/verify-chapter-summary-e2e.js",
+    "verify:narrator-preparation": "node scripts/verify-narrator-preparation-e2e.js"
   },
   "dependencies": {
     "@lingo-reader/mobi-parser": "^0.4.6",

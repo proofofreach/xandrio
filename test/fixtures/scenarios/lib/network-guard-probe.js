@@ -19,6 +19,8 @@
 
 const http = require('node:http');
 const https = require('node:https');
+const undici = require('undici');
+const { requestRemote } = require('../../../../lib/remote-fetch');
 
 const PROBE_TIMEOUT_MS = 4000;
 
@@ -105,6 +107,13 @@ function probeFetchNonHttpRejected() {
   });
 }
 
+function probeUndici(name, run) {
+  return withTimeout(name, async signal => {
+    const response = await run(signal);
+    return { status: response.status || response.statusCode, body: await response.body?.json?.() || await response.json() };
+  });
+}
+
 async function main() {
   const results = await Promise.all([
     record('https.request', probeHttpsRequest()),
@@ -112,7 +121,30 @@ async function main() {
     record('https.get', probeHttpsGet()),
     record('fetch', probeFetch()),
     record('fetch-post-body', probeFetchPost()),
-    record('fetch-non-http-scheme', probeFetchNonHttpRejected())
+    record('fetch-non-http-scheme', probeFetchNonHttpRejected()),
+    record('undici-fetch', probeUndici('undici-fetch', signal => undici.fetch('https://198.51.100.7/probe/undici-fetch', { signal }))),
+    record('undici-request', probeUndici('undici-request', signal => undici.request('https://198.51.100.7/probe/undici-request', { signal }))),
+    record('undici-explicit-agent', probeUndici('undici-explicit-agent', signal => undici.fetch('https://198.51.100.7/probe/undici-agent', { signal, dispatcher: new undici.Agent() }))),
+    record('remote-derived-cover', probeUndici('remote-derived-cover', async signal => { const remote = await requestRemote('https://books.synthetic.invalid/probe/remote-cover', { timeoutMs: PROBE_TIMEOUT_MS }); const payload = await remote.response.json(); remote.close(); return { status: remote.response.status, json: async () => payload }; })),
+    record('global-fetch-redirect', probeUndici('global-fetch-redirect', signal => fetch('https://198.51.100.7/probe/redirect', { signal }))),
+    record('undici-fetch-redirect', probeUndici('undici-fetch-redirect', signal => undici.fetch('https://198.51.100.7/probe/redirect', { signal }))),
+    record('undici-explicit-client', probeUndici('undici-explicit-client', signal => new undici.Client('https://198.51.100.7').request({ path: '/probe/undici-client', method: 'GET', signal }))),
+    record('socket-fail-closed', Promise.resolve().then(() => {
+      try { require('node:net').connect({ host: '198.51.100.7', port: 443 }); } catch (error) { return { rejected: /non-loopback socket/.test(error.message) }; }
+      throw new Error('raw socket bypassed the guard');
+    })),
+    record('localhost-rebind-rejected', new Promise((resolve, reject) => {
+      const socket = require('node:net').connect({ host: 'localhost', port: 443, lookup: (_host, _options, callback) => callback(null, [{ address: '198.51.100.7', family: 4 }]) });
+      socket.on('error', error => resolve({ rejected: /outside loopback/.test(error.message) }));
+      socket.on('connect', () => { socket.destroy(); reject(new Error('localhost custom lookup escaped')); });
+    })),
+    record('synthetic-dns', require('node:dns').promises.lookup('does-not-exist.synthetic.invalid', { all: true }).then(records => ({ records }))),
+    record('remote-private-rejected', withTimeout('remote-private-rejected', async signal => {
+      let rejected = false;
+      try { await requestRemote('https://127.0.0.1/probe/private', { signal }); } catch (error) { rejected = /safe public HTTPS/.test(error.message); }
+      if (!rejected) throw new Error('production SSRF restriction did not reject loopback');
+      return { rejected };
+    }))
   ]);
   process.stdout.write(`${JSON.stringify(results)}\n`);
   // Force exit even if the guard failed to guard something: a real,

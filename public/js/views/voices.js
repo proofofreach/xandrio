@@ -1,9 +1,11 @@
 import { API_BASE, apiGet, apiSend } from '../api.js';
 import { escapeHTML, safeAttr } from '../util/format.js';
-import { showToast } from '../ui/toast.js';
+import { showToast, showInlineConfirmation } from '../ui/toast.js';
+import { chapterDurationsFor, formatDuration, timeLeftAtSpeed, effectiveSpeed } from '../util/time-left.mjs';
 import { registerSheet } from '../ui/sheets.js';
 import { confirmSheet } from '../ui/confirm.js';
 import { readJSON, writeJSON } from '../util/storage.js';
+import { chapterPositionLabel } from '../util/chapter-labels.mjs';
 
 const SAVED_VOICES_KEY = 'xandrio_saved_voices';
 const VOICE_FILTERS_KEY = 'xandrio_voice_filters';
@@ -38,6 +40,56 @@ export function getPremiumChapterReadiness() {
 
 export function isPremiumVoiceSelected() {
   return isHighQualityVoice();
+}
+
+/**
+ * One narration summary for the player: the narrator actually playing, its
+ * engine, the preparation state and how much audio is ready ahead of the
+ * listener at the current speed (through the shared time-left helpers).
+ * `speed` and `chapterTime` default to the chunk player's values.
+ * `differsFromSelected` is true while another narrator plays than the one
+ * chosen for the book.
+ */
+export function getNarrationSummary({ speed, chapterTime } = {}) {
+  const actualVoice = deps.getActualVoice?.();
+  const voiceId = actualVoice || currentVoice;
+  const voice = voices.find(v => v.id === voiceId);
+  const player = deps.getChunkPlayer?.();
+  const rate = effectiveSpeed(speed ?? player?.playbackRate);
+  const status = premiumBookStatus;
+  const summary = {
+    name: getVoiceName(voiceId) || 'Narrator',
+    selectedName: getVoiceName(currentVoice) || 'Narrator',
+    engineLabel: voice ? engineLabel(providerId(voice)) : '',
+    state: isHighQualityVoice() ? (status?.status || 'loading') : 'idle',
+    readyAheadSeconds: null,
+    readyChapters: 0,
+    totalChapters: 0,
+    firstUnreadyChapter: null,
+    instantVoiceName: status?.instantVoice ? getVoiceName(status.instantVoice) : '',
+    differsFromSelected: Boolean(actualVoice && actualVoice !== currentVoice)
+  };
+  if (!isHighQualityVoice()) return summary;
+  const readiness = premiumChapterReadiness || [];
+  const chapters = deps.getChapters?.() || [];
+  if (!readiness.length || !chapters.length) return summary;
+  const book = deps.getCurrentBook?.();
+  const current = Math.max(0, deps.getCurrentChapter?.() || 0);
+  const time = Number(chapterTime ?? player?.getCurrentTime?.()) || 0;
+  const durations = chapterDurationsFor(book, chapters.length);
+  let seconds = 0;
+  for (let index = current; index < chapters.length; index++) {
+    if (chapters[index]?.empty) continue;
+    if (!readiness[index]) { summary.firstUnreadyChapter = index; break; }
+    const duration = Number(durations?.[index] ?? chapters[index]?.estimatedDuration) || 0;
+    seconds += index === current ? Math.max(0, duration - time) : duration;
+  }
+  const counted = chapters.map((chapter, index) => !chapter?.empty && index < readiness.length ? Boolean(readiness[index]) : null)
+    .filter(value => value !== null);
+  summary.readyChapters = counted.filter(Boolean).length;
+  summary.totalChapters = chapters.filter(chapter => !chapter?.empty).length;
+  summary.readyAheadSeconds = timeLeftAtSpeed(seconds, rate);
+  return summary;
 }
 
 // --- Voice selection (moved from modal) ---
@@ -285,7 +337,7 @@ document.addEventListener('visibilitychange', () => {
 
 function getVoiceName(voiceId) {
   const voice = voices.find(v => v.id === voiceId);
-  return voice?.name || (bookNarration?.voiceId === voiceId ? bookNarration.voiceName : null) || voiceId;
+  return voice?.name || (bookNarration && voiceId && bookNarration.voiceId === voiceId ? bookNarration.voiceName : null) || voiceId;
 }
 
 function unavailableVoiceMessage() {
@@ -308,7 +360,14 @@ async function loadVoiceCacheStatus() {
 
 function renderVoices() {
   const summary = document.getElementById('settings-voice-summary');
-  if (summary) summary.textContent = getVoiceName(defaultVoice);
+  if (summary) {
+    const defaultEntry = voices.find(v => v.id === defaultVoice);
+    const engine = defaultEntry ? engineLabel(providerId(defaultEntry)) : '';
+    const name = getVoiceName(defaultVoice);
+    // Names such as "Kokoro Onyx" already carry the engine.
+    const repeatsEngine = engine && name.toLowerCase().startsWith(engine.toLowerCase());
+    summary.textContent = engine && !repeatsEngine ? `${name} \u00b7 ${engine}` : name;
+  }
   const hint = document.getElementById('settings-voice-hint');
   if (hint) hint.textContent = 'Choose the default narrator. Books with their own narrator keep that choice.';
   renderVoiceSurface('voice-filter-bar', 'voice-list');
@@ -361,7 +420,7 @@ function renderVoiceSurface(filterBarId, listId, refreshFilters = true) {
     voiceSections.push('<div class="voice-empty">No other voices match these filters. <button type="button" class="voice-clear-filters" data-voice-action="browse-english">Browse English voices</button></div>');
   }
 
-  voiceList.innerHTML = [...voiceSections, renderCloneVoicePanel()].join('');
+  voiceList.innerHTML = [renderEngineStatusNotice(), ...voiceSections, renderCloneVoicePanel()].join('');
   const count = document.getElementById('voice-filter-count');
   if (count) {
     const total = filterVoices(voices).length;
@@ -404,7 +463,48 @@ function renderVoiceSheetSections(listId) {
   // hides when the user is explicitly browsing instant-only voices.
   const showClone = voiceSheetFacets.tier !== 'instant' &&
     (voiceSheetFacets.engine === 'all' || voiceSheetFacets.engine === 'chatterbox');
-  voiceList.innerHTML = (showClone ? [...sections, renderCloneVoicePanel()] : sections).join('');
+  voiceList.innerHTML = [renderEngineStatusNotice(), ...(showClone ? [...sections, renderCloneVoicePanel()] : sections)].join('');
+}
+
+const ENGINE_LABELS = { kokoro: 'Kokoro', 'moss-nano': 'MOSS Nano', edge: 'Edge', chatterbox: 'Chatterbox' };
+
+function engineLabel(provider) {
+  return ENGINE_LABELS[provider] || provider;
+}
+
+function joinNames(names) {
+  return names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}` : names[0];
+}
+
+// One plain-language line for engine state, shown once above the voice list
+// instead of on every card. Cards only repeat state that differs (for
+// example a voice whose model is not installed).
+function renderEngineStatusNotice() {
+  const engines = engineStatus?.engines;
+  if (!engines) return '';
+  const providers = [...new Set(voices.map(providerId))].filter(p => engines[p]);
+  const starting = providers.filter(p => engines[p].status === 'starting');
+  const idle = providers.filter(p => {
+    const e = engines[p];
+    return !e.up && e.status !== 'starting' && e.status !== 'models-uninstalled' && e.status !== 'disabled' && p !== 'moss-nano' && p !== 'edge';
+  });
+  const offline = providers.filter(p => p === 'moss-nano' && !engines[p].up && engines[p].status !== 'starting' &&
+    engines[p].status !== 'models-uninstalled' && engines[p].status !== 'disabled');
+  const lines = [];
+  if (starting.length) {
+    const names = starting.map(engineLabel);
+    lines.push(`${joinNames(names)} ${names.length > 1 ? 'are' : 'is'} starting \u2014 voices will be ready in a moment.`);
+  }
+  if (idle.length) {
+    const names = idle.map(engineLabel);
+    lines.push(`${joinNames(names)} ${names.length > 1 ? 'are' : 'is'} idle. ${names.length > 1 ? 'They start' : 'It starts'} when you choose ${names.length > 1 ? 'their' : 'one of its'} voices.`);
+  }
+  if (offline.length) {
+    const names = offline.map(engineLabel);
+    lines.push(`${joinNames(names)} ${names.length > 1 ? 'are' : 'is'} offline. Its voices cannot be chosen until it returns.`);
+  }
+  if (!lines.length) return '';
+  return `<p class="voice-engine-notice" role="status">${lines.map(escapeHTML).join(' ')}</p>`;
 }
 
 function renderCloneVoicePanel() {
@@ -604,11 +704,10 @@ function updatePlayerVoiceStatus() {
   const chosenName = getVoiceName(currentVoice) || 'Choose narrator';
   const actualName = actualVoice ? getVoiceName(actualVoice) : chosenName;
   const differs = actualVoice && actualVoice !== currentVoice;
-  const actualLabel = deps.getChunkPlayer()?.isPlaying ? 'Playing now' : 'Audio narrator';
   playerVoiceName.textContent = actualName;
   playerVoiceCache.textContent = differs
-    ? `${actualLabel} · ${chosenName} selected for this book`
-    : bookNarration?.inherited ? 'Library default · Change for this book' : 'Narrator for this book';
+    ? `${chosenName} selected`
+    : '';
   playerVoiceStatus.dataset.cache = getVoiceCacheClass(voiceCache[actualVoice || currentVoice]);
   updateHighQualityPrepPanel();
 }
@@ -632,8 +731,7 @@ function stopHighQualityPrepPolling() {
 
 function listeningTime(seconds) {
   if (seconds <= 0) return 'No audio ready from here';
-  if (seconds < 60) return 'Under 1 minute ready from here';
-  return `${Math.floor(seconds / 60)} minutes ready from here`;
+  return `${formatDuration(seconds)} ready from here`;
 }
 
 function updateHighQualityPrepPanel() {
@@ -669,7 +767,7 @@ function updateHighQualityPrepPanel() {
   };
   let detail = labels[state] || labels.idle;
   if (status && status.firstUnreadyChapter !== null && state !== 'loading') {
-    detail += ` Chapter ${status.firstUnreadyChapter + 1} is next to prepare.`;
+    detail += ` ${chapterPositionLabel(deps.getChapters?.(), status.firstUnreadyChapter, { withTotal: false })} is next to prepare.`;
   }
   if (preparationStale) detail = `Reconnecting… Last checked: ${detail}`;
   hqVoicePrepDetail.textContent = detail;
@@ -735,7 +833,8 @@ async function changeFallbackPolicy(event) {
     const saved = await apiSend('POST', `/api/narration/${encodeURIComponent(book.id)}`, { fallbackPolicy: value });
     if (deps.getCurrentBook()?.id !== book.id) return;
     bookNarration = saved;
-    showToast('Choice saved. It applies when audio next loads.');
+    const visible = ['hq-prep-choice', 'hq-prep-actions'].map(id => document.getElementById(id)).find(el => el && !el.hidden);
+    showInlineConfirmation(visible || event.target, 'Choice saved');
   } catch (error) { showToast(`Could not save choice: ${error.message}`, 'error'); }
   updateHighQualityPrepPanel();
 }
@@ -821,8 +920,7 @@ function renderVoiceCard(v, selectedVoice = currentVoice) {
       .filter(tag => !['local', 'chatterbox', 'kokoro', 'edge'].includes(String(tag).toLowerCase())).slice(0, 3);
     const tagSummary = summaryTags.map(t => escapeHTML(t)).join(' · ');
     const availability = status?.status === 'models-uninstalled' ? 'Voice model not installed'
-      : isEngineDown ? (provider === 'moss-nano' ? 'Narration service offline' : 'Starts when selected')
-      : isStarting ? 'Narration service starting'
+      : isEngineDown && provider === 'moss-nano' ? 'Offline'
       : provider === 'moss-nano' ? `MOSS Nano · ${tagSummary}` : tagSummary;
     const checkIcon = isActive
       ? '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" class="voice-card-check" aria-hidden="true"><path d="M5 13l4 4L19 7"/></svg>'

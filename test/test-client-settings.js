@@ -41,6 +41,16 @@ assertEqual(
   { smartRewindEnabled: false, rollingOfflineEnabled: true },
   'automatic playback settings accept booleans'
 );
+assertEqual(
+  sanitizeClientSettings({ shelfRowDensity: 'comfortable' }),
+  { shelfRowDensity: 'comfortable' },
+  'shelf row density accepts compact or comfortable'
+);
+assertEqual(
+  sanitizeClientSettings({ shelfRowDensity: 'huge' }).shelfRowDensity,
+  undefined,
+  'unknown shelf row densities are rejected'
+);
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

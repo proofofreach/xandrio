@@ -336,7 +336,7 @@ This file is generated from the locked installed Node dependency tree by `npm ru
 | proc-log | 5.0.0 | ISC | https://github.com/npm/proc-log.git |
 | process-nextick-args | 2.0.1 | MIT | https://github.com/calvinmetcalf/process-nextick-args.git |
 | promise-retry | 2.0.1 | MIT | git://github.com/IndigoUnited/node-promise-retry.git |
-| proxy-addr | 2.0.7 | MIT | jshttp/proxy-addr |
+| proxy-addr | 2.0.8 | MIT | jshttp/proxy-addr |
 | proxy-agent-negotiate | 1.1.0 | MIT | https://github.com/TooTallNate/proxy-agents.git |
 | proxy-from-env | 2.1.0 | MIT | https://github.com/Rob--W/proxy-from-env.git |
 | pstree.remy | 1.1.8 | MIT | https://github.com/remy/pstree.git |

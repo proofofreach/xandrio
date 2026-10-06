@@ -74,13 +74,14 @@ async function main() {
       await assertSearchWorkspace(page, SEARCH_A);
       passed++;
 
-      await page.locator('#back-to-library-btn').click();
+      await page.locator('[data-shell-tab="library"], [data-shell-nav="library"]').locator('visible=true').first().click();
       await page.waitForURL(/#\/library$/);
       await page.locator('#library-view.active').waitFor({ state: 'visible' });
       await page.waitForFunction(() => new URL(window.location.href).search === '');
       assert.strictEqual(new URL(page.url()).search, '', 'search state is removed outside the search route');
 
-      await page.locator('#add-book-btn').click();
+      // Find lives in the shell: the tab bar on phones, the sidebar on desktop.
+      await page.locator('[data-shell-tab="search"], [data-shell-nav="search"]').locator('visible=true').first().click();
       await page.waitForURL(/#\/search$/);
       await page.locator('#search-view.active').waitFor({ state: 'visible' });
       await assertSearchWorkspace(page, SEARCH_A);
@@ -92,7 +93,7 @@ async function main() {
       await assertSearchWorkspace(page, SEARCH_B);
       passed++;
 
-      await page.locator('#back-to-library-btn').click();
+      await page.locator('[data-shell-tab="library"], [data-shell-nav="library"]').locator('visible=true').first().click();
       await page.locator('#library-view.active').waitFor({ state: 'visible' });
       await page.goBack();
       await page.locator('#search-view.active').waitFor({ state: 'visible' });

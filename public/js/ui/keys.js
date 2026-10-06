@@ -32,7 +32,15 @@ export function onActivate(el, handler) {
 
 export function initKeys(actions = {}) {
   document.addEventListener('keydown', (e) => {
+    if (e.defaultPrevented) return;
     if (e.metaKey || e.ctrlKey || e.altKey) return;
+    if (e.key === 'Escape') {
+      requestSheetClose();
+      return;
+    }
+    // Sheets own keyboard input while open. Their controls handle their own
+    // arrows and activation; titles must not drive playback behind the dialog.
+    if (document.body.classList.contains('sheet-open') || e.target?.closest?.('[role="dialog"]')) return;
     if (isTypingTarget(e.target)) return;
 
     switch (e.key) {
@@ -81,9 +89,6 @@ export function initKeys(actions = {}) {
       case '?':
         e.preventDefault();
         actions.help?.();
-        break;
-      case 'Escape':
-        requestSheetClose();
         break;
       default:
         break;

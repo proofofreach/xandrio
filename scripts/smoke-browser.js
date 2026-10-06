@@ -550,12 +550,14 @@ async function verifyPlayback(page, fixtureState) {
   if (await page.locator('#download-book-btn, #share-book-btn, .player-book-actions').count() !== 0) {
     throw new Error('Player still duplicates title-level Download or Share actions');
   }
-  if (!await page.isVisible('[data-progress-scope="book"]')) throw new Error('Measured book timeline did not enable book seeking');
-  await page.click('[data-progress-scope="book"]');
-  if (await page.getAttribute('[data-progress-scope="book"]', 'aria-pressed') !== 'true') {
-    throw new Error('Book progress mode did not activate');
-  }
-  await page.click('[data-progress-scope="chapter"]');
+  // Book-wide seeking lives in the player's ••• menu.
+  await page.click('#player-more-btn');
+  await page.waitForSelector('#player-more-sheet.active');
+  if (await page.isDisabled('#player-book-seek-btn')) throw new Error('Measured book timeline did not enable book seeking');
+  await page.click('#player-book-seek-btn');
+  await page.waitForSelector('#book-seek-sheet.active');
+  await page.click('#book-seek-cancel');
+  await page.waitForFunction(() => !document.getElementById('book-seek-sheet').classList.contains('active'));
 
   await page.waitForFunction(() => window.__smokeAudios.includes(document.getElementById('audio-player')));
   const playbackAudioCount = await page.locator('#audio-player').count();
@@ -640,6 +642,49 @@ async function verifyInterruptedViewTransition(page) {
   if (await page.evaluate(() => document.documentElement.dataset.vt !== undefined)) {
     throw new Error('Interrupted view transitions left the data-vt marker behind');
   }
+}
+
+// Regression (P1-1): on the phone player the toast is top-docked under the
+// nav. A toast shown while a player sheet is open must keep a normal height
+// and never cover the sheet; it used to be pinned by both its top and its
+// bottom edge and stretched into a giant box.
+async function verifyToastOverPlayerSheet(page) {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${origin}/#/player/smoke`, { waitUntil: 'networkidle' });
+  await page.waitForSelector('#player-view.active');
+  for (const [opener, sheet] of [['#speed-sheet-btn', '#speed-sheet'], ['#player-more-btn', '#player-more-sheet']]) {
+    await page.click(opener);
+    await page.waitForSelector(`${sheet}.active`);
+    await page.waitForTimeout(300);
+    const result = await page.evaluate(async (sheetSelector) => {
+      const { showToast, hideToast } = await import('/js/ui/toast.js');
+      showToast('Smoke toast over a sheet', 'error', { key: `smoke-sheet-${sheetSelector}` });
+      await new Promise(resolve => setTimeout(resolve, 300));
+      const toast = document.getElementById('success-toast');
+      const panel = document.querySelector(`${sheetSelector} .voice-sheet-panel`).getBoundingClientRect();
+      const rect = toast.getBoundingClientRect();
+      const shown = toast.classList.contains('show');
+      const out = {
+        shown,
+        height: rect.height,
+        toastBottom: rect.bottom,
+        sheetTop: panel.top,
+        inlineTop: toast.style.top,
+        inlineBottom: toast.style.bottom
+      };
+      hideToast();
+      return out;
+    }, sheet);
+    if (result.shown && (result.height > 120 || result.toastBottom > result.sheetTop + 1)) {
+      throw new Error(`Toast over the ${sheet} sheet stretched or covered it: ${JSON.stringify(result)}`);
+    }
+    if (result.inlineBottom && result.inlineTop !== 'auto') {
+      throw new Error(`Toast pinned by both edges over ${sheet}: ${JSON.stringify(result)}`);
+    }
+    await page.keyboard.press('Escape');
+    await page.waitForFunction(selector => !document.querySelector(selector).classList.contains('active'), sheet);
+  }
+  await page.setViewportSize({ width: 1280, height: 800 });
 }
 
 async function verifyStudyGuideAudio(page, fixtureState) {
@@ -740,7 +785,7 @@ async function verifyLibraryLoadStates(page, fixtureState) {
     busy: list.getAttribute('aria-busy'),
     skeletons: list.querySelectorAll('.book-item.skeleton').length,
     loadingText: list.querySelector('[role="status"]')?.textContent?.trim() || '',
-    emptyNotice: list.textContent.includes('Your library is empty')
+    emptyNotice: list.textContent.includes('No books yet')
   }));
   if (
     loadingState.busy !== 'true' ||
@@ -774,7 +819,7 @@ async function verifyLibraryLoadStates(page, fixtureState) {
   await page.waitForSelector('.book-item:not(.skeleton)', { state: 'attached' });
   await page.waitForFunction(() => document.getElementById('library-list')?.getAttribute('aria-busy') === 'false');
   await page.waitForLoadState('networkidle');
-  if ((await page.textContent('#library-list')).includes('Your library is empty')) {
+  if ((await page.textContent('#library-list')).includes('No books yet')) {
     throw new Error('Populated library retained the empty notice after loading');
   }
 
@@ -784,7 +829,7 @@ async function verifyLibraryLoadStates(page, fixtureState) {
   fixtureState.libraryMode = 'empty';
   await page.goto(`${origin}/?library-state=empty#/library`, { waitUntil: 'networkidle' });
   await page.waitForFunction(() =>
-    document.querySelector('#library-list .empty-state-modern h3')?.textContent === 'Your library is empty'
+    document.querySelector('#library-list .empty-state-modern h3')?.textContent === 'No books yet'
   );
   if (await page.getAttribute('#library-list', 'aria-busy') !== 'false') {
     throw new Error('True empty library remained marked busy');
@@ -811,13 +856,16 @@ async function verifyPronunciations(page, fixtureState) {
   await page.waitForFunction(() => document.getElementById('chapter-trigger-title')?.textContent.includes('Chapter One'));
   await page.waitForFunction(() => document.getElementById('audio-loading')?.style.display === 'none');
   await page.setViewportSize({ width: 390, height: 844 });
-  for (const selector of ['#utility-timer-btn', '#chapter-sheet-btn', '#utility-bookmark-btn', '#utility-speed-btn']) {
+  for (const selector of ['#timer-btn-inline', '#chapter-sheet-btn', '#utility-bookmark-btn', '#speed-sheet-btn', '#player-recent-btn', '#player-more-btn']) {
     if (!await page.isVisible(selector)) throw new Error(`Mobile playback tool is not visible: ${selector}`);
   }
+  await page.click('#player-more-btn');
+  await page.waitForSelector('#player-more-sheet.active');
   if (!await page.isVisible('#pronunciation-repair-btn')) {
     throw new Error('Pronunciation repair is not discoverable in the mobile player');
   }
-  await page.evaluate(() => document.getElementById('pronunciation-repair-btn').click());
+  // The menu closes first, then the repair dialog opens.
+  await page.click('#pronunciation-repair-btn');
   await page.waitForSelector('#pronunciation-repair-dialog.active');
   await page.evaluate(() => {
     const context = document.getElementById('pronunciation-repair-context');
@@ -882,26 +930,47 @@ async function verifyLibraryActions(page) {
       await page.locator('[data-library-tab="all"]').textContent() !== 'Shared Library') {
     throw new Error('Library scopes are not labeled My Shelf, Downloaded, and Shared Library');
   }
-  if (await page.getAttribute('[data-library-tab="shelf"]', 'aria-selected') !== 'true') {
+  if (await page.getAttribute('[data-library-tab="shelf"]', 'aria-selected') !== 'true' ||
+      (await page.textContent('#library-scope-label')).trim() !== 'My Shelf') {
     throw new Error('A new account did not open on My Shelf');
   }
-  const tabBounds = await page.locator('#library-tabs').evaluate(element => ({
-    clientWidth: element.clientWidth,
-    scrollWidth: element.scrollWidth
-  }));
-  if (tabBounds.scrollWidth > tabBounds.clientWidth) {
-    throw new Error(`Library tabs overflow a 390px viewport: ${JSON.stringify(tabBounds)}`);
+  // Phones choose the scope from the large-title menu: full labels, a check
+  // on the active scope, keyboard navigation, Escape and focus return.
+  const scopeLabels = await page.locator('#library-scope-menu [data-scope-option]').allTextContents();
+  if (scopeLabels.map(label => label.trim()).join('|') !== 'My Shelf|Downloaded|Shared Library') {
+    throw new Error(`Scope menu does not list the three full scope names: ${JSON.stringify(scopeLabels)}`);
   }
-  await page.focus('[data-library-tab="shelf"]');
-  await page.keyboard.press('ArrowRight');
+  await page.focus('#library-scope-button');
+  await page.keyboard.press('Enter');
+  await page.waitForSelector('#library-scope-menu:not([hidden])');
+  if (await page.getAttribute('#library-scope-button', 'aria-expanded') !== 'true' ||
+      !await page.evaluate(() => document.activeElement?.getAttribute('aria-checked') === 'true' &&
+        document.activeElement?.dataset.scopeOption === 'shelf')) {
+    throw new Error('Scope menu does not open on the checked scope');
+  }
+  await page.keyboard.press('Escape');
+  if (!await page.locator('#library-scope-menu').isHidden() ||
+      !await page.evaluate(() => document.activeElement?.id === 'library-scope-button')) {
+    throw new Error('Escape does not close the scope menu and return focus to the title');
+  }
+  await page.keyboard.press('ArrowDown');
+  await page.keyboard.press('ArrowDown');
+  await page.keyboard.press('Enter');
   await page.waitForSelector('#downloaded-empty-hint:not([hidden])');
   if (await page.getAttribute('[data-library-tab="downloaded"]', 'aria-selected') !== 'true' ||
-      await page.getAttribute('[data-library-tab="downloaded"]', 'tabindex') !== '0') {
-    throw new Error('Downloaded tab does not support keyboard selection');
+      await page.getAttribute('[data-library-tab="downloaded"]', 'tabindex') !== '0' ||
+      await page.getAttribute('#library-scope-menu [data-scope-option="downloaded"]', 'aria-checked') !== 'true' ||
+      (await page.textContent('#library-scope-label')).trim() !== 'Downloaded' ||
+      !await page.evaluate(() => document.activeElement?.id === 'library-scope-button')) {
+    throw new Error('Downloaded scope does not support keyboard selection from the scope menu');
   }
   if (await page.evaluate(() => localStorage.getItem('xandrio_library_tab:user-smoke')) !== 'downloaded') {
     throw new Error('Downloaded scope preference was not saved for the signed-in account');
   }
+  if (await page.isVisible('#downloaded-device-hint')) {
+    throw new Error('Empty Downloaded scope shows the device-transfer paragraph before any download exists');
+  }
+  // "Shared Library" is never shortened: the large title fits a 390px phone.
   await page.click('[data-browse-shelf]');
   await page.waitForSelector('#shelf-empty-hint:not([hidden])');
   await page.click('[data-add-book-shelf]');
@@ -913,6 +982,13 @@ async function verifyLibraryActions(page) {
   if (await page.getAttribute('[data-library-tab="all"]', 'aria-selected') !== 'true') {
     throw new Error('Empty-shelf action did not open Shared Library');
   }
+  const titleBounds = await page.locator('#library-scope-button').evaluate(element => {
+    const box = element.getBoundingClientRect();
+    return { right: box.right, viewport: innerWidth, text: element.textContent.trim(), scroll: element.scrollWidth, client: element.clientWidth };
+  });
+  if (titleBounds.text !== 'Shared Library' || titleBounds.right > titleBounds.viewport || titleBounds.scroll > titleBounds.client + 1) {
+    throw new Error(`Shared Library title is shortened or overflows a 390px viewport: ${JSON.stringify(titleBounds)}`);
+  }
   if (await page.evaluate(() => localStorage.getItem('xandrio_library_tab:user-smoke')) !== 'all' ||
       await page.evaluate(() => localStorage.getItem('xandrio_library_tab')) !== null) {
     throw new Error('Library scope preference is not isolated to the signed-in account');
@@ -922,6 +998,13 @@ async function verifyLibraryActions(page) {
   }
   if (await page.locator('.shelf-toggle, .queue-toggle, .library-offline-badge').count() !== 0) {
     throw new Error('Library card still renders the old action-pill cluster');
+  }
+  const listStatus = await page.locator('[data-offline-status]').first().evaluate(element => {
+    const bounds = element.querySelector('button, [role="img"]').getBoundingClientRect();
+    return { width: bounds.width, height: bounds.height, label: element.querySelector('[aria-label]')?.getAttribute('aria-label') || '' };
+  });
+  if (listStatus.width < 44 || listStatus.height < 44 || !listStatus.label) {
+    throw new Error(`Inline offline control is not a labeled 44px target: ${JSON.stringify(listStatus)}`);
   }
   const gridStatus = await page.locator('[data-offline-status]').first().evaluate(element => {
     const list = element.closest('.book-list');
@@ -934,7 +1017,61 @@ async function verifyLibraryActions(page) {
   if (gridStatus.display === 'none' || gridStatus.width < 44 || gridStatus.height < 44 || !gridStatus.text.includes('Download')) {
     throw new Error(`Undownloaded grid card has no visible download action: ${JSON.stringify(gridStatus)}`);
   }
-  const overflowTrigger = await page.locator('[data-book-menu-toggle]').evaluate(trigger => {
+  // Phones: the row's press-and-hold (context menu) opens the book actions
+  // sheet; the "More actions" button stays reachable for keyboards.
+  const phoneTrigger = await page.locator('[data-book-menu-toggle]').first().evaluate(trigger => {
+    const bounds = trigger.getBoundingClientRect();
+    return { width: bounds.width, height: bounds.height, tabbable: trigger.tabIndex >= 0 && !trigger.disabled };
+  });
+  if (phoneTrigger.width < 44 || phoneTrigger.height < 44 || !phoneTrigger.tabbable) {
+    throw new Error(`Phone row actions are not keyboard reachable: ${JSON.stringify(phoneTrigger)}`);
+  }
+  await page.locator('#library-list .book-item:not(.hidden) .book-card-open').first().dispatchEvent('contextmenu');
+  await page.waitForSelector('#book-actions-sheet.active');
+  await page.waitForSelector('#book-actions-list [data-download-book]', { state: 'visible' });
+  for (const label of ['Download', 'Save to My Shelf', 'Add to Up Next', 'Share', 'Delete from library']) {
+    if (!await page.getByRole('menuitem', { name: label, exact: true }).isVisible()) {
+      throw new Error(`Book actions sheet is missing ${label}`);
+    }
+  }
+  if (await page.getByRole('menuitem', { name: /mark as nonfiction|nonfiction tag/i }).count() !== 0) {
+    throw new Error('Book actions still carry the admin nonfiction tag (it lives in Settings › Study guides)');
+  }
+  const originalViewport = page.viewportSize();
+  for (const width of [390, 1024]) {
+    await page.setViewportSize({ width, height: 900 });
+    await page.evaluate(async () => {
+      const { getOfflineStorageScopeId } = await import('/js/api.js');
+      const id = document.querySelector('[data-offline-status]').dataset.offlineStatus;
+      const entry = { bookId: id, mode: 'full', state: 'preparing', chapters: 20,
+        preparedChapters: 3, chapterEntries: [], manifestVersion: 3 };
+      localStorage.setItem(`xandrio_offline_books:${getOfflineStorageScopeId()}`, JSON.stringify({ [id]: entry }));
+      document.dispatchEvent(new CustomEvent('xandrio:offlinechange'));
+    });
+    const status = page.locator('[data-offline-status]').first();
+    const row = status.locator('xpath=ancestor::div[contains(@class, "book-item")][1]');
+    const rowWords = width < 760
+      ? await row.locator('.book-status').innerText()
+      : await status.innerText();
+    if (!rowWords.includes(width < 760 ? 'Preparing 15%' : '15%') ||
+        await status.locator('[data-download-book]').count() !== 0 ||
+        await status.locator('.offline-ring[style*="--pct:15"]').count() !== 1 ||
+        !await page.getByRole('menuitem', { name: 'Cancel download', exact: true }).isVisible() ||
+        await page.getByRole('menuitem', { name: 'Download', exact: true }).count() !== 0) {
+      throw new Error(`Preparing download must show progress and an active Cancel action (${width}px: ${rowWords})`);
+    }
+    await page.screenshot({ path: `/tmp/xandrio-download-preparing-${width}.png` });
+  }
+  await page.evaluate(async () => {
+    const { getOfflineStorageScopeId } = await import('/js/api.js');
+    localStorage.removeItem(`xandrio_offline_books:${getOfflineStorageScopeId()}`);
+    document.dispatchEvent(new CustomEvent('xandrio:offlinechange'));
+  });
+  await page.keyboard.press('Escape');
+  await page.waitForSelector('#book-actions-sheet:not(.active)', { state: 'attached' });
+  // Desktop: a persistently visible "More actions" button opens the row menu.
+  await page.setViewportSize({ width: 1024, height: 900 });
+  const overflowTrigger = await page.locator('[data-book-menu-toggle]').first().evaluate(trigger => {
     const styles = getComputedStyle(trigger);
     const bounds = trigger.getBoundingClientRect();
     return {
@@ -950,44 +1087,13 @@ async function verifyLibraryActions(page) {
       overflowTrigger.width < 44 || overflowTrigger.height < 44) {
     throw new Error(`Library overflow trigger is not persistently visible: ${JSON.stringify(overflowTrigger)}`);
   }
-  await page.click('[data-book-menu-toggle]');
-  await page.waitForSelector('[data-download-book]', { state: 'visible' });
-  for (const label of ['Download', 'Save to My Shelf', 'Add to Up Next', 'Share', 'Delete']) {
-    if (!await page.getByRole('menuitem', { name: label, exact: true }).isVisible()) {
-      throw new Error(`Library overflow menu is missing ${label}`);
-    }
-  }
-  const originalViewport = page.viewportSize();
-  for (const width of [390, 1024]) {
-    await page.setViewportSize({ width, height: 900 });
-    await page.evaluate(async () => {
-      const { getOfflineStorageScopeId } = await import('/js/api.js');
-      const id = document.querySelector('[data-offline-status]').dataset.offlineStatus;
-      const entry = { bookId: id, mode: 'full', state: 'preparing', chapters: 20,
-        preparedChapters: 3, chapterEntries: [], manifestVersion: 3 };
-      localStorage.setItem(`xandrio_offline_books:${getOfflineStorageScopeId()}`, JSON.stringify({ [id]: entry }));
-      document.dispatchEvent(new CustomEvent('xandrio:offlinechange'));
-    });
-    const status = page.locator('[data-offline-status]').first();
-    if (!(await status.innerText()).includes('Preparing audio · 3/20 chapters') ||
-        await status.locator('button').count() !== 0 ||
-        await status.locator('span > span').last().evaluate(el => el.getBoundingClientRect().width <= 1) ||
-        !await page.getByRole('menuitem', { name: 'Cancel download', exact: true }).isVisible() ||
-        await page.getByRole('menuitem', { name: 'Download', exact: true }).count() !== 0) {
-      throw new Error('Preparing download must show progress and an active Cancel action');
-    }
-    await page.screenshot({ path: `/tmp/xandrio-download-preparing-${width}.png` });
-  }
-  await page.evaluate(async () => {
-    const { getOfflineStorageScopeId } = await import('/js/api.js');
-    localStorage.removeItem(`xandrio_offline_books:${getOfflineStorageScopeId()}`);
-    document.dispatchEvent(new CustomEvent('xandrio:offlinechange'));
-  });
-  await page.setViewportSize(originalViewport);
+  await page.locator('[data-book-menu-toggle]').first().click();
+  await page.waitForSelector('.book-overflow-menu:not([hidden]) [data-download-book]', { state: 'visible' });
   await page.keyboard.press('Escape');
   if (await page.locator('.book-overflow-menu:not([hidden])').count() !== 0) {
     throw new Error('Library overflow menu did not close with Escape');
   }
+  await page.setViewportSize(originalViewport);
 }
 
 async function verifySearchWorkspace(page, fixtureState) {
@@ -1098,7 +1204,7 @@ async function verifySearchWorkspace(page, fixtureState) {
   if (mobilePageWidth.document > mobilePageWidth.viewport) {
     throw new Error(`Mobile search introduces horizontal scrolling: ${JSON.stringify(mobilePageWidth)}`);
   }
-  await page.evaluate(() => window.scrollTo(0, 1200));
+  await page.evaluate(() => window.scrollTo(0, 300));
   await page.waitForTimeout(50);
   const stickySearchGeometry = await page.locator('.search-workspace').evaluate(workspace => ({
     position: getComputedStyle(workspace).position,
@@ -1634,8 +1740,8 @@ async function verifyRealServiceWorkerOffline(browser) {
       Array.from(document.querySelectorAll('[data-book-id="smoke-offline"]'))
         .some(element => element.dataset.downloaded === '1')
     );
-    await page.click('[data-library-tab="downloaded"]');
-    await page.waitForSelector('[data-book-id="smoke-offline"]:not(.hidden)');
+    await page.click('.app-sidebar [data-shell-scope=\"downloaded\"]');
+    await page.waitForSelector('.book-item[data-book-id="smoke-offline"]:not(.hidden)');
     const downloadedStatus = page.locator('[data-offline-status="smoke-offline"]:visible');
     if (await downloadedStatus.count() !== 1 || !(await downloadedStatus.innerText()).includes('Downloaded')) {
       throw new Error('Completed download does not render its verified card status');
@@ -1806,6 +1912,8 @@ async function main() {
     traceSmoke('playback verified');
     await verifyInterruptedViewTransition(page);
     traceSmoke('interrupted view transition verified');
+    await verifyToastOverPlayerSheet(page);
+    traceSmoke('toast over a player sheet verified');
     await verifyStudyGuideAudio(page, fixtureState);
     traceSmoke('study-guide sources and audio verified');
     await verifyPronunciations(page, fixtureState);

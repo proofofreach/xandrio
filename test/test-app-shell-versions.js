@@ -115,8 +115,8 @@ assert(
 );
 assert(
   indexSource.includes('id="downloaded-device-hint"') &&
-    librarySource.includes("deviceHint.hidden = currentTab !== 'downloaded'"),
-  'the populated Downloaded view explains that copies are device-local'
+    librarySource.includes("deviceHint.hidden = currentTab !== 'downloaded' || !hasDownloads"),
+  'the populated Downloaded view explains that copies are device-local (and the empty one does not bury its action)'
 );
 {
   const initialLibraryMarkup = indexSource.slice(
@@ -127,7 +127,7 @@ assert(
     initialLibraryMarkup.includes('aria-busy="true"') &&
       initialLibraryMarkup.includes('Loading library…') &&
       (initialLibraryMarkup.match(/class="book-item skeleton"/g) || []).length === 6 &&
-      !initialLibraryMarkup.includes('Your library is empty'),
+      !initialLibraryMarkup.includes('No books yet'),
     'the initial library shell is a truthful accessible loading state'
   );
 }

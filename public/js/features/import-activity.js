@@ -191,3 +191,12 @@ export function beginImport(result) {
 export function activeImport(hash) {
   return hash ? [...jobs.values()].find(job => job.requestHash === hash && !terminal(job)) : null;
 }
+
+// The most recent import of this exact version, in any state. Search rows use
+// it to show Adding, Added (with Open) or a failure with Retry.
+export function latestImport(hash) {
+  if (!hash) return null;
+  let found = null;
+  for (const job of jobs.values()) if (job.requestHash === hash) found = job;
+  return found;
+}

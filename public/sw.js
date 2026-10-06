@@ -1,7 +1,7 @@
 importScripts('/js/offline-range.js');
 importScripts('/js/offline-store.js');
 
-const CACHE_VERSION = 'xandrio-v197';
+const CACHE_VERSION = 'xandrio-v204';
 const OFFLINE_ROUTE_CONTRACT_VERSION = 2;
 const OFFLINE_AUDIO_CACHE = 'xandrio-offline-audio';
 const OFFLINE_TITLE_CACHE = 'xandrio-offline-titles';
@@ -12,12 +12,17 @@ const OFFLINE_BLOCK_STORE = self.XandrioOfflineStore?.createStore?.() || null;
 // changes, including the un-versioned js/ modules below, which only
 // invalidate via CACHE_VERSION.
 const ASSET_VERSIONS = {
-  '/style-v3.css': 118,
-  '/composition.css': 7,
-  '/library-composition.css': 5,
-  '/js/ios-focus-zoom.js': 1,
-  '/js/lifecycle.js': 1,
-  '/app.js': 149
+  '/style-v3.css': 123,
+  '/composition.css': 9,
+  '/library-composition.css': 8,
+  '/shell.css': 4,
+  '/sheets.css': 2,
+  '/settings.css': 2,
+  '/player.css': 2,
+  '/find.css': 2,
+  '/js/ios-focus-zoom.js': 2,
+  '/js/lifecycle.js': 2,
+  '/app.js': 156
 };
 const versionedAsset = (path) => `${path}?v=${ASSET_VERSIONS[path]}`;
 const APP_SHELL = [
@@ -26,6 +31,11 @@ const APP_SHELL = [
   versionedAsset('/style-v3.css'),
   versionedAsset('/composition.css'),
   versionedAsset('/library-composition.css'),
+  versionedAsset('/shell.css'),
+  versionedAsset('/sheets.css'),
+  versionedAsset('/settings.css'),
+  versionedAsset('/player.css'),
+  versionedAsset('/find.css'),
   versionedAsset('/js/ios-focus-zoom.js'),
   versionedAsset('/js/lifecycle.js'),
   versionedAsset('/app.js'),
@@ -40,6 +50,8 @@ const APP_SHELL = [
   '/js/auto-sleep-schedule.mjs',
   '/js/single-file-chapter-player.js',
   '/js/util/format.js',
+  '/js/util/time-left.mjs',
+  '/js/util/library-status.mjs',
   '/js/ui/toast.js',
   '/js/ui/cover-images.js',
   '/js/ui/keys.js',
@@ -47,6 +59,7 @@ const APP_SHELL = [
   '/js/ui/segmented.js',
   '/js/ui/focus-trap.js',
   '/js/ui/sheets.js',
+  '/js/ui/shell.js',
   '/js/util/storage.js',
   '/js/util/chapter-labels.mjs',
   '/js/chapter-navigation.mjs',
@@ -71,7 +84,6 @@ const APP_SHELL = [
   '/js/features/queue-status.js',
   '/js/features/import-activity.js',
   '/js/features/sharing.js',
-  '/fonts/inter-latin.woff2',
   '/manifest.webmanifest',
   '/icon-xandrio-ankh.png'
 ];

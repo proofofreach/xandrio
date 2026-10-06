@@ -57,9 +57,9 @@ async function measureDevice(browser, origin, device, { standalone }) {
   // Safari min-content sizing regressions in the real player stack.
   await page.evaluate(() => {
     document.getElementById('book-title').textContent = "Napoleon Hill's Keys to Success: The 17 Principles of Personal Achievement";
-    document.getElementById('chapter-trigger-title').textContent = '1 - Develop Definiteness Of Purpose (28m)';
-    document.getElementById('book-progress-text').textContent = '20% · 4h 12m left';
-    document.getElementById('player-book-progress').hidden = false;
+    document.getElementById('chapter-trigger-title').textContent = '1 - Develop Definiteness Of Purpose';
+    document.getElementById('player-book-line').textContent = '4h 12m left in the book at 1.2×';
+    document.getElementById('player-book-line').hidden = false;
     document.getElementById('player-voice-name').textContent = 'Kokoro Onyx · Kokoro';
     document.getElementById('player-voice-cache').textContent = '4/65 ready';
     document.getElementById('utility-speed-value').textContent = '1.2x';
@@ -73,7 +73,7 @@ async function measureDevice(browser, origin, device, { standalone }) {
       return { top: Math.round(rect.top), bottom: Math.round(rect.bottom), height: Math.round(rect.height) };
     };
     const view = document.getElementById('player-view');
-    const main = document.querySelector('.player-main');
+    const main = document.querySelector('.pl-main');
     const mainStyle = getComputedStyle(main);
     const mainRect = main.getBoundingClientRect();
     const viewportWidth = document.documentElement.clientWidth;
@@ -108,13 +108,13 @@ async function measureDevice(browser, origin, device, { standalone }) {
       },
       overflowing,
       bodyPaddingTop: Math.round(parseFloat(getComputedStyle(document.body).paddingTop)),
-      topbar: box('.player-topbar'),
+      topbar: box('.pl-nav'),
       cover: box('book-cover'),
       title: box('book-title'),
       chapterTrigger: box('chapter-sheet-btn'),
-      progress: box('.player-progress'),
-      controls: box('.player-controls'),
-      utility: box('.player-utility-row')
+      progress: box('.pl-scrub'),
+      controls: box('.pl-transport'),
+      utility: box('.pl-tools')
     };
   });
   await context.close();

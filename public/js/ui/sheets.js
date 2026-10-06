@@ -8,6 +8,7 @@ export function registerSheet(el, options = {}) {
     backdrop = null,
     closeBtn = null,
     focusTarget = null,
+    initialFocus = null,
     bodyClass = 'sheet-open',
     activeClass = 'active',
     history = true
@@ -37,7 +38,7 @@ export function registerSheet(el, options = {}) {
     el.setAttribute('aria-hidden', 'false');
     if (bodyClass) document.body.classList.add(bodyClass);
     if (history) sheetOpened(close);
-    releaseFocus = trapFocus(panel());
+    releaseFocus = trapFocus(panel(), { initialFocus: typeof initialFocus === 'function' ? initialFocus(el) : initialFocus });
   }
 
   function dismiss() {

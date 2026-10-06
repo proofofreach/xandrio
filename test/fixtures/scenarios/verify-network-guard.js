@@ -67,6 +67,7 @@ function startCatcher() {
         body: rawBody ? JSON.parse(rawBody) : null
       };
       requests.push(entry);
+      if (req.url === '/probe/redirect') { res.writeHead(302, { location: 'https://203.0.113.9/probe/redirect-final' }); res.end(); return; }
       const payload = Buffer.from(JSON.stringify(entry));
       res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': payload.length });
       res.end(payload);
@@ -182,7 +183,7 @@ async function main() {
     test('probe child prints one parseable JSON result line', () => {
       const line = run.stdout.trim().split('\n').filter(Boolean).pop();
       results = JSON.parse(line);
-      assert.ok(Array.isArray(results) && results.length === 6, `expected 6 probe results, got: ${run.stdout}`);
+      assert.ok(Array.isArray(results) && results.length === 17, `expected 17 probe results, got: ${run.stdout}`);
     });
 
     const byName = Object.fromEntries(results.map(entry => [entry.name, entry]));
@@ -233,6 +234,20 @@ async function main() {
       assert.ok(entry && entry.ok, `probe failed: ${entry && entry.error}`);
       assert.strictEqual(entry.rejected, true);
       assert.ok(/non-HTTP\(S\)/.test(entry.message), `expected a fail-closed rejection message, got: ${entry.message}`);
+    });
+
+    for (const name of ['undici-fetch', 'undici-request', 'undici-explicit-agent', 'remote-derived-cover', 'global-fetch-redirect', 'undici-fetch-redirect', 'undici-explicit-client']) {
+      test(`${name} cannot bypass the local guard`, () => {
+        const entry = byName[name];
+        assert.ok(entry?.ok, `probe failed: ${entry?.error}`);
+        assert.ok(entry.body.host && entry.body.hostHeader.startsWith('127.0.0.1:'), JSON.stringify(entry));
+      });
+    }
+    test('unrecognised socket transport fails closed', () => assert.strictEqual(byName['socket-fail-closed']?.rejected, true));
+    test('a custom localhost lookup cannot rebind to an external address', () => assert.strictEqual(byName['localhost-rebind-rejected']?.rejected, true));
+    test('DNS resolves synthetic hosts without real network', () => assert.deepStrictEqual(byName['synthetic-dns']?.records, [{ address: '93.184.216.34', family: 4 }]));
+    test('remote fetch still rejects private URLs before dispatch', () => {
+      assert.strictEqual(byName['remote-private-rejected']?.rejected, true);
     });
 
     test('no probe request ever reached the catcher without the guard-attached target headers', () => {

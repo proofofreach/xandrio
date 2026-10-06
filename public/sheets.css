@@ -1,0 +1,354 @@
+/* Player sheets: Speed, Sleep timer, Chapters and Bookmarks, plus the shared
+   sheet anatomy the Recent sheet uses (title, Done, optional segmented control,
+   content). Loaded after shell.css.
+
+   Anatomy
+     .voice-sheet-handle        grabber
+     .voice-sheet-header        h3 title (22px, tabindex -1, receives initial focus)
+                                + .sheet-done text button (accent, 44px)
+     content                    rows 56-64px, 17px titles, 15px detail
+   Focus rings are :focus-visible only; opening a sheet focuses the title. */
+
+/* ---------- Shared anatomy ---------- */
+
+.speed-sheet-panel,
+.timer-sheet-panel,
+.chapter-sheet-panel,
+.recent-sheet-panel { background: var(--surface); }
+
+.speed-sheet-panel .voice-sheet-header,
+.timer-sheet-panel .voice-sheet-header,
+.chapter-sheet-panel .voice-sheet-header,
+.recent-sheet-panel .voice-sheet-header {
+  align-items: center;
+  margin-bottom: var(--space-3);
+}
+.speed-sheet-panel .voice-sheet-header h3,
+.timer-sheet-panel .voice-sheet-header h3,
+.chapter-sheet-panel .voice-sheet-header h3,
+.recent-sheet-panel .voice-sheet-header h3 {
+  margin: 0;
+  font-size: var(--text-title2);
+  line-height: var(--leading-title2);
+  font-weight: var(--weight-bold);
+}
+.voice-sheet-header h3[tabindex="-1"]:focus { outline: none; }
+
+.sheet-done {
+  flex: none;
+  min-width: 44px;
+  min-height: 44px;
+  margin: -6px -10px -6px 0;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--accent-text);
+  font: var(--weight-semibold) var(--text-body)/var(--leading-body) var(--font);
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.sheet-done:hover { background: color-mix(in oklab, var(--text) 8%, transparent); }
+.sheet-done:focus-visible { outline: 3px solid var(--focus-ring); outline-offset: 1px; }
+
+.sheet-status {
+  margin: 0 0 var(--space-3);
+  color: var(--text-secondary);
+  font-size: var(--text-subhead);
+  line-height: var(--leading-subhead);
+}
+
+/* A two-way segmented control (Applies to, Chapters | Bookmarks). */
+.speed-scope-control,
+.sheet-tabs {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 12px;
+  background: var(--surface-inset);
+}
+.speed-scope-control button,
+.sheet-tab {
+  min-height: 44px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--text-secondary);
+  font: var(--weight-semibold) var(--text-body)/var(--leading-body) var(--font);
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.speed-scope-control button.active,
+.sheet-tab[aria-selected="true"] {
+  background: var(--text);
+  color: var(--bg);
+}
+.speed-scope-control button:focus-visible,
+.sheet-tab:focus-visible { outline: 3px solid var(--focus-ring); outline-offset: 1px; }
+
+/* ---------- Speed ---------- */
+
+.speed-sheet-panel { overflow-y: auto; }
+.speed-hero { text-align: center; margin: var(--space-2) 0 var(--space-4); }
+.speed-hero-value {
+  font-size: clamp(48px, 16vw, 64px);
+  line-height: 1.05;
+  font-weight: var(--weight-bold);
+  letter-spacing: -0.02em;
+}
+.speed-hero-left {
+  margin: 4px 0 0;
+  min-height: var(--leading-body);
+  color: var(--text-secondary);
+  font-size: var(--text-body);
+  line-height: var(--leading-body);
+}
+.speed-stepper {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  min-height: 56px;
+  margin: 0 0 var(--space-3);
+  border-radius: 16px;
+  background: var(--surface-2);
+}
+.speed-step-btn {
+  width: 56px;
+  height: 56px;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 16px;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.speed-step-btn svg { width: 22px; height: 22px; }
+.speed-step-btn:active { background: color-mix(in oklab, var(--text) 10%, transparent); }
+.speed-step-btn:focus-visible { outline: 3px solid var(--focus-ring); outline-offset: -3px; }
+.speed-sheet-panel .speed-stepper-value {
+  min-width: 0;
+  font-size: var(--text-title3);
+  font-weight: var(--weight-semibold);
+}
+.speed-sheet-panel .speed-presets {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0 0 var(--space-4);
+}
+.speed-sheet-panel .speed-preset {
+  min-height: 44px;
+  padding: 0 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--text);
+  font: var(--weight-semibold) var(--text-subhead)/1 var(--font);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.speed-sheet-panel .speed-preset:hover { background: var(--surface-hover); }
+.speed-sheet-panel .speed-preset.active {
+  background: var(--text);
+  color: var(--bg);
+}
+.speed-sheet-panel .speed-preset:focus-visible { outline: 3px solid var(--focus-ring); outline-offset: 2px; }
+/* The chosen preset carries a check as well as the fill. */
+.speed-preset-check { display: none; width: 15px; height: 15px; flex: none; }
+.speed-preset.active .speed-preset-check { display: block; }
+.speed-scope { margin: 0 0 var(--space-2); }
+.speed-scope-label {
+  display: block;
+  margin: 0 0 6px;
+  color: var(--text-secondary);
+  font-size: var(--text-body);
+  line-height: var(--leading-body);
+}
+.speed-sheet-panel .speed-sheet-caption {
+  margin: var(--space-2) 0 0;
+  color: var(--text-secondary);
+  font-size: var(--text-subhead);
+  line-height: var(--leading-subhead);
+}
+
+/* ---------- Sleep timer ---------- */
+
+.timer-sheet-panel { overflow-y: auto; }
+.timer-sheet-panel .timer-options {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  margin: 0 0 var(--space-3);
+}
+.timer-sheet-panel .timer-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  min-height: 56px;
+  padding: 0 4px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text);
+  font: var(--weight-regular) var(--text-body)/var(--leading-body) var(--font);
+  text-align: left;
+}
+.timer-sheet-panel .timer-option + .timer-option { border-top: 1px solid var(--border); }
+.timer-sheet-panel .timer-option:hover { background: color-mix(in oklab, var(--text) 5%, transparent); color: var(--text); }
+.timer-sheet-panel .timer-option:focus-visible { outline: 3px solid var(--focus-ring); outline-offset: -3px; border-radius: 10px; }
+.timer-sheet-panel .timer-option.timer-option-wide { grid-column: auto; }
+.timer-sheet-panel .timer-option.active {
+  background: transparent;
+  color: var(--accent-text);
+  font-weight: var(--weight-semibold);
+}
+/* The chosen option shows a check glyph, not only a colour. */
+.timer-sheet-panel .timer-option.active::after {
+  content: "";
+  flex: none;
+  width: 22px;
+  height: 22px;
+  background: currentColor;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m5 12.5 4.5 4.5L19 7.5'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m5 12.5 4.5 4.5L19 7.5'/%3E%3C/svg%3E") center / contain no-repeat;
+}
+.sheet-actions { display: flex; flex-direction: column; gap: 8px; margin: 0 0 var(--space-3); }
+.sheet-actions[hidden],
+.sheet-actions > [hidden] { display: none; }
+.sheet-actions .btn-secondary { width: 100%; min-height: 48px; font-size: var(--text-body); }
+.timer-sheet-panel .timer-reliability-hint {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--text-footnote);
+  line-height: var(--leading-footnote);
+}
+
+/* ---------- Chapters and Bookmarks ---------- */
+
+.chapter-sheet-panel .sheet-tabs { margin: 0 0 var(--space-2); }
+.chapter-sheet-panel .chapter-list,
+.chapter-sheet-panel .chapter-sheet-bookmarks { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 0 0 8px; }
+.chapter-sheet-panel .chapter-list[hidden],
+.chapter-sheet-panel .chapter-sheet-bookmarks[hidden] { display: none; }
+
+.chapter-sheet-panel .chapter-list-item {
+  min-height: 60px;
+  grid-template-columns: 36px minmax(0, 1fr) auto 28px;
+  gap: 10px;
+  padding: 8px 4px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+.chapter-sheet-panel .chapter-list-item + .chapter-list-item,
+.chapter-sheet-panel .chapter-list-group .chapter-list-item + .chapter-list-item { border-top: 1px solid var(--border); }
+.chapter-sheet-panel .chapter-list-item:hover { background: color-mix(in oklab, var(--text) 5%, transparent); }
+.chapter-sheet-panel .chapter-list-item:focus-visible { outline: 3px solid var(--focus-ring); outline-offset: -3px; border-radius: 10px; }
+/* Front matter and other unnumbered rows drop the number column entirely. */
+.chapter-sheet-panel .chapter-list-item:has(> .chapter-list-index:empty) {
+  grid-template-columns: minmax(0, 1fr) auto 28px;
+}
+.chapter-sheet-panel .chapter-list-index:empty { display: none; }
+.chapter-sheet-panel .chapter-list-index {
+  color: var(--text-secondary);
+  font-size: var(--text-subhead);
+  font-weight: var(--weight-semibold);
+}
+.chapter-sheet-panel .chapter-list-title {
+  font-size: var(--text-body);
+  line-height: var(--leading-body);
+  font-weight: var(--weight-semibold);
+}
+.chapter-sheet-panel .chapter-list-meta {
+  min-height: 0;
+  color: var(--text-secondary);
+  font-size: var(--text-subhead);
+  line-height: var(--leading-subhead);
+}
+.chapter-sheet-panel .chapter-list-meta:empty { display: none; }
+.chapter-sheet-panel .chapter-list-duration {
+  color: var(--text-secondary);
+  font-size: var(--text-subhead);
+}
+/* Now playing: bars glyph, "Now playing" text and an accent title. */
+.chapter-sheet-panel .chapter-list-item.active {
+  background: var(--accent-dim);
+  border-color: transparent;
+}
+.chapter-sheet-panel .chapter-list-item.active .chapter-list-title { color: var(--accent-text); }
+.chapter-sheet-panel .chapter-list-item.active .chapter-list-meta { color: var(--accent-text); font-weight: var(--weight-semibold); }
+.chapter-sheet-panel .chapter-list-current .now-playing-mark { width: 20px; height: 20px; }
+.chapter-sheet-panel .chapter-list-heading {
+  margin: 16px 0 4px;
+  font-size: var(--text-subhead);
+}
+
+.chapter-sheet-bookmarks:empty::before {
+  content: "No bookmarks yet. Use Bookmark in the player to save your place.";
+  display: block;
+  padding: 16px 4px;
+  color: var(--text-secondary);
+  font-size: var(--text-body);
+  line-height: var(--leading-body);
+}
+.chapter-sheet-panel .bookmarks-section {
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.chapter-sheet-panel .bookmarks-section-title { display: none; }
+.chapter-sheet-panel .bookmark-row {
+  min-height: 60px;
+  padding: 6px 0 6px 4px;
+  border: 0;
+  border-radius: 0;
+}
+.chapter-sheet-panel .bookmark-row + .bookmark-row { border-top: 1px solid var(--border); }
+.chapter-sheet-panel .bookmark-row:focus-visible { outline: 3px solid var(--focus-ring); outline-offset: -3px; border-radius: 10px; }
+.chapter-sheet-panel .bookmark-row-title {
+  font-size: var(--text-body);
+  line-height: var(--leading-body);
+  font-variant-numeric: tabular-nums;
+}
+.chapter-sheet-panel .bookmark-row-meta {
+  font-size: var(--text-subhead);
+  line-height: var(--leading-subhead);
+}
+.chapter-sheet-panel .bookmark-delete-btn { width: 44px; height: 44px; }
+
+/* ---------- Recent: no ring on open ---------- */
+
+.recent-sheet-panel .recent-row-hit:focus:not(:focus-visible) { outline: none; }
+/* The open book stands out whether it is playing, paused or failed; its
+   sub-line says which ("Playing" / "Current"), so colour is never alone. */
+.recent-row.is-current .recent-row-title { color: var(--accent-text); }
+
+/* ---------- Docked desktop player: sheets open over the pane ---------- */
+/* At >= 1200px the player is a right pane (player.css). Its sheets rise
+   from the pane's bottom edge, not centred over the library column. */
+@media (min-width: 1200px) {
+  body.has-shell[data-view="player"] :is(#speed-sheet, #timer-modal, #chapter-sheet, #player-more-sheet, #book-seek-sheet, #voice-sheet, #recent-sheet) .voice-sheet-panel {
+    left: auto;
+    right: 0;
+    width: var(--pl-pane, 400px);
+    transform: translate(0, 100%);
+  }
+  body.has-shell[data-view="player"] :is(#speed-sheet, #timer-modal, #chapter-sheet, #player-more-sheet, #book-seek-sheet, #voice-sheet, #recent-sheet).active .voice-sheet-panel {
+    transform: translate(0, 0);
+  }
+}

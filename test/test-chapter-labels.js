@@ -19,7 +19,7 @@ function test(name, fn) {
 
 (async () => {
   const moduleUrl = pathToFileURL(path.join(__dirname, '..', 'public', 'js', 'util', 'chapter-labels.mjs'));
-  const { chapterListItemState, chapterListOrdinal, chapterProgressContext, expandNumericChapterTitle, findPreferredStartChapterIndex, firstDisplaySentence } = await import(moduleUrl.href);
+  const { chapterListItemState, chapterListOrdinal, chapterProgressContext, chapterNumbering, chapterTotal, chapterPositionLabel, chapterResumeLabel, sharedTitlePrefixes, expandNumericChapterTitle, findPreferredStartChapterIndex, firstDisplaySentence } = await import(moduleUrl.href);
 
   test('numeric source titles are presented as chapter labels', () => {
     assert.strictEqual(expandNumericChapterTitle('1'), 'Chapter 1');
@@ -103,6 +103,73 @@ function test(name, fn) {
       ['', '01', '02', '03', '04', '', '05', '06', '20']
     );
     assert.strictEqual(chapterProgressContext(chapters, 2), 'Chapter 2 of 20');
+  });
+
+  test('one numbering rule and denominator: numbering that restarts per part counts chapters in order', () => {
+    const chapters = [
+      { title: 'Praise', type: 'backmatter' },
+      { title: 'Contents', type: 'toc' },
+      { title: 'Epigraph', type: 'content' },
+      { title: 'Part I: Sick Kids', type: 'divider', empty: true },
+      { title: 'Part I: Sick Kids — Chapter 1', type: 'chapter' },
+      { title: 'Part I: Sick Kids — Chapter 2', type: 'chapter' },
+      { title: 'Part II: Influences', type: 'divider', empty: true },
+      { title: 'Part II: Influences — Chapter 1', type: 'chapter' },
+      { title: 'Chapter 1A', type: 'content' },
+      { title: 'Chapter 1B', type: 'content' },
+      { title: 'Notes', type: 'backmatter' }
+    ];
+    const numbering = chapterNumbering(chapters);
+    assert.strictEqual(numbering.mode, 'ordinal');
+    assert.strictEqual(numbering.total, 3);
+    assert.strictEqual(chapterTotal(chapters), 3);
+    assert.strictEqual(chapterPositionLabel(chapters, 7), 'Chapter 3 of 3');
+    assert.strictEqual(chapterPositionLabel(chapters, 7, { short: true }), 'Ch 3 of 3');
+    assert.strictEqual(chapterPositionLabel(chapters, 7, { short: true, withTotal: false }), 'Ch 3');
+    assert.strictEqual(chapterListOrdinal(chapters, 7), '03');
+    // Unnumbered pieces and matter keep their names; no "Section 8 of 62".
+    assert.strictEqual(chapterPositionLabel(chapters, 2), 'Epigraph');
+    assert.strictEqual(chapterPositionLabel(chapters, 3), 'Part I: Sick Kids');
+    assert.strictEqual(chapterPositionLabel(chapters, 8), 'Chapter 1A');
+    assert.strictEqual(chapterListOrdinal(chapters, 8), '');
+  });
+
+  test('authored numbers set the denominator on every surface', () => {
+    const chapters = [
+      { title: 'Prologue', type: 'content' },
+      { title: 'Chapter 1', type: 'chapter' },
+      { title: 'Chapter 2', type: 'chapter' },
+      { title: 'Interlude', type: 'chapter' },
+      { title: 'Chapter 3', type: 'chapter' }
+    ];
+    assert.strictEqual(chapterNumbering(chapters).mode, 'authored');
+    assert.strictEqual(chapterTotal(chapters), 3);
+    assert.strictEqual(chapterPositionLabel(chapters, 4), 'Chapter 3 of 3');
+    assert.strictEqual(chapterResumeLabel(chapters, 4), 'Ch 3');
+    assert.strictEqual(chapterPositionLabel(chapters, 3), 'Interlude');
+    assert.strictEqual(chapterListOrdinal(chapters, 3), '');
+  });
+
+  test('chapter sheet prints a shared part prefix once as a heading', () => {
+    const chapters = [
+      { title: 'Epigraph', type: 'content' },
+      { title: 'Part I: Sick Kids', type: 'divider', empty: true },
+      { title: 'Part I: Sick Kids — Chapter 1', type: 'chapter' },
+      { title: 'Part I: Sick Kids — Chapter 2', type: 'chapter' },
+      { title: 'Part I: Lone', type: 'content' },
+      { title: 'Part II: Influences — Chapter 1', type: 'chapter' },
+      { title: 'Part II: Influences — Chapter 2', type: 'chapter' },
+      { title: 'Chapter 7: The Boy', type: 'chapter' }
+    ];
+    const shared = sharedTitlePrefixes(chapters);
+    assert.deepStrictEqual(shared[2], { heading: 'Part I: Sick Kids', rest: 'Chapter 1' });
+    assert.deepStrictEqual(shared[3], { heading: 'Part I: Sick Kids', rest: 'Chapter 2' });
+    assert.strictEqual(shared[4], null);
+    assert.strictEqual(shared[5].heading, 'Part II: Influences');
+    assert.strictEqual(shared[6].rest, 'Chapter 2');
+    assert.strictEqual(shared[0], null);
+    assert.strictEqual(shared[1], null);
+    assert.strictEqual(shared[7], null);
   });
 
   test('player start does not jump to a late generic chapter after real content', () => {

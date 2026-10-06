@@ -64,7 +64,7 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
   browser=await chromium.launch();const context=await browser.newContext({serviceWorkers:'block',extraHTTPHeaders:{Authorization:'Bearer real-book-token'},viewport:{width:390,height:844}});
   await context.tracing.start({screenshots:true,snapshots:true});
   const page=await context.newPage();await page.goto(origin+'/#/player/peter-rabbit');
-  await page.waitForFunction(()=>document.querySelector('#audio-player').readyState>=2);await page.locator('#utility-speed-btn').click();await page.locator('.speed-preset[data-speed="2"]').click();await page.locator('#close-speed-sheet-btn').click();await sleep(600);
+  await page.waitForFunction(()=>document.querySelector('#audio-player').readyState>=2);await page.locator('#speed-sheet-btn').click();await page.locator('.speed-preset[data-speed="2"]').click();await page.locator('#close-speed-sheet-btn').click();await sleep(600);
   if(await page.locator('#audio-player').evaluate(a=>a.paused)) await page.locator('#play-pause-btn').click();
   await page.waitForFunction(()=>Array.from(document.querySelectorAll('audio')).some(a=>!a.paused&&a.currentTime>0),{},{timeout:20000});
   await page.evaluate(()=>{window.bookPlayback={events:[],maxTime:0};for(const a of document.querySelectorAll('audio')){for(const e of ['ended','error','stalled','waiting','playing'])a.addEventListener(e,()=>window.bookPlayback.events.push({type:e,time:a.currentTime,rate:a.playbackRate}));a.addEventListener('timeupdate',()=>window.bookPlayback.maxTime=Math.max(window.bookPlayback.maxTime,a.currentTime));}});

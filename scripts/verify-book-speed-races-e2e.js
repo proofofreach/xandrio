@@ -73,7 +73,7 @@ function tone() {
     context = await browser.newContext({ serviceWorkers: 'block' });
     await context.tracing.start({ screenshots: true, snapshots: true, sources: true });
     async function state(page) {
-      return page.evaluate(() => ({ title: document.querySelector('#book-title').textContent, rate: document.querySelector('#audio-player').playbackRate, speed: document.querySelector('#utility-speed-value').textContent, toast: document.querySelector('#success-toast').textContent, rewind: document.querySelector('[data-book-smart-rewind].active')?.dataset.bookSmartRewind, offline: document.querySelector('[data-book-rolling-offline].active')?.dataset.bookRollingOffline }));
+      return page.evaluate(() => ({ title: document.querySelector('#book-title').textContent, rate: document.querySelector('#audio-player').playbackRate, speed: document.querySelector('#utility-speed-value').textContent, toast: document.querySelector('#success-toast').textContent, rewind: null, offline: null }));
     }
     async function check(name, fn) {
       if (process.env.BOOK_SPEED_CASE && !name.includes(process.env.BOOK_SPEED_CASE)) return;
@@ -90,6 +90,10 @@ function tone() {
       else await page.evaluate(id => { location.hash = `#/player/${id}`; }, book);
       await page.waitForFunction(book => { const a = document.querySelector('#audio-player'); return a?.readyState >= 3 && a.currentSrc.includes(`/${book}/`) && document.querySelector('#book-title').textContent === `Book ${book.toUpperCase()}`; }, book);
     }
+    // Smart rewind and automatic cache moved out of the speed sheet (the player's
+    // book menu owns them); their save path is the exported setBookPlaybackSetting.
+    async function setBook(page, key, value) { await page.evaluate(([k, v]) => import('/js/views/playback-speed.js').then(m => { m.setBookPlaybackSetting(k, v); }), [key, value]); }
+    async function choice(page, key) { return page.evaluate(k => import('/js/views/playback-speed.js').then(m => m.getBookPlaybackSettingChoice(k)), key); }
     async function sheet(page) { await page.locator('#speed-sheet-btn').click(); await page.locator('#speed-sheet.active').waitFor(); }
     async function saveSettled(page, count = 1) {
       await page.waitForResponse(r => r.url().includes('/api/listening-queue/books/') && r.request().method() === 'PUT');
@@ -98,37 +102,39 @@ function tone() {
     }
     await check('a delayed reset cannot change the newly opened book', async page => {
       await open(page); await sheet(page); const g = gate();
-      await page.locator('#clear-book-speed-btn').click(); await hit(g); await open(page, 'b');
+      await page.locator('#speed-scope-all').click(); await hit(g); await open(page, 'b');
       const before = await state(page), response = saveSettled(page); g.release.resolve(); await response;
       const after = await state(page); assert.equal(after.rate, 2, JSON.stringify({ before, after }));
       assert.equal(settings.a.playbackSpeed, undefined); assert.equal(settings.b.playbackSpeed, 2); return { before, after };
     });
-    await check('a delayed save does not claim a newer unsaved speed', async page => {
+    await check('a delayed save does not claim a newer speed choice', async page => {
       await open(page); await sheet(page); const g = gate();
-      await page.locator('#set-book-speed-btn').click(); await hit(g);
-      await page.locator('.speed-preset[data-speed="2"]').click(); const response = saveSettled(page); g.release.resolve(); await response;
-      const after = await state(page); assert.equal(settings.a.playbackSpeed, 1.5); assert.equal(after.rate, 2);
-      assert(!after.toast.includes('Using 2.00x for this book'), JSON.stringify(after)); return after;
+      await page.locator('.speed-preset[data-speed="1.25"]').click(); await hit(g);
+      await page.locator('.speed-preset[data-speed="2"]').click(); const response = saveSettled(page, 2); g.release.resolve(); await response;
+      await page.waitForTimeout(250);
+      const after = await state(page); assert.equal(settings.a.playbackSpeed, 2, JSON.stringify({ requests, completed })); assert.equal(after.rate, 2);
+      assert.deepEqual(requests.map(r => r.settings.playbackSpeed), [1.25, 2]);
+      assert(!after.toast.includes('1.25'), JSON.stringify(after)); return after;
     });
     await check('rapid rewind choices persist in click order', async page => {
       await open(page); await sheet(page); const g = gate();
-      await page.locator('[data-book-smart-rewind="on"]').click(); await hit(g);
-      await page.locator('[data-book-smart-rewind="off"]').click(); await page.waitForTimeout(250);
+      await setBook(page, 'smartRewindEnabled', true); await hit(g);
+      await setBook(page, 'smartRewindEnabled', false); await page.waitForTimeout(250);
       const response = saveSettled(page); g.release.resolve(); await response;
       await page.waitForTimeout(250); const after = await state(page);
-      assert.equal(settings.a.smartRewindEnabled, false, JSON.stringify({ after, requests, completed })); assert.equal(after.rewind, 'off'); return after;
+      assert.equal(settings.a.smartRewindEnabled, false, JSON.stringify({ after, requests, completed })); assert.equal(await choice(page, 'smartRewindEnabled'), 'off'); return after;
     });
     await check('a newer book speed save supersedes a pending reset', async page => {
       await open(page); await sheet(page); const g = gate();
-      await page.locator('#clear-book-speed-btn').click(); await hit(g);
-      await page.locator('#set-book-speed-btn').click(); await page.waitForTimeout(250);
+      await page.locator('#speed-scope-all').click(); await hit(g);
+      await page.locator('#speed-scope-book').click(); await page.waitForTimeout(250);
       const response = saveSettled(page); g.release.resolve(); await response; await page.waitForTimeout(250);
       const after = await state(page); assert.equal(settings.a.playbackSpeed, 1.5); assert.equal(after.rate, 1.5, JSON.stringify(after)); return after;
     });
     await check('queued book settings do not cross a sync profile switch', async page => {
       await open(page); await sheet(page); const g = gate();
-      await page.locator('[data-book-smart-rewind="on"]').click(); await hit(g);
-      await page.locator('[data-book-smart-rewind="off"]').click();
+      await setBook(page, 'smartRewindEnabled', true); await hit(g);
+      await setBook(page, 'smartRewindEnabled', false);
       await page.locator('#close-speed-sheet-btn').click();
       await page.evaluate(() => { location.hash = '#/settings/sync'; });
       await page.locator('#sync-profile-input').fill('Fixture'); await page.locator('#sync-start-btn').click();
@@ -140,22 +146,24 @@ function tone() {
       await page.locator('#player-view.active').waitFor();
       await sheet(page);
       const after = await state(page);
-      assert.equal(after.rewind, 'default', JSON.stringify(after));
+      assert.equal(await choice(page, 'smartRewindEnabled'), 'default', JSON.stringify(after));
       return { requests, completed, after };
     });
     await check('a failed book save allows the following setting to save', async page => {
       await open(page); await sheet(page); const g = gate({ fail: true });
-      await page.locator('[data-book-rolling-offline="on"]').click(); await hit(g);
-      await page.locator('[data-book-rolling-offline="off"]').click(); const response = saveSettled(page); g.release.resolve(); await response;
+      await setBook(page, 'rollingOfflineEnabled', true); await hit(g);
+      await setBook(page, 'rollingOfflineEnabled', false); const response = saveSettled(page); g.release.resolve(); await response;
       await page.waitForTimeout(250); const after = await state(page);
-      assert.equal(settings.a.rollingOfflineEnabled, false); assert.equal(after.offline, 'off'); return after;
+      assert.equal(settings.a.rollingOfflineEnabled, false); assert.equal(await choice(page, 'rollingOfflineEnabled'), 'off'); return after;
     });
-    await check('a current reset applies global speed and reports save failure', async page => {
+    await check('a current reset keeps the speed as the default and reports save failure', async page => {
       await open(page); await sheet(page); const g = gate({ fail: true });
-      await page.locator('#clear-book-speed-btn').click(); await hit(g); let response = saveSettled(page); g.release.resolve(); await response;
+      await page.locator('#speed-scope-all').click(); await hit(g); let response = saveSettled(page); g.release.resolve(); await response;
       assert.equal((await state(page)).rate, 1.5); assert.equal((await state(page)).toast, 'Could not reset book speed');
-      response = saveSettled(page); await page.locator('#clear-book-speed-btn').click(); await response;
-      const after = await state(page); assert.equal(after.rate, 1); assert.equal(settings.a.playbackSpeed, undefined); return after;
+      assert.equal(await page.locator('#speed-scope-book').getAttribute('aria-pressed'), 'true');
+      response = saveSettled(page); await page.locator('#speed-scope-all').click(); await response;
+      const after = await state(page); assert.equal(after.rate, 1.5); assert.equal(settings.a.playbackSpeed, undefined);
+      assert.equal(await page.locator('#speed-scope-all').getAttribute('aria-pressed'), 'true'); return after;
     });
     await check('keyboard speed changes select the adjacent preset from a custom speed', async page => {
       await open(page); await sheet(page);
@@ -164,11 +172,15 @@ function tone() {
       await page.locator('#speed-stepper-up').click(); // 1.55x
       await page.keyboard.press('ArrowDown'); const down = await state(page); assert.equal(down.rate, 1.5, JSON.stringify(down)); return { up, down };
     });
-    await check('cycling above the last preset wraps to the first preset', async page => {
-      await open(page); await sheet(page); await page.locator('.speed-preset[data-speed="2"]').click();
-      await page.locator('#speed-stepper-up').click(); await page.locator('#close-speed-sheet-btn').click();
-      await page.locator('#speed-btn').click(); const after = await state(page); assert.equal(after.rate, .8, JSON.stringify(after)); return after;
-    });
+    // The Readable player has no top-bar cycle button (#speed-btn); its Speed
+    // tool opens the speed sheet. The cycle check runs only where one exists.
+    if (require('node:fs').readFileSync(path.join(__dirname, '..', 'public', 'index.html'), 'utf8').includes('id="speed-btn"')) {
+      await check('cycling above the last preset wraps to the first preset', async page => {
+        await open(page); await sheet(page); await page.locator('.speed-preset[data-speed="2"]').click();
+        await page.locator('#speed-stepper-up').click(); await page.locator('#close-speed-sheet-btn').click();
+        await page.locator('#speed-btn').click(); const after = await state(page); assert.equal(after.rate, .8, JSON.stringify(after)); return after;
+      });
+    }
   } finally {
     for (const g of allGates) g.release.resolve();
     if (context) await context.tracing.stop({ path: path.join(output, `${phase}.trace.zip`) });
