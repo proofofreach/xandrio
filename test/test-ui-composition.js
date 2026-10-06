@@ -12,17 +12,30 @@ const { startScenarioEnvironment } = require('./fixtures/scenarios/lib/environme
       try {
         const page = await context.newPage();
         await page.goto(`${environment.origin}/#/library`);
-        const resumeCard = page.locator('.rail-card').first();
-        await resumeCard.waitFor();
-        const cover = await resumeCard.locator('.rail-cover-wrap').boundingBox();
-        const play = await resumeCard.locator('.rail-play-action').boundingBox();
-        const dismiss = await resumeCard.locator('.rail-dismiss').boundingBox();
-        assert(play.y >= cover.y && play.y + play.height <= cover.y + cover.height + 1,
-          'resume action stays beside the cover instead of falling into an extra grid row');
-        assert(dismiss.width >= 44 && dismiss.height >= 44, 'compact resume card retains its dismiss touch target');
-        assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
-        await resumeCard.focus();
-        await page.keyboard.press('Enter');
+        if (width < 760) {
+          const resumeCard = page.locator('.rail-card').first();
+          await resumeCard.waitFor();
+          const card = await resumeCard.boundingBox();
+          const cover = await resumeCard.locator('.rail-cover-wrap').boundingBox();
+          const meta = await resumeCard.locator('.rail-meta').boundingBox();
+          assert(card.height >= 44 && card.height <= 80, 'Continue cards stay compact one-tap targets');
+          assert(cover.y >= card.y && cover.y + cover.height <= card.y + card.height + 1, 'cover stays inside the compact card');
+          assert(meta.y >= card.y && meta.y + meta.height <= card.y + card.height, 'resume point stays beside the cover');
+          assert.match(await resumeCard.locator('.rail-meta').textContent(), /^(Ch \d+|Section \d+|[^·]+)( · .+)?$/, 'resume point names the chapter');
+          assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+          await resumeCard.focus();
+          await page.keyboard.press('Enter');
+        } else {
+          // Desktop: the table sorted by Last played is the switcher.
+          const row = page.locator('.book-item[data-book-id="scn-meridian"] .book-card-open');
+          await row.waitFor();
+          assert.equal(await page.locator('#continue-rail').isVisible(), false);
+          const height = (await page.locator('.book-item[data-book-id="scn-meridian"] .book-item-inner').boundingBox()).height;
+          assert(Math.abs(height - 60) <= 1, `desktop table rows are 60px (got ${height})`);
+          assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+          await row.focus();
+          await page.keyboard.press('Enter');
+        }
         await page.waitForURL('**/#/player/scn-meridian');
         await page.waitForFunction(() => document.getElementById('audio-loading')?.style.display === 'none' && document.getElementById('book-title')?.textContent === 'The Meridian Line');
         passed++;
@@ -56,7 +69,7 @@ const { startScenarioEnvironment } = require('./fixtures/scenarios/lib/environme
           await page.locator('#settings-hub').waitFor({ state: 'visible' });
           assert.equal(await page.locator('[data-settings-pane="voice"]').isVisible(), false);
         }
-        assert.equal(await page.locator('#settings-playback-summary').textContent(), '15s skip · smart rewind on');
+        assert.equal(await page.locator('#settings-playback-summary').textContent(), '1.0× · Skip 15 s');
         assert.equal(await page.locator('#settings-sleep-summary').textContent(), 'Off');
         assert.equal(await page.locator('#settings-language-summary').textContent(), 'English');
         if (width < 760) await page.locator('[data-settings-link="voice"]').click();
@@ -85,7 +98,7 @@ const { startScenarioEnvironment } = require('./fixtures/scenarios/lib/environme
           await page.evaluate(() => { document.documentElement.style.zoom = '1.4'; });
           const play = await page.locator('#play-pause-btn').boundingBox();
           assert(play.y >= 0 && play.y + play.height <= 844, 'Play stays visible at enlarged text scale');
-          const transport = await page.locator('.player-controls > button').evaluateAll(buttons => buttons.map(button => {
+          const transport = await page.locator('.pl-transport > button').evaluateAll(buttons => buttons.map(button => {
             const rect = button.getBoundingClientRect();
             return { id: button.id, left: rect.left, right: rect.right, width: rect.width, height: rect.height };
           }));
@@ -97,15 +110,16 @@ const { startScenarioEnvironment } = require('./fixtures/scenarios/lib/environme
         assert(await page.locator('#chapter-sheet').isVisible());
         await page.keyboard.press('Escape');
         const layout = await page.evaluate(() => {
-          const status = document.querySelector('.player-status-area');
+          const status = document.getElementById('player-narration');
           document.getElementById('playback-resume-prompt').hidden = false;
+          const author = document.getElementById('book-author-header').getBoundingClientRect();
           const chapter = document.getElementById('chapter-sheet-btn').getBoundingClientRect();
           const resume = document.getElementById('playback-resume-prompt').getBoundingClientRect();
-          const progress = document.querySelector('.player-progress').getBoundingClientRect();
-          return { status: !!status, ordered: resume.top >= chapter.bottom && resume.bottom <= progress.top + 1,
+          const progress = document.querySelector('.pl-scrub').getBoundingClientRect();
+          return { status: !!status, ordered: resume.top >= author.bottom && resume.bottom <= chapter.top + 1 && chapter.bottom <= progress.top + 1,
             overflow: document.documentElement.scrollWidth > innerWidth, duplicate: !!document.getElementById('utility-chapters-btn') };
         });
-        assert(layout.status && layout.ordered, 'recovery remains between chapter and timeline');
+        assert(layout.status && layout.ordered, 'recovery sits in the narration area, above the chapter row and timeline');
         assert.equal(layout.overflow, false, 'player does not overflow the viewport');
         assert.equal(layout.duplicate, false);
         passed++;
@@ -120,19 +134,19 @@ const { startScenarioEnvironment } = require('./fixtures/scenarios/lib/environme
         totalSecondsListened: seconds, booksFinishedCount: 0, booksInProgressCount: 1,
         recent: [entry], inProgress: [entry]
       } }));
-      for (const [total, expected] of [[59, '<1'], [180, '3'], [3660, '1h 1m']]) {
+      for (const [total, expected] of [[59, '< 1m'], [180, '3m'], [3660, '1h 01m']]) {
         seconds = total;
         if (page.url() === `${environment.origin}/#/stats`) await page.reload();
         else await page.goto(`${environment.origin}/#/stats`);
         await page.waitForFunction(value => document.querySelector('.stat-tile-value')?.textContent === value, expected);
         assert.equal(await page.locator('[data-book-id="sample"]').count(), 1, 'history never repeats an in-progress book');
-        assert.equal(await page.locator('.stat-tile-label').first().textContent(), total < 3600 ? 'minutes listened' : 'listened');
+        assert.equal(await page.locator('.stat-tile-label').first().textContent(), 'listened');
         passed++;
       }
       await page.route('**/api/search', route => route.fulfill({ json: { works: [] } }));
       await page.goto(`${environment.origin}/#/search`);
       await page.waitForFunction(() => document.getElementById('search-filter-summary')?.textContent.includes('Gutenberg'));
-      assert.equal(await page.locator('.search-header h2').textContent(), 'Add a book');
+      assert.equal(await page.locator('.search-header h2').textContent(), 'Find');
       await page.locator('#search-input').fill('No matching title');
       await page.locator('#search-btn').click();
       await page.locator('[data-search-edit]').waitFor();

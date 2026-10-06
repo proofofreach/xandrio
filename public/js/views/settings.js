@@ -4,6 +4,7 @@ import { loadClientSettings, getClientSettings, getSkipInterval, getProgressDisp
 import { getOfflineManifest, renderOfflineState } from '../features/offline.js';
 import { loadLibrary } from './library.js';
 import { initVoices, loadVoices, stopVoiceSample } from './voices.js';
+import { formatSpeed } from '../util/time-left.mjs';
 import { readText, writeText } from '../util/storage.js';
 import { escapeHTML, relativeTime } from '../util/format.js';
 import { confirmSheet } from '../ui/confirm.js';
@@ -17,6 +18,7 @@ const SETTINGS_PAGES = {
   voice: {},
   sources: {},
   offline: {},
+  shelf: {},
   language: {},
   account: { signedIn: true },
   sync: { signedOut: true },
@@ -169,6 +171,7 @@ export function initSettings(options = {}) {
   const skipIntervalControl = document.getElementById('skip-interval-control');
   const defaultSpeedLabel = document.getElementById('default-speed-label');
   const progressModeControl = document.getElementById('progress-mode-control');
+  const shelfDensityControl = document.getElementById('shelf-density-control');
   const smartRewindControl = document.getElementById('smart-rewind-control');
   const rollingOfflineControl = document.getElementById('rolling-offline-control');
   const defaultSearchSourcesControl = document.getElementById('default-search-sources');
@@ -202,7 +205,7 @@ export function initSettings(options = {}) {
     const signedIn = Boolean(user?.id);
     const admin = isAdminUser(user);
 
-    setHidden(document.getElementById('settings-identity'), !signedIn);
+    setHidden(document.getElementById('settings-identity'), false);
     setHidden(document.getElementById('settings-menu-account-row'), !signedIn);
     setHidden(accountLogoutBtn, !signedIn);
     setHidden(document.getElementById('settings-menu-sync-row'), signedIn);
@@ -238,6 +241,10 @@ export function initSettings(options = {}) {
     const heading = document.querySelector(`[data-settings-pane="${CSS.escape(section)}"] h2`);
     if (heading) {
       heading.tabIndex = -1;
+      // Programmatic focus moves screen-reader and keyboard position to the
+      // page title without drawing a ring on a non-interactive heading.
+      heading.setAttribute('data-programmatic-focus', '');
+      heading.addEventListener('blur', () => heading.removeAttribute('data-programmatic-focus'), { once: true });
       heading.focus({ preventScroll: true });
     }
 
@@ -263,6 +270,7 @@ export function initSettings(options = {}) {
     if (needsHub || section === 'account' || section === 'sync') loadAccountOrSync();
     if (needsHub || section === 'calibre') loadCalibreConnections();
     if ((needsHub || section === 'guides') && isAdminUser()) loadBookGuideSettings();
+    if (section === 'guides' && isAdminUser()) loadBookGuideTags();
     if ((needsHub || section === 'diagnostics') && isAdminUser()) loadOperatorDiagnostics();
     if ((needsHub || section === 'accounts') && isAdminUser() && getCurrentUser()?.id) loadAdminAccounts();
     if (section !== 'voice') stopVoiceSample();
@@ -270,17 +278,29 @@ export function initSettings(options = {}) {
 
   function updateHubIdentity() {
     const user = getCurrentUser();
-    if (!user) return;
+    const identity = document.getElementById('settings-identity');
+    if (!user) {
+      // Trusted-LAN mode: no accounts, so the row names this instance.
+      const host = window.location.hostname || 'This server';
+      document.getElementById('settings-identity-name').textContent = host;
+      document.getElementById('settings-identity-detail').textContent = 'Trusted network \u00b7 no sign-in';
+      document.getElementById('settings-identity-role').textContent = '';
+      document.getElementById('settings-identity-avatar').textContent = 'X';
+      identity?.removeAttribute('href');
+      return;
+    }
+    identity?.setAttribute('href', '#/settings/account');
     const name = user.displayName || user.username || 'Signed in';
     const nameEl = document.getElementById('settings-identity-name');
     const detailEl = document.getElementById('settings-identity-detail');
     const roleEl = document.getElementById('settings-identity-role');
     const avatar = document.getElementById('settings-identity-avatar');
     if (nameEl) nameEl.textContent = name;
-    if (detailEl) detailEl.textContent = user.username ? `@${user.username}` : '';
+    const roleLabel = user.role ? user.role[0].toUpperCase() + user.role.slice(1) : '';
+    if (detailEl) detailEl.textContent = [roleLabel, user.username ? `@${user.username}` : ''].filter(Boolean).join(' \u00b7 ');
     if (roleEl) {
-      roleEl.textContent = user.role || '';
-      roleEl.className = 'settings-status settings-status-ok';
+      roleEl.textContent = '';
+      roleEl.hidden = true;
     }
     if (avatar) avatar.textContent = name.slice(0, 1).toUpperCase();
   }
@@ -288,8 +308,7 @@ export function initSettings(options = {}) {
   function updatePlaybackSummary() {
     const settings = getClientSettings();
     const skip = settings.skipIntervalSeconds || getSkipInterval();
-    const rewind = settings.smartRewindEnabled === false ? 'smart rewind off' : 'smart rewind on';
-    setSummary('settings-playback-summary', `${skip}s skip · ${rewind}`);
+    setSummary('settings-playback-summary', `${formatSpeed(getDefaultSpeed())} \u00b7 Skip ${skip} s`);
   }
 
   function updateOfflineSummary() {
@@ -374,12 +393,12 @@ export function initSettings(options = {}) {
   };
 
   function providerEnablement(provider = {}) {
-    if (provider.enabled === false) return { label: 'Disabled', className: 'is-attention' };
+    if (provider.enabled === false) return { label: 'Off on this server', className: 'is-attention' };
     if ((provider.requiresAcknowledgement || provider.requiresOperatorAcknowledgement) && provider.acknowledged === false) {
       return { label: 'Acknowledgement required', className: 'is-attention' };
     }
     if (provider.configured === false) return { label: 'Unconfigured', className: '' };
-    return { label: 'Enabled', className: 'is-enabled' };
+    return { label: 'Available', className: 'is-enabled' };
   }
 
   async function loadProviderStatus() {
@@ -402,7 +421,7 @@ export function initSettings(options = {}) {
         }
         const detailEl = document.querySelector(`[data-provider-detail="${CSS.escape(provider.id)}"]`);
         if (detailEl && provider.detail) detailEl.textContent = detail;
-        if (enablement.label === 'Enabled') enabled += 1;
+        if (enablement.label === 'Available') enabled += 1;
         if (enablement.label === 'Unconfigured' || enablement.label === 'Acknowledgement required') needsKey += 1;
       });
       setSummary('settings-sources-summary', sources.length
@@ -1252,6 +1271,72 @@ export function initSettings(options = {}) {
     }
   });
 
+  // Per-book nonfiction tags (moved here from the library book menu). Admin
+  // only, like the rest of this page; the server enforces it too.
+  const guideTagsList = document.getElementById('book-guide-tags-list');
+  const guideTagsSearch = document.getElementById('book-guide-tags-search');
+  let guideTagBooks = [];
+
+  function renderBookGuideTags() {
+    if (!guideTagsList) return;
+    const query = (guideTagsSearch?.value || '').trim().toLowerCase();
+    const books = guideTagBooks
+      .filter(book => !query || `${book.title || ''} ${book.author || ''}`.toLowerCase().includes(query))
+      .sort((a, b) => (b.studyGuideCategory === 'nonfiction') - (a.studyGuideCategory === 'nonfiction')
+        || String(a.title || '').localeCompare(String(b.title || '')));
+    guideTagsList.innerHTML = books.length ? books.map(book => {
+      const tagged = book.studyGuideCategory === 'nonfiction';
+      const id = escapeHTML(String(book.id));
+      return `
+        <li class="book-guide-tag-row">
+          <label class="settings-row settings-row-switch">
+            <span class="settings-label">
+              <span class="settings-label-text">${escapeHTML(book.title || 'Untitled')}</span>
+              <span class="settings-label-hint">${escapeHTML(book.author || 'Unknown Author')}</span>
+            </span>
+            <input class="switch" type="checkbox" role="switch" data-guide-tag-book="${id}" ${tagged ? 'checked' : ''}
+                   aria-label="Nonfiction: ${escapeHTML(book.title || 'Untitled')}">
+          </label>
+        </li>`;
+    }).join('') : `<li class="settings-hint">${guideTagBooks.length ? 'No matching books.' : 'No books yet.'}</li>`;
+  }
+
+  async function loadBookGuideTags() {
+    if (!guideTagsList || !isAdminUser()) return;
+    guideTagsList.setAttribute('aria-busy', 'true');
+    try {
+      const data = await apiGet('/api/library');
+      guideTagBooks = Array.isArray(data?.books) ? data.books : [];
+      renderBookGuideTags();
+    } catch (err) {
+      guideTagsList.innerHTML = `<li class="settings-hint">${escapeHTML(err.message || 'Could not load books.')}</li>`;
+    } finally {
+      guideTagsList.setAttribute('aria-busy', 'false');
+    }
+  }
+
+  guideTagsSearch?.addEventListener('input', renderBookGuideTags);
+  guideTagsList?.addEventListener('change', async event => {
+    const input = event.target.closest('[data-guide-tag-book]');
+    if (!input) return;
+    const bookId = input.dataset.guideTagBook;
+    const category = input.checked ? 'nonfiction' : 'unknown';
+    input.disabled = true;
+    try {
+      await apiSend('PUT', `/api/book/${encodeURIComponent(bookId)}/guide/category`, { category });
+      const book = guideTagBooks.find(item => String(item.id) === bookId);
+      if (book) book.studyGuideCategory = category;
+      showToast(category === 'nonfiction' ? 'Marked as nonfiction' : 'Nonfiction tag removed');
+      await loadLibrary();
+    } catch (error) {
+      console.error('Study-guide category update failed:', error);
+      input.checked = !input.checked;
+      showToast(error.message || 'Could not update the study-guide tag', 'error');
+    } finally {
+      input.disabled = false;
+    }
+  });
+
   async function loadBookGuideSettings() {
     if (!bookGuidesSettingsSection) return;
     const user = getCurrentUser();
@@ -1592,6 +1677,12 @@ export function initSettings(options = {}) {
     const settings = getClientSettings();
     renderSegmentedControl(skipIntervalControl, settings.skipIntervalSeconds || getSkipInterval(), 'skipInterval');
     renderSegmentedControl(progressModeControl, settings.progressDisplayMode || getProgressDisplayMode(), 'progressMode');
+    const density = settings.shelfRowDensity === 'comfortable' ? 'comfortable' : 'compact';
+    renderSegmentedControl(shelfDensityControl, density, 'shelfDensity');
+    shelfDensityControl?.querySelectorAll('[data-shelf-density]').forEach(btn => {
+      btn.setAttribute('aria-pressed', btn.dataset.shelfDensity === density ? 'true' : 'false');
+    });
+    setSummary('settings-shelf-summary', density === 'comfortable' ? 'Comfortable' : 'Compact');
     if (smartRewindControl) smartRewindControl.checked = settings.smartRewindEnabled !== false;
     if (rollingOfflineControl) rollingOfflineControl.checked = settings.rollingOfflineEnabled !== false;
     const defaultSources = settings.defaultSearchSources || getDefaultSearchSources();
@@ -1604,7 +1695,7 @@ export function initSettings(options = {}) {
       defaultSpeedSelect.value = match ? match.value : '';
     }
     if (defaultSpeedLabel) {
-      defaultSpeedLabel.textContent = speed ? `${Number(speed).toFixed(2)}x` : '1.00x (normal)';
+      defaultSpeedLabel.textContent = formatSpeed(speed || 1);
     }
     updatePlaybackSummary();
     updateOfflineSummary();
@@ -1617,6 +1708,13 @@ export function initSettings(options = {}) {
     deps.applySkipIntervalLabels();
     renderClientSettings();
   }
+
+  shelfDensityControl?.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-shelf-density]');
+    if (!btn) return;
+    setClientSetting('shelfRowDensity', btn.dataset.shelfDensity);
+    renderClientSettings();
+  });
 
   skipIntervalControl?.addEventListener('click', (e) => {
     const btn = e.target.closest('[data-skip-interval]');

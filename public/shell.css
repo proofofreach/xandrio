@@ -1,0 +1,360 @@
+/* App shell: phone tab bar, desktop sidebar, persistent mini player,
+   Recent sheet, coach hint, toast docking and inline confirmations.
+   Loaded after the view stylesheets so the shell owns its own geometry.
+
+   Geometry contract (custom properties on body.has-shell):
+     --tabbar-h      height the tab bar occupies, including the home
+                     indicator safe area (0 + safe area where hidden)
+     --mini-h        height the mini player occupies (0 when hidden)
+     --shell-bottom  everything docked at the bottom; views pad by it and
+                     toasts sit above it
+     --shell-left    sidebar width on desktop (0 on phones)               */
+
+body.has-shell {
+  --tabbar-h: calc(54px + var(--safe-bottom));
+  --mini-h: 0px;
+  --shell-left: 0px;
+  --shell-bottom: calc(var(--tabbar-h) + var(--mini-h));
+}
+body.has-shell.has-mini-player { --mini-h: 64px; }
+body.has-shell[data-view="player"],
+body.has-shell[data-view="guide"] { --tabbar-h: var(--safe-bottom); }
+
+/* Header actions the shell now provides (Settings and Add Book live in the
+   tab bar / sidebar). The elements stay in the DOM for keyboard shortcuts
+   and existing flows that click them programmatically. */
+body.has-shell #settings-btn,
+body.has-shell #add-book-btn { display: none; }
+
+/* Toasts centre on the content column and stack above the coach hint. */
+body.has-shell .toast { left: calc(50% + var(--shell-left) / 2); }
+body.has-shell .toast { width: min(560px, calc(100vw - 16px - var(--safe-left) - var(--safe-right) - var(--shell-left))); }
+body.has-coach-hint .toast { bottom: calc(var(--shell-bottom) + 64px); }
+
+/* Views clear everything docked at the bottom. */
+body.has-shell #library-view,
+body.has-shell #search-view,
+body.has-shell #settings-view,
+body.has-shell #stats-view,
+body.has-shell #guide-view {
+  padding-bottom: calc(var(--shell-bottom) + 24px);
+}
+
+/* ==================== TAB BAR (phone) ==================== */
+
+.app-tabbar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 60;
+  display: flex;
+  justify-content: space-around;
+  height: var(--tabbar-h);
+  padding: 4px max(10px, var(--safe-right)) var(--safe-bottom) max(10px, var(--safe-left));
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+}
+.app-tabbar[hidden] { display: none; }
+body[data-view="player"] .app-tabbar,
+body[data-view="guide"] .app-tabbar { display: none; }
+
+.app-tab {
+  flex: 0 1 112px;
+  min-width: 64px;
+  min-height: 44px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 2px;
+  padding-top: 2px;
+  border-radius: 10px;
+  color: var(--text-secondary);
+  font-size: var(--text-footnote);
+  line-height: var(--leading-footnote);
+  font-weight: 500;
+  text-decoration: none;
+  -webkit-tap-highlight-color: transparent;
+}
+.app-tab svg { width: 26px; height: 26px; flex: none; }
+.app-tab.is-on { color: var(--accent-text); font-weight: var(--weight-bold); }
+.app-tab:focus-visible { outline: 3px solid var(--focus-ring); outline-offset: -3px; }
+
+/* ==================== SIDEBAR (desktop) ==================== */
+
+.app-sidebar { display: none; }
+
+@media (min-width: 760px) {
+  body.has-shell {
+    --tabbar-h: var(--safe-bottom);
+    --shell-left: 232px;
+  }
+  body.has-shell.has-mini-player { --mini-h: 72px; }
+  .app-tabbar { display: none; }
+
+  .app-sidebar:not([hidden]) {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 60;
+    width: var(--shell-left);
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: max(20px, var(--safe-top)) 12px 20px max(12px, var(--safe-left));
+    overflow-y: auto;
+    background: var(--surface);
+    border-right: 1px solid var(--border);
+  }
+  body.has-shell #app { margin-left: var(--shell-left); width: auto; }
+}
+
+/* The study guide keeps its own layout; below 1100px it needs the full
+   width. The player docks into the shell (player.css). */
+@media (min-width: 760px) and (max-width: 1099px) {
+  body.has-shell[data-view="guide"] .app-sidebar { display: none; }
+  body.has-shell[data-view="guide"] { --shell-left: 0px; }
+}
+
+.app-sidebar-brand {
+  display: flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 0 12px 8px;
+  color: var(--text);
+  font-size: var(--text-title3);
+  font-weight: var(--weight-bold);
+  letter-spacing: -0.01em;
+  text-decoration: none;
+}
+.app-sidebar-heading {
+  margin: 14px 12px 4px;
+  color: var(--text-secondary);
+  font-size: var(--text-footnote);
+  line-height: var(--leading-footnote);
+  font-weight: var(--weight-semibold);
+}
+.app-sidebar-list { list-style: none; margin: 0; padding: 0; }
+.app-sidebar-link {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 44px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: var(--text-subhead);
+  line-height: var(--leading-subhead);
+  font-weight: 500;
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+}
+.app-sidebar-link svg { width: 22px; height: 22px; flex: none; color: var(--text-secondary); }
+.app-sidebar-link:hover { background: var(--surface-2); }
+.app-sidebar-link.is-on { background: var(--surface-2); font-weight: var(--weight-bold); }
+.app-sidebar-link.is-on svg { color: var(--accent-text); }
+.app-sidebar-count { margin-left: auto; color: var(--text-secondary); font-weight: 500; }
+.app-sidebar-count:empty { display: none; }
+
+/* ==================== MINI PLAYER ==================== */
+
+body.has-shell .mini-player {
+  bottom: var(--tabbar-h);
+  height: 64px;
+  padding: 0;
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  z-index: 55;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+@media (min-width: 760px) {
+  body.has-shell .mini-player {
+    left: var(--shell-left);
+    height: calc(72px + var(--safe-bottom));
+    padding-bottom: var(--safe-bottom);
+  }
+}
+
+.mini-player-progress-track {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -1px;
+  height: 3px;
+  background: var(--track);
+  overflow: hidden;
+}
+body.has-shell .mini-player-progress {
+  position: static;
+  height: 100%;
+  border-radius: 0;
+  background: var(--accent);
+}
+
+body.has-shell .mini-player-content {
+  gap: 4px;
+  padding: 0 max(4px, var(--safe-right)) 0 max(8px, var(--safe-left));
+  cursor: default;
+}
+.mini-player-open {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 56px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 4px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.mini-player-open:focus-visible { outline: 3px solid var(--focus-ring); outline-offset: -3px; }
+body.has-shell .mini-player-cover {
+  width: 36px;
+  height: 54px;
+  border-radius: 3px;
+  object-fit: cover;
+  background: var(--surface-2);
+}
+body.has-shell .mini-player-info { gap: 0; }
+body.has-shell .mini-player-title {
+  font-size: var(--text-subhead);
+  line-height: var(--leading-subhead);
+  font-weight: var(--weight-semibold);
+}
+body.has-shell .mini-player-chapter {
+  font-size: var(--text-footnote);
+  line-height: var(--leading-footnote);
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+body.has-shell .mini-player-btn {
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  color: var(--text);
+}
+body.has-shell .mini-player-btn svg { width: 30px; height: 30px; }
+body.has-shell .mini-player-btn--play svg { width: 26px; height: 26px; }
+body.has-shell .mini-player-btn:hover { background: var(--surface-2); }
+body.has-shell .mini-player-btn .mini-skip-label {
+  font-size: var(--text-footnote);
+  line-height: 1;
+  font-weight: var(--weight-bold);
+  margin-top: 2px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.03em;
+}
+/* The phone bar keeps play/pause and skip forward, as in the spec; skip
+   back joins them where there is room. */
+body.has-shell .mini-player-btn--secondary { display: none; }
+@media (min-width: 760px) {
+  body.has-shell .mini-player-btn--secondary { display: flex; }
+}
+
+/* ==================== COACH HINT ==================== */
+
+.shell-coach-hint {
+  position: fixed;
+  bottom: calc(var(--shell-bottom) + 8px);
+  z-index: 56;
+  width: min(560px, calc(100vw - 16px - var(--safe-left) - var(--safe-right) - var(--shell-left)));
+  left: calc(50% + var(--shell-left) / 2);
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 6px 6px 6px 14px;
+  border-radius: 14px;
+  background: var(--surface-2);
+  color: var(--text);
+  box-shadow: var(--shadow);
+  font-size: var(--text-subhead);
+  line-height: var(--leading-subhead);
+}
+.shell-coach-hint[hidden] { display: none; }
+.shell-coach-text { flex: 1 1 auto; min-width: 0; }
+.shell-coach-dismiss {
+  flex: none;
+  min-height: 44px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--accent-text);
+  font: inherit;
+  font-weight: var(--weight-semibold);
+  cursor: pointer;
+}
+
+/* ==================== RECENT SHEET ==================== */
+
+.recent-sheet-panel { background: var(--surface); }
+.recent-sheet-panel .voice-sheet-header { align-items: center; margin-bottom: var(--space-2); }
+.recent-sheet-panel .voice-sheet-header h3 { margin: 0; font-size: var(--text-title3); }
+.recent-sheet-list { list-style: none; margin: 0; padding: 0; overflow-y: auto; }
+.recent-row + .recent-row { border-top: 1px solid var(--border); }
+.recent-row-hit {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 64px;
+  padding: 5px 0 5px 4px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.recent-row-hit:focus-visible { outline: 3px solid var(--focus-ring); outline-offset: -3px; border-radius: 10px; }
+.recent-row-cover { width: 36px; height: 54px; flex: none; border-radius: 3px; object-fit: cover; background: var(--surface-2); }
+.recent-row-text { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; }
+.recent-row-title,
+.recent-row-sub { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.recent-row-title { font-size: var(--text-body); line-height: var(--leading-body); font-weight: var(--weight-semibold); }
+.recent-row-sub { font-size: var(--text-subhead); line-height: var(--leading-subhead); color: var(--text-secondary); }
+.recent-row-icon { width: 44px; height: 44px; flex: none; display: inline-flex; align-items: center; justify-content: center; }
+.recent-row-icon svg { width: 22px; height: 22px; }
+.recent-row.is-playing .recent-row-title,
+.recent-row.is-playing .recent-row-icon { color: var(--accent-text); }
+.recent-empty { padding: 16px 4px; color: var(--text-secondary); font-size: var(--text-subhead); }
+
+/* ==================== INLINE CONFIRMATION ==================== */
+/* showInlineConfirmation(tool, "Saved · 12:04") overlays the tool's label
+   for ~2s instead of raising a toast over the transport. */
+.is-confirming { position: relative; }
+.inline-confirmation {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 6px;
+  border-radius: inherit;
+  background: inherit;
+  background-color: var(--surface);
+  color: var(--text);
+  font-size: var(--text-subhead);
+  font-weight: var(--weight-semibold);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  pointer-events: none;
+}

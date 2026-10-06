@@ -173,3 +173,99 @@ function patchFetch() {
 }
 
 patchFetch();
+
+// Imported Undici clients and remote-fetch's explicit per-target Agent do not
+// use global fetch or its dispatcher. Guard dispatch itself, including custom
+// Agent/Client/Pool instances, before a connector can select a remote socket.
+const undici = require('undici');
+const { kUrl } = require('undici/lib/core/symbols');
+const originalAgentDispatch = undici.Agent.prototype.dispatch;
+const stubDispatcher = new undici.Agent();
+for (const name of ['Agent', 'Client', 'Pool', 'BalancedPool', 'ProxyAgent', 'EnvHttpProxyAgent']) {
+  const prototype = undici[name]?.prototype;
+  if (!prototype || typeof prototype.dispatch !== 'function') continue;
+  const originalDispatch = prototype.dispatch;
+  prototype.dispatch = function guardedDispatch(options, handler) {
+    const url = new URL(options.path || '/', String(options.origin || this[kUrl]));
+    const hostname = stripBrackets(url.hostname);
+    if (LOOPBACK_HOSTS.has(hostname) && ['http:', 'https:'].includes(url.protocol)) {
+      return originalDispatch.call(this, options, handler);
+    }
+    if (!['http:', 'https:'].includes(url.protocol)) {
+      throw new Error(`network-guard: Undici blocked a non-HTTP(S) destination ${url.protocol}`);
+    }
+    const headers = new Headers();
+    if (Array.isArray(options.headers)) {
+      for (let i = 0; i < options.headers.length; i += 2) headers.append(String(options.headers[i]), String(options.headers[i + 1]));
+    } else {
+      for (const [key, value] of Object.entries(options.headers || {})) headers.append(key, String(value));
+    }
+    headers.delete('host');
+    headers.set('host', `127.0.0.1:${STUB_PORT}`);
+    headers.set('x-scenario-target-host', hostname);
+    headers.set('x-scenario-target-protocol', url.protocol);
+    return originalAgentDispatch.call(stubDispatcher, {
+      ...options,
+      origin: `http://127.0.0.1:${STUB_PORT}`,
+      path: `${url.pathname}${url.search}`,
+      headers: [...headers].flat(),
+      // Never retain a target-specific connector/authority when forwarding.
+      servername: undefined
+    }, handler);
+  };
+}
+
+// Share the guarded package dispatcher with built-in global fetch too, so
+// redirects returned by the stub pass through the same origin guard.
+undici.setGlobalDispatcher(new undici.Agent());
+
+// DNS must not reach a real resolver. Supply a public synthetic address so
+// the unchanged production assertPublicTarget still executes its SSRF checks;
+// restricted IP literals are rejected by the product before transport.
+const dns = require('node:dns');
+const originalLookup = dns.lookup;
+const originalPromiseLookup = dns.promises.lookup;
+function syntheticRecords(options) {
+  const family = options === 6 || options?.family === 6 ? 6 : 4;
+  const address = family === 6 ? '2606:4700::1111' : '93.184.216.34';
+  return options?.all ? [{ address, family }] : { address, family };
+}
+dns.lookup = function guardedLookup(hostname, options, callback) {
+  if (LOOPBACK_HOSTS.has(stripBrackets(hostname))) return originalLookup.apply(this, arguments);
+  if (typeof options === 'function') { callback = options; options = {}; }
+  const result = syntheticRecords(options);
+  queueMicrotask(() => options?.all ? callback(null, result) : callback(null, result.address, result.family));
+};
+dns.promises.lookup = function guardedPromiseLookup(hostname, options) {
+  if (LOOPBACK_HOSTS.has(stripBrackets(hostname))) return originalPromiseLookup.call(this, hostname, options);
+  return Promise.resolve(syntheticRecords(options));
+};
+
+// Last barrier for unrecognised transports, custom dispatchers and proxy
+// tunnels. TCP may connect only to literal loopback or localhost. Preserve
+// Unix sockets used by local tooling. This is only a scenario child preload.
+const net = require('node:net');
+const originalConnect = net.Socket.prototype.connect;
+net.Socket.prototype.connect = function loopbackOnlyConnect(...args) {
+  const first = args[0];
+  const options = Array.isArray(first) ? first[0] : first;
+  const isOptions = options && typeof options === 'object';
+  const unix = typeof options === 'string' && !/^\d+$/.test(options) || isOptions && options.path;
+  const host = isOptions ? options.host || options.hostname || 'localhost' : typeof args[1] === 'string' ? args[1] : 'localhost';
+  if (!unix && !LOOPBACK_HOSTS.has(stripBrackets(host))) {
+    throw new Error(`network-guard: blocked non-loopback socket to ${host}`);
+  }
+  if (!unix && isOptions && stripBrackets(host) === 'localhost') {
+    const lookup = options.lookup || originalLookup;
+    options.lookup = function loopbackLookup(name, lookupOptions, callback) {
+      lookup(name, lookupOptions, (error, addresses, family) => {
+        const resolved = Array.isArray(addresses) ? addresses.map(item => item.address) : [addresses];
+        if (!error && resolved.some(address => !LOOPBACK_HOSTS.has(stripBrackets(address)))) {
+          return callback(new Error('network-guard: blocked a localhost lookup resolving outside loopback'));
+        }
+        callback(error, addresses, family);
+      });
+    };
+  }
+  return originalConnect.apply(this, args);
+};

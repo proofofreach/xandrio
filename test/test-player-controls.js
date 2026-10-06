@@ -14,7 +14,7 @@ async function main() {
         await page.goto(`${environment.origin}/#/player/scn-meridian`, { waitUntil: 'domcontentloaded' });
         await page.waitForFunction(() => Number(document.getElementById('progress-slider')?.dataset.duration) > 0
           && document.getElementById('audio-loading')?.style.display === 'none');
-        const timer = page.locator(viewport.width < 760 ? '#utility-timer-btn' : '#timer-btn-inline');
+        const timer = page.locator('#timer-btn-inline');
         await timer.click();
         assert.equal(await page.locator('#cancel-timer-btn').isVisible(), false);
         await page.locator('.timer-option[data-minutes="15"]').click();
@@ -48,7 +48,7 @@ async function main() {
         assert(Math.abs(await page.evaluate(() => window.seekValue) - (1805 / 3600 * 100)) < 0.0001, 'keyboard seeks five seconds, not one percent');
         passed++;
 
-        await page.locator(viewport.width < 760 ? '#utility-speed-btn' : '#speed-sheet-btn').click();
+        await page.locator('#speed-sheet-btn').click();
         await page.locator('.speed-preset[data-speed="2"]').click();
         await page.locator('#close-speed-sheet-btn').click();
         await page.waitForFunction(() => !document.getElementById('speed-sheet').classList.contains('active'));
@@ -61,15 +61,24 @@ async function main() {
             accessible: document.getElementById('progress-slider').getAttribute('aria-valuetext')
           };
         });
-        assert.equal(chapterTimes.remaining, '-29:00 left');
+        assert.equal(chapterTimes.remaining, '−29:00');
         assert.match(chapterTimes.accessible, /2:00 of 60:00.*29:00 listening time left at 2x/);
-        await page.locator('[data-progress-scope="book"]').click();
-        const bookTimes = await page.evaluate(() => ({ duration: Number(document.getElementById('progress-slider').dataset.duration), value: Number(document.getElementById('progress-slider').value), text: document.getElementById('chapter-progress-total').textContent }));
-        const expectedRemaining = Math.max(0, bookTimes.duration * (1 - bookTimes.value / 100)) / 2;
-        assert.match(bookTimes.text, /left$/);
-        const format = value => { const seconds = Math.round(value * 1e6) / 1e6; return `${Math.floor(seconds / 60)}:${Math.floor(seconds % 60).toString().padStart(2, '0')}`; };
-        assert.equal(bookTimes.text, `-${format(expectedRemaining)} left`);
-        assert.match(await slider.getAttribute('aria-valuetext'), /listening time left at 2x/);
+        assert.match(await page.locator('#player-book-line').textContent(), / left in the book at 2\.0×$|^Finished$/,
+          'the book sentence states time left at the current speed');
+        assert.equal(await page.locator('[data-progress-scope]').count(), 0, 'the chapter/book scope selector is gone');
+        // Book-wide seeking moved to the ••• menu.
+        await page.locator('#player-more-btn').click();
+        await page.locator('#player-more-sheet.active').waitFor();
+        await page.locator('#player-book-seek-btn').click();
+        await page.locator('#book-seek-sheet.active').waitFor();
+        await page.waitForFunction(() => !document.getElementById('player-more-sheet').classList.contains('active'));
+        const seek = page.locator('#book-seek-slider');
+        assert((await seek.boundingBox()).height >= 44, 'book seek target is a full touch target');
+        await seek.evaluate(element => { element.value = '50'; element.dispatchEvent(new Event('input', { bubbles: true })); });
+        assert.match(await page.locator('#book-seek-preview').textContent(), /into the chapter$/);
+        assert.match(await seek.getAttribute('aria-valuetext'), / of /);
+        await page.locator('#book-seek-cancel').click();
+        await page.waitForFunction(() => !document.getElementById('book-seek-sheet').classList.contains('active'));
         passed++;
 
         await page.evaluate(async () => (await import('/js/views/player-ui.js')).setPlaybackBuffering(true));

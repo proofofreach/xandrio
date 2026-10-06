@@ -48,10 +48,20 @@ function renderListeningQueue() {
   `;
 }
 
+// The queued books in order, for read-only views (the docked player's Up
+// Next list). Changes are announced with the xandrio:listeningqueue event.
+export function getListeningQueueBooks() {
+  const books = bookMap();
+  return (state.queue?.bookIds || []).map(id => books.get(id) || { id, title: 'Untitled', author: '' });
+}
+
 export async function loadListeningQueue() {
   try {
     state = await apiGet('/api/listening-queue');
     renderListeningQueue();
+    // Per-book speeds live in this state; the library re-states each row's
+    // time left at its own speed once they arrive.
+    document.dispatchEvent?.(new CustomEvent('xandrio:listeningqueue'));
   } catch (error) {
     console.warn('Listening queue unavailable:', error);
   }
@@ -72,6 +82,13 @@ export async function advanceListeningQueue(finishedBookId) {
   const result = await apiSend('POST', '/api/listening-queue/advance', { finishedBookId });
   await loadListeningQueue();
   return result;
+}
+
+// Saved per-book speed from the loaded queue state, or null.
+export function getBookSpeedSetting(bookId) {
+  if (bookId == null) return null;
+  const value = Number(state.queue?.bookSettings?.[String(bookId)]?.playbackSpeed);
+  return Number.isFinite(value) && value > 0 ? value : null;
 }
 
 export async function getBookPlaybackSettings(bookId) {

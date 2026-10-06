@@ -87,7 +87,7 @@ const PLAYER_ROUTE = HASH_ROUTE.player;
 const isolatedPlayerCell = options => cell({ ...options, isolateVariants: true });
 const PLAYER_SHEET_CELLS = {
   chapters: isolatedPlayerCell({ dataset: 'full', route: PLAYER_ROUTE, overlay: true, interaction: 'player-open-chapters', domSignature: sig('#chapter-sheet.active .chapter-list-item.active') }),
-  bookmarks: isolatedPlayerCell({ dataset: 'full', route: PLAYER_ROUTE, overlay: true, interaction: 'player-add-bookmark-and-open-chapters', domSignature: sig('#chapter-sheet.active .bookmarks-section .bookmark-row', null, { '#chapter-sheet.active .bookmarks-section .bookmark-row': 1 }) }),
+  bookmarks: isolatedPlayerCell({ dataset: 'full', route: PLAYER_ROUTE, overlay: true, interaction: 'player-add-bookmark-and-open-bookmarks', domSignature: sig('#chapter-sheet.active #chapter-sheet-bookmarks:not([hidden]) .bookmark-row', null, { '#chapter-sheet.active #chapter-sheet-bookmarks:not([hidden]) .bookmark-row': 1 }) }),
   voice: isolatedPlayerCell({ dataset: 'full', route: PLAYER_ROUTE, overlay: true, interaction: 'player-open-voice', domSignature: sig('#voice-sheet.active #player-voice-list .voice-card') }),
   // The degraded dataset uses the genuine failing Chatterbox engine stub. The
   // selector is the product's visible down-engine card, not the engine status

@@ -37,7 +37,7 @@ function readerStatusHTML(data, user = { role: 'admin' }) {
 
 assert(index.includes('id="guide-view"'), 'guide has a full-screen view');
 assert(index.includes('id="guide-body"') && index.includes('aria-busy="false"'), 'guide body exposes loading state');
-assert(index.includes('id="guide-btn"') && index.includes('id="utility-guide-btn"'), 'guide is available from player controls');
+assert(/<div id="player-more-sheet"[\s\S]*id="guide-btn"[^>]*data-more-row[^>]*hidden/.test(index), 'guide is available from the player ••• menu');
 assert(!index.includes('id="guide-nonfiction-confirmed"'), 'the app does not repeat title-level rights acknowledgements');
 
 assert(app.includes("import { initBookGuide, openBookGuide, refreshGuideState } from './js/views/book-guide.js';"), 'app imports guide view module');
@@ -57,7 +57,10 @@ assert(!index.includes('qwen/qwen3.7-flash'), 'settings do not offer Qwen while 
 assert(index.includes('glm-5.2'), 'settings offer a ZDR-capable independent verifier');
 assert(settings.includes("'/api/book-guides/config/test'"), 'settings can run a bounded paid provider test');
 assert(settings.includes('This acknowledgement applies to the provider configuration, not each title.'), 'provider acknowledgement occurs at configuration time');
-assert(library.includes('data-book-guide-tag') && library.includes('Mark as nonfiction'), 'admins can explicitly tag nonfiction titles');
+assert(settings.includes('data-guide-tag-book') && settings.includes("/guide/category`, { category })") && settings.includes('Marked as nonfiction') &&
+  index.includes('id="book-guide-tags-list"') && index.indexOf('id="book-guide-tags-list"') > index.indexOf('data-settings-pane="guides"'),
+  'admins tag nonfiction titles in Settings › Study guides');
+assert(!library.includes('data-book-guide-tag') && !library.includes('Mark as nonfiction'), 'the library book menu no longer carries the admin tag action');
 assert(library.includes('data-book-guide=') && library.includes('Study guide'), 'tagged titles expose a study-guide action');
 assert(guide.includes('data-guide-tag-nonfiction') && guide.includes("apiSend('PUT', `${guidePath(activeBookId)}/category`"), 'untagged guide state can mark the title as nonfiction without leaving the view');
 assert(guide.includes('Mark this title as nonfiction') && guide.includes("status === 'needs-classification'"), 'untagged titles explain the exact eligibility action instead of reporting configuration unavailable');
@@ -76,7 +79,7 @@ assert(guide.includes('data-guide-audio-speed') && guide.includes('playbackRate'
 assert(app.includes('pauseBookPlayback') && guide.includes('deps.pauseBookPlayback?.()'), 'guide narration pauses book playback before starting');
 assert(guide.includes('LAST_SECTION_PREFIX') && guide.includes('localStorage.setItem'), 'guide keeps only browser-local section state');
 
-assert(/\.player-utility-row\s*\{[^}]*grid-auto-flow:\s*column;[^}]*grid-auto-columns:\s*minmax\(0, 1fr\);/.test(style), 'mobile player utilities give the guide button its own column without stranding an empty one when it is hidden');
+assert(!index.includes('id="utility-guide-btn"'), 'the study guide has one player entry point, in the ••• menu');
 assert(style.includes('#guide-view') && style.includes('.guide-source-link'), 'guide has view and source-link styles');
 assert(style.includes('.guide-sources > summary') && style.includes('min-height: var(--touch-min)'), 'source disclosures stay quiet while preserving touch targets');
 assert(style.includes('.guide-narration') && style.includes('.guide-narration-sections'), 'guide narration has responsive player styles');
@@ -91,7 +94,7 @@ assert(!index.toLowerCase().includes('certif') && !settings.includes('Needs cert
 assert(settings.includes("apiGet('/api/book-guides/config')") && settings.includes("apiSend('PUT', '/api/book-guides/config'") && settings.includes("apiSend('DELETE', '/api/book-guides/config')"), 'admin settings load, save, and clear guide configuration');
 assert(settings.includes("user.role !== 'admin'") && settings.includes("err.status === 403"), 'guide settings remain hidden from non-admin users');
 assert(guide.includes('await refreshGuideState();'), 'generation refreshes the canonical server state');
-assert(index.includes('id="guide-btn"') && index.includes('id="utility-guide-btn"') && guide.includes("toggleAttribute('hidden', !showEntry)"), 'player guide entry points follow feature or artifact availability');
+assert(index.includes('id="guide-btn"') && guide.includes("toggleAttribute('hidden', !showEntry)"), 'player guide entry points follow feature or artifact availability');
 assert(guide.includes('existing guide remains available'), 'disabling generation preserves existing guide access');
 assert(guide.includes('Could not create the guide'), 'guide renders actionable server failure details');
 const rawDestination = 'provider.example/internal/guide-route';

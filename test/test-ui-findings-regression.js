@@ -43,8 +43,17 @@ async function main() {
       assert.strictEqual(await page.evaluate(() => document.activeElement?.id), 'library-search-toggle');
       passed++;
 
-      const dismiss = await page.locator('.rail-dismiss').first().boundingBox();
-      assert(dismiss && dismiss.width >= 44 && dismiss.height >= 44, `rail dismiss is ${JSON.stringify(dismiss)}`);
+      // Continue cards are whole 44px+ targets; removing one from Continue
+      // moved into the book actions (press and hold the card).
+      const card = await page.locator('.rail-card').first().boundingBox();
+      assert(card && card.width >= 44 && card.height >= 44, `Continue card is ${JSON.stringify(card)}`);
+      await page.locator('.rail-card').first().dispatchEvent('contextmenu');
+      await page.locator('#book-actions-sheet.active').waitFor();
+      assert(await page.getByRole('menuitem', { name: 'Remove from Continue', exact: true }).isVisible());
+      const removeBox = await page.getByRole('menuitem', { name: 'Remove from Continue', exact: true }).boundingBox();
+      assert(removeBox.height >= 44, `Remove from Continue is ${JSON.stringify(removeBox)}`);
+      await page.keyboard.press('Escape');
+      await page.locator('#book-actions-sheet:not(.active)').waitFor({ state: 'attached' });
       const deleteStops = await page.locator('.delete-btn-reveal').evaluateAll(buttons => buttons.map(button => ({
         tabIndex: button.tabIndex,
         ariaHidden: button.getAttribute('aria-hidden')
@@ -59,17 +68,16 @@ async function main() {
       const browserContext = await context(1280, 800, 'library:full');
       const page = await browserContext.newPage();
       await page.goto(`${environment.origin}/#/library`, { waitUntil: 'networkidle' });
-      const contextRail = await page.locator('.library-context-rail').boundingBox();
+      // Desktop: the table sorted by Last played is the switcher, so the
+      // shelf starts right under the title row instead of below a rail.
       const controls = await page.locator('.library-controls').boundingBox();
       const firstBook = await page.locator('#library-list .book-item:not(.skeleton)').first().boundingBox();
-      assert(contextRail && controls && firstBook);
-      assert(firstBook.y < contextRail.y + contextRail.height - 40,
-        `library shelf still starts below its context rail: ${JSON.stringify({ contextRail, controls, firstBook })}`);
-      const labels = await page.locator('.header-action-label').evaluateAll(elements => elements.map(element => ({
-        text: element.textContent.trim(),
-        visible: element.getBoundingClientRect().width > 0
-      })));
-      assert(labels.length >= 3 && labels.every(label => label.visible));
+      assert(controls && firstBook);
+      assert(firstBook.y < 160, `library shelf starts too low on desktop: ${JSON.stringify({ controls, firstBook })}`);
+      const actions = await page.locator('.library-header .header-actions > button').evaluateAll(buttons => buttons
+        .filter(button => button.getBoundingClientRect().width > 0)
+        .map(button => ({ name: button.getAttribute('aria-label') || button.textContent.trim(), width: button.getBoundingClientRect().width })));
+      assert(actions.length >= 1 && actions.every(action => action.name && action.width >= 44), `header actions: ${JSON.stringify(actions)}`);
       passed++;
       await browserContext.close();
     }

@@ -36,6 +36,19 @@ async function visibleBookCount(page) {
   return page.locator('#library-list .book-item:not(.skeleton):not(.hidden)').count();
 }
 
+// Phones choose the scope from the large-title menu; wider screens use the
+// sidebar scope links. Both drive the same scope state.
+async function chooseScope(page, viewport, scope) {
+  if (viewport.width < 760) {
+    await page.locator('#library-scope-button').click();
+    await page.locator(`#library-scope-menu [data-scope-option="${scope}"]`).click();
+    assert.strictEqual(await page.locator('#library-scope-menu').isHidden(), true, `${viewport.name}: scope menu closes after a choice`);
+  } else {
+    // The docked sidebar replaces the header segmented control.
+    await page.locator(`.app-sidebar [data-shell-scope="${scope}"]`).click();
+  }
+}
+
 async function verifyViewport(browser, environment, viewport) {
   const context = await browser.newContext({
     viewport: { width: viewport.width, height: viewport.height },
@@ -84,10 +97,10 @@ async function verifyViewport(browser, environment, viewport) {
     assert.strictEqual(await partialCard.getAttribute('data-downloaded'), '0');
     assert.match(await partialCard.locator('[data-offline-status]').innerText(), /Partial 1\/3.*Continue/);
 
-    await page.locator('[data-library-tab="downloaded"]').click();
+    await chooseScope(page, viewport, 'downloaded');
     assert.strictEqual(await readyCard.isVisible(), true, `${viewport.name}: ready download missing from Downloaded`);
     assert.strictEqual(await partialCard.isVisible(), false, `${viewport.name}: incomplete download shown as Downloaded`);
-    await page.locator('[data-library-tab="all"]').click();
+    await chooseScope(page, viewport, 'all');
     assert.strictEqual(await visibleBookCount(page), initialCount, `${viewport.name}: Shared Library did not restore all cards`);
     await page.waitForTimeout(400);
 

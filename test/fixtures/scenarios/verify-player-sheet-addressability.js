@@ -10,7 +10,6 @@ const assert = require('node:assert');
 const { createHash } = require('node:crypto');
 const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 
 const projectRoot = path.resolve(__dirname, '../../..');
@@ -23,7 +22,8 @@ const cells = [
   { view: 'activity', state: 'active' }
 ];
 const variants = ['mobile', 'desktop'];
-const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), 'scenario-player-sheets-'));
+const outputDir = path.join(projectRoot, 'output/ui-rewrite-fixes/player-sheet-captures');
+fs.mkdirSync(outputDir, { recursive: true });
 
 function filename(viewport) {
   return `${viewport}_dark_nopreference_normal.png`;
@@ -47,7 +47,7 @@ try {
   }
   assert.deepStrictEqual(
     MATRIX.player.bookmarks.domSignature.exactly,
-    { '#chapter-sheet.active .bookmarks-section .bookmark-row': 1 },
+    { '#chapter-sheet.active #chapter-sheet-bookmarks:not([hidden]) .bookmark-row': 1 },
     'bookmark evidence must reject rows leaked from an earlier variant'
   );
   assert.strictEqual(MATRIX.player.chapters.route, HASH_ROUTE.player);
@@ -88,5 +88,5 @@ try {
 
   console.log('player sheet addressability and viewport regression: passed');
 } finally {
-  fs.rmSync(outputDir, { recursive: true, force: true });
+  console.log(`player sheet evidence retained: ${outputDir}`);
 }

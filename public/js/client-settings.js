@@ -3,17 +3,20 @@ import { showToast } from './ui/toast.js';
 import { readJSON, writeJSON } from './util/storage.js';
 
 const CLIENT_SETTINGS_KEY = 'xandrio_client_settings';
+const LOCAL_SCHEMA = 2;
 const DEFAULTS = {
   skipIntervalSeconds: 15,
   defaultSpeed: null,
-  progressDisplayMode: 'elapsed',
+  progressDisplayMode: 'remaining',
   defaultSearchSources: ['standardebooks', 'gutenberg'],
   smartRewindEnabled: true,
-  rollingOfflineEnabled: true
+  rollingOfflineEnabled: true,
+  shelfRowDensity: 'compact'
 };
 
 const ALLOWED_SKIP_INTERVALS = new Set([10, 15, 30]);
 const ALLOWED_PROGRESS_MODES = new Set(['elapsed', 'remaining']);
+const ALLOWED_ROW_DENSITIES = new Set(['compact', 'comfortable']);
 const ALLOWED_SEARCH_SOURCES = new Set(['standardebooks', 'gutenberg', 'annas', 'zlibrary', 'internetarchive', 'opds']);
 
 let settings = { ...DEFAULTS, ...readLocalSettings() };
@@ -47,15 +50,30 @@ function sanitize(source = {}) {
   if (typeof source.rollingOfflineEnabled === 'boolean') {
     next.rollingOfflineEnabled = source.rollingOfflineEnabled;
   }
+  if (ALLOWED_ROW_DENSITIES.has(source.shelfRowDensity)) {
+    next.shelfRowDensity = source.shelfRowDensity;
+  }
   return next;
 }
 
+// Only values that differ from the defaults are stored locally, so a changed
+// default reaches everyone who never chose. Blobs written before this schema
+// (no _v) held every default; their "elapsed" was the old default, not a
+// choice, so it is dropped. A choice saved to the profile still returns from
+// the server.
 function readLocalSettings() {
-  return sanitize(readJSON(CLIENT_SETTINGS_KEY, {}));
+  const stored = readJSON(CLIENT_SETTINGS_KEY, {}) || {};
+  const local = sanitize(stored);
+  if (stored._v !== LOCAL_SCHEMA && local.progressDisplayMode === 'elapsed') delete local.progressDisplayMode;
+  return local;
 }
 
 function writeLocalSettings() {
-  writeJSON(CLIENT_SETTINGS_KEY, settings);
+  const explicit = { _v: LOCAL_SCHEMA };
+  for (const key of Object.keys(settings)) {
+    if (JSON.stringify(settings[key]) !== JSON.stringify(DEFAULTS[key])) explicit[key] = settings[key];
+  }
+  writeJSON(CLIENT_SETTINGS_KEY, explicit);
 }
 
 function emitChange(key) {
@@ -105,7 +123,7 @@ export function getDefaultSpeed() {
 }
 
 export function getProgressDisplayMode() {
-  return settings.progressDisplayMode === 'remaining' ? 'remaining' : 'elapsed';
+  return settings.progressDisplayMode === 'elapsed' ? 'elapsed' : 'remaining';
 }
 
 export function getDefaultSearchSources() {
@@ -120,6 +138,12 @@ export function isSmartRewindEnabled() {
 
 export function isRollingOfflineEnabled() {
   return settings.rollingOfflineEnabled !== false;
+}
+
+// Library rows: 'compact' (72px, the default) or 'comfortable' (the taller
+// two-line rows).
+export function getShelfRowDensity() {
+  return settings.shelfRowDensity === 'comfortable' ? 'comfortable' : 'compact';
 }
 
 export function setClientSetting(key, value) {

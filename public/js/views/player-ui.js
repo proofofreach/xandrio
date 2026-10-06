@@ -1,12 +1,18 @@
 import { API_BASE, apiGet } from '../api.js';
-import { formatDuration, formatTime, escapeHTML, isIOSLike, needsReliablePlayback } from '../util/format.js';
+import { formatDuration, formatTime, escapeHTML, coverImageHTML, isIOSLike, needsReliablePlayback } from '../util/format.js';
 import { getProgressDisplayMode, setClientSetting } from '../client-settings.js';
 import { bookProgressInfo, normalizedChapterDurations } from './library.js';
 import { registerSheet } from '../ui/sheets.js';
+import { markInlineStatus, registerInlineStatus, showInlineConfirmation, showToast } from '../ui/toast.js';
+import { openRecentSheet } from '../ui/shell.js';
+// Namespace import: the per-book setting helpers are optional (the sheets
+// work adds them); the ••• menu falls back to deps.saveBookPlaybackSettings.
+import * as playbackSpeed from './playback-speed.js';
 import { readText, writeText } from '../util/storage.js';
-import { getPremiumChapterReadiness, isPremiumVoiceSelected } from './voices.js';
+import { getNarrationSummary, getPremiumChapterReadiness, isPremiumVoiceSelected } from './voices.js';
 import { bookTimelinePosition, bookTimelineSeekTarget } from '../util/book-timeline.mjs';
-import { chapterListItemState, chapterListOrdinal, chapterProgressContext, expandNumericChapterTitle, findPreferredStartChapterIndex, firstDisplaySentence } from '../util/chapter-labels.mjs';
+import { timeLeftLabel, formatSpeed } from '../util/time-left.mjs';
+import { friendlyChapterType, chapterListItemState, chapterListOrdinal, chapterNumbering, chapterPositionLabel, chapterProgressContext, sharedTitlePrefixes, expandNumericChapterTitle, findPreferredStartChapterIndex, firstDisplaySentence } from '../util/chapter-labels.mjs';
 
 const ICON_PREPARING = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" class="icon" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M7 3h10M7 21h10M8 3v4l4 5-4 5v4M16 3v4l-4 5 4 5v4"/></svg>';
 const TIME_DISPLAY_KEY = 'xandrio_time_display';
@@ -51,7 +57,17 @@ export function initPlayerUI(options = {}) {
   loadingDetail = document.getElementById('loading-detail');
   audioLoadingFill = document.getElementById('audio-loading-fill');
   audioLoadingActions = document.getElementById('audio-loading-actions');
+  // Inline status areas: a toast repeating what they show is suppressed.
+  registerInlineStatus(audioLoading);
+  registerInlineStatus(playbackReliability);
+  registerInlineStatus(playbackResumePrompt);
+  registerInlineStatus(document.getElementById('hq-voice-prep'));
   playPauseBtn = document.getElementById('play-pause-btn');
+  document.getElementById('player-recent-btn')?.addEventListener('click', () => openRecentSheet());
+  initNarration();
+  initMoreMenu();
+  initBookSeekSheet();
+  initPaneUpNext();
   document.getElementById('progress-slider')?.addEventListener('keydown', handleProgressKey);
   document.querySelectorAll('[data-progress-scope]').forEach(button => {
     button.addEventListener('click', () => setPlaybackProgressScope(button.dataset.progressScope));
@@ -59,7 +75,8 @@ export function initPlayerUI(options = {}) {
   chapterSheetController = registerSheet(chapterSheet, {
     backdrop: chapterSheetBackdrop,
     closeBtn: chapterSheetClose,
-    focusTarget: () => chapterSheet?.querySelector('.chapter-sheet-panel') || chapterSheet
+    focusTarget: () => chapterSheet?.querySelector('.chapter-sheet-panel') || chapterSheet,
+    initialFocus: () => document.getElementById('chapter-sheet-title')
   });
   chapterSheetBtn?.addEventListener('click', openChapterSheet);
   chapterList?.addEventListener('click', (e) => {
@@ -75,6 +92,7 @@ export function initPlayerUI(options = {}) {
 }
 
 let lastChunkTimeData = null;
+let lastNarrationTick = 0;
 
 function completeBookTimeline() {
   return normalizedChapterDurations(deps.getCurrentBook?.(), deps.getChapters?.().length || 0);
@@ -88,8 +106,9 @@ function paintProgressLabels({ current, total, remaining, percent, context }) {
   const contextEl = document.getElementById('player-progress-context');
   if (currentEl) currentEl.textContent = formatTime(current);
   if (totalEl) {
+    // "−31:22": listening time left in the chapter at the current speed.
     totalEl.textContent = getTimeDisplayMode() === 'remaining'
-      ? `-${formatTime(listeningRemaining)} left`
+      ? `−${formatTime(listeningRemaining)}`
       : formatTime(total);
     totalEl.setAttribute('aria-label', getTimeDisplayMode() === 'remaining'
       ? `${formatTime(listeningRemaining)} listening time left at ${rate}x. Show total audio time`
@@ -185,6 +204,13 @@ export function paintChapterTimes(data) {
   if (data) lastChunkTimeData = data;
   if (!data) return;
   syncPlaybackProgressScope();
+  syncMiniPlayerTimeLeft();
+  // "ready ahead" shrinks as playback moves; refresh it now and then.
+  const now = Date.now();
+  if (now - lastNarrationTick > 5000) {
+    lastNarrationTick = now;
+    syncNarration();
+  }
   const durations = completeBookTimeline();
   if (playbackProgressScope === 'book' && durations) {
     const position = bookTimelinePosition(durations, deps.getCurrentChapter(), data.currentTime);
@@ -262,6 +288,7 @@ export function setPlaybackReliabilityState(state, text) {
   const shouldShow = needsReliablePlayback() && isPlaybackActionRequired(normalizedState);
   playbackReliability.dataset.state = normalizedState;
   playbackReliability.hidden = !shouldShow;
+  markInlineStatus(playbackReliability, shouldShow && normalizedState === 'resume' ? 'playback-interrupted' : null);
   if (shouldShow) playbackReliabilityText.textContent = text;
   syncMiniPlayerInfo();
 }
@@ -406,57 +433,76 @@ function extractTitleLikeSubtitle(text = '') {
 
 export function updateChapterTrigger() {
   updateBookProgress();
-  if (!chapterTriggerTitle || !deps.getChapters()[deps.getCurrentChapter()]) return;
-  const chapter = deps.getChapters()[deps.getCurrentChapter()];
-  const title = displayChapterTitle(chapter, deps.getCurrentChapter());
-  const dur = formatDuration(chapter.estimatedDuration);
-  chapterTriggerTitle.textContent = dur ? `${title} (${dur})` : title;
+  syncNarration();
+  const chapters = deps.getChapters?.() || [];
+  const index = deps.getCurrentChapter?.() || 0;
+  if (!chapterTriggerTitle || !chapters[index]) return;
+  const { ordinal, name } = chapterRowLabels(chapters, index);
+  const ordinalEl = document.getElementById('chapter-trigger-ordinal');
+  if (ordinalEl) ordinalEl.textContent = ordinal;
+  chapterTriggerTitle.textContent = name;
+  chapterTriggerTitle.hidden = !name;
+  chapterSheetBtn?.setAttribute('aria-label', `${[ordinal, name].filter(Boolean).join(', ')}. Open chapter list`);
 }
 
-// Book-level progress line under the chapter scrubber. Chapter granularity
-// only (per-chapter durations aren't reliably known client-side); reuses the
-// same bookProgressInfo() math as the library progress bars.
-export function updateBookProgress() {
-  const wrapEl = document.getElementById('player-book-progress');
-  const fillEl = document.getElementById('player-book-progress-fill');
-  const textEl = document.getElementById('book-progress-text');
-  if (!wrapEl) return;
-
-  if (!deps.getCurrentBook() || !deps.getChapters().length) {
-    wrapEl.hidden = true;
-    updateStartOverButton(null);
-    return;
+// The chapter row: "Chapter 12 of 50" over the chapter's own name. A name
+// that would only repeat the number keeps its full title.
+export function chapterRowLabels(chapters, index) {
+  const chapter = chapters?.[index];
+  if (!chapter) return { ordinal: '', name: '' };
+  const title = displayChapterTitle(chapter, index);
+  // One numbering rule (chapterNumbering): an unnumbered section (Prologue,
+  // Copyright, a part divider) is shown by its own name alone.
+  if (!chapterNumbering(chapters).numbers[index]) return { ordinal: title, name: '' };
+  const ordinal = chapterPositionLabel(chapters, index);
+  let name = title;
+  if (/^Chapter \d+ of \d+$/.test(ordinal)) {
+    const rest = title.replace(/^(?:chapter|ch\.?)\s+[\w-]+\s*[:.\-–—]?\s*/i, '').trim();
+    if (rest && rest !== title) name = rest;
   }
+  return { ordinal, name };
+}
 
-  const progress = bookProgressInfo(deps.getCurrentBook(), {
+// The open book's progress at the live player speed. One computation feeds
+// the player's book sentence and the mini player.
+function currentBookProgress() {
+  const book = deps.getCurrentBook?.();
+  if (!book || !deps.getChapters?.().length) return null;
+  return bookProgressInfo(book, {
     chapterIndex: deps.getCurrentChapter(),
     timestamp: deps.getCurrentChapterTime?.() || 0,
-    playbackRate: deps.getCurrentPlaybackSpeed(),
     finished: deps.getCurrentBookFinished()
-  });
-
-  if (!progress || progress.percent == null) {
-    wrapEl.hidden = true;
-    updateStartOverButton(null);
-    return;
-  }
-
-  wrapEl.hidden = playbackProgressScope === 'book';
-  if (fillEl) fillEl.style.width = `${progress.percent}%`;
-  if (textEl) {
-    const parts = [`${progress.percent}%`];
-    if (progress.timeLeft != null) parts.push(`${formatDuration(progress.timeLeft)} left`);
-    textEl.textContent = parts.join(' · ');
-    wrapEl.setAttribute('aria-valuenow', String(progress.percent));
-    wrapEl.setAttribute('aria-valuetext', `Book ${parts.join(', ')}`);
-  }
-  updateStartOverButton(progress);
+  }, deps.getCurrentPlaybackSpeed());
 }
 
-function updateStartOverButton(progress = null) {
+// "9h 12m left in the book at 1.25×", from the shared time-left helper.
+export function bookLineText(progress) {
+  if (!progress || progress.timeLeft == null) return '';
+  if (progress.timeLeft === 0) return 'Finished';
+  return `${timeLeftLabel(progress.timeLeft, progress.speed, { withSpeed: false })} in the book at ${formatSpeed(progress.speed)}`;
+}
+
+// Book position is one sentence under the chapter scrubber; book-wide
+// seeking lives in the ••• menu (Go to position in book).
+let lastBookLine = null;
+export function updateBookProgress() {
+  syncMiniPlayerTimeLeft();
+  const lineEl = document.getElementById('player-book-line');
+  const progress = deps.getCurrentBook?.() && deps.getChapters?.().length ? currentBookProgress() : null;
+  const text = bookLineText(progress);
+  if (lineEl && text !== lastBookLine) {
+    lineEl.textContent = text;
+    lineEl.hidden = !text;
+    lastBookLine = text;
+  }
+  updateStartOverButton();
+}
+
+// Start over sits in the ••• menu behind its confirmation, so it is offered
+// for any open book rather than only near the end.
+function updateStartOverButton() {
   if (!startOverBtn) return;
-  const shouldShow = Boolean(deps.getCurrentBookFinished()) || Boolean(progress && Number.isFinite(progress.percent) && progress.percent >= 95);
-  startOverBtn.hidden = !shouldShow;
+  startOverBtn.hidden = !deps.getCurrentBook?.();
 }
 
 // Samples a tiny cover image and turns it into a restrained solid player tint.
@@ -524,28 +570,51 @@ export function renderChapterList() {
     return `${prefix}<div class="chapter-list-group" role="group" aria-label="${escapeHTML(heading)}">`
       + `<p class="chapter-list-heading">${escapeHTML(heading)}</p>`;
   };
-  chapterList.innerHTML = deps.getChapters().map((chapter, index) => {
+  const closeGroup = () => {
+    if (!openGroup) return '';
+    openGroup = false;
+    return '</div>';
+  };
+  const chapters = deps.getChapters();
+  // Without authored headings, rows that all start with the same part name
+  // ("Part I: Sick Kids — Chapter 1", "… — Chapter 2") print that name once
+  // as a group heading and keep only what differs.
+  const derived = chapters.some(chapter => chapter?.groupHeading) ? [] : sharedTitlePrefixes(chapters);
+  let derivedHeading = null;
+  chapterList.innerHTML = chapters.map((chapter, index) => {
     if (chapter.empty) return '';
-    const groupHeading = chapter.groupHeading ? openGroupFor(chapter.groupHeading) : '';
+    let groupHeading = '';
+    const shared = derived[index] || null;
+    if (chapter.groupHeading) {
+      groupHeading = openGroupFor(chapter.groupHeading);
+    } else if (shared && shared.heading !== derivedHeading) {
+      groupHeading = openGroupFor(shared.heading);
+    } else if (!shared && derivedHeading) {
+      groupHeading = closeGroup();
+    }
+    if (!chapter.groupHeading) derivedHeading = shared?.heading || null;
     const itemState = chapterListItemState(index, deps.getCurrentChapter());
     const isActive = itemState === 'active';
-    const title = displayChapterTitle(chapter, index);
+    const title = displayChapterTitle(shared ? { ...chapter, title: shared.rest } : chapter, index);
     const dur = formatDuration(durations?.[index] || chapter.estimatedDuration);
-    const typeLabel = chapter.type && chapter.type !== 'content' && chapter.type !== 'chapter'
-      ? chapter.type
+    const friendlyType = chapter.type && chapter.type !== 'content' && chapter.type !== 'chapter'
+      ? friendlyChapterType(chapter.type)
       : '';
+    // "Copyright / Copyright" says nothing twice.
+    const typeLabel = friendlyType.toLowerCase() === title.toLowerCase() ? '' : friendlyType;
+    const metaLabel = [isActive ? 'Now playing' : '', typeLabel].filter(Boolean).join(' \u00b7 ');
     const classes = ['chapter-list-item'];
     if (isActive) classes.push('active');
     const premiumDot = premiumMode && premiumReadiness[index]
       ? '<span class="chapter-premium-dot" role="img" aria-label="Premium audio ready"></span>'
       : '';
-    const ordinal = chapterListOrdinal(deps.getChapters(), index);
+    const ordinal = chapterListOrdinal(chapters, index);
     return `${groupHeading}
       <button class="${classes.join(' ')}" type="button" role="option" aria-selected="${isActive}" data-chapter-index="${index}">
         <span class="chapter-list-index">${premiumDot}${ordinal}</span>
         <span class="chapter-list-copy">
           <span class="chapter-list-title">${escapeHTML(title)}</span>
-          <span class="chapter-list-meta">${escapeHTML(typeLabel)}</span>
+          <span class="chapter-list-meta">${escapeHTML(metaLabel)}</span>
         </span>
         <span class="chapter-list-duration">${dur ? escapeHTML(dur) : ''}</span>
         <span class="chapter-list-current" aria-hidden="true">${isActive ? ICON_NOW_PLAYING : ''}</span>
@@ -656,6 +725,7 @@ export function showAudioLoading(text, options = {}) {
   if (audioLoading && loadingText) {
     loadingText.textContent = text;
     const status = options.status || 'preparing';
+    markInlineStatus(audioLoading, status === 'error' ? (options.toastKey || 'audio-error') : null);
     audioLoading.dataset.status = status;
     audioLoading.classList.toggle('is-indeterminate', Boolean(options.indeterminate));
     if (loadingDetail) {
@@ -683,6 +753,7 @@ export function hideAudioLoading() {
   if (audioLoading) {
     audioLoading.style.display = 'none';
     audioLoading.dataset.status = '';
+    markInlineStatus(audioLoading, null);
     audioLoading.classList.remove('is-indeterminate');
     narrationPreparingStartedAt = 0;
     stopAudioLoadingPoll();
@@ -712,6 +783,7 @@ export function setChunkOverlayState(state, options = {}) {
     stopAudioLoadingPoll();
     audioLoading.dataset.status = state;
     audioLoading.classList.remove('is-indeterminate');
+    markInlineStatus(audioLoading, options.toastKey || (state === 'error' ? 'audio-error' : null));
     if (loadingText) loadingText.textContent = options.message || 'Narration needs attention';
     if (loadingDetail) loadingDetail.textContent = options.detail || '';
     if (audioLoadingFill) audioLoadingFill.style.width = '0%';
@@ -738,7 +810,7 @@ function renderOverlayActions(options) {
   }
   const dismissBtn = document.createElement('button');
   dismissBtn.type = 'button';
-  dismissBtn.className = 'btn-ghost btn-sm';
+  dismissBtn.className = 'pl-btn pl-btn-secondary';
   dismissBtn.textContent = options.dismissOnly ? 'OK' : 'Dismiss';
   dismissBtn.addEventListener('click', () => hideAudioLoading());
   if (options.dismissOnly) {
@@ -748,17 +820,441 @@ function renderOverlayActions(options) {
   }
   const retryBtn = document.createElement('button');
   retryBtn.type = 'button';
-  retryBtn.className = 'btn-secondary btn-sm';
-  retryBtn.textContent = options.retryLabel || 'Try again';
-  retryBtn.addEventListener('click', () => {
+  retryBtn.className = 'pl-btn pl-btn-primary';
+  retryBtn.textContent = options.retryLabel || 'Retry';
+  const retry = () => {
     hideAudioLoading();
     if (typeof options.onRetry === 'function') options.onRetry();
     else deps.loadChapter?.(deps.getCurrentChapter?.());
+  };
+  retryBtn.addEventListener('click', retry);
+  // The second recovery path: switch this book to the instant narrator when
+  // one is offered (then retry once the choice is saved), otherwise open the
+  // narrator picker.
+  const fallback = document.getElementById('narration-fallback');
+  const canUseInstant = fallback && !fallback.hidden && fallback.value !== 'instant';
+  const altBtn = document.createElement('button');
+  altBtn.type = 'button';
+  altBtn.className = 'pl-btn pl-btn-secondary';
+  altBtn.textContent = canUseInstant ? 'Use instant narrator' : 'Change narrator';
+  altBtn.addEventListener('click', () => {
+    if (canUseInstant) chooseNarrationFallback('instant').then(retry);
+    else document.getElementById('player-voice-status')?.click();
   });
-  audioLoadingActions.append(retryBtn, dismissBtn);
+  dismissBtn.className = 'pl-textbtn pl-card-dismiss';
+  audioLoadingActions.append(retryBtn, altBtn, dismissBtn);
   audioLoadingActions.hidden = false;
 }
 
+
+// --- Narration line and cards ---
+// One line, "Ryan · 2h 10m ready ahead", that opens the narrator picker. It
+// expands into a card while the book prepares, while a chapter loads, after
+// a failure, or when playback needs a tap. voices.js keeps painting the
+// narrator name, the preparation panel (#hq-voice-prep*) and the fallback
+// choice; this module only composes them, so every preparation, recovery
+// and reliability behaviour stays where it was.
+let narrationEl = null;
+let narrationLine = null;
+let narrationReady = null;
+let narrationCache = null;
+let hqPrep = null;
+let hqPrepBtn = null;
+let hqPrepHeading = null;
+let hqPrepStretch = null;
+let hqPrepDetail = null;
+let hqPrepChoice = null;
+let hqPrepActions = null;
+let hqPrepHeadAction = null;
+let narrationSyncQueued = false;
+
+function initNarration() {
+  narrationEl = document.getElementById('player-narration');
+  narrationLine = document.getElementById('player-voice-status');
+  narrationReady = document.getElementById('player-narration-ready');
+  narrationCache = document.getElementById('player-voice-cache');
+  hqPrep = document.getElementById('hq-voice-prep');
+  hqPrepBtn = document.getElementById('hq-voice-prep-btn');
+  hqPrepHeading = document.getElementById('hq-prep-heading');
+  hqPrepStretch = document.getElementById('hq-prep-stretch');
+  hqPrepDetail = document.getElementById('hq-voice-prep-detail');
+  hqPrepChoice = document.getElementById('hq-prep-choice');
+  hqPrepActions = document.getElementById('hq-prep-actions');
+  hqPrepHeadAction = hqPrep?.querySelector('.pl-card-head-action') || null;
+  if (!narrationEl) return;
+
+  narrationEl.addEventListener('click', event => {
+    const choice = event.target.closest('[data-fallback-choice]');
+    if (!choice || choice.disabled) return;
+    void chooseNarrationFallback(choice.dataset.fallbackChoice);
+  });
+
+  if (typeof MutationObserver !== 'function') return;
+  const observer = new MutationObserver(scheduleNarrationSync);
+  const watch = (el, options) => { if (el) observer.observe(el, options); };
+  watch(hqPrep, { attributes: true, attributeFilter: ['hidden', 'data-state'] });
+  for (const id of ['hq-voice-prep-title', 'hq-voice-prep-detail', 'hq-voice-prep-count', 'player-voice-name', 'player-voice-cache']) {
+    watch(document.getElementById(id), { childList: true, characterData: true, subtree: true });
+  }
+  watch(hqPrepBtn, { childList: true, characterData: true, subtree: true, attributes: true, attributeFilter: ['disabled'] });
+  watch(document.getElementById('narration-fallback'), {
+    attributes: true, attributeFilter: ['hidden', 'disabled'], childList: true, characterData: true, subtree: true
+  });
+  watch(audioLoading, { attributes: true, attributeFilter: ['style', 'data-status'] });
+  watch(playbackReliability, { attributes: true, attributeFilter: ['hidden'] });
+  watch(playbackResumePrompt, { attributes: true, attributeFilter: ['hidden'] });
+  syncNarration();
+}
+
+function scheduleNarrationSync() {
+  if (narrationSyncQueued) return;
+  narrationSyncQueued = true;
+  queueMicrotask(() => {
+    narrationSyncQueued = false;
+    syncNarration();
+  });
+}
+
+// Saves the "if a chapter isn't ready" choice through the existing control
+// (voices.js persists it on change). Resolves once the save settles.
+export function chooseNarrationFallback(value) {
+  const select = document.getElementById('narration-fallback');
+  if (!select || select.hidden || select.disabled) return Promise.resolve(false);
+  if (select.value === value) return Promise.resolve(true);
+  select.value = value;
+  select.dispatchEvent(new Event('change', { bubbles: true }));
+  scheduleNarrationSync();
+  return new Promise(resolve => {
+    const started = Date.now();
+    const check = () => {
+      if (!select.disabled || Date.now() - started > 8000) resolve(true);
+      else setTimeout(check, 100);
+    };
+    setTimeout(check, 50);
+  });
+}
+
+// Listening time already prepared from the current position at the current
+// speed, from the narration summary voices.js keeps for the player.
+function readyAhead(summary) {
+  if (summary.readyAheadSeconds === null) return null;
+  return {
+    seconds: summary.readyAheadSeconds,
+    firstUnready: summary.firstUnreadyChapter,
+    ready: summary.readyChapters,
+    total: summary.totalChapters
+  };
+}
+
+function readyAheadText(ahead, state) {
+  if (state === 'ready' || (ahead && ahead.firstUnready === null && ahead.ready > 0)) return 'All ready';
+  if (!ahead) return '';
+  if (ahead.seconds >= 60) return `${formatDuration(ahead.seconds)} ready ahead`;
+  return state === 'generating' ? 'Preparing' : 'Not ready yet';
+}
+
+function isShownEl(el) {
+  return Boolean(el && !el.hidden && el.style.display !== 'none');
+}
+
+export function syncNarration() {
+  if (!narrationEl) return;
+  const summary = getNarrationSummary({
+    speed: deps.getCurrentPlaybackSpeed?.(),
+    chapterTime: deps.getCurrentChapterTime?.() || 0
+  });
+  const name = summary.name;
+  const preparingName = summary.selectedName;
+  const hqVisible = Boolean(hqPrep && !hqPrep.hidden);
+  const hqState = hqPrep?.dataset.state || 'idle';
+  const hqError = hqVisible && hqState === 'error';
+  const hqCard = hqVisible && !['ready', 'loading'].includes(hqState);
+  const loadingShown = isShownEl(audioLoading);
+  const loadingStatus = audioLoading?.dataset.status || '';
+  const audioError = loadingShown && loadingStatus === 'error';
+  const ahead = hqVisible ? readyAhead(summary) : null;
+  const fallback = document.getElementById('narration-fallback');
+  const fallbackOffered = Boolean(fallback && !fallback.hidden);
+
+  // Keep the actual narrator and useful readiness on one compact line. The
+  // engine remains in its accessible label and narrator-selection sheet.
+  const ready = hqVisible && !summary.differsFromSelected ? readyAheadText(ahead, hqState) : '';
+  const lineParts = [ready].filter(Boolean);
+  if (narrationReady) {
+    narrationReady.textContent = lineParts.length ? ` · ${lineParts.join(' · ')}` : '';
+    narrationReady.hidden = !lineParts.length;
+  }
+  if (narrationCache) narrationCache.hidden = !summary.differsFromSelected;
+  const spoken = [name, summary.engineLabel, ready, summary.differsFromSelected ? narrationCache?.textContent : ''].filter(Boolean);
+  narrationLine?.setAttribute('aria-label', `Narration: ${spoken.join(', ')}. Change narrator`);
+  const moreNarrator = document.getElementById('player-more-narrator');
+  if (moreNarrator) moreNarrator.textContent = name;
+
+  // The preparation card.
+  if (hqPrep) {
+    hqPrep.classList.toggle('is-collapsed', !hqCard);
+    hqPrep.classList.toggle('is-error', hqError);
+    markInlineStatus(hqPrep, hqError ? 'narration-prep-error' : null);
+    const chapterNumbers = chapterNumbering(deps.getChapters?.());
+    const readiness = getPremiumChapterReadiness();
+    const countedChapters = chapterNumbers.numbers.filter(Boolean).length;
+    const readyChapters = chapterNumbers.numbers.filter((number, index) => number && readiness[index]).length;
+    const counts = ahead && countedChapters ? `${readyChapters} of ${countedChapters} chapters` : '';
+    let heading;
+    if (hqError) {
+      const at = ahead?.firstUnready != null ? ` at ${chapterPositionLabel(deps.getChapters?.(), ahead.firstUnready, { withTotal: false })}` : '';
+      heading = `<strong>Narration failed</strong>${escapeHTML(at)} · ${escapeHTML(preparingName)}`;
+    } else if (counts) {
+      const lead = hqState === 'generating' ? `Preparing with ${preparingName}` : preparingName;
+      heading = `<strong>${escapeHTML(lead)}</strong> · ${escapeHTML(counts)}`;
+    } else {
+      heading = `<strong>${escapeHTML(document.getElementById('hq-voice-prep-title')?.textContent || name)}</strong>`;
+    }
+    if (hqPrepHeading && hqPrepHeading.innerHTML !== heading) hqPrepHeading.innerHTML = heading;
+
+    const stretchParts = [];
+    if (ahead && !hqError) {
+      if (ahead.seconds >= 60) stretchParts.push(`${formatDuration(ahead.seconds)} ready ahead`);
+      if (ahead.firstUnready !== null) stretchParts.push(`${chapterPositionLabel(deps.getChapters?.(), ahead.firstUnready, { withTotal: false })} not ready yet`);
+    }
+    const stretch = stretchParts.join(' · ');
+    if (hqPrepStretch) {
+      if (hqPrepStretch.textContent !== stretch) hqPrepStretch.textContent = stretch;
+      hqPrepStretch.hidden = !stretch;
+    }
+    // voices.js words every state; while preparing runs normally the stretch
+    // above already says it, unless the status is stale.
+    const detailText = hqPrepDetail?.textContent || '';
+    if (hqPrepDetail) hqPrepDetail.hidden = hqState === 'generating' && Boolean(stretch) && !/^Reconnecting/.test(detailText);
+
+    // Pause / Resume / Prepare sit in the head; Retry becomes a full button.
+    if (hqPrepBtn) {
+      const home = hqError ? hqPrepActions : hqPrepHeadAction;
+      if (home && hqPrepBtn.parentElement !== home) home.prepend(hqPrepBtn);
+      hqPrepBtn.className = hqError ? 'pl-btn pl-btn-primary' : 'pl-textbtn';
+      const label = hqPrepBtn.textContent.trim();
+      hqPrepBtn.setAttribute('aria-label', label === 'Pause' ? 'Pause preparation'
+        : label === 'Resume' ? 'Resume preparation' : label === 'Retry' ? 'Retry preparation' : label);
+    }
+    if (hqPrepActions) {
+      hqPrepActions.hidden = !hqError;
+      const instant = hqPrepActions.querySelector('[data-fallback-choice="instant"]');
+      if (instant) instant.hidden = !fallbackOffered || fallback.value === 'instant';
+    }
+    if (hqPrepChoice) {
+      hqPrepChoice.hidden = !fallbackOffered || hqError;
+      if (fallbackOffered) {
+        hqPrepChoice.querySelectorAll('[data-fallback-choice]').forEach(chip => {
+          const value = chip.dataset.fallbackChoice;
+          const option = [...fallback.options].find(item => item.value === value);
+          const label = value === 'wait' ? (option?.textContent || 'Wait') : 'Instant narrator';
+          if (chip.textContent !== label) chip.textContent = label;
+          if (value === 'instant' && option) chip.title = option.textContent;
+          chip.setAttribute('aria-pressed', String(fallback.value === value));
+          chip.disabled = fallback.disabled;
+        });
+      }
+    }
+  }
+
+  // The chapter-loading card sets its own glyph from its status (CSS).
+  const failed = hqError || audioError;
+  narrationEl.dataset.mode = failed ? 'failed' : (hqCard || loadingShown ? 'card' : 'line');
+  // The card names the narrator itself, so the line steps aside for it.
+  if (narrationLine) narrationLine.hidden = (hqCard || audioError) && !summary.differsFromSelected;
+}
+
+// --- ••• menu ---
+let moreSheetController = null;
+let moreMenuReplaying = false;
+
+function waitForSheetClose() {
+  return new Promise(resolve => {
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      window.removeEventListener('popstate', finish);
+      setTimeout(resolve, 0);
+    };
+    window.addEventListener('popstate', finish);
+    setTimeout(finish, 350);
+  });
+}
+
+function initMoreMenu() {
+  const sheet = document.getElementById('player-more-sheet');
+  if (!sheet) return;
+  moreSheetController = registerSheet(sheet, {
+    backdrop: document.getElementById('player-more-backdrop'),
+    closeBtn: document.getElementById('player-more-close'),
+    focusTarget: () => sheet.querySelector('.player-more-panel'),
+    initialFocus: () => document.getElementById('player-more-title'),
+    onOpen: syncMoreMenu
+  });
+  document.getElementById('player-more-btn')?.addEventListener('click', () => moreSheetController.open());
+
+  // A row closes the menu first, then runs its existing action (which may
+  // open its own sheet), so the history-backed sheets never interleave.
+  // Programmatic clicks while the menu is closed (keyboard shortcuts) pass
+  // straight through.
+  sheet.addEventListener('click', event => {
+    const row = event.target.closest('[data-more-row]');
+    if (!row || moreMenuReplaying || !sheet.classList.contains('active')) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    if (row.disabled) return;
+    moreSheetController.dismiss();
+    waitForSheetClose().then(() => {
+      moreMenuReplaying = true;
+      try { row.click(); } finally { moreMenuReplaying = false; }
+    });
+  }, true);
+
+  document.getElementById('player-queue-btn')?.addEventListener('click', () => {
+    const book = deps.getCurrentBook?.();
+    if (book?.id) deps.addToListeningQueue?.(book.id);
+  });
+  document.getElementById('player-book-seek-btn')?.addEventListener('click', openBookSeekSheet);
+
+  sheet.querySelectorAll('[data-player-book-setting]').forEach(button => {
+    button.addEventListener('click', () => {
+      const key = button.dataset.playerBookSetting;
+      const choice = button.dataset.choice;
+      void saveBookSettingFromMenu(key, choice);
+    });
+  });
+}
+
+function syncMoreMenu() {
+  const hasTimeline = Boolean(completeBookTimeline());
+  const seekBtn = document.getElementById('player-book-seek-btn');
+  if (seekBtn) seekBtn.disabled = !hasTimeline;
+  const note = document.getElementById('player-book-seek-note');
+  if (note) note.hidden = hasTimeline;
+  syncBookSettingControls();
+  syncNarration();
+}
+
+function bookSettingChoice(key) {
+  if (typeof playbackSpeed.getBookPlaybackSettingChoice === 'function') {
+    return playbackSpeed.getBookPlaybackSettingChoice(key);
+  }
+  const settings = deps.getCurrentBookPlaybackSettings?.() || {};
+  return Object.hasOwn(settings, key) ? (settings[key] ? 'on' : 'off') : 'default';
+}
+
+function paintBookSettingChoice(key, choice) {
+  document.querySelectorAll(`[data-player-book-setting="${key}"]`).forEach(button => {
+    button.setAttribute('aria-pressed', String(button.dataset.choice === choice));
+  });
+}
+
+function syncBookSettingControls() {
+  for (const key of ['smartRewindEnabled', 'rollingOfflineEnabled']) paintBookSettingChoice(key, bookSettingChoice(key));
+}
+
+// Per-book Smart rewind and Automatic cache. Uses the speed module's
+// serialized per-book save when it is available, otherwise the same
+// saveBookPlaybackSettings path in order.
+let menuSettingChain = Promise.resolve();
+async function saveBookSettingFromMenu(key, choice) {
+  const book = deps.getCurrentBook?.();
+  if (!book) return;
+  const value = choice === 'default' ? null : choice === 'on';
+  paintBookSettingChoice(key, choice);
+  let request;
+  if (typeof playbackSpeed.setBookPlaybackSetting === 'function') {
+    request = Promise.resolve(playbackSpeed.setBookPlaybackSetting(key, value));
+  } else {
+    if (!deps.saveBookPlaybackSettings) return;
+    request = menuSettingChain.then(() => deps.saveBookPlaybackSettings(book.id, { [key]: value }));
+    menuSettingChain = request.catch(() => undefined);
+    request = request.catch(error => {
+      showToast('Could not save book settings', 'error');
+      throw error;
+    });
+  }
+  try { await request; } catch {}
+  if (deps.getCurrentBook?.() === book) syncBookSettingControls();
+}
+
+// --- Go to position in book ---
+let bookSeekController = null;
+let bookSeekSlider = null;
+
+function initBookSeekSheet() {
+  const sheet = document.getElementById('book-seek-sheet');
+  if (!sheet) return;
+  bookSeekSlider = document.getElementById('book-seek-slider');
+  bookSeekController = registerSheet(sheet, {
+    backdrop: document.getElementById('book-seek-backdrop'),
+    closeBtn: document.getElementById('book-seek-close'),
+    focusTarget: () => sheet.querySelector('.book-seek-panel'),
+    initialFocus: () => document.getElementById('book-seek-title'),
+    onOpen: syncBookSeekSheet
+  });
+  bookSeekSlider?.addEventListener('input', paintBookSeekPreview);
+  bookSeekSlider?.addEventListener('keydown', event => {
+    // Arrow keys move one minute; Page keys ten.
+    const total = completeBookTimeline()?.reduce((sum, value) => sum + Number(value), 0) || 0;
+    const step = { ArrowLeft: -60, ArrowDown: -60, ArrowRight: 60, ArrowUp: 60, PageDown: -600, PageUp: 600 }[event.key];
+    if (!step || !(total > 0) || event.altKey || event.ctrlKey || event.metaKey) return;
+    event.preventDefault();
+    bookSeekSlider.value = Math.max(0, Math.min(100, Number(bookSeekSlider.value) + step / total * 100));
+    paintBookSeekPreview();
+  });
+  document.getElementById('book-seek-cancel')?.addEventListener('click', () => bookSeekController.dismiss());
+  document.getElementById('book-seek-go')?.addEventListener('click', () => {
+    const percent = Number(bookSeekSlider?.value) || 0;
+    bookSeekController.dismiss();
+    waitForSheetClose().then(() => {
+      Promise.resolve(deps.seekAcrossBook?.(percent)).catch(error => console.error('Book seek failed:', error));
+    });
+  });
+}
+
+export function openBookSeekSheet() {
+  if (!completeBookTimeline()) return;
+  bookSeekController?.open();
+}
+
+function syncBookSeekSheet() {
+  const position = bookTimelinePosition(completeBookTimeline(), deps.getCurrentChapter?.(), deps.getCurrentChapterTime?.() || 0);
+  if (bookSeekSlider) bookSeekSlider.value = position ? position.percent : 0;
+  paintBookSeekPreview();
+}
+
+function paintBookSeekPreview() {
+  const percent = Number(bookSeekSlider?.value) || 0;
+  const target = getBookSeekTarget(percent);
+  const preview = document.getElementById('book-seek-preview');
+  bookSeekSlider?.style.setProperty('--seek-percent', `${percent}%`);
+  if (!target) {
+    if (preview) preview.textContent = 'Book seeking needs a duration for every chapter';
+    return;
+  }
+  const chapters = deps.getChapters?.() || [];
+  const { ordinal, name } = chapterRowLabels(chapters, target.chapterIndex);
+  const where = [ordinal, name].filter(Boolean).join(' · ');
+  const text = `${where} · ${formatTime(target.chapterTime)} into the chapter`;
+  if (preview) preview.textContent = text;
+  const elapsed = document.getElementById('book-seek-elapsed');
+  const total = document.getElementById('book-seek-total');
+  if (elapsed) elapsed.textContent = formatTime(target.elapsed);
+  if (total) total.textContent = `−${formatTime(Math.max(0, target.total - target.elapsed))}`;
+  bookSeekSlider?.setAttribute('aria-valuetext', `${formatTime(target.elapsed)} of ${formatTime(target.total)}. ${where}`);
+}
+
+// --- Bookmark confirmation ---
+// Confirms on the Bookmark tool ("Saved · 12:04") instead of a toast when
+// the tool is on screen. Returns false otherwise so the caller can toast.
+export function confirmBookmarkSaved(timestamp) {
+  const tool = document.getElementById('utility-bookmark-btn');
+  if (!tool || !tool.isConnected || tool.getClientRects().length === 0) return false;
+  showInlineConfirmation(tool, `Saved · ${formatTime(timestamp)}`);
+  return true;
+}
 
 // --- Mini Player ---
 export function updateMiniPlayer(viewName) {
@@ -779,21 +1275,48 @@ export function updateMiniPlayer(viewName) {
 export function syncMiniPlayerInfo() {
   if (!deps.getCurrentBook()) return;
   const titleEl = document.getElementById('mini-player-title');
-  const chapterEl = document.getElementById('mini-player-chapter');
   const coverEl = document.getElementById('mini-player-cover');
   if (titleEl) titleEl.textContent = deps.getCurrentBook().title;
-  if (chapterEl && deps.getChapters()[deps.getCurrentChapter()]) {
-    chapterEl.textContent = displayChapterTitle(
-      deps.getChapters()[deps.getCurrentChapter()],
-      deps.getCurrentChapter()
-    );
-  }
+  syncMiniPlayerTimeLeft();
   if (coverEl) {
     coverEl.src = `${API_BASE}/api/cover/${encodeURIComponent(deps.getCurrentBook().id)}`;
     coverEl.alt = deps.getCurrentBook().title;
     coverEl.onerror = () => { coverEl.style.display = 'none'; };
     coverEl.onload = () => { coverEl.style.display = 'block'; };
   }
+}
+
+// Mini player status line: "Ch 12 of 50 · 9h 12m left at 1.25×", and the
+// book-progress hairline. Runs on every time update, so it writes only when
+// the visible text or width changes.
+let lastMiniLine = '';
+let lastMiniPercent = '';
+export function syncMiniPlayerTimeLeft() {
+  const chapterEl = document.getElementById('mini-player-chapter');
+  const progressEl = document.getElementById('mini-player-progress');
+  const book = deps.getCurrentBook?.();
+  const chapters = deps.getChapters?.() || [];
+  if (!book || !chapters[deps.getCurrentChapter()]) return;
+  const context = chapterPositionLabel(chapters, deps.getCurrentChapter(), { short: true })
+    || displayChapterTitle(chapters[deps.getCurrentChapter()], deps.getCurrentChapter());
+  const progress = currentBookProgress();
+  // The speed is stated only when it differs from the one the library's
+  // sort line already states.
+  const timeLeft = progress?.timeLeft != null
+    ? timeLeftLabel(progress.timeLeft, progress.speed, { referenceSpeed: playbackSpeed.getReferencePlaybackSpeed?.() ?? null })
+    : '';
+  const line = [context, timeLeft].filter(Boolean).join(' · ');
+  if (chapterEl && line !== lastMiniLine) {
+    chapterEl.textContent = line;
+    lastMiniLine = line;
+  }
+  const percent = progress?.percent != null ? `${progress.percent}%` : '0%';
+  if (progressEl && percent !== lastMiniPercent) {
+    progressEl.style.width = percent;
+    lastMiniPercent = percent;
+  }
+  document.getElementById('mini-player-open')
+    ?.setAttribute('aria-label', `Now playing: ${book.title || 'Untitled'}. ${line}. Open the player`);
 }
 
 export function syncPlaybackControls(forcePlaying = null) {
@@ -813,4 +1336,59 @@ export function syncPlaybackControls(forcePlaying = null) {
 
 export function syncMiniPlayerIcon() {
   syncPlaybackControls();
+}
+
+// --- Docked pane: Up Next ---
+// At >= 1200px the player is a pane beside the library (player.css). Below
+// its tools it lists the listening queue (Up Next) so the next book is one
+// click away. Read-only: the library's Up Next rail keeps reordering and
+// removal. Hidden on narrower layouts by CSS.
+let paneUpNext = null;
+
+function initPaneUpNext() {
+  const main = document.querySelector('#player-view .pl-main');
+  if (!main || paneUpNext) return;
+  paneUpNext = document.createElement('section');
+  paneUpNext.id = 'player-up-next';
+  paneUpNext.className = 'pl-up-next';
+  paneUpNext.setAttribute('aria-labelledby', 'player-up-next-title');
+  paneUpNext.hidden = true;
+  main.append(paneUpNext);
+  paneUpNext.addEventListener('click', event => {
+    const row = event.target.closest('[data-up-next-book]');
+    if (row) void deps.resumeBook?.(row.dataset.upNextBook);
+  });
+  document.addEventListener('xandrio:listeningqueue', renderPaneUpNext);
+  document.addEventListener('xandrio:libraryloaded', renderPaneUpNext);
+  document.addEventListener('xandrio:viewchange', renderPaneUpNext);
+}
+
+export function renderPaneUpNext() {
+  if (!paneUpNext) return;
+  const currentId = String(deps.getCurrentBook?.()?.id ?? '');
+  const queued = (deps.getListeningQueueBooks?.() || []).filter(book => String(book.id) !== currentId);
+  if (!queued.length) {
+    paneUpNext.hidden = true;
+    paneUpNext.innerHTML = '';
+    return;
+  }
+  const inProgress = new Map((deps.getRecentBooks?.(50) || []).map(entry => [String(entry.book.id), entry.progress]));
+  const reference = playbackSpeed.getReferencePlaybackSpeed?.() ?? null;
+  paneUpNext.hidden = false;
+  paneUpNext.innerHTML = `
+    <h2 id="player-up-next-title" class="pl-up-next-title">Up Next</h2>
+    <ul class="pl-up-next-list">${queued.slice(0, 5).map(book => {
+      const progress = inProgress.get(String(book.id)) || bookProgressInfo(book, { chapterIndex: 0, timestamp: 0 });
+      const left = progress?.timeLeft != null ? timeLeftLabel(progress.timeLeft, progress.speed, { referenceSpeed: reference }) : '';
+      const sub = [book.author, left].filter(Boolean).join(' · ');
+      return `<li>
+        <button type="button" class="pl-up-next-row" data-up-next-book="${escapeHTML(String(book.id))}" aria-label="${escapeHTML(`Play ${book.title || 'Untitled'}${sub ? `, ${sub}` : ''}`)}">
+          ${coverImageHTML(book, 'pl-up-next-cover')}
+          <span class="pl-up-next-text">
+            <span class="pl-up-next-name">${escapeHTML(book.title || 'Untitled')}</span>
+            <span class="pl-up-next-sub num">${escapeHTML(sub)}</span>
+          </span>
+        </button>
+      </li>`;
+    }).join('')}</ul>`;
 }

@@ -6,24 +6,33 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="Xandrio">
-  <meta name="theme-color" content="#101217">
+  <meta name="theme-color" content="#0B0B0D" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#F2F2F7" media="(prefers-color-scheme: light)">
+  <meta name="color-scheme" content="dark light">
   <link rel="manifest" href="/manifest.webmanifest">
   <title>Xandrio - Audiobook Library</title>
-  <link rel="preload" href="/fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin>
   <!-- ?v= values must match ASSET_VERSIONS in sw.js (single source of truth) -->
-  <link rel="stylesheet" href="style-v3.css?v=118">
-  <link rel="stylesheet" href="composition.css?v=7">
-  <link rel="stylesheet" href="library-composition.css?v=5">
-  <script src="/js/ios-focus-zoom.js?v=1" defer></script>
+  <link rel="stylesheet" href="style-v3.css?v=123">
+  <link rel="stylesheet" href="composition.css?v=9">
+  <link rel="stylesheet" href="library-composition.css?v=8">
+  <link rel="stylesheet" href="shell.css?v=4">
+  <link rel="stylesheet" href="sheets.css?v=2">
+  <link rel="stylesheet" href="settings.css?v=2">
+  <link rel="stylesheet" href="player.css?v=2">
+  <link rel="stylesheet" href="find.css?v=2">
+  <script src="/js/ios-focus-zoom.js?v=2" defer></script>
   <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=2">
 </head>
 <body>
   <!-- Player direction b6bae047, approved cover-first composition.
   THESIS: Book artwork leads; playback stays within easy reach.
   SCENE: A phone listener on the move or in low evening light.
-  SYSTEM: Dark neutral ground, existing Inter, ivory controls, amber elapsed time.
-  COMPOSITION: Portrait art, left-aligned metadata, chapter and seek, transport,
-  compact session details and tools. Desktop keeps two columns.
+  SYSTEM: Readable — system type at Dynamic Type sizes, dark-first with a light
+  twin, one amber accent. App shell: tab bar (phone) or sidebar (>=760px).
+  COMPOSITION: Portrait art, left-aligned metadata, one narration line, one
+  chapter row, chapter seek with the book sentence, transport, three tools;
+  book-level actions in the ••• menu. Desktop docks the player beside the
+  library.
   CONSTRAINTS: Real covers, intrinsic proportions, full touch targets, visible
   recovery states and safe-area clearance. Long content remains scrollable. -->
   <div id="deployment-banner" class="deployment-banner" role="alert" hidden></div>
@@ -55,10 +64,23 @@
     <!-- Library View -->
     <div id="library-view" class="view active">
       <header class="library-header">
-        <h1>
-          <img src="icon-xandrio-ankh.png" alt="Xandrio" class="header-logo">
-          <span class="header-wordmark">Xandrio</span>
+        <h1 class="library-title">
+          <button id="library-scope-button" class="library-scope-button" type="button"
+                  aria-haspopup="menu" aria-expanded="false" aria-controls="library-scope-menu"
+                  aria-label="My Shelf. Change library scope">
+            <span id="library-scope-label">My Shelf</span>
+            <svg class="scope-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6.5 9.5 5.5 5.5 5.5-5.5"/></svg>
+          </button>
+          <span id="library-title-text" class="library-title-text">My Shelf</span>
         </h1>
+        <div id="library-tabs" class="library-tabs" role="tablist" aria-label="Library scope">
+          <button id="library-tab-shelf" data-library-tab="shelf" class="library-tab active"
+                  role="tab" aria-selected="true" aria-controls="library-panel" tabindex="0">My Shelf</button>
+          <button id="library-tab-downloaded" data-library-tab="downloaded" class="library-tab"
+                  role="tab" aria-selected="false" aria-controls="library-panel" tabindex="-1">Downloaded</button>
+          <button id="library-tab-all" data-library-tab="all" class="library-tab"
+                  role="tab" aria-selected="false" aria-controls="library-panel" tabindex="-1">Shared Library</button>
+        </div>
         <div class="header-actions">
           <button id="stats-btn" class="btn-icon" aria-label="Listening stats" title="Your listening">
             <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="width:20px;height:20px"><path stroke-linecap="round" stroke-linejoin="round" d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75zM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625zM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V4.125z"/></svg>
@@ -91,6 +113,21 @@
             <span class="btn-add-label">Add Book</span>
           </button>
         </div>
+        <div id="library-scope-menu" class="library-scope-menu" role="menu" aria-label="Library scope" hidden>
+          <button type="button" role="menuitemradio" aria-checked="true" data-scope-option="shelf" tabindex="-1">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg><span>My Shelf</span>
+          </button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-scope-option="downloaded" tabindex="-1">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg><span>Downloaded</span>
+          </button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-scope-option="all" tabindex="-1">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg><span>Shared Library</span>
+          </button>
+          <div class="library-scope-menu-sep" role="separator"></div>
+          <button type="button" role="menuitem" data-scope-stats tabindex="-1">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 20v-7M12 20V8M19 20V4"/></svg><span>Listening stats</span>
+          </button>
+        </div>
       </header>
 
       <div id="library-search-bar" class="library-search-bar collapsed" aria-hidden="true" inert>
@@ -98,14 +135,6 @@
         <button id="library-search-close" class="library-search-close" aria-label="Close search"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="icon"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg></button>
       </div>
 
-      <div id="library-tabs" class="library-tabs" role="tablist" aria-label="Library scope">
-        <button id="library-tab-shelf" data-library-tab="shelf" class="library-tab active"
-                role="tab" aria-selected="true" aria-controls="library-panel" tabindex="0">My Shelf</button>
-        <button id="library-tab-downloaded" data-library-tab="downloaded" class="library-tab"
-                role="tab" aria-selected="false" aria-controls="library-panel" tabindex="-1">Downloaded</button>
-        <button id="library-tab-all" data-library-tab="all" class="library-tab"
-                role="tab" aria-selected="false" aria-controls="library-panel" tabindex="-1">Shared Library</button>
-      </div>
       <p id="downloaded-device-hint" class="downloaded-device-hint" hidden>
         Audio preparation continues on the server when Xandrio is closed. During the later device download, keep Xandrio visible and the screen awake. Interrupted downloads resume safely.
       </p>
@@ -120,35 +149,49 @@
           <div class="library-primary">
           <div class="library-controls">
           <div class="control-row">
-            <select id="sort-select" aria-label="Sort books">
-              <option value="last-read" selected>Last Played</option>
-              <option value="recent">Recently Added</option>
-              <option value="title-az">Title A-Z</option>
-              <option value="title-za">Title Z-A</option>
-              <option value="author-az">Author A-Z</option>
-              <option value="author-za">Author Z-A</option>
-            </select>
-            <button id="view-toggle-btn" class="btn-icon" aria-label="Toggle grid/list view" title="Toggle view">
-              <span id="view-toggle-icon"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="icon"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 6A2.25 2.25 0 016 3.75h2.25A2.25 2.25 0 0110.5 6v2.25a2.25 2.25 0 01-2.25 2.25H6a2.25 2.25 0 01-2.25-2.25V6zM3.75 15.75A2.25 2.25 0 016 13.5h2.25a2.25 2.25 0 012.25 2.25V18a2.25 2.25 0 01-2.25 2.25H6A2.25 2.25 0 013.75 18v-2.25zM13.5 6a2.25 2.25 0 012.25-2.25H18A2.25 2.25 0 0120.25 6v2.25A2.25 2.25 0 0118 10.5h-2.25a2.25 2.25 0 01-2.25-2.25V6zM13.5 15.75a2.25 2.25 0 012.25-2.25H18a2.25 2.25 0 012.25 2.25V18A2.25 2.25 0 0118 20.25h-2.25A2.25 2.25 0 0113.5 18v-2.25z"/></svg></span>
-            </button>
+            <span id="library-count" class="library-count num" aria-live="polite"></span>
+            <span class="library-sort">
+              <select id="sort-select" aria-label="Sort books">
+                <option value="last-read" selected>Last played</option>
+                <option value="recent">Recently added</option>
+                <option value="title-az">Title A–Z</option>
+                <option value="title-za">Title Z–A</option>
+                <option value="author-az">Author A–Z</option>
+                <option value="author-za">Author Z–A</option>
+              </select>
+              <svg class="library-sort-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6.5 9.5 5.5 5.5 5.5-5.5"/></svg>
+            </span>
+            <span id="library-speed-note" class="library-speed-note num">Time left at 1.0×</span>
+            <div class="library-view-toggle" role="group" aria-label="Layout">
+              <button id="view-mode-list" class="view-mode-btn is-on" type="button" data-view-mode="list" aria-pressed="true" aria-label="List" title="List">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 6.5h16M4 12h16M4 17.5h16"/></svg>
+              </button>
+              <button id="view-toggle-btn" class="view-mode-btn" type="button" data-view-mode="grid" aria-pressed="false" aria-label="Grid" title="Grid">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="4" width="6.5" height="6.5" rx="1.6"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1.6"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1.6"/><rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.6"/></svg>
+              </button>
+            </div>
           </div>
         </div>
 
+          <div class="library-table-head" aria-hidden="true">
+            <span>Book</span><span>Time left at speed</span><span>Status</span><span>Offline</span>
+          </div>
+
           <section id="shelf-empty-hint" class="shelf-empty-hint" aria-labelledby="shelf-empty-title" hidden>
           <div class="shelf-empty-copy">
-            <h2 id="shelf-empty-title">Start Your Shelf</h2>
+            <h2 id="shelf-empty-title">Start your shelf</h2>
             <p>Find a title to add, or save one that is already in the Shared Library.</p>
           </div>
           <div class="shelf-empty-actions">
-            <button class="btn-primary" type="button" data-add-book-shelf>Find a Book</button>
+            <button class="btn-primary" type="button" data-add-book-shelf>Find a book</button>
             <button class="btn-secondary" type="button" data-browse-shared-library>Browse Shared Library</button>
           </div>
           </section>
 
           <section id="downloaded-empty-hint" class="shelf-empty-hint" aria-labelledby="downloaded-empty-title" hidden>
           <div class="shelf-empty-copy">
-            <h2 id="downloaded-empty-title">No Downloaded Books</h2>
-            <p>No books downloaded on this device.</p>
+            <h2 id="downloaded-empty-title">No downloaded books</h2>
+            <p>Download a book to listen without a connection.</p>
           </div>
           <div class="shelf-empty-actions">
             <button class="btn-secondary" type="button" data-browse-shelf>Browse My Shelf</button>
@@ -226,13 +269,28 @@
     <!-- Search View -->
     <div id="search-view" class="view">
       <header class="search-header">
-        <button id="back-to-library-btn" class="btn-back" aria-label="Return to library">← Library</button>
-        <h2>Add a book</h2>
+        <h2>Find</h2>
+        <div class="upload-section">
+          <div id="book-drop-zone" class="book-drop-zone" role="button" tabindex="0" aria-label="Upload a file: EPUB, MOBI, AZW, AZW3, PRC or PDF">
+            <svg class="book-drop-glyph" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.9" stroke="currentColor" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M12 16.5V3.75m0 0L7.5 8.25M12 3.75l4.5 4.5M4.5 14.25v4.5A2.25 2.25 0 006.75 21h10.5a2.25 2.25 0 002.25-2.25v-4.5"/></svg>
+            <span id="upload-btn" class="book-drop-label">Upload a file</span>
+          </div>
+          <p class="book-drop-hint">EPUB, MOBI, AZW, AZW3, PRC or PDF</p>
+          <input type="file" id="file-input" accept=".epub,.mobi,.prc,.azw,.azw3,.pdf" style="display: none;" />
+          <div id="upload-progress" class="upload-progress" style="display: none;">
+            <div class="upload-progress-info">
+              <span class="upload-filename"></span>
+              <span class="upload-status">Uploading...</span>
+            </div>
+            <div class="upload-progress-bar">
+              <div class="upload-progress-fill"></div>
+            </div>
+          </div>
+        </div>
       </header>
 
       <div class="search-content-workspace">
       <section class="search-workspace" aria-label="Book search">
-        <h3 class="add-book-method">Find online</h3>
         <div class="search-box">
           <div class="search-input-wrap">
             <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true">
@@ -315,30 +373,6 @@
         </div>
       </section>
 
-      <div class="upload-section">
-
-        <div id="book-drop-zone" class="book-drop-zone" role="button" tabindex="0" aria-label="Upload a book by dragging a file here or choosing a file">
-          <div class="book-drop-icon" aria-hidden="true">
-            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.7" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 16.5V3.75m0 0L7.5 8.25M12 3.75l4.5 4.5M4.5 14.25v4.5A2.25 2.25 0 006.75 21h10.5a2.25 2.25 0 002.25-2.25v-4.5"/></svg>
-          </div>
-          <div class="book-drop-copy">
-            <h3>Upload file</h3>
-            <p>EPUB, MOBI, AZW, AZW3, PRC, or PDF</p>
-          </div>
-          <span id="upload-btn" class="btn-secondary" aria-hidden="true">Choose File</span>
-        </div>
-        <input type="file" id="file-input" accept=".epub,.mobi,.prc,.azw,.azw3,.pdf" style="display: none;" />
-        <div id="upload-progress" class="upload-progress" style="display: none;">
-          <div class="upload-progress-info">
-            <span class="upload-filename"></span>
-            <span class="upload-status">Uploading...</span>
-          </div>
-          <div class="upload-progress-bar">
-            <div class="upload-progress-fill"></div>
-          </div>
-        </div>
-      </div>
-
       <div id="download-error" class="download-error-notification" role="alert" aria-live="polite" style="display: none;"></div>
       <div id="search-results" class="search-results"></div>
       </div>
@@ -349,7 +383,6 @@
       <div class="settings-shell">
         <aside id="settings-hub" class="settings-hub" aria-label="Settings">
           <header class="settings-hub-header">
-            <button id="settings-back-btn" class="btn-back" aria-label="Return to library">← Library</button>
             <h2>Settings</h2>
           </header>
 
@@ -378,8 +411,13 @@
                 </a></li>
                 <li><a class="settings-menu-row" href="#/settings/voice" data-settings-link="voice">
                   <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M19.114 5.636a9 9 0 010 12.728M16.463 8.288a5.25 5.25 0 010 7.424M6.75 8.25l4.72-4.72a.75.75 0 011.28.53v15.88a.75.75 0 01-1.28.53l-4.72-4.72H4.51c-.88 0-1.704-.507-1.938-1.354A9.01 9.01 0 012.25 12c0-.83.112-1.633.322-2.396C2.806 8.756 3.63 8.25 4.51 8.25H6.75z"/></svg>
-                  <span class="settings-menu-title">Voice</span>
+                  <span class="settings-menu-title">Default narrator</span>
                   <span class="settings-menu-value" id="settings-voice-summary" data-settings-summary="voice"></span>
+                </a></li>
+                <li><a class="settings-menu-row" href="#/stats" data-shell-stats-link>
+                  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M4 20V13M10 20V8M16 20V4M2.5 20.5h19"/></svg>
+                  <span class="settings-menu-title">Listening stats</span>
+                  <span class="settings-menu-value"></span>
                 </a></li>
               </ul>
             </section>
@@ -397,6 +435,11 @@
                   <span class="settings-menu-title">Offline</span>
                   <span class="settings-menu-value" id="settings-offline-summary" data-settings-summary="offline"></span>
                 </a></li>
+                <li><a class="settings-menu-row" href="#/settings/shelf" data-settings-link="shelf">
+                  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M4 6.5h16M4 12h16M4 17.5h16"/></svg>
+                  <span class="settings-menu-title">Shelf rows</span>
+                  <span class="settings-menu-value" id="settings-shelf-summary" data-settings-summary="shelf"></span>
+                </a></li>
                 <li><a class="settings-menu-row" href="#/settings/language" data-settings-link="language">
                   <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M10.5 21l5.25-11.25L21 21m-9-3h7.5M3 5.621a48.474 48.474 0 016-.371m0 0c1.12 0 2.233.038 3.334.114M9 5.25V3m3.334 2.364C11.176 10.658 7.69 15.08 3 17.502m9.334-12.138c.896.061 1.785.147 2.666.257m-4.589 8.495a18.023 18.023 0 01-3.827-5.802"/></svg>
                   <span class="settings-menu-title">Search language</span>
@@ -406,11 +449,11 @@
             </section>
 
             <section class="settings-menu-group" aria-labelledby="settings-menu-devices">
-              <h3 id="settings-menu-devices">Devices &amp; integrations</h3>
+              <h3 id="settings-menu-devices">Devices and integrations</h3>
               <ul>
                 <li id="settings-menu-account-row" hidden><a class="settings-menu-row" href="#/settings/account" data-settings-link="account">
                   <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M17.982 18.725A7.488 7.488 0 0012 15.75a7.488 7.488 0 00-5.982 2.975m11.963 0a9 9 0 10-11.963 0m11.963 0A8.966 8.966 0 0112 21a8.966 8.966 0 01-5.982-2.275M15 9.75a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
-                  <span class="settings-menu-title">Account &amp; devices</span>
+                  <span class="settings-menu-title">Account and devices</span>
                   <span class="settings-menu-value" id="settings-account-summary" data-settings-summary="account"></span>
                 </a></li>
                 <li id="settings-menu-sync-row" hidden><a class="settings-menu-row" href="#/settings/sync" data-settings-link="sync">
@@ -427,7 +470,7 @@
             </section>
 
             <section id="settings-menu-server" class="settings-menu-group" aria-labelledby="settings-menu-server-title" hidden>
-              <h3 id="settings-menu-server-title">Server</h3>
+              <h3 id="settings-menu-server-title">Admin</h3>
               <ul>
                 <li id="settings-menu-accounts-row" hidden><a class="settings-menu-row" href="#/settings/accounts" data-settings-link="accounts">
                   <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M15 19.128a9.38 9.38 0 002.625.372 9.337 9.337 0 004.121-.952 4.125 4.125 0 00-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 018.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0111.964-3.07M12 6.375a3.375 3.375 0 11-6.75 0 3.375 3.375 0 016.75 0zm8.25 2.25a2.625 2.625 0 11-5.25 0 2.625 2.625 0 015.25 0z"/></svg>
@@ -458,7 +501,7 @@
           <!-- Playback -->
           <section class="settings-pane" data-settings-pane="playback" aria-labelledby="settings-pane-title-playback" hidden>
             <header class="settings-pane-header">
-              <a class="btn-back settings-pane-back" href="#/settings">← Settings</a>
+              <a class="settings-pane-back" href="#/settings"><span aria-hidden="true">‹</span> Settings</a>
               <h2 id="settings-pane-title-playback">Playback</h2>
             </header>
             <div class="settings-card">
@@ -479,15 +522,15 @@
                   <span class="settings-label-hint">New books start at this speed. A book keeps its own speed once you change it while listening.</span>
                 </label>
                 <select id="default-speed-select" class="settings-select" aria-describedby="default-speed-label">
-                  <option value="">1.00x (normal)</option>
-                  <option value="0.75">0.75x</option>
-                  <option value="0.9">0.90x</option>
-                  <option value="1.1">1.10x</option>
-                  <option value="1.25">1.25x</option>
-                  <option value="1.5">1.50x</option>
-                  <option value="1.75">1.75x</option>
-                  <option value="2">2.00x</option>
-                  <option value="2.5">2.50x</option>
+                  <option value="">1.0× (normal)</option>
+                  <option value="0.75">0.75×</option>
+                  <option value="0.9">0.9×</option>
+                  <option value="1.1">1.1×</option>
+                  <option value="1.25">1.25×</option>
+                  <option value="1.5">1.5×</option>
+                  <option value="1.75">1.75×</option>
+                  <option value="2">2.0×</option>
+                  <option value="2.5">2.5×</option>
                 </select>
                 <span id="default-speed-label" class="sr-only">Not set</span>
               </div>
@@ -530,7 +573,7 @@
           <!-- Sleep schedule -->
           <section class="settings-pane" data-settings-pane="sleep" aria-labelledby="settings-pane-title-sleep" hidden>
             <header class="settings-pane-header">
-              <a class="btn-back settings-pane-back" href="#/settings">← Settings</a>
+              <a class="settings-pane-back" href="#/settings"><span aria-hidden="true">‹</span> Settings</a>
               <h2 id="settings-pane-title-sleep">Sleep schedule</h2>
             </header>
             <fieldset class="settings-card auto-sleep-settings">
@@ -557,8 +600,8 @@
           <!-- Voice -->
           <section class="settings-pane" data-settings-pane="voice" aria-labelledby="settings-pane-title-voice" hidden>
             <header class="settings-pane-header">
-              <a class="btn-back settings-pane-back" href="#/settings">← Settings</a>
-              <h2 id="settings-pane-title-voice">Voice</h2>
+              <a class="settings-pane-back" href="#/settings"><span aria-hidden="true">‹</span> Settings</a>
+              <h2 id="settings-pane-title-voice">Default narrator</h2>
             </header>
             <p id="settings-voice-hint" class="settings-lead">Choose the default narrator. Books with their own narrator keep that choice.</p>
             <div id="voice-filter-bar" class="voice-filter-bar voice-settings-browse" aria-label="Voice filters"></div>
@@ -568,7 +611,7 @@
           <!-- Book sources -->
           <section class="settings-pane" data-settings-pane="sources" aria-labelledby="settings-pane-title-sources" hidden>
             <header class="settings-pane-header">
-              <a class="btn-back settings-pane-back" href="#/settings">← Settings</a>
+              <a class="settings-pane-back" href="#/settings"><span aria-hidden="true">‹</span> Settings</a>
               <h2 id="settings-pane-title-sources">Book sources</h2>
             </header>
             <p class="settings-lead">Choose which catalogs Search uses by default. You can change the selection for a single search on the Search page.</p>
@@ -599,7 +642,7 @@
                       </div>
                       <small data-provider-detail="standardebooks">Carefully formatted public-domain EPUBs.</small>
                     </div>
-                    <label class="provider-default"><span class="sr-only">Search Standard Ebooks by default</span><input class="switch" type="checkbox" role="switch" value="standardebooks"></label>
+                    <label class="provider-default"><span class="provider-default-label" aria-hidden="true">Search by default</span><input class="switch" type="checkbox" role="switch" value="standardebooks" aria-label="Search Standard Ebooks by default"></label>
                   </div>
                   <div class="provider-row" data-provider="gutenberg">
                     <div class="provider-copy">
@@ -609,7 +652,7 @@
                       </div>
                       <small data-provider-detail="gutenberg">Large public-domain library.</small>
                     </div>
-                    <label class="provider-default"><span class="sr-only">Search Project Gutenberg by default</span><input class="switch" type="checkbox" role="switch" value="gutenberg"></label>
+                    <label class="provider-default"><span class="provider-default-label" aria-hidden="true">Search by default</span><input class="switch" type="checkbox" role="switch" value="gutenberg" aria-label="Search Project Gutenberg by default"></label>
                   </div>
                 </div>
               </div>
@@ -624,7 +667,7 @@
                       </div>
                       <small data-provider-detail="annas">Broad coverage; rights unverified. Downloads need a secret key.</small>
                     </div>
-                    <label class="provider-default"><span class="sr-only">Search Anna's Archive by default</span><input class="switch" type="checkbox" role="switch" value="annas"></label>
+                    <label class="provider-default"><span class="provider-default-label" aria-hidden="true">Search by default</span><input class="switch" type="checkbox" role="switch" value="annas" aria-label="Search Anna's Archive by default"></label>
                   </div>
                   <details class="provider-account" id="annas-account">
                     <summary><span>Secret key</span><span id="annas-account-summary" class="settings-menu-value"></span></summary>
@@ -660,7 +703,7 @@
                       </div>
                       <small data-provider-detail="zlibrary">Broad coverage; search works without an account, downloads need one.</small>
                     </div>
-                    <label class="provider-default"><span class="sr-only">Search Z-Library by default</span><input class="switch" type="checkbox" role="switch" value="zlibrary"></label>
+                    <label class="provider-default"><span class="provider-default-label" aria-hidden="true">Search by default</span><input class="switch" type="checkbox" role="switch" value="zlibrary" aria-label="Search Z-Library by default"></label>
                   </div>
                   <details class="provider-account" id="zlib-account">
                     <summary><span>Account</span><span id="zlib-account-summary" class="settings-menu-value"></span></summary>
@@ -695,7 +738,7 @@
                       </div>
                       <small data-provider-detail="internetarchive">Scanned and digitized texts; rights unverified.</small>
                     </div>
-                    <label class="provider-default"><span class="sr-only">Search Internet Archive by default</span><input class="switch" type="checkbox" role="switch" value="internetarchive"></label>
+                    <label class="provider-default"><span class="provider-default-label" aria-hidden="true">Search by default</span><input class="switch" type="checkbox" role="switch" value="internetarchive" aria-label="Search Internet Archive by default"></label>
                   </div>
                 </div>
               </div>
@@ -710,7 +753,7 @@
                       </div>
                       <small data-provider-detail="opds">Your own OPDS server — Calibre-Web, Kavita, COPS.</small>
                     </div>
-                    <label class="provider-default"><span class="sr-only">Search my OPDS catalog by default</span><input class="switch" type="checkbox" role="switch" value="opds"></label>
+                    <label class="provider-default"><span class="provider-default-label" aria-hidden="true">Search by default</span><input class="switch" type="checkbox" role="switch" value="opds" aria-label="Search my OPDS catalog by default"></label>
                   </div>
                 </div>
               </div>
@@ -722,7 +765,7 @@
           <!-- Offline -->
           <section class="settings-pane" data-settings-pane="offline" aria-labelledby="settings-pane-title-offline" hidden>
             <header class="settings-pane-header">
-              <a class="btn-back settings-pane-back" href="#/settings">← Settings</a>
+              <a class="settings-pane-back" href="#/settings"><span aria-hidden="true">‹</span> Settings</a>
               <h2 id="settings-pane-title-offline">Offline</h2>
             </header>
             <div class="settings-card">
@@ -738,10 +781,30 @@
             <div id="offline-books-list" class="offline-books-list"></div>
           </section>
 
+          <!-- Shelf rows -->
+          <section class="settings-pane" data-settings-pane="shelf" aria-labelledby="settings-pane-title-shelf" hidden>
+            <header class="settings-pane-header">
+              <a class="settings-pane-back" href="#/settings"><span aria-hidden="true">‹</span> Settings</a>
+              <h2 id="settings-pane-title-shelf">Shelf rows</h2>
+            </header>
+            <div class="settings-card">
+              <div class="settings-row settings-row-stacked">
+                <div class="settings-label">
+                  <span class="settings-label-text">Row size</span>
+                  <span class="settings-label-hint">Compact fits more books on screen. Comfortable shows two-line titles and a progress bar.</span>
+                </div>
+                <div id="shelf-density-control" class="segmented-control" role="group" aria-label="Shelf rows">
+                  <button type="button" data-shelf-density="compact">Compact</button>
+                  <button type="button" data-shelf-density="comfortable">Comfortable</button>
+                </div>
+              </div>
+            </div>
+          </section>
+
           <!-- Search language -->
           <section class="settings-pane" data-settings-pane="language" aria-labelledby="settings-pane-title-language" hidden>
             <header class="settings-pane-header">
-              <a class="btn-back settings-pane-back" href="#/settings">← Settings</a>
+              <a class="settings-pane-back" href="#/settings"><span aria-hidden="true">‹</span> Settings</a>
               <h2 id="settings-pane-title-language">Search language</h2>
             </header>
             <div class="settings-card">
@@ -769,7 +832,7 @@
           <!-- Account & devices (signed-in instances) -->
           <section class="settings-pane" data-settings-pane="account" id="account-section" aria-labelledby="settings-pane-title-account" hidden>
             <header class="settings-pane-header">
-              <a class="btn-back settings-pane-back" href="#/settings">← Settings</a>
+              <a class="settings-pane-back" href="#/settings"><span aria-hidden="true">‹</span> Settings</a>
               <h2 id="settings-pane-title-account">Account &amp; devices</h2>
             </header>
             <div class="settings-card">
@@ -814,7 +877,7 @@
           <!-- Sync (trusted-LAN instances without accounts) -->
           <section class="settings-pane" data-settings-pane="sync" id="sync-section" aria-labelledby="settings-pane-title-sync" hidden>
             <header class="settings-pane-header">
-              <a class="btn-back settings-pane-back" href="#/settings">← Settings</a>
+              <a class="settings-pane-back" href="#/settings"><span aria-hidden="true">‹</span> Settings</a>
               <h2 id="settings-pane-title-sync">Sync</h2>
             </header>
             <div class="settings-card">
@@ -848,7 +911,7 @@
           <!-- Calibre -->
           <section class="settings-pane" data-settings-pane="calibre" id="calibre-integration-section" aria-labelledby="settings-pane-title-calibre" hidden>
             <header class="settings-pane-header">
-              <a class="btn-back settings-pane-back" href="#/settings">← Settings</a>
+              <a class="settings-pane-back" href="#/settings"><span aria-hidden="true">‹</span> Settings</a>
               <h2 id="settings-pane-title-calibre">Calibre</h2>
             </header>
             <div class="settings-card">
@@ -878,7 +941,7 @@
           <!-- Accounts (admin) -->
           <section class="settings-pane" data-settings-pane="accounts" id="admin-accounts" aria-labelledby="settings-pane-title-accounts" hidden>
             <header class="settings-pane-header">
-              <a class="btn-back settings-pane-back" href="#/settings">← Settings</a>
+              <a class="settings-pane-back" href="#/settings"><span aria-hidden="true">‹</span> Settings</a>
               <h2 id="settings-pane-title-accounts">Accounts</h2>
             </header>
             <p class="settings-lead">Manage who can sign in to this server. Disabled accounts are signed out everywhere and cannot sign in until re-enabled.</p>
@@ -892,7 +955,7 @@
           <!-- Study guides (admin, experimental) -->
           <section class="settings-pane" data-settings-pane="guides" id="book-guides-settings-section" aria-labelledby="settings-pane-title-guides" hidden>
             <header class="settings-pane-header">
-              <a class="btn-back settings-pane-back" href="#/settings">← Settings</a>
+              <a class="settings-pane-back" href="#/settings"><span aria-hidden="true">‹</span> Settings</a>
               <h2 id="settings-pane-title-guides">Study guides <span class="settings-title-tag">Experimental</span></h2>
             </header>
             <div class="settings-card">
@@ -961,12 +1024,21 @@
               </div>
             </form>
             <p id="book-guides-settings-error" class="settings-error" role="alert" aria-live="polite" style="display:none"></p>
+            <h3 class="settings-subheading" id="book-guides-tags-title">Nonfiction tags</h3>
+            <div class="settings-card book-guide-tags" aria-labelledby="book-guides-tags-title">
+              <p class="settings-hint">Study guides are offered only for books tagged as nonfiction. Tagged books show Study guide in their actions.</p>
+              <div class="book-guide-tags-filter settings-field">
+                <label class="sr-only" for="book-guide-tags-search">Filter books</label>
+                <input id="book-guide-tags-search" type="search" placeholder="Filter books…" autocomplete="off" spellcheck="false" />
+              </div>
+              <ul id="book-guide-tags-list" class="book-guide-tags-list" aria-busy="true"></ul>
+            </div>
           </section>
 
           <!-- Diagnostics (admin) -->
           <section class="settings-pane" data-settings-pane="diagnostics" id="operator-diagnostics-section" aria-labelledby="settings-pane-title-diagnostics" hidden>
             <header class="settings-pane-header">
-              <a class="btn-back settings-pane-back" href="#/settings">← Settings</a>
+              <a class="settings-pane-back" href="#/settings"><span aria-hidden="true">‹</span> Settings</a>
               <h2 id="settings-pane-title-diagnostics">Diagnostics</h2>
             </header>
             <div class="settings-card">
@@ -991,7 +1063,7 @@
           <!-- Unknown section -->
           <section class="settings-pane" data-settings-pane="missing" aria-labelledby="settings-pane-title-missing" hidden>
             <header class="settings-pane-header">
-              <a class="btn-back settings-pane-back" href="#/settings">← Settings</a>
+              <a class="settings-pane-back" href="#/settings"><span aria-hidden="true">‹</span> Settings</a>
               <h2 id="settings-pane-title-missing">Not available</h2>
             </header>
             <p class="settings-lead" id="settings-missing-copy">This settings page is not available on this account.</p>
@@ -1040,9 +1112,8 @@
 
     <!-- Stats / Listening History View -->
     <div id="stats-view" class="view">
-      <header>
-        <button id="stats-back-btn" class="btn-back" aria-label="Return to library">← Library</button>
-        <h2>Your Listening</h2>
+      <header class="stats-header">
+        <h2>Listening</h2>
       </header>
       <div id="stats-body" class="stats-body"></div>
     </div>
@@ -1062,256 +1133,284 @@
       </main>
     </div>
 
-    <!-- Player View — Libby-inspired -->
-    <div id="player-view" class="view">
+    <!-- Player View — Readable. Phone: one column (nav, cover, title, the
+         narration line or its card, chapter row, chapter scrubber with the
+         book sentence, transport, three tools). >= 1100px: a right pane
+         docked beside the library (see player.css). -->
+    <div id="player-view" class="view" aria-label="Now playing">
       <div class="player-ambient" aria-hidden="true"><img id="player-ambient-img" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==" alt="" /></div>
-      <!-- Top bar -->
-      <div class="player-topbar">
-        <div class="player-topbar-left">
-          <button id="back-btn" class="topbar-btn" aria-label="Return to library">
-            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor">
-              <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 19.5L8.25 12l7.5-7.5" />
-            </svg>
+      <header class="pl-nav">
+        <button id="back-btn" class="pl-icbtn" type="button" aria-label="Return to library">
+          <svg class="pl-ic-down" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 9l7 7 7-7"/></svg>
+          <svg class="pl-ic-close" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M6 18 18 6M6 6l12 12"/></svg>
+        </button>
+        <span class="pl-nav-title" aria-hidden="true">Now Playing</span>
+        <div class="pl-nav-r">
+          <button id="player-recent-btn" class="pl-textbtn" type="button" aria-label="Recent books, switch book" aria-haspopup="dialog">Recent</button>
+          <button id="player-more-btn" class="pl-icbtn" type="button" aria-label="More for this book" aria-haspopup="dialog">
+            <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.9"/><circle cx="12" cy="12" r="1.9"/><circle cx="19" cy="12" r="1.9"/></svg>
           </button>
         </div>
-        <div class="player-topbar-right">
-          <div class="speed-btn-group">
-            <button id="speed-btn" class="topbar-btn" aria-label="Playback speed" title="Playback speed">
-              <span style="font-size:13px;font-weight:700;">1x</span>
-            </button>
-            <button id="speed-sheet-btn" class="topbar-btn topbar-btn-chevron" aria-label="More speed options" title="More speed options" aria-haspopup="dialog">
-              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor">
-                <path stroke-linecap="round" stroke-linejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5" />
-              </svg>
-            </button>
-          </div>
-          <button id="bookmark-btn" class="topbar-btn" aria-label="Bookmark this spot" title="Bookmark this spot">
-            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
-              <path stroke-linecap="round" stroke-linejoin="round" d="M17.593 3.322c1.1.128 1.907 1.077 1.907 2.185V21L12 17.25 4.5 21V5.507c0-1.108.806-2.057 1.907-2.185a48.507 48.507 0 0111.186 0z" />
-            </svg>
-          </button>
-          <button id="guide-btn" class="topbar-btn" type="button" aria-label="Open study guide" title="Study guide" hidden>
-            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true">
-              <path stroke-linecap="round" stroke-linejoin="round" d="M12 6.042A8.967 8.967 0 006 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 016 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 016-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0018 18a8.967 8.967 0 00-6 2.292m0-14.25v14.25" />
-            </svg>
-          </button>
-          <button id="timer-btn-inline" class="topbar-btn" aria-label="Sleep timer" title="Sleep timer">
-            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
-              <path stroke-linecap="round" stroke-linejoin="round" d="M21.752 15.002A9.718 9.718 0 0118 15.75c-5.385 0-9.75-4.365-9.75-9.75 0-1.33.266-2.597.748-3.752A9.753 9.753 0 003 11.25C3 16.635 7.365 21 12.75 21a9.753 9.753 0 009.002-5.998z" />
-            </svg>
-            <span id="timer-countdown" class="timer-countdown" aria-hidden="true"></span>
-          </button>
-          <button id="voice-btn" class="topbar-btn" aria-label="Voice selection" title="Voice selection">
-            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
-              <path stroke-linecap="round" stroke-linejoin="round" d="M19.114 5.636a9 9 0 010 12.728M16.463 8.288a5.25 5.25 0 010 7.424M6.75 8.25l4.72-4.72a.75.75 0 011.28.53v15.88a.75.75 0 01-1.28.53l-4.72-4.72H4.51c-.88 0-1.704-.507-1.938-1.354A9.01 9.01 0 012.25 12c0-.83.112-1.633.322-2.396C2.806 8.756 3.63 8.25 4.51 8.25H6.75z" />
-            </svg>
-          </button>
-          <button id="pronunciation-repair-btn" class="topbar-btn pronunciation-repair-btn" type="button" aria-label="Fix pronunciation" title="Fix pronunciation">
-            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true">
-              <path stroke-linecap="round" stroke-linejoin="round" d="M4 7.5h8m-8 9h5m-2.5 0l3-9m7 1.75v5.5m2.75-2.75h-5.5" />
-            </svg>
-          </button>
-        </div>
-      </div>
+      </header>
 
-      <div class="player-main">
-        <div class="player-art-column">
-          <!-- Large cover art -->
-          <div class="player-cover-wrap">
-            <img id="book-cover" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==" alt="" class="player-cover" />
-          </div>
-
-          <!-- About this book -->
-          <details class="player-details">
-            <summary>About this book</summary>
-            <p id="book-description" class="player-details-desc"></p>
-            <p id="book-details-text" class="player-details-meta"></p>
-            <button id="rebuild-chapters-btn" class="btn-secondary player-rebuild-chapters" type="button" hidden>Rebuild chapters</button>
-          </details>
+      <main class="pl-main">
+        <div class="pl-cover-wrap">
+          <img id="book-cover" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==" alt="" class="pl-cover" />
         </div>
 
-        <div class="player-control-column">
-          <!-- Book info -->
-          <div class="player-book-info">
-            <h1 id="book-title" class="player-book-title">Book Title</h1>
-            <p id="book-author-header" class="player-book-author"></p>
-          </div>
+        <div class="pl-info">
+          <h1 id="book-title" class="pl-title">Book Title</h1>
+          <p id="book-author-header" class="pl-author"></p>
+        </div>
 
-          <!-- Primary chapter selector -->
-          <div class="player-secondary">
-            <button id="chapter-sheet-btn" class="player-chapter-trigger" type="button" aria-label="Open chapter list">
-              <span class="player-chapter-trigger-copy">
+        <!-- Narration: one line (narrator · ready ahead) that opens the
+             narrator picker, expanding into a card while the book prepares,
+             while a chapter loads, on a failure, or when playback needs a tap.
+             voices.js paints #player-voice-*, #hq-voice-prep-* and
+             #narration-fallback; player-ui.js composes the line and cards. -->
+        <section id="player-narration" class="pl-narration" data-mode="line" aria-label="Narration and playback status">
+          <button id="player-voice-status" class="pl-narr-line" type="button" aria-label="Change narrator">
+            <svg class="pl-narr-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 10v4M8 7v10M12 4v16M16 8v8M20 10.5v3"/></svg>
+            <span class="pl-narr-text">
+              <strong id="player-voice-name" class="pl-narr-name">Loading voice…</strong><span id="player-narration-ready" class="pl-narr-ready" hidden></span>
+              <span id="player-voice-cache" class="pl-narr-cache" hidden></span>
+            </span>
+            <svg class="pl-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 5l7 7-7 7"/></svg>
+          </button>
 
-                <span id="chapter-trigger-title" class="player-chapter-trigger-title">Chapter 1</span>
+          <div id="hq-voice-prep" class="pl-card" data-state="idle" hidden aria-live="polite">
+            <div class="pl-card-head">
+              <svg class="pl-card-glyph pl-glyph-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="8.5" stroke-opacity=".3"/><path d="M20.5 12A8.5 8.5 0 0 0 12 3.5"/></svg>
+              <svg class="pl-card-glyph pl-glyph-warn" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3.5 21 19.5H3z"/><path d="M12 10v4.5"/><circle cx="12" cy="17.2" r="1" fill="currentColor" stroke="none"/></svg>
+              <span class="pl-card-copy">
+                <span id="hq-prep-heading" class="pl-card-title"></span>
+                <span id="hq-voice-prep-title" class="pl-src-copy">High-quality audio</span>
+                <span id="hq-voice-prep-count" class="pl-src-copy"></span>
               </span>
-              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="icon">
-                <path stroke-linecap="round" stroke-linejoin="round" d="M8.25 6.75h12M8.25 12h12M8.25 17.25h12M3.75 6.75h.008v.008H3.75V6.75zm0 5.25h.008v.008H3.75V12zm0 5.25h.008v.008H3.75v-.008z" />
-              </svg>
-            </button>
-            <select id="chapter-select" class="player-chapter-select sr-only" aria-label="Select chapter"></select>
-          </div>
-
-          <section class="player-status-area" aria-label="Narration and playback status">
-          <div id="hq-voice-prep" class="hq-voice-prep" data-state="idle" hidden aria-live="polite">
-            <div class="hq-voice-prep-row">
-              <div class="hq-voice-prep-copy">
-                <span id="hq-voice-prep-title" class="hq-voice-prep-title">High-quality audio</span>
-                <span id="hq-voice-prep-detail" class="hq-voice-prep-detail">Checking preparation…</span>
-              </div>
-              <button id="hq-voice-prep-btn" class="hq-voice-prep-btn" type="button">Prepare book</button>
+              <span class="pl-card-head-action"><button id="hq-voice-prep-btn" class="pl-textbtn" type="button">Prepare book</button></span>
             </div>
-            <div class="hq-voice-prep-track" aria-hidden="true">
-              <div id="hq-voice-prep-fill" class="hq-voice-prep-fill"></div>
+            <div class="pl-bar" aria-hidden="true"><div id="hq-voice-prep-fill" class="pl-bar-fill"></div></div>
+            <p id="hq-prep-stretch" class="pl-card-sub" hidden></p>
+            <p id="hq-voice-prep-detail" class="pl-card-sub">Checking preparation…</p>
+            <div id="hq-prep-choice" class="pl-choice" role="group" aria-label="If a chapter isn't ready" hidden>
+              <span class="pl-choice-label" aria-hidden="true">If a chapter isn't ready:</span>
+              <button type="button" class="pl-chip" data-fallback-choice="wait" aria-pressed="true">Wait</button>
+              <button type="button" class="pl-chip" data-fallback-choice="instant" aria-pressed="false">Use instant narrator</button>
             </div>
-            <div id="hq-voice-prep-count" class="hq-voice-prep-count"></div>
-            <label id="narration-fallback-label" class="narration-fallback-label" for="narration-fallback" hidden>When a chapter is not ready</label>
-            <select id="narration-fallback" class="narration-fallback" hidden>
+            <div id="hq-prep-actions" class="pl-card-actions" hidden>
+              <button type="button" class="pl-btn pl-btn-secondary" data-fallback-choice="instant">Use instant narrator</button>
+            </div>
+            <label id="narration-fallback-label" class="sr-only" for="narration-fallback" hidden>When a chapter is not ready</label>
+            <select id="narration-fallback" class="sr-only" tabindex="-1" aria-hidden="true" hidden>
               <option value="wait">Wait for this narrator</option>
               <option value="instant">Use an instant narrator</option>
             </select>
           </div>
 
-          <div id="playback-reliability" class="playback-reliability" data-state="hidden" hidden aria-live="polite">
-            <span class="playback-reliability-dot" aria-hidden="true"></span>
+          <div id="playback-reliability" class="pl-card pl-card-compact" data-state="hidden" hidden aria-live="polite">
+            <svg class="pl-card-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7.5v5M12 16v.5"/></svg>
             <span id="playback-reliability-text">Playback needs attention</span>
           </div>
 
-          <div id="playback-resume-prompt" class="playback-resume-prompt" hidden role="status">
-            <div>
-              <strong>Tap to resume</strong>
-              <span>iPhone paused audio after leaving the app.</span>
+          <div id="playback-resume-prompt" class="pl-card pl-card-compact" hidden role="status">
+            <div class="pl-card-copy">
+              <strong class="pl-card-title">Tap to resume</strong>
+              <span class="pl-card-sub">iPhone paused audio after leaving the app.</span>
             </div>
-            <button id="playback-resume-btn" type="button">Resume playback</button>
+            <button id="playback-resume-btn" class="pl-btn pl-btn-primary" type="button">Resume playback</button>
           </div>
 
-          <!-- Audio loading -->
-          <div id="audio-loading" class="audio-loading" style="display: none;" role="status" aria-live="polite">
-            <div class="audio-loading-row">
-              <div class="spinner"></div>
-              <div class="audio-loading-copy">
-                <span id="loading-text">Preparing audio...</span>
-                <span id="loading-detail" class="loading-detail"></span>
-              </div>
-            </div>
-            <div class="audio-loading-progress" aria-hidden="true">
-              <div id="audio-loading-fill" class="audio-loading-fill"></div>
-            </div>
-            <div id="audio-loading-actions" class="audio-loading-actions" hidden></div>
-          </div>
-
-          </section>
-
-          <!-- Progress -->
-          <div class="player-progress">
-            <div id="player-progress-scope" class="player-progress-scope" role="group" aria-label="Seek within chapter or book" hidden>
-              <button type="button" class="player-progress-scope-btn active" data-progress-scope="chapter" aria-pressed="true">Chapter</button>
-              <button type="button" class="player-progress-scope-btn" data-progress-scope="book" aria-pressed="false">Book</button>
-            </div>
-            <input type="range" id="progress-slider" class="player-progress-slider" min="0" max="100" step="any" value="0" aria-label="Playback progress" aria-valuetext="0:00 of 0:00" />
-            <div class="player-time-row">
-              <span id="chapter-progress-current">0:00</span>
-              <span id="player-progress-context" class="player-progress-context">Chapter 1</span>
-              <span id="chapter-progress-total" role="button" tabindex="0" aria-label="Toggle chapter time display">0:00</span>
-            </div>
-            <p id="playback-buffering" class="player-buffering" role="status" hidden>Buffering…</p>
-          </div>
-
-          <button id="start-over-btn" class="start-over-btn" type="button" hidden>Start Over</button>
-
-          <!-- Main controls -->
-          <div class="player-controls">
-            <button id="prev-chapter-btn" class="ctrl-btn ctrl-btn-chapter" aria-label="Previous chapter">
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M5 5h2v14H5zM18 5.6v12.8a.8.8 0 0 1-1.2.7l-8.5-6.4a.9.9 0 0 1 0-1.4l8.5-6.4a.8.8 0 0 1 1.2.7Z"/></svg>
-            </button>
-            <button id="skip-back-btn" class="ctrl-btn" aria-label="Skip back 15 seconds">
-              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M8 3 3 7l5 4M3 7h9a8 8 0 1 1-7.4 11"/></svg>
-              <span class="skip-label">15</span>
-            </button>
-            <button id="play-pause-btn" class="ctrl-btn-play" aria-label="Play or pause">
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor"><path fill-rule="evenodd" d="M4.5 5.653c0-1.426 1.529-2.33 2.779-1.643l11.54 6.348c1.295.712 1.295 2.572 0 3.285L7.28 19.991c-1.25.687-2.779-.217-2.779-1.643V5.653z" clip-rule="evenodd"/></svg>
-            </button>
-            <button id="skip-forward-btn" class="ctrl-btn" aria-label="Skip forward 15 seconds">
-              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="m16 3 5 4-5 4m5-4h-9a8 8 0 1 0 7.4 11"/></svg>
-              <span class="skip-label">15</span>
-            </button>
-            <button id="next-chapter-btn" class="ctrl-btn ctrl-btn-chapter" aria-label="Next chapter">
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M17 5h2v14h-2zM6 5.6v12.8a.8.8 0 0 0 1.2.7l8.5-6.4a.9.9 0 0 0 0-1.4L7.2 4.9a.8.8 0 0 0-1.2.7Z"/></svg>
-            </button>
-          </div>
-
-          <div class="player-session-meta">
-            <!-- Book-level progress -->
-            <div id="player-book-progress" class="player-book-progress" role="progressbar" aria-label="Book progress" aria-valuemin="0" aria-valuemax="100" hidden>
-              <div class="player-book-progress-meta">
-                <span class="player-book-progress-label">Book progress</span>
-                <span id="book-progress-text" class="player-book-progress-text"></span>
-              </div>
-              <div class="player-book-progress-track" aria-hidden="true" hidden><div id="player-book-progress-fill" class="player-book-progress-fill"></div></div>
-            </div>
-            <button id="player-voice-status" class="player-voice-status" type="button" aria-label="Change narration voice">
-              <span class="player-voice-status-label">Voice</span>
-              <span id="player-voice-name" class="player-voice-status-name">Loading voice...</span>
-              <span id="player-voice-cache" class="player-voice-status-cache">Cache status unavailable</span>
-            </button>
-
-          </div>
-
-          <nav class="player-utility-row" aria-label="Playback tools">
-            <button id="utility-timer-btn" class="player-utility-btn" type="button">
-              <span class="player-utility-icon" aria-hidden="true">
-                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor">
-                  <path stroke-linecap="round" stroke-linejoin="round" d="M21.752 15.002A9.718 9.718 0 0118 15.75c-5.385 0-9.75-4.365-9.75-9.75 0-1.33.266-2.597.748-3.752A9.753 9.753 0 003 11.25C3 16.635 7.365 21 12.75 21a9.753 9.753 0 009.002-5.998z" />
-                </svg>
+          <div id="audio-loading" class="pl-card" style="display: none;" role="status" aria-live="polite">
+            <div class="pl-card-head">
+              <svg class="pl-card-glyph pl-glyph-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="8.5" stroke-opacity=".3"/><path d="M20.5 12A8.5 8.5 0 0 0 12 3.5"/></svg>
+              <svg class="pl-card-glyph pl-glyph-warn" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3.5 21 19.5H3z"/><path d="M12 10v4.5"/><circle cx="12" cy="17.2" r="1" fill="currentColor" stroke="none"/></svg>
+              <svg class="pl-card-glyph pl-glyph-offline" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3l18 18M8.3 8.3A9 9 0 0 0 3 12M12 20h.01M8.5 16.1a6 6 0 0 1 6.9 0M5.5 12.6a11 11 0 0 1 3.4-2m11.6 2a11 11 0 0 0-6.5-3.3"/></svg>
+              <span class="pl-card-copy">
+                <span id="loading-text" class="pl-card-title">Preparing audio...</span>
+                <span id="loading-detail" class="pl-card-sub"></span>
               </span>
-              <span>Sleep</span>
-            </button>
-            <button id="utility-bookmark-btn" class="player-utility-btn" type="button">
-              <span class="player-utility-icon" aria-hidden="true">
-                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor">
-                  <path stroke-linecap="round" stroke-linejoin="round" d="M17.593 3.322c1.1.128 1.907 1.077 1.907 2.185V21L12 17.25 4.5 21V5.507c0-1.108.806-2.057 1.907-2.185a48.507 48.507 0 0111.186 0z" />
-                </svg>
-              </span>
-              <span>Bookmark</span>
-            </button>
-            <button id="utility-guide-btn" class="player-utility-btn" type="button" hidden>
-              <span class="player-utility-icon" aria-hidden="true">
-                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor">
-                  <path stroke-linecap="round" stroke-linejoin="round" d="M12 6.042A8.967 8.967 0 006 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 016 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 016-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0018 18a8.967 8.967 0 00-6 2.292m0-14.25v14.25" />
-                </svg>
-              </span>
-              <span>Guide</span>
-            </button>
-            <button id="utility-speed-btn" class="player-utility-btn" type="button" aria-haspopup="dialog">
-              <span id="utility-speed-value" class="player-utility-speed" aria-hidden="true">1x</span>
-              <span>Speed</span>
-            </button>
-          </nav>
+            </div>
+            <div class="pl-bar" aria-hidden="true">
+              <div id="audio-loading-fill" class="pl-bar-fill"></div>
+            </div>
+            <div id="audio-loading-actions" class="pl-card-actions" hidden></div>
+          </div>
+        </section>
+
+        <!-- Chapter: one row; it opens the chapter list. -->
+        <button id="chapter-sheet-btn" class="pl-chrow" type="button" aria-haspopup="dialog">
+          <span class="pl-chrow-text">
+            <span id="chapter-trigger-ordinal" class="pl-chrow-ordinal">Chapter 1</span>
+            <span id="chapter-trigger-title" class="pl-chrow-name">Chapter 1</span>
+          </span>
+          <svg class="pl-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 5l7 7-7 7"/></svg>
+        </button>
+        <select id="chapter-select" class="sr-only" aria-label="Select chapter"></select>
+
+        <!-- Chapter scrubber; book position is the sentence under it. -->
+        <div class="pl-scrub">
+          <input type="range" id="progress-slider" class="pl-slider" min="0" max="100" step="any" value="0" aria-label="Chapter progress" aria-valuetext="0:00 of 0:00" />
+          <div class="pl-times">
+            <span id="chapter-progress-current">0:00</span>
+            <span id="chapter-progress-total" role="button" tabindex="0" aria-label="Toggle chapter time display">0:00</span>
+          </div>
+          <p id="player-book-line" class="pl-bookline" hidden></p>
+          <p id="playback-buffering" class="pl-buffering" role="status" hidden>Buffering…</p>
         </div>
-      </div>
+
+        <!-- Transport: Previous chapter · Back · Play/Pause · Forward · Next chapter -->
+        <div class="pl-transport" role="group" aria-label="Playback">
+          <button id="prev-chapter-btn" class="pl-tbtn pl-tbtn-ch" type="button" aria-label="Previous chapter">
+            <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M4.5 5h2v14h-2zM13 6.2v11.6a.8.8 0 0 1-1.25.66l-5.45-3.8a.8.8 0 0 1 0-1.32l5.45-3.8A.8.8 0 0 1 13 6.2zM20 6.2v11.6a.8.8 0 0 1-1.25.66l-5.45-3.8a.8.8 0 0 1 0-1.32l5.45-3.8A.8.8 0 0 1 20 6.2z"/></svg>
+          </button>
+          <button id="skip-back-btn" class="pl-tbtn" type="button" aria-label="Skip back 15 seconds">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4.5A8 8 0 1 1 6.34 6.84"/><path d="M9.6 6.84H6.34V3.6"/></svg>
+            <span class="skip-label" aria-hidden="true">15</span>
+          </button>
+          <button id="play-pause-btn" class="pl-play" type="button" aria-label="Play or pause">
+            <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M4.5 5.653c0-1.426 1.529-2.33 2.779-1.643l11.54 6.348c1.295.712 1.295 2.572 0 3.285L7.28 19.991c-1.25.687-2.779-.217-2.779-1.643V5.653z" clip-rule="evenodd"/></svg>
+          </button>
+          <button id="skip-forward-btn" class="pl-tbtn" type="button" aria-label="Skip forward 15 seconds">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4.5A8 8 0 1 0 17.66 6.84"/><path d="M14.4 6.84h3.26V3.6"/></svg>
+            <span class="skip-label" aria-hidden="true">15</span>
+          </button>
+          <button id="next-chapter-btn" class="pl-tbtn pl-tbtn-ch" type="button" aria-label="Next chapter">
+            <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M17.5 5h2v14h-2zM4 6.2v11.6a.8.8 0 0 0 1.25.66l5.45-3.8a.8.8 0 0 0 0-1.32L5.25 7.54A.8.8 0 0 0 4 6.2zM11 6.2v11.6a.8.8 0 0 0 1.25.66l5.45-3.8a.8.8 0 0 0 0-1.32L12.25 7.54A.8.8 0 0 0 11 6.2z"/></svg>
+          </button>
+        </div>
+
+        <!-- Tools: Speed (opens the speed sheet), Sleep (shows its countdown),
+             Bookmark (confirms inline). -->
+        <div class="pl-tools" role="group" aria-label="Playback tools">
+          <button id="speed-sheet-btn" class="pl-tool" type="button" aria-haspopup="dialog">
+            <span id="utility-speed-value" class="pl-tool-speed">1.0×</span><span>Speed</span>
+          </button>
+          <button id="timer-btn-inline" class="pl-tool pl-sleep" type="button" aria-label="Sleep timer">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5z"/></svg>
+            <span id="timer-countdown" class="pl-tool-count" aria-hidden="true"></span>
+            <span class="pl-tool-label" aria-hidden="true">Sleep</span>
+          </button>
+          <button id="utility-bookmark-btn" class="pl-tool" type="button" aria-label="Bookmark this spot">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 4h10a1 1 0 0 1 1 1v15l-6-3.6L6 20V5a1 1 0 0 1 1-1z"/></svg>
+            <span>Bookmark</span>
+          </button>
+        </div>
+      </main>
 
       <!-- Persistent native media element for online streams and offline chapters -->
       <audio id="audio-player" preload="metadata"></audio>
     </div>
 
-    <!-- Timer Modal -->
-    <div id="timer-modal" class="modal" role="dialog" aria-labelledby="timer-modal-title">
-      <div class="modal-content">
-        <h3 id="timer-modal-title">Sleep Timer</h3>
-        <div class="timer-options">
-          <button class="timer-option" data-minutes="5">5 min</button>
-          <button class="timer-option" data-minutes="10">10 min</button>
-          <button class="timer-option" data-minutes="15">15 min</button>
-          <button class="timer-option" data-minutes="30">30 min</button>
-          <button class="timer-option" data-minutes="60">60 min</button>
-          <button class="timer-option timer-option-wide" data-mode="chapter">End of chapter</button>
+    <!-- Player ••• menu: book-level actions that are not needed while
+         listening. Rows open their own sheet after this one closes. -->
+    <div id="player-more-sheet" class="voice-sheet player-more-sheet" aria-hidden="true">
+      <div class="voice-sheet-backdrop" id="player-more-backdrop"></div>
+      <section class="voice-sheet-panel player-more-panel" role="dialog" aria-modal="true" aria-labelledby="player-more-title">
+        <div class="voice-sheet-handle" aria-hidden="true"></div>
+        <div class="voice-sheet-header">
+          <h3 id="player-more-title" class="pl-more-title" tabindex="-1">This book</h3>
+          <button id="player-more-close" class="btn-icon" type="button" aria-label="Close"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 18 18 6M6 6l12 12"/></svg></button>
+        </div>
+        <div class="pl-more-list">
+          <button id="voice-btn" class="pl-more-row" type="button" data-more-row>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 10v4M8 7v10M12 4v16M16 8v8M20 10.5v3"/></svg>
+            <span class="pl-more-text"><span>Narrator for this book</span><span id="player-more-narrator" class="pl-more-sub"></span></span>
+          </button>
+          <button id="pronunciation-repair-btn" class="pl-more-row" type="button" data-more-row>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7.5h8m-8 9h5m-2.5 0l3-9m7 1.75v5.5m2.75-2.75h-5.5"/></svg>
+            <span class="pl-more-text"><span>Fix pronunciation</span></span>
+          </button>
+          <button id="player-book-seek-btn" class="pl-more-row" type="button" data-more-row>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12h18M7 8l-4 4 4 4M17 8l4 4-4 4"/></svg>
+            <span class="pl-more-text"><span>Go to position in book…</span><span id="player-book-seek-note" class="pl-more-sub" hidden>Needs a duration for every chapter</span></span>
+          </button>
+          <button id="player-queue-btn" class="pl-more-row" type="button" data-more-row>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6h12M4 12h12M4 18h7M16 15v6M13 18h6"/></svg>
+            <span class="pl-more-text"><span>Add to Up Next</span></span>
+          </button>
+          <button id="guide-btn" class="pl-more-row" type="button" data-more-row hidden>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 6.04A9 9 0 0 0 6 3.75c-1.05 0-2.06.18-3 .51v14.25A9 9 0 0 1 6 18c2.3 0 4.41.87 6 2.29m0-14.25a9 9 0 0 1 6-2.29c1.05 0 2.06.18 3 .51v14.25A9 9 0 0 0 18 18a9 9 0 0 0-6 2.29m0-14.25v14.25"/></svg>
+            <span class="pl-more-text"><span>Study guide</span></span>
+          </button>
+          <div class="pl-more-setting">
+            <span id="player-smart-rewind-label" class="pl-more-setting-label">Smart rewind for this book</span>
+            <div class="pl-seg" role="group" aria-labelledby="player-smart-rewind-label">
+              <button type="button" data-player-book-setting="smartRewindEnabled" data-choice="default" aria-pressed="true">Default</button>
+              <button type="button" data-player-book-setting="smartRewindEnabled" data-choice="on" aria-pressed="false">On</button>
+              <button type="button" data-player-book-setting="smartRewindEnabled" data-choice="off" aria-pressed="false">Off</button>
+            </div>
+          </div>
+          <div class="pl-more-setting">
+            <span id="player-rolling-offline-label" class="pl-more-setting-label">Automatic cache for this book</span>
+            <div class="pl-seg" role="group" aria-labelledby="player-rolling-offline-label">
+              <button type="button" data-player-book-setting="rollingOfflineEnabled" data-choice="default" aria-pressed="true">Default</button>
+              <button type="button" data-player-book-setting="rollingOfflineEnabled" data-choice="on" aria-pressed="false">On</button>
+              <button type="button" data-player-book-setting="rollingOfflineEnabled" data-choice="off" aria-pressed="false">Off</button>
+            </div>
+          </div>
+          <details class="pl-more-about">
+            <summary class="pl-more-row">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.5"/></svg>
+              <span class="pl-more-text"><span>About this book</span></span>
+            </summary>
+            <p id="book-description" class="pl-more-desc"></p>
+            <p id="book-details-text" class="pl-more-meta"></p>
+          </details>
+          <button id="rebuild-chapters-btn" class="pl-more-row pl-more-rebuild" type="button" data-more-row hidden>Rebuild chapters</button>
+          <button id="start-over-btn" class="pl-more-row" type="button" data-more-row hidden>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 12a8 8 0 1 0 2.34-5.66"/><path d="M4 4v4h4"/></svg>
+            <span class="pl-more-text"><span>Start over</span></span>
+          </button>
+        </div>
+      </section>
+    </div>
+
+    <!-- Go to position in book: the book-wide scrubber, moved out of the
+         main view. Seeks only on Go. -->
+    <div id="book-seek-sheet" class="voice-sheet book-seek-sheet" aria-hidden="true">
+      <div class="voice-sheet-backdrop" id="book-seek-backdrop"></div>
+      <section class="voice-sheet-panel book-seek-panel" role="dialog" aria-modal="true" aria-labelledby="book-seek-title">
+        <div class="voice-sheet-handle" aria-hidden="true"></div>
+        <div class="voice-sheet-header">
+          <h3 id="book-seek-title" class="pl-more-title" tabindex="-1">Go to position in book</h3>
+          <button id="book-seek-close" class="btn-icon" type="button" aria-label="Close"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 18 18 6M6 6l12 12"/></svg></button>
+        </div>
+        <p id="book-seek-preview" class="pl-seek-preview" aria-live="polite"></p>
+        <input type="range" id="book-seek-slider" class="pl-slider" min="0" max="100" step="any" value="0" aria-label="Position in book" aria-describedby="book-seek-preview" />
+        <div class="pl-times"><span id="book-seek-elapsed">0:00</span><span id="book-seek-total">0:00</span></div>
+        <div class="pl-seek-actions">
+          <button id="book-seek-cancel" class="pl-btn pl-btn-secondary" type="button">Cancel</button>
+          <button id="book-seek-go" class="pl-btn pl-btn-primary" type="button">Go</button>
+        </div>
+      </section>
+    </div>
+
+    <!-- Sleep timer sheet -->
+    <div id="timer-modal" class="voice-sheet timer-sheet" aria-hidden="true">
+      <div class="voice-sheet-backdrop" id="timer-sheet-backdrop"></div>
+      <section class="voice-sheet-panel timer-sheet-panel" role="dialog" aria-modal="true" aria-labelledby="timer-modal-title">
+        <div class="voice-sheet-handle" aria-hidden="true"></div>
+        <div class="voice-sheet-header">
+          <h3 id="timer-modal-title" tabindex="-1">Sleep timer</h3>
+          <button id="close-timer-modal-btn" class="sheet-done" type="button">Done</button>
+        </div>
+        <p id="timer-sheet-status" class="sheet-status" role="status">Timer is off.</p>
+        <div class="timer-options" role="group" aria-label="Stop playback after">
+          <button class="timer-option" type="button" data-minutes="5">5 minutes</button>
+          <button class="timer-option" type="button" data-minutes="10">10 minutes</button>
+          <button class="timer-option" type="button" data-minutes="15">15 minutes</button>
+          <button class="timer-option" type="button" data-minutes="30">30 minutes</button>
+          <button class="timer-option" type="button" data-minutes="60">1 hour</button>
+          <button class="timer-option" type="button" data-mode="chapter">End of chapter</button>
+        </div>
+        <div class="sheet-actions">
+          <button id="extend-timer-btn" class="btn-secondary" type="button" hidden>Add 5 minutes</button>
+          <button id="cancel-timer-btn" class="btn-secondary" type="button" hidden>Turn off timer</button>
         </div>
         <p class="timer-reliability-hint">
           End of chapter remains reliable when your screen is locked. Minute timers are best effort if iOS suspends Xandrio.
         </p>
-        <button id="extend-timer-btn" class="btn-secondary" hidden>+5 min</button>
-        <button id="cancel-timer-btn" class="btn-secondary">Cancel Timer</button>
-        <button id="close-timer-modal-btn" class="btn-primary" style="margin-top:8px;">Close</button>
-      </div>
+      </section>
     </div>
 
     <!-- Speed sheet -->
@@ -1334,42 +1433,38 @@
       </section>
     </div>
 
-    <div id="speed-sheet" class="modal" role="dialog" aria-labelledby="speed-sheet-title">
-      <div class="modal-content">
-        <h3 id="speed-sheet-title">Playback Speed</h3>
-        <!-- Preset chips rendered from PLAYBACK_SPEEDS in playback-speed.js -->
-        <div class="speed-presets"></div>
+    <div id="speed-sheet" class="voice-sheet speed-sheet" aria-hidden="true">
+      <div class="voice-sheet-backdrop" id="speed-sheet-backdrop"></div>
+      <section class="voice-sheet-panel speed-sheet-panel" role="dialog" aria-modal="true" aria-labelledby="speed-sheet-title">
+        <div class="voice-sheet-handle" aria-hidden="true"></div>
+        <div class="voice-sheet-header">
+          <h3 id="speed-sheet-title" tabindex="-1">Speed</h3>
+          <button id="close-speed-sheet-btn" class="sheet-done" type="button">Done</button>
+        </div>
+        <div class="speed-hero" role="status" aria-live="polite">
+          <div id="speed-hero-value" class="speed-hero-value num">1.00&times;</div>
+          <p id="speed-hero-left" class="speed-hero-left num"></p>
+        </div>
         <div class="speed-stepper">
-          <button type="button" id="speed-stepper-down" class="btn-icon" aria-label="Decrease speed">
-            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M5 12h14" /></svg>
+          <button type="button" id="speed-stepper-down" class="speed-step-btn" aria-label="Slower, 0.05">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M5 12h14" /></svg>
           </button>
-          <span id="speed-stepper-value" class="speed-stepper-value">1.00x</span>
-          <button type="button" id="speed-stepper-up" class="btn-icon" aria-label="Increase speed">
-            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 5v14M5 12h14" /></svg>
+          <span id="speed-stepper-value" class="speed-stepper-value num">1.00&times;</span>
+          <button type="button" id="speed-stepper-up" class="speed-step-btn" aria-label="Faster, 0.05">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M12 5v14M5 12h14" /></svg>
           </button>
         </div>
-        <button id="set-default-speed-btn" class="btn-ghost btn-sm speed-default-btn" type="button">Set as default</button>
-        <button id="set-book-speed-btn" class="btn-ghost btn-sm speed-default-btn" type="button">Use for this book</button>
-        <button id="clear-book-speed-btn" class="btn-ghost btn-sm speed-default-btn" type="button">Use global speed</button>
-        <p class="speed-sheet-caption">Book-specific speed overrides your default.</p>
-        <div class="settings-row settings-row-stacked">
-          <div class="settings-label"><span class="settings-label-text">Smart rewind for this book</span></div>
-          <div id="book-smart-rewind-control" class="segmented-control" role="group" aria-label="Smart rewind for this book">
-            <button type="button" data-book-smart-rewind="default">Default</button>
-            <button type="button" data-book-smart-rewind="on">On</button>
-            <button type="button" data-book-smart-rewind="off">Off</button>
+        <!-- Preset chips rendered from PLAYBACK_SPEEDS in playback-speed.js -->
+        <div class="speed-presets" role="group" aria-label="Preset speeds"></div>
+        <div class="speed-scope">
+          <span id="speed-scope-label" class="speed-scope-label">Applies to</span>
+          <div class="speed-scope-control" role="group" aria-labelledby="speed-scope-label">
+            <button type="button" id="speed-scope-book" data-speed-scope="book" aria-pressed="false">This book</button>
+            <button type="button" id="speed-scope-all" data-speed-scope="all" aria-pressed="false">All books</button>
           </div>
         </div>
-        <div class="settings-row settings-row-stacked">
-          <div class="settings-label"><span class="settings-label-text">Automatic cache for this book</span></div>
-          <div id="book-rolling-offline-control" class="segmented-control" role="group" aria-label="Automatic cache for this book">
-            <button type="button" data-book-rolling-offline="default">Default</button>
-            <button type="button" data-book-rolling-offline="on">On</button>
-            <button type="button" data-book-rolling-offline="off">Off</button>
-          </div>
-        </div>
-        <button id="close-speed-sheet-btn" class="btn-primary" style="margin-top:8px;">Close</button>
-      </div>
+        <p id="speed-scope-caption" class="speed-sheet-caption"></p>
+      </section>
     </div>
 
     <!-- Start Over Modal -->
@@ -1435,20 +1530,41 @@
       <section class="voice-sheet-panel chapter-sheet-panel" role="dialog" aria-modal="true" aria-labelledby="chapter-sheet-title">
         <div class="voice-sheet-handle" aria-hidden="true"></div>
         <div class="voice-sheet-header">
-          <div>
-            <h3 id="chapter-sheet-title">Chapters</h3>
-            <p id="chapter-sheet-subtitle">Jump without losing your place.</p>
-          </div>
-          <button id="chapter-sheet-close" class="btn-icon" aria-label="Close chapter list">
-            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="icon"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
-          </button>
+          <h3 id="chapter-sheet-title" tabindex="-1">Chapters</h3>
+          <button id="chapter-sheet-close" class="sheet-done" type="button">Done</button>
         </div>
-        <div id="chapter-sheet-bookmarks"></div>
+        <div class="sheet-tabs" role="tablist" aria-label="Chapters and bookmarks">
+          <button type="button" id="chapter-sheet-tab-chapters" class="sheet-tab" role="tab" aria-selected="true" aria-controls="chapter-list" data-chapter-sheet-tab="chapters">Chapters</button>
+          <button type="button" id="chapter-sheet-tab-bookmarks" class="sheet-tab" role="tab" aria-selected="false" aria-controls="chapter-sheet-bookmarks" data-chapter-sheet-tab="bookmarks">Bookmarks</button>
+        </div>
+        <div id="chapter-sheet-bookmarks" class="chapter-sheet-bookmarks" role="tabpanel" aria-labelledby="chapter-sheet-tab-bookmarks" hidden></div>
         <div id="chapter-list" class="chapter-list" role="listbox" aria-label="Chapters"></div>
       </section>
     </div>
 
     <!-- User-scoped background narration activity -->
+    <!-- Recent books: last five in progress, one tap resumes. Opened by
+         press-and-hold on the mini player (phase 3 adds the player button). -->
+    <div id="recent-sheet" class="voice-sheet recent-sheet" aria-hidden="true">
+      <div class="voice-sheet-backdrop" id="recent-sheet-backdrop"></div>
+      <section class="voice-sheet-panel recent-sheet-panel" role="dialog" aria-modal="true" aria-labelledby="recent-sheet-title">
+        <div class="voice-sheet-handle" aria-hidden="true"></div>
+        <div class="voice-sheet-header">
+          <h3 id="recent-sheet-title" tabindex="-1">Recent</h3>
+          <button id="recent-sheet-close" class="sheet-done" type="button">Done</button>
+        </div>
+        <ul id="recent-sheet-list" class="recent-sheet-list"></ul>
+      </section>
+    </div>
+    <div id="book-actions-sheet" class="voice-sheet book-actions-sheet" aria-hidden="true">
+      <div class="voice-sheet-backdrop" id="book-actions-backdrop"></div>
+      <section class="voice-sheet-panel book-actions-panel" role="dialog" aria-modal="true" aria-labelledby="book-actions-title">
+        <div class="voice-sheet-handle" aria-hidden="true"></div>
+        <div id="book-actions-head" class="book-actions-head"><h3 id="book-actions-title" class="book-actions-title" tabindex="-1">Book</h3></div>
+        <div id="book-actions-list" class="book-actions-list" role="menu" aria-label="Book actions"></div>
+        <button id="book-actions-cancel" class="btn-secondary book-actions-cancel" type="button">Cancel</button>
+      </section>
+    </div>
     <div id="audio-activity-sheet" class="voice-sheet audio-activity-sheet" aria-hidden="true">
       <div class="voice-sheet-backdrop" id="audio-activity-backdrop"></div>
       <section class="voice-sheet-panel audio-activity-panel" role="dialog" aria-modal="true" aria-labelledby="audio-activity-title">
@@ -1500,25 +1616,67 @@
   </div>
 
   <!-- Mini Player — persistent bottom bar visible on non-player views -->
-  <div id="mini-player" class="mini-player" style="display:none" role="complementary" aria-label="Now playing">
-    <div class="mini-player-progress" id="mini-player-progress"></div>
+  <!-- Persistent mini player: docks above the tab bar (phone) or at the
+       bottom of the content column (desktop). Tap opens the player; press
+       and hold (or right-click / Shift+F10) opens the Recent sheet. -->
+  <div id="mini-player" class="mini-player" style="display:none" role="region" aria-label="Now playing">
+    <div class="mini-player-progress-track" aria-hidden="true"><div class="mini-player-progress" id="mini-player-progress"></div></div>
     <div class="mini-player-content" id="mini-player-tap">
-      <img id="mini-player-cover" class="mini-player-cover" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==" alt="" />
-      <div class="mini-player-info">
-        <span id="mini-player-title" class="mini-player-title"></span>
-        <span id="mini-player-chapter" class="mini-player-chapter"></span>
-      </div>
-      <button id="mini-player-back" class="mini-player-btn" aria-label="Back 15 seconds">
-        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9 15L3 9m0 0l6-6M3 9h12a6 6 0 010 12h-3"/></svg>
-        <span class="mini-skip-label">15</span>
+      <button id="mini-player-open" class="mini-player-open" type="button" aria-label="Open the player" aria-describedby="mini-player-hold-hint">
+        <img id="mini-player-cover" class="mini-player-cover" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==" alt="" />
+        <span class="mini-player-info">
+          <span id="mini-player-title" class="mini-player-title"></span>
+          <span id="mini-player-chapter" class="mini-player-chapter num"></span>
+        </span>
       </button>
-      <button id="mini-player-play" class="mini-player-btn" aria-label="Play/Pause"></button>
-      <button id="mini-player-forward" class="mini-player-btn" aria-label="Forward 15 seconds">
-        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M15 15l6-6m0 0l-6-6m6 6H9a6 6 0 000 12h3"/></svg>
-        <span class="mini-skip-label">15</span>
+      <span id="mini-player-hold-hint" class="sr-only">Press and hold, or press Shift F10, for recent books.</span>
+      <button id="mini-player-back" class="mini-player-btn mini-player-btn--secondary" type="button" aria-label="Back 15 seconds">
+        <svg viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7.2 10.5A11 11 0 1 1 5 17"/><path d="M6.5 4.5v6h6"/></svg>
+        <span class="mini-skip-label" aria-hidden="true">15</span>
+      </button>
+      <button id="mini-player-play" class="mini-player-btn mini-player-btn--play" type="button" aria-label="Play/Pause"></button>
+      <button id="mini-player-forward" class="mini-player-btn" type="button" aria-label="Forward 15 seconds">
+        <svg viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M24.8 10.5A11 11 0 1 0 27 17"/><path d="M25.5 4.5v6h-6"/></svg>
+        <span class="mini-skip-label" aria-hidden="true">15</span>
       </button>
     </div>
   </div>
+
+  <!-- One-time coach hint: shown once the reader has two or more books in
+       progress; remembered in localStorage when dismissed. -->
+  <div id="shell-coach-hint" class="shell-coach-hint" role="status" hidden>
+    <span class="shell-coach-text">Press and hold the player bar to switch books</span>
+    <button id="shell-coach-dismiss" class="shell-coach-dismiss" type="button">Got it</button>
+  </div>
+
+  <!-- Phone navigation: three tabs. Hash links keep deep links and history. -->
+  <nav id="app-tabbar" class="app-tabbar" aria-label="Main" hidden>
+    <a class="app-tab" href="#/library" data-shell-tab="library"><svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M4 5.5A1.5 1.5 0 0 1 5.5 4H8.5v16H5.5A1.5 1.5 0 0 1 4 18.5z"/><path fill="currentColor" d="M9.5 4h4v16h-4z"/><path fill="currentColor" d="M14.2 5.2l3.9-1 3.6 14.6-3.9 1z"/></svg><span>Library</span></a>
+    <a class="app-tab" href="#/search" data-shell-tab="search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg><span>Find</span></a>
+    <a class="app-tab" href="#/settings" data-shell-tab="settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg><span>Settings</span></a>
+  </nav>
+
+  <!-- Desktop navigation (>=760px) replaces the tab bar. -->
+  <nav id="app-sidebar" class="app-sidebar" aria-label="Main" hidden>
+    <a class="app-sidebar-brand" href="#/library">Xandrio</a>
+    <h2 class="app-sidebar-heading" id="app-sidebar-library">Library</h2>
+    <ul class="app-sidebar-list" aria-labelledby="app-sidebar-library">
+      <li><a class="app-sidebar-link" href="#/library" data-shell-nav="library" data-shell-scope="shelf"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5.5A1.5 1.5 0 0 1 5.5 4H9v16H5.5A1.5 1.5 0 0 1 4 18.5zM9 4h4.5v16H9z"/><path d="M14.2 5.2l3.9-1 3.6 14.6-3.9 1z"/></svg><span>My Shelf</span><span class="app-sidebar-count num" data-shell-count="shelf"></span></a></li>
+      <li><a class="app-sidebar-link" href="#/library" data-shell-nav="library" data-shell-scope="downloaded"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="m8 12.5 2.8 2.8L16 10"/></svg><span>Downloaded</span><span class="app-sidebar-count num" data-shell-count="downloaded"></span></a></li>
+      <li><a class="app-sidebar-link" href="#/library" data-shell-nav="library" data-shell-scope="all"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.6 3.8 5.6 3.8 9s-1.3 6.4-3.8 9c-2.5-2.6-3.8-5.6-3.8-9S9.5 5.6 12 3z"/></svg><span>Shared Library</span><span class="app-sidebar-count num" data-shell-count="all"></span></a></li>
+    </ul>
+    <h2 class="app-sidebar-heading" id="app-sidebar-add">Add</h2>
+    <ul class="app-sidebar-list" aria-labelledby="app-sidebar-add">
+      <li><a class="app-sidebar-link" href="#/search" data-shell-nav="search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg><span>Find books</span></a></li>
+      <li><a class="app-sidebar-link" href="#/search" data-shell-action="upload"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 16V4M6.5 9.5 12 4l5.5 5.5"/><path d="M4 15v3.5A1.5 1.5 0 0 0 5.5 20h13a1.5 1.5 0 0 0 1.5-1.5V15"/></svg><span>Upload a file</span></a></li>
+    </ul>
+    <h2 class="app-sidebar-heading" id="app-sidebar-more">More</h2>
+    <ul class="app-sidebar-list" aria-labelledby="app-sidebar-more">
+      <li><button class="app-sidebar-link" type="button" data-shell-action="audio-activity" aria-controls="audio-activity-sheet" aria-haspopup="dialog"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 10v4M8 7v10M12 4v16M16 8v8M20 10.5v3"/></svg><span>Audio activity</span><span class="app-sidebar-count num" id="app-sidebar-activity-count"></span></button></li>
+      <li><a class="app-sidebar-link" href="#/stats" data-shell-nav="stats"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 20v-7M12 20V8M19 20V4"/></svg><span>Listening stats</span></a></li>
+      <li><a class="app-sidebar-link" href="#/settings" data-shell-nav="settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg><span>Settings</span></a></li>
+    </ul>
+  </nav>
 
   <div id="operator-notice-dialog" class="modal operator-notice-dialog" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="operator-notice-title">
     <section class="modal-content operator-notice-content">
@@ -1536,7 +1694,7 @@
     </section>
   </div>
 
-  <script src="/js/lifecycle.js?v=1"></script>
-  <script type="module" src="app.js?v=149"></script>
+  <script src="/js/lifecycle.js?v=2"></script>
+  <script type="module" src="app.js?v=156"></script>
 </body>
 </html>

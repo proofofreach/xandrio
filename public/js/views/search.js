@@ -1,7 +1,7 @@
 import { API_BASE, apiGet, apiSend, syncHeaders } from '../api.js';
 import { formatApiDetails, escapeHTML, safeAttr, encodeState, decodeState } from '../util/format.js';
 import { loadLibrary } from './library.js';
-import { activeImport, beginImport, initImportActivity } from '../features/import-activity.js';
+import { activeImport, beginImport, initImportActivity, latestImport } from '../features/import-activity.js';
 import { onActivate } from '../ui/keys.js';
 import { trapFocus } from '../ui/focus-trap.js';
 import { getDefaultSearchSources } from '../client-settings.js';
@@ -44,6 +44,7 @@ let latestSourceStatus = {};
 let sourceSelectionMessage = '';
 let searchInProgress = false;
 let searchRequestVersion = 0;
+let activeSearchRequest = null;
 let searchSourcesReady = false;
 const SEARCH_COVER_RETRY_DELAY_MS = 3000;
 const MOBILE_SEARCH_MEDIA = '(max-width: 759px)';
@@ -85,24 +86,41 @@ function sourcePillLabel(source) {
   return serverLabel && serverLabel !== 'OPDS' ? serverLabel : source.label;
 }
 
+// Spelled-out names for the filter summary line ("Anna's Archive", not "Anna's").
+const SOURCE_FULL_NAMES = {
+  standardebooks: 'Standard Ebooks',
+  gutenberg: 'Project Gutenberg',
+  annas: "Anna's Archive",
+  zlibrary: 'Z-Library',
+  internetarchive: 'Internet Archive'
+};
+
+function sourceFullName(source) {
+  return SOURCE_FULL_NAMES[source.id] || sourcePillLabel(source);
+}
+
 // Search Functions
 // Helper: Convert quality score to star display
 // Skeleton rows shown in the search view while a search request is in flight.
-function skeletonResultsHTML() {
+function skeletonResultsHTML(sourceCount = 0) {
   const row = `
     <div class="result-card skeleton-result" aria-hidden="true">
       <div class="sk-block sk-result-cover"></div>
       <div class="skeleton-result-lines">
         <div class="sk-line w-70"></div>
         <div class="sk-line w-45"></div>
+        <div class="sk-line w-60"></div>
       </div>
     </div>
   `;
-  return `<div class="search-results-list">${row.repeat(6)}</div>`;
+  const words = sourceCount > 1 ? `Searching ${sourceCount} sources…` : 'Searching…';
+  return `<p class="search-loading-note" role="status">${words}</p><div class="search-results-list" aria-busy="true">${row.repeat(5)}</div>`;
 }
 
 const SEARCH_ICON = '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="icon-lg"><path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z"/></svg>';
 const ERROR_ICON = '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="icon-lg"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z"/></svg>';
+const CHECK_ICON = '<svg class="chip-check" viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="m4.5 10.5 3.5 3.5 7.5-8" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+const STAR_ICON = '<svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="m10 2.5 2.3 4.9 5.2.7-3.8 3.7.9 5.3L10 14.6l-4.6 2.5.9-5.3L2.5 8.1l5.2-.7z"/></svg>';
 const ADD_TO_LIBRARY_ICON = '<svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M10 4v12M4 10h12" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>';
 
 // Renders an .empty-state-modern block into the results area. When `retry` is
@@ -188,7 +206,7 @@ function updateFilterSummary() {
   const summary = document.getElementById('search-filter-summary');
   if (summary) {
     const language = languageFilter?.selectedOptions[0]?.textContent || 'English';
-    const sources = SEARCH_SOURCES.filter(source => configuredSourceIds().includes(source.id)).map(sourcePillLabel);
+    const sources = SEARCH_SOURCES.filter(source => configuredSourceIds().includes(source.id)).map(sourceFullName);
     summary.textContent = [language, sources.length ? sources.join(', ') : 'No available sources'].join(' · ');
   }
 }
@@ -284,6 +302,8 @@ function hydrateSearchWorkspaceFromUrl() {
 
 function clearRenderedSearchResults() {
   searchRequestVersion += 1;
+  activeSearchRequest?.controller.abort();
+  activeSearchRequest = null;
   searchInProgress = false;
   lastSearchWorks = [];
   lastSearchIntent = null;
@@ -298,6 +318,7 @@ function clearRenderedSearchResults() {
   if (resultsCount) resultsCount.hidden = true;
   if (searchSortWrap) searchSortWrap.hidden = true;
   if (searchBtn) searchBtn.disabled = false;
+  renderSourceShelf();
 }
 
 function safeResultCoverUrl(result) {
@@ -391,17 +412,12 @@ function buildResultCard(work, eagerCover = false) {
         </ul>
       </details>`
     : '';
-  const publisher = result.publisher && result._year
-    ? String(result.publisher).replace(String(result._year), '').replace(/,\s*$/, '').trim()
-    : result.publisher;
-  const secondaryMeta = [result.size, result._year, publisher]
-    .filter(Boolean)
-    .map(value => escapeHTML(String(value)))
-    .join(' · ');
-  const editionMeta = [
+  const metaLine = [
     result.format ? String(result.format).toUpperCase() : '',
-    result.source ? getSourceLabel(result.source) : ''
-  ].filter(Boolean);
+    result.source ? getSourceLabel(result.source) : '',
+    result.size,
+    result._year
+  ].filter(Boolean).map(value => `<span>${escapeHTML(String(value))}</span>`).join(' · ');
   const title = work.title || result.title || 'Untitled';
   const author = work.author || result.author || 'Unknown';
   const coverLoading = eagerCover ? 'loading="eager" fetchpriority="high"' : 'loading="lazy"';
@@ -421,17 +437,18 @@ function buildResultCard(work, eagerCover = false) {
           <span>${escapeHTML(String(result.format || 'Book').toUpperCase())}</span>
         </span>
         ${coverUrl ? `<img class="result-cover" data-result-cover src="${safeAttr(coverUrl)}" alt="" width="200" height="300" ${coverLoading} decoding="async" referrerpolicy="no-referrer" />` : ''}
-        ${isBest ? '<span class="best-match-badge">Best match</span>' : ''}
-        <span class="result-cover-action-cue" aria-hidden="true"><span class="result-cover-action-icon">${ADD_TO_LIBRARY_ICON}</span><span>Add to library</span></span>
       </button>
       <div class="result-card-copy">
+        ${isBest ? `<p class="result-best-match">${STAR_ICON}<span>Best match</span></p>` : ''}
         <h3 class="result-card-title">${escapeHTML(title)}</h3>
         <p class="result-card-author">${escapeHTML(author)}</p>
-        <p class="result-card-biblio" data-result-import-status role="status" hidden>Adding to library…</p>
-        ${secondaryMeta ? `<p class="result-card-biblio">${secondaryMeta}</p>` : ''}
-        ${editionInfo}
-        ${editionMeta.length ? `<footer class="result-card-footer"><p class="result-card-edition-meta">${editionMeta.map(value => `<span>${escapeHTML(value)}</span>`).join('')}</p></footer>` : ''}
+        ${metaLine ? `<p class="result-card-edition-meta">${metaLine}</p>` : ''}
+        <p class="result-import-status" data-result-import-status role="status" hidden></p>
       </div>
+      <div class="result-card-action">
+        <button type="button" class="result-add-btn" data-result-add data-work-id="${safeAttr(work.id)}" aria-label="${safeAttr(coverActionLabel)}"><span data-result-add-label>Add</span></button>
+      </div>
+      ${editionInfo}
     </article>`;
 }
 
@@ -507,6 +524,24 @@ function observeSearchLoadMore() {
   searchLoadObserver.observe(searchLoadMore);
 }
 
+// What a result row says about its version's import. Adding, Added and
+// failure are all words; the trailing button carries the next action.
+function importRowState(edition) {
+  if (activeImport(edition?.hash)) return { state: 'adding' };
+  const job = latestImport(edition?.hash);
+  if (!job) return { state: 'idle' };
+  if (job.status === 'complete') {
+    const bookId = job.result?.bookId || job.result?.book?.id;
+    return { state: 'added', bookId, text: 'Added to your library' };
+  }
+  if (job.status === 'failed') {
+    if (job.error?.existingBookId) return { state: 'added', bookId: job.error.existingBookId, text: 'Already in your library' };
+    const reason = job.error?.suggestion || job.error?.error || job.error?.message || '';
+    return { state: 'failed', text: `Could not add this version${reason ? `. ${reason}` : '.'}` };
+  }
+  return { state: 'idle' };
+}
+
 function updateImportActions() {
   for (const button of searchResults?.querySelectorAll('[data-work-add], [data-edition-choice]') || []) {
     const work = lastSearchWorks.find(work => work.id === button.dataset.workId);
@@ -517,12 +552,34 @@ function updateImportActions() {
     button.setAttribute('aria-busy', String(busy));
     if (!button.dataset.addLabel) button.dataset.addLabel = button.getAttribute('aria-label');
     button.setAttribute('aria-label', busy ? `Adding ${edition.title || 'book'} to library` : button.dataset.addLabel);
-    if (button.hasAttribute('data-work-add')) {
-      const status = button.closest('.result-card')?.querySelector('[data-result-import-status]');
-      if (status) status.hidden = !busy;
+  }
+  for (const card of searchResults?.querySelectorAll('.result-card[data-work-id]') || []) {
+    const work = workById.get(card.dataset.workId);
+    const button = card.querySelector('[data-result-add]');
+    if (!work || !button) continue;
+    const row = importRowState(work.bestEdition);
+    const label = button.querySelector('[data-result-add-label]');
+    const status = card.querySelector('[data-result-import-status]');
+    if (!button.dataset.addLabel) button.dataset.addLabel = button.getAttribute('aria-label');
+    const name = work.title || 'book';
+    const text = { idle: 'Add', adding: 'Adding…', added: 'Open', failed: 'Retry' }[row.state];
+    if (label.textContent !== text) label.textContent = text;
+    button.dataset.state = row.state;
+    button.disabled = row.state === 'adding';
+    button.setAttribute('aria-busy', String(row.state === 'adding'));
+    button.setAttribute('aria-label', {
+      idle: button.dataset.addLabel,
+      adding: `Adding ${name} to library`,
+      added: `Open ${name}`,
+      failed: `Retry adding ${name} to library`
+    }[row.state]);
+    card.dataset.importState = row.state;
+    const message = row.state === 'adding' ? 'Adding to your library…' : row.text || '';
+    if (status) {
+      status.hidden = !message;
+      status.dataset.state = row.state;
+      if (status.textContent !== message) status.textContent = message;
     }
-    const cue = button.querySelector('.result-cover-action-cue > span:last-child');
-    if (cue) cue.textContent = busy ? 'Adding…' : 'Add to library';
   }
 }
 document.addEventListener('xandrio:importchange', updateImportActions);
@@ -574,17 +631,14 @@ function effectiveDefaultSources() {
   return firstAvailable ? [firstAvailable.id] : [];
 }
 
+// Chip status is always words: "Z-Lib · offline", "Anna's · 12", "· searching".
 function sourceValue(source, selected, configured) {
-  if (!configured) {
-    return '<span class="source-status-dot is-unavailable" aria-hidden="true"></span><span class="sr-only">Unavailable</span>';
-  }
-  if (searchInProgress && selected) {
-    return '<span class="source-spinner" aria-hidden="true"></span><span class="sr-only">Searching</span>';
-  }
+  if (!configured) return 'not set up';
+  if (searchInProgress && selected) return '<span class="source-spinner" aria-hidden="true"></span>searching';
   const status = latestSourceStatus[source.id];
   if (!selected || !status) return '';
-  if (status.ok) return escapeHTML(String(status.count || 0));
-  return '<span class="source-status-dot is-issue" aria-hidden="true"></span><span class="sr-only">Source issue</span>';
+  if (status.ok) return escapeHTML(`${status.count || 0} found`);
+  return `<span class="source-status-dot is-issue" aria-hidden="true"></span>${escapeHTML(sourceIssueWords(status))}`;
 }
 
 // Every caller renders this as `${sourceLabel}: ${sourceIssueLabel(status)}`, so
@@ -608,6 +662,13 @@ const SOURCE_ISSUE_LABELS = {
 function sourceIssueLabel(status = {}) {
   const code = status.errorCode || status.code;
   return SOURCE_ISSUE_LABELS[code] || status.message || status.error || 'Unavailable';
+}
+
+// Short lower-case state for a chip: "offline", "timed out", "reconnect required".
+function sourceIssueWords(status = {}) {
+  const label = sourceIssueLabel(status);
+  if (/^(unavailable|temporarily unavailable)$/i.test(label)) return 'offline';
+  return label.length > 24 ? 'offline' : label.charAt(0).toLowerCase() + label.slice(1);
 }
 
 function sourceStatusMessage() {
@@ -672,8 +733,8 @@ function sourcePillHTML(source) {
   return `
     <button type="button" class="${classes}" data-search-source="${source.id}"
       aria-pressed="${selected}" ${configured ? '' : 'disabled'} title="${safeAttr(title)}">
-      <span>${escapeHTML(sourcePillLabel(source))}</span>
-      ${value ? `<span class="search-source-value">${value}</span>` : ''}
+      ${selected ? CHECK_ICON : ''}
+      <span class="search-source-text"><span class="search-source-name">${escapeHTML(sourcePillLabel(source))}</span>${value ? `<span class="search-source-value"><span class="search-source-dot" aria-hidden="true">· </span>${value}</span>` : ''}</span>
     </button>`;
 }
 
@@ -757,11 +818,16 @@ async function searchBooks() {
     renderSourceShelf();
     return;
   }
+  const requestKey = JSON.stringify({ query, language: selectedLanguage, sources });
+  if (activeSearchRequest?.key === requestKey) return;
+  activeSearchRequest?.controller.abort();
+  const controller = new AbortController();
+  activeSearchRequest = { key: requestKey, controller };
   const requestVersion = ++searchRequestVersion;
 
   // Clear any previous download errors
   downloadError.style.display = 'none';
-  searchResults.innerHTML = skeletonResultsHTML();
+  searchResults.innerHTML = skeletonResultsHTML(sources.length);
   if (resultsCount) resultsCount.hidden = true;
   if (searchSortWrap) searchSortWrap.hidden = true;
   latestSourceStatus = {};
@@ -778,7 +844,7 @@ async function searchBooks() {
   renderSourceShelf();
 
   try {
-    const data = await apiSend('POST', '/api/search', { query, language: selectedLanguage, sources });
+    const data = await apiSend('POST', '/api/search', { query, language: selectedLanguage, sources }, { signal: controller.signal });
     if (requestVersion !== searchRequestVersion) return;
     latestSourceStatus = data.sourceStatus || {};
 
@@ -858,6 +924,7 @@ async function searchBooks() {
     }
   } finally {
     if (requestVersion === searchRequestVersion) {
+      activeSearchRequest = null;
       searchInProgress = false;
       searchBtn.disabled = false;
       renderSourceShelf();
@@ -1346,14 +1413,21 @@ export function initSearch(options = {}) {
       return;
     }
 
-    const workAction = e.target.closest('[data-work-add], [data-edition-choice]');
+    const workAction = e.target.closest('[data-work-add], [data-result-add], [data-edition-choice]');
     if (workAction && searchResults?.contains(workAction)) {
       e.preventDefault();
       e.stopPropagation();
       const work = workById.get(workAction.dataset.workId);
       const editionIndex = Number(workAction.dataset.editionChoice || 0);
       const edition = work?.editions?.[editionIndex] || work?.bestEdition;
-      if (edition) downloadBook(edition);
+      if (!edition) return;
+      // A finished import turns Add into Open (from the button or the cover).
+      const row = workAction.hasAttribute('data-edition-choice') ? null : importRowState(edition);
+      if (row?.state === 'added' && row.bookId && typeof deps.openBook === 'function') {
+        deps.openBook(row.bookId).catch(error => console.warn('Opening imported book failed:', error));
+        return;
+      }
+      downloadBook(edition);
       return;
     }
 

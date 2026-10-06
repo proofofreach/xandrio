@@ -89,7 +89,7 @@ async function verifyDownloadLifecycle(browser, environment) {
     assert.equal(await attached.locator('[data-import-detail]').textContent(), 'Validating the EPUB container.',
       'the first visible step after 202 must come from the status endpoint');
 
-    await page.locator('#back-to-library-btn').click();
+    await page.locator('[data-shell-tab="library"], [data-shell-nav="library"]').locator('visible=true').first().click();
     await page.waitForURL(/#\/library$/);
     await attached.locator('[data-import-label]').filter({ hasText: 'Added to library' }).waitFor({ timeout: 5000 });
     assert.match(page.url(), /#\/library$/, 'completion after leaving Search must preserve the Library route');
@@ -219,8 +219,10 @@ async function verifyCompletedImportActions(browser, environment, viewport) {
     await page.waitForURL(/#\/player\/scn-meridian$/);
     await page.locator('#player-view.active').waitFor();
     assert.equal(await page.locator('#book-title').textContent(), 'The Meridian Line');
-    assert.equal(await page.locator('#library-view').isVisible(), false,
-      'Open book must show the player without the shelf');
+    // From 1200px the player docks as a pane beside the shelf; below that
+    // it replaces the shelf.
+    assert.equal(await page.locator('#library-view').isVisible(), viewport.width >= 1200,
+      viewport.width >= 1200 ? 'Open book docks the player beside the shelf' : 'Open book must show the player without the shelf');
     await card.waitFor({ state: 'detached', timeout: 2000 });
     await page.screenshot({ path: path.join(SCREENSHOT_DIR, `import-open-${viewport.width}.png`), fullPage: true });
     await page.reload({ waitUntil: 'domcontentloaded' });
@@ -248,7 +250,7 @@ async function verifyOpenDuringNavigation(browser, environment) {
         return { ready: Promise.resolve(), finished };
       };
     });
-    await page.locator('#back-to-library-btn').click();
+    await page.locator('[data-shell-tab="library"], [data-shell-nav="library"]').locator('visible=true').first().click();
     await page.waitForURL(/#\/library$/);
     await page.locator('[data-import-job="job-navigation"] [data-import-open]').click();
     await page.locator('#player-view.active').waitFor();

@@ -1087,6 +1087,7 @@ function zeroCrossingRate(pcm) {
       const firstPath = path.join(dir, 'abort-first.mp3');
       await createTone(firstPath, 2, 440);
       const aborted = deferred();
+      const waitingForSecondChunk = deferred();
       const children = new Set();
       const source = {
         bookId: 'book_abort',
@@ -1104,6 +1105,7 @@ function zeroCrossingRate(pcm) {
               reject(error);
             };
             signal.addEventListener('abort', onAbort, { once: true });
+            waitingForSecondChunk.resolve();
             if (signal.aborted) onAbort();
           });
         },
@@ -1122,9 +1124,18 @@ function zeroCrossingRate(pcm) {
             `http://127.0.0.1:${server.address().port}/api/audio-stream/book_abort/0`,
             response => {
               response.once('data', () => {
-                response.destroy();
-                request.destroy();
-                resolve();
+                // Encoded bytes can arrive while the first decoder still runs.
+                // Disconnect only when there is a chunk wait to cancel.
+                const waitingGuard = rejectAfter(HANG_GUARD_MS, 'second chunk wait was not started');
+                Promise.race([waitingForSecondChunk.promise, waitingGuard.promise]).then(() => {
+                  response.destroy();
+                  request.destroy();
+                  resolve();
+                }, error => {
+                  response.destroy();
+                  request.destroy();
+                  reject(error);
+                }).finally(() => waitingGuard.cancel());
               });
               response.once('error', error => {
                 if (error.code !== 'ECONNRESET') reject(error);

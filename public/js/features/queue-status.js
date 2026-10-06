@@ -425,6 +425,13 @@ async function pollQueueStatus(scope = pollScope) {
     if (scope !== pollScope || scope?.closed) return;
     renderQueueStatus(status);
     queueStatusEl?.removeAttribute?.('data-stale');
+    // The library states narration preparation per book from this same
+    // poll ("Preparing 46%", "Narration failed"), so it costs no request.
+    if (typeof CustomEvent === 'function') {
+      document.dispatchEvent?.(new CustomEvent('xandrio:audioactivity', {
+        detail: { books: Array.isArray(status?.books) ? status.books : [] }
+      }));
+    }
   } catch {
     if (scope !== pollScope || scope?.closed) return;
     // A failed poll says nothing about the work that was already visible. In

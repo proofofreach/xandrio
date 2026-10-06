@@ -22,7 +22,7 @@ let bookmarksCache = [];
 //   selectChapter,             // (chapterIndex, options) => Promise, commits a chapter selection
 //   seek,                      // (seconds) => seek the active player
 //   dismissChapterSheet,       // () => close the chapter sheet
-//   onBookmarkAdded            // optional () => called after a bookmark is saved
+//   onBookmarkAdded            // optional ({ timestamp, label }) => true when it confirmed inline (no toast)
 // }
 export function initBookmarks(options) {
   deps = options;
@@ -153,9 +153,12 @@ export async function addBookmarkAtCurrentPosition() {
     });
 
     const label = `Bookmarked at ${formatTime(timestamp)}`;
-    showToast(label);
-    announceToScreenReader(label);
-    deps.onBookmarkAdded?.();
+    // The player confirms inline on its Bookmark tool and returns true;
+    // otherwise (tool not on screen) the toast confirms.
+    if (deps.onBookmarkAdded?.({ timestamp, label }) !== true) {
+      showToast(label);
+      announceToScreenReader(label);
+    }
   } catch {
     showToast('Could not save bookmark', 'error');
   }
