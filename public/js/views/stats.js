@@ -7,6 +7,9 @@
 import { apiGet } from '../api.js';
 import { navigateTo } from '../router.js';
 import { escapeHTML, safeAttr, relativeTime, coverImageHTML } from '../util/format.js';
+import { formatDuration, timeLeftAtSpeed } from '../util/time-left.mjs';
+import { statusLineVariants } from '../util/library-status.mjs';
+import { effectiveSpeedForBook, getReferencePlaybackSpeed } from './playback-speed.js';
 
 let deps = {};
 let statsBody = null;
@@ -40,21 +43,34 @@ function recentCardHTML(entry) {
 function progressRowHTML(entry) {
   const percent = Number.isFinite(entry.percent) ? entry.percent : 0;
   const when = entry.updatedAt ? relativeTime(entry.updatedAt) : '';
+  const speed = effectiveSpeedForBook(entry.id);
+  const timeLeft = entry.remainingSeconds != null ? timeLeftAtSpeed(entry.remainingSeconds, speed) : null;
+  // Same status vocabulary as the library rows: "9h 12m left · Played 2 days ago".
+  const [variant] = statusLineVariants({
+    timeLeft,
+    speed,
+    referenceSpeed: getReferencePlaybackSpeed(),
+    stateWord: when ? { long: `Played ${when}`, short: when, warn: false } : null
+  });
+  const time = variant?.time ? `<span class="status-time">${escapeHTML(variant.time)}</span>` : '';
+  const state = variant?.state
+    ? `<span class="status-state">${variant.time ? '<span class="status-sep" aria-hidden="true"> \u00b7 </span>' : ''}${escapeHTML(variant.state)}</span>`
+    : '';
   const chapter = entry.chapterCount
     ? `Chapter ${Math.min(entry.chapterIndex + 1, entry.chapterCount)} of ${entry.chapterCount}`
     : '';
-  const meta = [chapter, when].filter(Boolean).join(' · ');
   return `
     <button class="stats-progress-row" data-book-id="${safeAttr(entry.id)}" aria-label="Open ${safeAttr(entry.title)}">
       <div class="stats-progress-cover-wrap">${coverHTML(entry, 'stats-progress-cover')}</div>
       <div class="stats-progress-info">
         <h3>${escapeHTML(entry.title)}</h3>
         <p>${escapeHTML(entry.author || '')}</p>
-        <div class="book-progress" role="progressbar" aria-valuenow="${percent}" aria-valuemin="0" aria-valuemax="100" aria-label="${percent}% listened">
+        <p class="stats-progress-meta num">${time}${state}</p>
+        <div class="book-progress" role="progressbar" aria-valuenow="${percent}" aria-valuemin="0" aria-valuemax="100" aria-label="${percent}% listened${chapter ? `, ${safeAttr(chapter)}` : ''}">
           <div class="book-progress-fill" style="width:${percent}%"></div>
         </div>
-        <p class="stats-progress-meta">${escapeHTML(meta)}<span class="stats-progress-percent">${percent}%</span></p>
       </div>
+      <span class="stats-progress-percent num" aria-hidden="true">${percent}%</span>
     </button>`;
 }
 
@@ -77,15 +93,11 @@ function render(stats) {
   }
 
   const seconds = Math.max(0, Number(stats.totalSecondsListened) || 0);
-  const minutes = Math.floor(seconds / 60);
-  const duration = minutes < 60
-    ? (seconds > 0 && minutes === 0 ? '<1' : String(minutes))
-    : `${Math.floor(minutes / 60)}h${minutes % 60 ? ` ${minutes % 60}m` : ''}`;
-  const durationLabel = minutes < 60 ? (minutes === 1 ? 'minute listened' : 'minutes listened') : 'listened';
+  const duration = formatDuration(seconds) || '0m';
   const tiles = `
     <div class="stats-tiles">
-      ${statTile(duration, durationLabel)}
-      ${statTile(stats.booksFinishedCount, stats.booksFinishedCount === 1 ? 'book finished' : 'books finished')}
+      ${statTile(duration, 'listened')}
+      ${statTile(stats.booksFinishedCount, 'finished')}
       ${statTile(stats.booksInProgressCount, 'in progress')}
     </div>`;
 
@@ -139,8 +151,6 @@ async function loadStats() {
 export function initStats(options = {}) {
   deps = options;
   statsBody = document.getElementById('stats-body');
-  const backBtn = document.getElementById('stats-back-btn');
-  backBtn?.addEventListener('click', () => navigateTo('library'));
   document.getElementById('stats-btn')?.addEventListener('click', () => navigateTo('stats'));
 
   document.addEventListener('xandrio:viewchange', (e) => {

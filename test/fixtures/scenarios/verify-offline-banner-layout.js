@@ -39,7 +39,7 @@ async function assertLibraryHeaderClearsBanner(page, textScale) {
     };
     const banner = document.getElementById('offline-banner');
     const header = document.querySelector('.library-header');
-    const logo = document.querySelector('.library-header .header-logo');
+    const logo = document.querySelector('.library-header .library-title');
     const controls = [...document.querySelectorAll('.library-header .header-actions > button')]
       .filter(button => {
         const box = button.getBoundingClientRect();
@@ -56,7 +56,7 @@ async function assertLibraryHeaderClearsBanner(page, textScale) {
   );
   assert(
     geometry.logo.top >= geometry.banner.bottom,
-    `${textScale}: Xandrio logo clears the offline banner (${geometry.logo.top} < ${geometry.banner.bottom})`
+    `${textScale}: library title clears the offline banner (${geometry.logo.top} < ${geometry.banner.bottom})`
   );
   assert(geometry.controls.length > 0, `${textScale}: header controls rendered`);
   for (const [index, control] of geometry.controls.entries()) {
@@ -130,7 +130,7 @@ async function main() {
     const desktopChecks = [
       {
         label: 'desktop library', scenario: 'library:offline', route: '#/library', activeView: '#library-view.active',
-        selectors: ['.library-header', '.library-header .header-logo', '.library-header .header-actions > button']
+        selectors: ['.library-header', '.library-header .library-title', '.library-header .header-actions > button']
       },
       {
         label: 'desktop player', scenario: 'player:offline', route: '#/player/scn-meridian', activeView: '#player-view.active',
@@ -138,7 +138,7 @@ async function main() {
       },
       {
         label: 'desktop settings', scenario: 'settings:offline', route: '#/settings', activeView: '#settings-view.active',
-        selectors: ['#settings-back-btn']
+        selectors: ['#settings-hub .settings-hub-header h2']
       }
     ];
     for (const check of desktopChecks) {

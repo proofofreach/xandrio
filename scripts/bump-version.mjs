@@ -1,80 +1,77 @@
 #!/usr/bin/env node
-// Bump frontend cache-busting versions in lockstep.
-//
+// Bump every versioned shell asset, or the explicit asset paths, in lockstep.
 // Usage: node scripts/bump-version.mjs [asset...]
-//   node scripts/bump-version.mjs              # bump app.js + style-v3.css + SW cache
-//   node scripts/bump-version.mjs app.js       # bump only app.js (+ SW cache)
-//
-// Rewrites the ?v=N query strings in public/index.html and the matching
-// APP_SHELL entries in public/sw.js, and always bumps CACHE_VERSION and the
-// offline controller pin so installed PWAs refetch and recognize the shell.
+// Unversioned modules invalidate through the worker cache and controller pin.
 
 import { readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { dirname, join } from 'node:path';
+import { dirname, join, basename } from 'node:path';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const indexPath = join(root, 'public', 'index.html');
 const swPath = join(root, 'public', 'sw.js');
 const offlinePath = join(root, 'public', 'js', 'features', 'offline.js');
+const escapeRE = value => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-const KNOWN = ['app.js', 'style-v3.css'];
-const SW_ASSET_KEYS = {
-  'app.js': '/app.js',
-  'style-v3.css': '/style-v3.css'
-};
-const args = process.argv.slice(2);
-const targets = args.length
-  ? KNOWN.filter(name => args.some(a => name.includes(a.replace(/^\/?(js\/)?/, '').replace(/\?.*$/, ''))))
-  : ['app.js', 'style-v3.css'];
-
-if (args.length && targets.length === 0) {
-  console.error(`No known asset matches ${JSON.stringify(args)}. Known: ${KNOWN.join(', ')}`);
+function fail(message) {
+  console.error(message);
   process.exit(1);
 }
 
 let indexHtml = readFileSync(indexPath, 'utf8');
 let sw = readFileSync(swPath, 'utf8');
 let offline = readFileSync(offlinePath, 'utf8');
-
-for (const name of targets) {
-  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const re = new RegExp(`(${escaped}\\?v=)(\\d+)`, 'g');
-  let next = null;
-  indexHtml = indexHtml.replace(re, (_, prefix, n) => {
-    next = Number(n) + 1;
-    return `${prefix}${next}`;
-  });
-  if (next === null) {
-    console.error(`Did not find ${name}?v=N in index.html`);
-    process.exit(1);
-  }
-  const swAssetKey = SW_ASSET_KEYS[name];
-  const swVersionRe = new RegExp(`('${swAssetKey.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}':\\s*)(\\d+)`);
-  if (!swVersionRe.test(sw)) {
-    console.error(`Did not find ASSET_VERSIONS entry for ${swAssetKey} in sw.js`);
-    process.exit(1);
-  }
-  sw = sw.replace(swVersionRe, `$1${next}`);
-  console.log(`${name} -> v${next}`);
+const mapBlocks = [...sw.matchAll(/const ASSET_VERSIONS = \{([\s\S]*?)\};/g)];
+if (mapBlocks.length !== 1) fail('Expected one ASSET_VERSIONS map in sw.js');
+const entries = [...mapBlocks[0][1].matchAll(/['"]([^'"]+)['"]:\s*(\d+)/g)];
+const versions = new Map(entries.map(([, path, version]) => [path, Number(version)]));
+if (!versions.size || versions.size !== entries.length) fail('Missing or duplicate ASSET_VERSIONS entries');
+const shellBlock = sw.match(/const APP_SHELL = \[([\s\S]*?)\];/);
+if (!shellBlock) fail('Missing APP_SHELL in sw.js');
+const shellPaths = [...shellBlock[1].matchAll(/versionedAsset\(['"]([^'"]+)['"]\)/g)].map(match => match[1]);
+if (shellPaths.length !== versions.size || new Set(shellPaths).size !== shellPaths.length || shellPaths.some(path => !versions.has(path))) {
+  fail('ASSET_VERSIONS and versioned APP_SHELL entries do not match');
 }
 
-// Always bump the SW cache version so clients purge the old app shell.
-let cacheVersion = null;
-sw = sw.replace(/(const CACHE_VERSION = 'xandrio-v)(\d+)(')/, (_, pre, n, post) => {
-  const next = Number(n) + 1;
-  cacheVersion = `xandrio-v${next}`;
-  console.log(`CACHE_VERSION -> xandrio-v${next}`);
-  return `${pre}${next}${post}`;
-});
-const offlineVersionRe = /(export const EXPECTED_OFFLINE_SW_VERSION = ')[^']+(')/;
-if (!cacheVersion || !offlineVersionRe.test(offline)) {
-  console.error('Missing worker cache version or offline controller pin');
-  process.exit(1);
+// Validate the entire contract before changing any file. A partial selection
+// cannot conceal a stale stylesheet, missing shell entry or controller pin.
+const htmlAssets = [...indexHtml.matchAll(/(?:src|href)=["']\/?([^"'?]+)\?v=(\d+)["']/g)]
+  .map(([, path, version]) => ({ path: `/${path}`, version: Number(version) }));
+for (const [path, version] of versions) {
+  const references = htmlAssets.filter(asset => asset.path === path);
+  if (!references.length || references.some(asset => asset.version !== version)) {
+    fail(`index.html and ASSET_VERSIONS disagree for ${path}`);
+  }
 }
-offline = offline.replace(offlineVersionRe, `$1${cacheVersion}$2`);
+for (const asset of htmlAssets) {
+  if (/\.(?:css|js)$/.test(asset.path) && !versions.has(asset.path)) fail(`Versioned shell asset missing from ASSET_VERSIONS: ${asset.path}`);
+}
+const cacheMatches = [...sw.matchAll(/const CACHE_VERSION = '(xandrio-v(\d+))';/g)];
+const pinMatches = [...offline.matchAll(/export const EXPECTED_OFFLINE_SW_VERSION = '([^']+)';/g)];
+if (cacheMatches.length !== 1 || pinMatches.length !== 1 || cacheMatches[0][1] !== pinMatches[0][1]) {
+  fail('Worker cache version and offline controller pin do not match');
+}
 
+const args = process.argv.slice(2);
+const targets = args.length ? new Set() : new Set(versions.keys());
+for (const arg of args) {
+  const normalized = arg.replace(/^\/?public\//, '').replace(/^\//, '').replace(/\?.*$/, '');
+  const matches = [...versions.keys()].filter(path => path.slice(1) === normalized || basename(path) === normalized);
+  if (matches.length !== 1) fail(`Unknown or ambiguous asset ${JSON.stringify(arg)}. Known: ${[...versions.keys()].join(', ')}`);
+  targets.add(matches[0]);
+}
+for (const path of targets) {
+  const next = versions.get(path) + 1;
+  const htmlRE = new RegExp(`((?:src|href)=["']/?${escapeRE(path.slice(1))}\\?v=)\\d+`, 'g');
+  indexHtml = indexHtml.replace(htmlRE, (_, prefix) => `${prefix}${next}`);
+  const mapRE = new RegExp(`(['"]${escapeRE(path)}['"]:\\s*)\\d+`);
+  sw = sw.replace(mapRE, (_, prefix) => `${prefix}${next}`);
+  console.log(`${path} -> v${next}`);
+}
+const cacheVersion = `xandrio-v${Number(cacheMatches[0][2]) + 1}`;
+sw = sw.replace(/const CACHE_VERSION = 'xandrio-v\d+';/, `const CACHE_VERSION = '${cacheVersion}';`);
+offline = offline.replace(/export const EXPECTED_OFFLINE_SW_VERSION = '[^']+';/, `export const EXPECTED_OFFLINE_SW_VERSION = '${cacheVersion}';`);
 writeFileSync(indexPath, indexHtml);
 writeFileSync(swPath, sw);
 writeFileSync(offlinePath, offline);
-console.log('Done. index.html, sw.js, and the offline controller pin updated in lockstep.');
+console.log(`CACHE_VERSION -> ${cacheVersion}. Shell assets and controller pin updated in lockstep.`);

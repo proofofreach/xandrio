@@ -1,0 +1,324 @@
+/* Readable redesign: Settings hub and pages, voice list, listening stats.
+   Loaded after shell.css. iOS inset-grouped lists, Dynamic Type sizes
+   (large title 34, title 22, body 17, subhead 15, footnote 13), 44px targets. */
+
+/* ---------- Programmatic focus ----------
+   Moving focus to a page title on entry must not draw the focus ring.
+   Keyboard users still get the ring on every interactive control. */
+[data-programmatic-focus]:focus,
+[data-programmatic-focus]:focus-visible { outline: none; }
+
+/* ---------- Large titles ---------- */
+.settings-hub-header h2,
+.stats-header h2 {
+  margin: 8px 0 12px;
+  font-size: var(--text-large-title);
+  line-height: 1.12;
+  font-weight: var(--weight-bold);
+  letter-spacing: -0.01em;
+  color: var(--text);
+}
+.settings-pane-header h2 {
+  margin: 0;
+  font-size: var(--text-title1);
+  line-height: 1.15;
+  font-weight: var(--weight-bold);
+}
+.stats-header { margin-bottom: 8px; }
+
+/* Page-level back goes to the hub (phone only; the hub is beside the page on wide screens). */
+.settings-pane-header { gap: 0; margin-bottom: 20px; }
+.settings-pane-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 44px;
+  margin-left: -4px;
+  padding: 0 4px;
+  color: var(--accent-text);
+  font-size: var(--text-body);
+  text-decoration: none;
+}
+.settings-pane-back span { font-size: 28px; line-height: 1; margin-top: -3px; }
+.settings-pane-back:hover { text-decoration: underline; }
+
+/* ---------- Identity row ---------- */
+.settings-identity {
+  gap: 14px;
+  min-height: 72px;
+  margin: 0 0 var(--space-6);
+  padding: 4px 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+.settings-identity:hover { background: transparent; }
+.settings-identity-avatar {
+  flex: none;
+  width: 56px;
+  height: 56px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: var(--text-title2);
+  font-weight: var(--weight-bold);
+}
+.settings-identity-copy strong { font-size: var(--text-title2); line-height: 1.2; font-weight: var(--weight-semibold); }
+.settings-identity-copy span { margin-top: 2px; font-size: var(--text-body); }
+.settings-identity > .settings-status[hidden],
+.settings-identity > .settings-status:empty { display: none; }
+
+/* ---------- Hub: inset grouped list ---------- */
+.settings-menu { gap: var(--space-8); }
+.settings-menu-group h3 {
+  margin: 0 0 8px 16px;
+  font-size: var(--text-subhead);
+  line-height: 1.3;
+  font-weight: var(--weight-semibold);
+  color: var(--text-secondary);
+}
+.settings-menu-group ul {
+  background: var(--surface);
+  border-radius: 14px;
+  overflow: hidden;
+}
+.settings-menu-group li + li { border-top: 1px solid var(--border); margin-left: 16px; }
+.settings-menu-group li + li .settings-menu-row { margin-left: -16px; padding-left: 16px; }
+.settings-menu-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) 12px;
+  column-gap: 12px;
+  row-gap: 0;
+  min-height: 52px;
+  padding: 8px 16px;
+  border-bottom: 0;
+  border-radius: 0;
+}
+.settings-menu-row svg { display: none; }
+.settings-menu-title {
+  grid-column: 1;
+  grid-row: 1;
+  font-size: var(--text-body);
+  font-weight: var(--weight-regular);
+  color: var(--text);
+}
+.settings-menu-value {
+  grid-column: 2;
+  grid-row: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: right;
+  font-size: var(--text-subhead);
+  color: var(--text-secondary);
+}
+.settings-menu-row::after { grid-column: 3; grid-row: 1; }
+.settings-menu-row:active { background: var(--surface-hover); }
+.settings-menu-row.is-active {
+  background: var(--surface-hover);
+  border-radius: 0;
+}
+.settings-hub-footer { margin-top: var(--space-8); }
+.settings-signout { min-height: 44px; }
+.settings-hub-links a { display: inline-flex; align-items: center; min-height: 44px; }
+.settings-hub-links { font-size: var(--text-footnote); }
+
+/* ---------- Pages: inset grouped cards and readable rows ---------- */
+.settings-lead { font-size: var(--text-subhead); line-height: 1.45; color: var(--text-secondary); margin-bottom: 20px; }
+.settings-card {
+  display: block;
+  margin: 0 0 var(--space-6);
+  padding: 0 16px;
+  background: var(--surface);
+  border-radius: 14px;
+}
+.settings-card > * + * { border-top: 1px solid var(--border); }
+.settings-card > .settings-error:empty,
+.settings-card > [hidden] { display: none; }
+.settings-row {
+  min-height: 56px;
+  padding: 12px 0;
+  gap: 16px;
+}
+.settings-row-stacked { gap: 12px; align-items: stretch; }
+.settings-row-stacked .settings-select { max-width: none; }
+.settings-label-text { font-size: var(--text-body); line-height: 1.3; }
+.settings-label-hint { margin-top: 4px; font-size: var(--text-footnote); line-height: 1.4; color: var(--text-secondary); }
+.settings-card > .settings-info,
+.settings-card > .settings-disclosure { padding: 12px 0; margin: 0; }
+.settings-hint { font-size: var(--text-footnote); color: var(--text-secondary); }
+.settings-error { font-size: var(--text-footnote); }
+.settings-field label,
+.settings-field > label { font-size: var(--text-footnote); }
+.settings-disclosure { font-size: var(--text-subhead); }
+.settings-disclosure p { font-size: var(--text-footnote); }
+.settings-status { font-size: var(--text-footnote); padding: 4px 10px; }
+
+/* Targets: 44px minimum */
+#settings-view :is(.btn-ghost, .btn-primary, .btn-secondary, .btn-danger) {
+  min-height: 44px;
+  min-width: 44px;
+  padding: 0 16px;
+  font-size: var(--text-subhead);
+}
+#settings-view .settings-select,
+#settings-view .settings-form input,
+#settings-view .settings-field input,
+#settings-view .settings-field select { min-height: 44px; font-size: var(--text-body); }
+#settings-view summary { min-height: 44px; display: flex; align-items: center; }
+
+.segmented-control {
+  padding: 2px;
+  border-radius: 10px;
+  gap: 2px;
+}
+.segmented-control button {
+  min-height: 44px;
+  min-width: 44px;
+  padding: 0 18px;
+  border-radius: 8px;
+  font-size: var(--text-subhead);
+}
+
+.switch {
+  width: 51px;
+  height: 31px;
+}
+.switch::after {
+  top: 2px;
+  left: 2px;
+  width: 27px;
+  height: 27px;
+}
+.switch:checked::after { transform: translateX(20px); }
+.settings-row-switch { min-height: 56px; }
+
+/* ---------- Book sources ---------- */
+.provider-group { margin-bottom: var(--space-6); }
+.provider-group h3 {
+  margin: 0 0 8px 16px;
+  font-size: var(--text-subhead);
+  font-weight: var(--weight-semibold);
+  color: var(--text-secondary);
+}
+.provider-row {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  padding: 14px 0 6px;
+  border-bottom: 0;
+}
+.provider-copy { gap: 6px; }
+.provider-copy strong { font-size: var(--text-body); }
+.provider-copy small { font-size: var(--text-footnote); color: var(--text-secondary); }
+.provider-heading { gap: 10px; }
+.provider-default {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 44px;
+  cursor: pointer;
+}
+.provider-default-label { font-size: var(--text-subhead); color: var(--text); }
+
+/* Health is a status word with a dot, separate from the default-search toggle. */
+.provider-status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  font-size: var(--text-footnote);
+  font-weight: var(--weight-semibold);
+  color: var(--text-secondary);
+}
+.provider-status-badge::before {
+  content: '';
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.8;
+}
+.provider-status-badge.is-enabled { color: var(--success-text); }
+.provider-status-badge.is-attention { color: var(--accent-text); }
+.provider-account summary { min-height: 44px; font-size: var(--text-subhead); }
+
+/* ---------- Diagnostics ---------- */
+.operator-diagnostics-summary { border: 0; background: var(--surface); border-radius: 14px; padding: 0 16px; }
+.operator-diagnostic-row { min-height: 48px; padding: 10px 0; font-size: var(--text-subhead); }
+.operator-diagnostic-issue { font-size: var(--text-subhead); line-height: 1.4; }
+.operator-diagnostic-issue span { display: block; margin-top: 4px; font-size: var(--text-footnote); color: var(--text-secondary); }
+
+/* ---------- Voice pages ---------- */
+.voice-engine-notice {
+  margin: 0 0 12px;
+  padding: 12px 16px;
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--text-secondary);
+  font-size: var(--text-subhead);
+  line-height: 1.4;
+}
+.voice-card { min-height: 56px; padding: 8px 12px; border-radius: 12px; }
+.voice-card-name { font-size: var(--text-body); }
+.voice-card-meta { font-size: var(--text-footnote); color: var(--text-secondary); }
+.voice-facet-chip { min-height: 44px; font-size: var(--text-subhead); }
+.voice-save-btn { min-width: 44px; min-height: 44px; }
+.voice-filter span { font-size: var(--text-footnote); }
+.voice-settings-filters summary { min-height: 44px; font-size: var(--text-subhead); }
+
+/* ---------- Stats ---------- */
+.stats-tiles { gap: 8px; margin-bottom: 24px; }
+.stat-tile {
+  align-items: flex-start;
+  gap: 6px;
+  padding: 14px 14px 12px;
+  border: 0;
+  border-radius: 14px;
+  text-align: left;
+}
+.stat-tile-value { white-space: nowrap; font-size: var(--text-title2); font-weight: var(--weight-bold); color: var(--text); }
+.stat-tile-label { font-size: var(--text-subhead); color: var(--text-secondary); }
+.stats-section .rail-heading { font-size: var(--text-subhead); font-weight: var(--weight-semibold); color: var(--text-secondary); }
+
+.stats-progress-list { gap: 0; background: var(--surface); border-radius: 14px; overflow: hidden; }
+.stats-progress-row {
+  position: relative;
+  gap: 12px;
+  min-height: 84px;
+  padding: 8px 16px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+.stats-progress-row + .stats-progress-row { border-top: 1px solid var(--border); }
+.stats-progress-row:hover,
+.stats-progress-row:focus-visible { background: var(--surface-hover); }
+.stats-progress-cover-wrap { width: 44px; border-radius: 4px; }
+.stats-progress-info h3 { font-size: var(--text-body); line-height: 1.25; }
+.stats-progress-info p { margin: 1px 0 0; font-size: var(--text-subhead); color: var(--text-secondary); }
+.stats-progress-info p.stats-progress-meta { display: block; justify-content: initial; color: var(--text-secondary); font-size: var(--text-subhead); }
+.stats-progress-meta .status-sep { color: var(--text-muted); }
+.stats-progress-info .book-progress { margin: 6px 0 0; height: 3px; }
+.stats-progress-percent {
+  flex: none;
+  align-self: center;
+  min-width: 44px;
+  text-align: right;
+  font-size: var(--text-subhead);
+  font-weight: var(--weight-semibold);
+  color: var(--text-secondary);
+}
+.stats-recent-badge { font-size: var(--text-footnote); }
+
+@media (min-width: 760px) {
+  .settings-pane-back { display: none; }
+  .settings-menu-group li + li .settings-menu-row { margin-left: -16px; }
+  .settings-pane-header h2 { margin-top: 8px; }
+  .settings-card { max-width: 640px; }
+}
+.provider-group .settings-card { margin-bottom: 0; }

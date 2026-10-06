@@ -115,10 +115,10 @@ function buildDatasetServerEnvironment({ port, dataDir, cacheDir, kokoroPort, ch
     // hostnames (standardebooks.org's real default; example.com, an IANA
     // reserved domain guaranteed never to serve real content, for the
     // custom feed) and rely on the network guard's *hostname*-based
-    // redirect, exactly like Gutenberg/Internet Archive. DNS still resolves
-    // for these hosts; no application data ever reaches them — the network
-    // guard rewrites the connection itself before any request leaves this
-    // process (see lib/network-guard.js).
+    // redirect, exactly like Gutenberg/Internet Archive. The preload supplies
+    // synthetic public DNS records so production SSRF checks execute without
+    // resolver egress, then redirects every HTTP transport to the local stub
+    // (see lib/network-guard.js).
     OPDS_FEED_URL: 'https://example.com/opds-feed',
     OPDS_LABEL: 'Scenario OPDS',
     XANDRIO_TOKEN: '',
@@ -132,6 +132,8 @@ async function startScenarioEnvironment({
   runtimeDir,
   datasets = DATASETS,
   defaultDataset,
+  prepareDataset,
+  ttsDelayMs = 0,
   log = () => {}
 } = {}) {
   const selectedDatasets = [...new Set(datasets)];
@@ -159,9 +161,10 @@ async function startScenarioEnvironment({
     const dataDir = path.join(datasetDir, 'data');
     const cacheDir = path.join(datasetDir, 'cache');
     await provisionDataset({ dataDir, cacheDir, dataset });
+    if (prepareDataset) await prepareDataset({ dataDir, cacheDir, dataset });
 
-    const kokoro = createTtsEngineStub('kokoro');
-    const chatterbox = createTtsEngineStub('chatterbox', { failing: dataset === 'degraded' });
+    const kokoro = createTtsEngineStub('kokoro', { responseDelayMs: ttsDelayMs });
+    const chatterbox = createTtsEngineStub('chatterbox', { failing: dataset === 'degraded', responseDelayMs: ttsDelayMs });
     const kokoroPort = await kokoro.listen(0);
     const chatterboxPort = await chatterbox.listen(0);
     engineStubs[dataset] = { kokoro, chatterbox };

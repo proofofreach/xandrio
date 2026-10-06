@@ -195,7 +195,7 @@ async function performInteraction(page, interaction, log) {
     await trigger.click();
     return true;
   }
-  if (interaction === 'player-add-bookmark-and-open-chapters') {
+  if (interaction === 'player-add-bookmark-and-open-bookmarks') {
     const bookmark = await findFirst(page, ['#bookmark-btn', '#utility-bookmark-btn']);
     if (!bookmark) return log('  (skipping bookmark interaction — no bookmark trigger found)');
     await bookmark.click();
@@ -203,6 +203,7 @@ async function performInteraction(page, interaction, log) {
     const trigger = await findFirst(page, ['#chapter-sheet-btn', '#utility-chapters-btn']);
     if (!trigger) return log('  (skipping chapter-sheet interaction — no chapter trigger found)');
     await trigger.click();
+    await page.getByRole('tab', { name: 'Bookmarks', exact: true }).click();
     return true;
   }
   if (interaction === 'player-open-voice') {
@@ -224,42 +225,25 @@ async function performInteraction(page, interaction, log) {
     return true;
   }
   if (interaction === 'player-open-pronunciation') {
+    await page.locator('#player-more-btn').click();
     const trigger = await findFirst(page, ['#pronunciation-repair-btn']);
     if (!trigger) return log('  (skipping pronunciation interaction — no repair trigger found)');
     await trigger.click();
     return true;
   }
   if (interaction === 'library-start-offline-and-open-activity') {
-    const activityTrigger = page.locator('#queue-status').first();
-    // The mobile capture starts the durable preparation. The desktop capture
-    // intentionally reuses that same real server state, so open the already
-    // visible activity control rather than pretending a second request is a
-    // fresh action.
-    if (await activityTrigger.isVisible().catch(() => false)) {
-      await activityTrigger.click();
-      return true;
+    // This cell gets a fresh dataset and a delayed local TTS response per
+    // viewport, so durable preparation is genuinely active when captured.
+    const row = page.locator('.book-item[data-book-id="scn-driftwood"]');
+    await row.locator('.book-card-open').focus();
+    await page.keyboard.press('Shift+F10');
+    await page.getByRole('menuitem', { name: 'Download', exact: true }).filter({ visible: true }).click();
+    if (await page.locator('#book-actions-sheet.active').isVisible().catch(() => false)) {
+      await page.locator('#book-actions-cancel').click();
     }
-    // Each viewport is a separate browser context but intentionally shares
-    // the same deterministic server dataset. The first preparation can finish
-    // before the second viewport arrives, so choose the first title whose real
-    // overflow menu still offers offline setup instead of assuming one fixed
-    // book remains pending.
-    let offlineAction = null;
-    for (const bookId of ['scn-driftwood', 'scn-fieldnotes', 'scn-lighthouse', 'scn-meridian']) {
-      const menu = page.locator(`[data-book-id="${bookId}"] [data-book-menu-toggle]`).first();
-      if (!(await menu.isVisible().catch(() => false))) continue;
-      await menu.click();
-      const candidate = page.locator(`[data-download-book="${bookId}"]`).first();
-      if (await candidate.isVisible().catch(() => false)) {
-        offlineAction = candidate;
-        break;
-      }
-    }
-    if (!offlineAction) return log('  (skipping audio-activity interaction — no offline action found)');
-    await offlineAction.click();
-    const active = await activityTrigger.waitFor({ state: 'visible', timeout: 8000 })
-      .then(() => true, () => false);
-    if (!active) return log('  (skipping audio-activity interaction — offline preparation did not expose activity)');
+    const desktopTrigger = page.locator('[data-shell-action="audio-activity"]');
+    const activityTrigger = await desktopTrigger.isVisible() ? desktopTrigger : page.locator('#queue-status');
+    await activityTrigger.waitFor({ state: 'visible', timeout: 10000 });
     await activityTrigger.click();
     return true;
   }
@@ -517,6 +501,7 @@ async function main() {
               proxyPort: 0,
               datasets: [cell.dataset],
               defaultDataset: cell.dataset,
+              ttsDelayMs: view === 'activity' && state === 'active' ? 12000 : 0,
               log
             })
             : null;

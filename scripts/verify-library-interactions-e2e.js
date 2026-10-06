@@ -157,8 +157,17 @@ const book = id => ({ id, title: id === 'a' ? 'A Long Walk Through the Library a
         await page.setViewportSize(size);
         await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
         const trigger = page.locator('.book-item[data-book-id="a"] [data-book-menu-toggle]');
-        const menu = page.locator('.book-item[data-book-id="a"] .book-overflow-menu');
-        if (await menu.isHidden()) await trigger.click();
+        // Desktop: the row menu. Phone: the same actions in a bottom sheet,
+        // opened by press-and-hold (context menu) on the row.
+        const phone = size.width < 760;
+        const menu = phone
+          ? page.locator('#book-actions-sheet.active #book-actions-list')
+          : page.locator('.book-item[data-book-id="a"] .book-overflow-menu');
+        if (phone) {
+          await page.locator('.book-item[data-book-id="a"] .book-card-open').dispatchEvent('contextmenu');
+          await menu.waitFor();
+          await page.waitForTimeout(350); // let the sheet finish sliding in
+        } else if (await menu.isHidden()) await trigger.click();
         const rect = await menu.boundingBox();
         if (!rect) {
           const state = await page.evaluate(() => ({
@@ -182,6 +191,8 @@ const book = id => ({ id, title: id === 'a' ? 'A Long Walk Through the Library a
         }), 'Last menu action is not clipped or covered');
         await page.keyboard.press('Escape');
         assert(await menu.isHidden(), 'Escape closes the menu');
+        if (phone) assert(await page.evaluate(() => document.activeElement?.closest?.('.book-item')?.dataset.bookId === 'a'),
+          'focus returns to the row after the sheet closes');
       }
       return geometry;
     });

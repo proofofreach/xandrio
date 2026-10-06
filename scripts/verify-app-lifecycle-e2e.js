@@ -182,7 +182,7 @@ function tone(frequency) {
       await page.waitForFunction(() => !document.querySelector('#play-pause-btn').disabled);
       assert.equal(await page.locator('#mini-player-play').isEnabled(), true);
       await page.unroute(target);
-      await page.locator('#audio-loading-actions button').filter({ hasText: 'Try again' }).click();
+      await page.locator('#audio-loading-actions button').filter({ hasText: 'Retry' }).click();
       await ready(page, 'a'); await page.locator('#play-pause-btn').click();
       await page.waitForFunction(() => document.querySelector('#audio-player').currentTime > .05);
       return state(page);

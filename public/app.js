@@ -13,7 +13,8 @@ import { initOffline, prepareOfflineStorage, renderOfflineState, queuePendingPos
 import { initPronunciationRepair } from './js/features/pronunciations.js';
 import { initQueueStatus } from './js/features/queue-status.js';
 import { loadClientSettings, getSkipInterval, isSmartRewindEnabled, isRollingOfflineEnabled } from './js/client-settings.js';
-import { initLibrary, loadLibrary, cacheBookMeta } from './js/views/library.js';
+import { initLibrary, loadLibrary, cacheBookMeta, getRecentInProgress } from './js/views/library.js';
+import { initShell, openUploadSection } from './js/ui/shell.js';
 import { initSearch } from './js/views/search.js';
 import { initSettings } from './js/views/settings.js';
 import { initStats } from './js/views/stats.js';
@@ -25,10 +26,10 @@ import { readJSON, writeJSON, readText } from './js/util/storage.js';
 import { createPlaybackSession, restorePlaybackPosition } from './js/playback-session.js';
 import { navigateChapterSelection, positionMatchesChapterStructure, shouldAllowBackwardReconciliation } from './js/chapter-navigation.mjs';
 import { SingleFileChapterPlayer } from './js/single-file-chapter-player.js';
-import { initPlayerUI, refreshPlaybackTimes, setPlaybackBuffering, paintChapterTimes, paintScrubPreview, toggleTimeDisplayMode, syncTimeDisplayModeFromClientSettings, getPlaybackProgressScope, getBookSeekTarget, syncPlaybackProgressScope, setPlaybackReliabilityState, setResumePromptVisible, handleChunkWaiting, handleChunkPreparing, setChunkOverlayState, displayChapterTitle, updateChapterTrigger, updateBookProgress, updatePlayerAmbient, renderChapterList, openChapterSheet, closeChapterSheet, dismissChapterSheet, showAudioLoading, hideAudioLoading, updateMiniPlayer, syncMiniPlayerInfo, syncPlaybackControls } from './js/views/player-ui.js';
-import { findPreferredStartChapterIndex } from './js/util/chapter-labels.mjs';
+import { initPlayerUI, refreshPlaybackTimes, setPlaybackBuffering, paintChapterTimes, paintScrubPreview, toggleTimeDisplayMode, syncTimeDisplayModeFromClientSettings, getPlaybackProgressScope, getBookSeekTarget, syncPlaybackProgressScope, setPlaybackReliabilityState, setResumePromptVisible, handleChunkWaiting, handleChunkPreparing, setChunkOverlayState, displayChapterTitle, updateChapterTrigger, updateBookProgress, updatePlayerAmbient, renderChapterList, openChapterSheet, closeChapterSheet, dismissChapterSheet, showAudioLoading, hideAudioLoading, updateMiniPlayer, syncMiniPlayerInfo, syncPlaybackControls, confirmBookmarkSaved } from './js/views/player-ui.js';
+import { findPreferredStartChapterIndex, chapterResumeLabels, chapterTotal } from './js/util/chapter-labels.mjs';
 import { applyRewindForResume, createSmartRewindController } from './js/smart-rewind.mjs';
-import { initListeningQueue, loadListeningQueue, addToListeningQueue, advanceListeningQueue, getBookPlaybackSettings, saveBookPlaybackSettings } from './js/features/listening-queue.js';
+import { initListeningQueue, loadListeningQueue, getListeningQueueBooks, addToListeningQueue, advanceListeningQueue, getBookPlaybackSettings, saveBookPlaybackSettings } from './js/features/listening-queue.js';
 import { initDeploymentGuard } from './js/deployment-origin.js';
 
 // SVG Icon constants
@@ -177,11 +178,8 @@ function handleChunkTimeUpdate(data) {
   if (!isScrubbing) {
     // The player UI owns the slider because it may represent either the
     // current chapter or the complete book timeline.
+    // paintChapterTimes also refreshes the mini player's book progress.
     paintChapterTimes(data);
-
-    // Mini player progress
-    const miniProgress = document.getElementById('mini-player-progress');
-    if (miniProgress) miniProgress.style.width = data.progressPercent + '%';
   }
 }
 
@@ -453,6 +451,7 @@ async function prepareManualResume(snapshot) {
     setResumePromptVisible(false);
     setPlaybackReliabilityState('resume', 'Stream interrupted');
     showToast('Playback was interrupted', 'error', {
+      key: 'playback-interrupted',
       actionLabel: 'Try again',
       onAction: () => { void prepareManualResume(lineageSnapshot); }
     });
@@ -467,6 +466,7 @@ async function prepareManualResume(snapshot) {
   setResumePromptVisible(true);
   setPlaybackReliabilityState('resume', 'Ready to resume');
   showToast('Playback was interrupted', 'error', {
+    key: 'playback-interrupted',
     actionLabel: 'Resume',
     onAction: () => resumeFromPreparedSource()
   });
@@ -767,9 +767,11 @@ function handleChunkError(error) {
   setChunkOverlayState('error', {
     message: "Couldn't load this chapter",
     detail: 'The audio failed to load. Check your connection and try again.',
-    onRetry: retry
+    onRetry: retry,
+    toastKey: 'chapter-load-error'
   });
-  showToast("Couldn't load audio for this chapter", 'error', { actionLabel: 'Retry', onAction: retry });
+  // Suppressed while the player's inline status shows this error.
+  showToast("Couldn't load audio for this chapter", 'error', { actionLabel: 'Retry', onAction: retry, key: 'chapter-load-error' });
 }
 
 function handleChunkReady() {
@@ -812,6 +814,7 @@ function makePlaybackCallbacks() {
           rollingOfflineTimer = null;
         }
         if (detail.reason === 'external') {
+          resumePauseRevision++;
           playbackPausedByUser = true;
           loadChapterToken++;
           cancelPlaybackRecovery({ preserveReadySource: true });
@@ -927,6 +930,11 @@ document.addEventListener('DOMContentLoaded', async () => {
   initializeDOMElements();  // Initialize DOM elements first
   await loadClientSettings();
   initPlayerUI({
+    // Docked pane Up Next list (player-ui.js renderPaneUpNext).
+    openBook: bookId => openBook(bookId),
+    resumeBook,
+    getListeningQueueBooks,
+    getRecentBooks: limit => getRecentInProgress(limit),
     getCurrentBook: () => currentBook,
     getCurrentChapter: () => currentChapter,
     getChapters: () => chapters,
@@ -946,7 +954,12 @@ document.addEventListener('DOMContentLoaded', async () => {
     selectChapter,
     checkpointPlayback,
     renderBookmarksSection,
-    haptic
+    haptic,
+    // ••• menu: per-book settings, Up Next and book-wide seeking.
+    getCurrentBookPlaybackSettings: () => currentBookPlaybackSettings,
+    saveBookPlaybackSettings: saveCurrentBookPlaybackSettings,
+    addToListeningQueue,
+    seekAcrossBook
   });
   initBookGuide({
     getCurrentBook: () => currentBook,
@@ -980,12 +993,26 @@ document.addEventListener('DOMContentLoaded', async () => {
   
   initLibrary({
     openBook,
+    resumeBook,
     navigateTo,
+    openUpload: () => openUploadSection(),
+    // The open book's live resume point, so the library describes where
+    // the listener is rather than the last server save.
+    getCurrentPlayback: () => {
+      if (!currentBook) return null;
+      const time = Number(chunkPlayer?.getCurrentTime?.());
+      return {
+        bookId: String(currentBook.id),
+        chapterIndex: currentChapter,
+        timestamp: Number.isFinite(time) ? time : null,
+        isPlaying: Boolean(chunkPlayer?.isPlaying)
+      };
+    },
     openBookGuide: bookId => navigateTo('guide', bookId),
     addToListeningQueue,
     onBookDeleted: clearDeletedBookFromPlayer
   });
-  initListeningQueue({ openBook });
+  initListeningQueue({ openBook: resumeBook });
   initSearch({ openBook, navigateTo });
   initSleepTimer({
     pausePlayback: pausePlaybackForUser,
@@ -999,6 +1026,11 @@ document.addEventListener('DOMContentLoaded', async () => {
   initPlaybackSpeed({
     getChunkPlayer: () => chunkPlayer,
     getCurrentBook: () => currentBook,
+    // The speed sheet states the time left in the book at the chosen speed.
+    getCurrentChapter: () => currentChapter,
+    getCurrentChapterTime: () => chunkPlayer?.getCurrentTime?.() || 0,
+    getCurrentBookFinished: () => currentBookFinished,
+    getChapterCount: () => chapters.length,
     getCurrentBookPlaybackSettings: () => currentBookPlaybackSettings,
     isSmartRewindEnabled,
     isRollingOfflineEnabled,
@@ -1042,6 +1074,15 @@ document.addEventListener('DOMContentLoaded', async () => {
   setupMediaSessionHandlers();
   setupPlaybackReportExport();
 
+  // App shell (tab bar / sidebar, mini player hold, Recent sheet). Listens
+  // for the first view change, so it is ready before the router renders.
+  initShell({
+    getRecentBooks: limit => getRecentInProgress(limit),
+    getCurrentBookId: () => currentBook?.id ?? null,
+    isPlaying: () => Boolean(chunkPlayer?.isPlaying),
+    resumeBook
+  });
+
   // Hash routing (back button, deep links, reload-into-player). Runs last so
   // every view and listener above is ready before the initial route renders.
   initRouter({
@@ -1069,11 +1110,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     checkpointPlayback,
     savePosition,
     dismissChapterSheet: () => dismissChapterSheet(),
-    onBookmarkAdded: () => {
-      const buttons = [bookmarkBtn, document.getElementById('utility-bookmark-btn')].filter(Boolean);
-      buttons.forEach(button => button.classList.add('bookmark-saved-flash'));
-      setTimeout(() => buttons.forEach(button => button.classList.remove('bookmark-saved-flash')), 900);
-    },
+    // "Saved · 12:04" on the Bookmark tool instead of a toast over the
+    // player; true tells bookmarks.js not to toast.
+    onBookmarkAdded: ({ timestamp } = {}) => confirmBookmarkSaved(timestamp),
   });
   initPronunciationRepair({
     getCurrentBook: () => currentBook,
@@ -1326,7 +1365,7 @@ function setupPlaybackReportExport() {
 // Event Listeners
 function setupEventListeners() {
   addBookBtn.addEventListener('click', () => navigateTo('search'));
-  backToLibraryBtn.addEventListener('click', () => navigateTo('library'));
+  backToLibraryBtn?.addEventListener('click', () => navigateTo('library'));
   backBtn.addEventListener('click', () => {
     savePosition();
     navigateTo('library');
@@ -1480,12 +1519,10 @@ function setupEventListeners() {
     }
   });
 
-  document.getElementById('utility-timer-btn')?.addEventListener('click', () => timerBtnInline?.click());
+  // The Speed tool is #speed-sheet-btn and the Sleep tool #timer-btn-inline;
+  // their own modules bind them.
   document.getElementById('utility-bookmark-btn')?.addEventListener('click', () => {
     if (currentBook) addBookmarkAtCurrentPosition();
-  });
-  document.getElementById('utility-speed-btn')?.addEventListener('click', () => {
-    document.getElementById('speed-sheet-btn')?.click();
   });
 
   startOverModalController = registerSheet(startOverModal, { bodyClass: '' });
@@ -1654,6 +1691,58 @@ function clearChapterLoadIntent(intent) {
 // Snapshot of the outgoing session, filled at commit time so the catch block
 // can restore what the user was doing if a late open failure strands them.
 let previousSession = null;
+let resumePauseRevision = 0;
+// Continue, Recent and library switches explicitly resume. Route opens retain
+// the paused loading behavior; only this intent may start the loaded source.
+async function resumeBook(bookId, { navigationReady = null } = {}) {
+  const targetId = String(bookId);
+  const pauseRevision = resumePauseRevision;
+  let token = ++openBookToken;
+  if (!openingBookId && String(currentBook?.id || '') === targetId && playbackEngineOwnsReadySource()) {
+    // Play a ready source during the tap's activation window. Route changes
+    // wait for the caller's sheet history dismissal so Back cannot undo them.
+    const playing = chunkPlayer.isPlaying ? Promise.resolve() : togglePlayPause(true);
+    if (navigationReady) await navigationReady;
+    if (token !== openBookToken || pauseRevision !== resumePauseRevision) return false;
+    syncPlayerHash(bookId);
+    showView('player');
+    await playing;
+    // This tap already attempted playback. A denied start needs another user
+    // gesture, not a second attempt after the navigation await.
+    return token === openBookToken && pauseRevision === resumePauseRevision
+      && String(currentBook?.id || '') === targetId && Boolean(chunkPlayer?.isPlaying);
+  } else {
+    // WebKit grants later playback on this same element after load() runs in
+    // the user gesture. Only prime an empty element: reloading an outgoing
+    // source would disturb its position and ownership before the open commits.
+    if (audioPlayer && !chunkPlayer?.isPreparingSource?.()) {
+      if (!audioPlayer.getAttribute('src') && !audioPlayer.currentSrc) audioPlayer.load();
+      else if (audioPlayer.paused) {
+        // WebKit HTMLMediaElement::attributeChanged(autoplayAttr) grants the
+        // gesture without playing or reloading. Restore it in this same task.
+        const autoplay = audioPlayer.autoplay;
+        const autoplayAttribute = audioPlayer.getAttribute('autoplay');
+        audioPlayer.autoplay = !autoplay;
+        audioPlayer.autoplay = autoplay;
+        if (autoplayAttribute !== null) audioPlayer.setAttribute('autoplay', autoplayAttribute);
+      }
+    }
+    if (navigationReady) await navigationReady;
+    if (token !== openBookToken || pauseRevision !== resumePauseRevision) return false;
+    const opening = openBook(bookId);
+    token = openBookToken;
+    const opened = await opening;
+    if (token !== openBookToken || pauseRevision !== resumePauseRevision) return false;
+    if (!opened || String(currentBook?.id || '') !== targetId || !playbackEngineOwnsReadySource()) {
+      pausePlaybackForUser();
+      return false;
+    }
+  }
+  if (token !== openBookToken || pauseRevision !== resumePauseRevision || String(currentBook?.id || '') !== targetId) return false;
+  if (!chunkPlayer.isPlaying) await togglePlayPause(true);
+  return token === openBookToken && String(currentBook?.id || '') === targetId && Boolean(chunkPlayer?.isPlaying);
+}
+
 async function openBook(bookId) {
   const token = ++openBookToken;
   offlineUnavailableOnlineRetry.clear();
@@ -1745,8 +1834,16 @@ async function openBook(bookId) {
     showAudioLoading('Loading selected book...');
 
     // Cache chapter count for library progress bars (see bookProgressInfo)
+    // and the resume-point labels the Continue strip and Recent sheet show,
+    // so they name chapters by the mini player's rule without loading text.
     if (Array.isArray(chapters) && chapters.length > 0) {
-      cacheBookMeta(bookId, { chapterCount: chapters.length });
+      cacheBookMeta(bookId, {
+        chapterCount: chapters.length,
+        chapterStructureKey: nextBook.chapterStructureKey,
+        chapterLabels: chapterResumeLabels(chapters),
+        chapterTotal: chapterTotal(chapters),
+        chapterStructure: chapters.map(({ title, type, empty }) => ({ title, type, empty: Boolean(empty) }))
+      });
     }
 
     // Display book title
@@ -1754,7 +1851,7 @@ async function openBook(bookId) {
 
     // Display author in header (compact)
     if (currentBook.author) {
-      bookAuthorHeader.textContent = `by ${currentBook.author}`;
+      bookAuthorHeader.textContent = currentBook.author;
     } else {
       bookAuthorHeader.textContent = '';
     }
@@ -1884,7 +1981,8 @@ async function openBook(bookId) {
   } catch (err) {
     if (token !== openBookToken) return false;
     console.error('Failed to open book:', err);
-    showToast("Couldn't open book", 'error');
+    // Same key as the player's inline failure card: the card says it already.
+    showToast("Couldn't open book", 'error', { key: 'chapter-load-error' });
     const snapshot = previousSession?.token === token ? previousSession : null;
     previousSession = previousSession && previousSession.token !== token ? previousSession : null;
     if (snapshot && snapshot.token === token) {
@@ -2409,6 +2507,10 @@ async function togglePlayPause(forcePlay = false) {
   forcePlay = forcePlay === true;
   if (!currentBook || !chunkPlayer) return;
   const token = recoveryToken;
+  const selectedBook = currentBook;
+  const selectedOpenToken = openBookToken;
+  const selectedPlayer = chunkPlayer;
+  const stillSelected = () => currentBook === selectedBook && openBookToken === selectedOpenToken && chunkPlayer === selectedPlayer;
   try {
     if (!forcePlay && chunkPlayer.isAwaitingChapterAdvance) {
       pausePlaybackForUser();
@@ -2446,7 +2548,7 @@ async function togglePlayPause(forcePlay = false) {
       // activation from the tap at the first await.
       applySmartRewindForResume();
       await chunkPlayer.play();
-      if (token.cancelled || playbackPausedByUser) return;
+      if (!stillSelected() || token.cancelled || playbackPausedByUser) return;
       setResumePromptVisible(false);
       updatePlaybackUI(true);
     } else {
@@ -2455,7 +2557,7 @@ async function togglePlayPause(forcePlay = false) {
     checkpointPlayback();
     scheduleServerPositionSave();
   } catch (err) {
-    if (err?.cancelled || token.cancelled || playbackPausedByUser) return;
+    if (!stillSelected() || err?.cancelled || token.cancelled || playbackPausedByUser) return;
     updatePlaybackUI(false);
     if (err?.code === 'SOURCE_NOT_READY') {
       recoverIdleUnreadyPlayback();
@@ -2619,6 +2721,7 @@ async function resumeNativeSingleFileFromMediaSession() {
 }
 
 function pausePlaybackForUser() {
+  resumePauseRevision++;
   playbackPausedByUser = true;
   loadChapterToken++;
   cancelPlaybackRecovery({ preserveReadySource: true });

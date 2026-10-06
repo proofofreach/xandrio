@@ -66,6 +66,8 @@ const tests = [
   'test-epub-zip-limits.js',
   'test-route-error-safety.js',
   'test-router-transitions.js',
+  'test-time-left.js',
+  'test-library-status.js',
   'test-client-settings.js',
   'test-bookmarks-routes.js',
   'test-client-offline-identity.js',

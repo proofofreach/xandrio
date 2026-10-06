@@ -5,15 +5,9 @@
 // pass through one of them.
 import { API_BASE } from '../api.js';
 
-// Format seconds into human-readable duration (e.g., "2h 15m", "45m", "< 1m")
-export function formatDuration(seconds) {
-  if (!seconds || seconds <= 0) return '';
-  if (seconds < 60) return '< 1m';
-  const h = Math.floor(seconds / 3600);
-  const m = Math.round((seconds % 3600) / 60);
-  if (h > 0) return m > 0 ? `${h}h ${m}m` : `${h}h`;
-  return `${m}m`;
-}
+// Durations share one formatter with every "time left" string; see
+// time-left.mjs ("9h 12m", "45m", "< 1m"; minutes rounded before splitting).
+export { formatDuration } from './time-left.mjs';
 
 // Format seconds as a playback clock (e.g., "12:07")
 export function formatTime(seconds) {

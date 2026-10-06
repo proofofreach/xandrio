@@ -4346,6 +4346,7 @@ registerLibraryBookRoutes(app, {
   REFRESH_BOOK_RESULT,
   chapterRebuildService,
   getChaptersCached,
+  getCachedChapterStructure: bookDocument.getCachedChapterStructure,
   normalizeChapterTitleForDisplay,
   isXBookPath,
   xbookStore,

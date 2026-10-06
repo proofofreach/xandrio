@@ -92,7 +92,7 @@ function matchesQuery(haystack, query) {
   return words.every(word => normalized.includes(word));
 }
 
-function createTtsEngineStub(name, { failing = false } = {}) {
+function createTtsEngineStub(name, { failing = false, responseDelayMs = 0 } = {}) {
   let isFailing = failing;
   const server = http.createServer(async (req, res) => {
     try {
@@ -102,6 +102,7 @@ function createTtsEngineStub(name, { failing = false } = {}) {
       if (req.url === '/tts' && req.method === 'POST') {
         if (isFailing) return sendJson(res, 503, { error: `Scenario ${name} engine marked down` });
         const body = await readJsonBody(req);
+        if (responseDelayMs > 0) await new Promise(resolve => setTimeout(resolve, responseDelayMs).unref());
         const wav = ttsResponseWavForText(body.text || '');
         res.writeHead(200, { 'Content-Type': 'audio/wav', 'Content-Length': wav.length });
         return res.end(wav);

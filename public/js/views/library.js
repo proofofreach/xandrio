@@ -1,7 +1,13 @@
 import { apiGet, apiSend, getCurrentUser } from '../api.js';
-import { formatDuration, escapeHTML, safeAttr, relativeTime, coverImageHTML, cssEscape } from '../util/format.js';
+import { escapeHTML, safeAttr, relativeTime, coverImageHTML, cssEscape, formatTime } from '../util/format.js';
+import { bookTimeLeft, chapterDurationsFor, effectiveSpeed, formatDuration, formatSpeed } from '../util/time-left.mjs';
+import { deviceState, narrationState, primaryState, statusLineVariants, gridTimeVariants } from '../util/library-status.mjs';
+import { chapterPositionLabel } from '../util/chapter-labels.mjs';
+import { effectiveSpeedForBook, getReferencePlaybackSpeed } from './playback-speed.js';
 import { readJSON, writeJSON, readText, writeText } from '../util/storage.js';
+import { getClientSettings } from '../client-settings.js';
 import { confirmSheet } from '../ui/confirm.js';
+import { registerSheet } from '../ui/sheets.js';
 import { showToast, showUndoToast } from '../ui/toast.js';
 import { shareBook } from '../features/sharing.js';
 import {
@@ -16,37 +22,68 @@ import {
   removeOfflineBook
 } from '../features/offline.js';
 
-const ICON_GRID = '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="icon"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 6A2.25 2.25 0 016 3.75h2.25A2.25 2.25 0 0110.5 6v2.25a2.25 2.25 0 01-2.25 2.25H6a2.25 2.25 0 01-2.25-2.25V6zM3.75 15.75A2.25 2.25 0 016 13.5h2.25a2.25 2.25 0 012.25 2.25V18a2.25 2.25 0 01-2.25 2.25H6A2.25 2.25 0 013.75 18v-2.25zM13.5 6a2.25 2.25 0 012.25-2.25H18A2.25 2.25 0 0120.25 6v2.25A2.25 2.25 0 0118 10.5h-2.25a2.25 2.25 0 01-2.25-2.25V6zM13.5 15.75a2.25 2.25 0 012.25-2.25H18a2.25 2.25 0 012.25 2.25V18a2.25 2.25 0 01-2.25 2.25h-2.25A2.25 2.25 0 0113.5 18v-2.25z"/></svg>';
-const ICON_LIST = '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="icon"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5"/></svg>';
+// ---- Glyphs (stroked SVG; DESIGN.md rules out emoji icons) -----------------
+const svg = (body, extra = '') => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"${extra}>${body}</svg>`;
+const GLYPH = {
+  download: svg('<circle cx="12" cy="12" r="9.2"/><path d="M12 7.5v8.5m0 0-3.6-3.6M12 16l3.6-3.6"/>'),
+  check: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10" fill="currentColor"/><path d="m7.6 12.3 3 3 5.8-6.2" fill="none" stroke="var(--offline-check-mark, #0B0B0D)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  retry: svg('<path d="M19.5 8.5A8 8 0 0 0 5 9"/><path d="M19.8 4.5v4.3h-4.3"/><path d="M4.5 15.5A8 8 0 0 0 19 15"/><path d="M4.2 19.5v-4.3h4.3"/>'),
+  warn: svg('<path d="M12 4 2.8 19.5h18.4z"/><path d="M12 10v4.2M12 17h.01"/>', ' class="status-warn"'),
+  chevron: svg('<path d="m6.5 9.5 5.5 5.5 5.5-5.5"/>', ' class="scope-chevron"'),
+  check1: svg('<path d="m5 12.5 4.5 4.5L19 7.5"/>'),
+  more: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg>',
+  queue: svg('<path d="M4 6.5h13M4 11.5h13M4 16.5h7"/><path d="m15 14.5 5 3-5 3z" fill="currentColor"/>'),
+  shelf: svg('<path d="M4 6.5h13M4 11.5h9M4 16.5h7"/><path d="M18.5 20.5s-3.5-2.1-3.5-4.4a1.8 1.8 0 0 1 3.5-.6 1.8 1.8 0 0 1 3.5.6c0 2.3-3.5 4.4-3.5 4.4z" fill="currentColor" stroke="none"/>'),
+  share: svg('<path d="M12 15V3.5M7.5 8 12 3.5 16.5 8"/><path d="M5 12v6.5A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5V12"/>'),
+  info: svg('<circle cx="12" cy="12" r="9"/><path d="M12 11v5.5M12 7.8h.01"/>'),
+  hide: svg('<path d="M4 12h16"/><circle cx="12" cy="12" r="9"/>'),
+  trash: svg('<path d="M4.5 6.5h15M9.5 6.5V4.5h5v2M6.5 6.5l1 13h9l1-13M10 10.5v6M14 10.5v6"/>'),
+  remove: svg('<circle cx="12" cy="12" r="9"/><path d="M8.5 12h7"/>'),
+  cancel: svg('<circle cx="12" cy="12" r="9"/><path d="m9 9 6 6m0-6-6 6"/>'),
+  bookshelf: svg('<path d="M4 5.5A1.5 1.5 0 0 1 5.5 4H9v16H5.5A1.5 1.5 0 0 1 4 18.5zM9 4h4.5v16H9z"/><path d="M14.2 5.2l3.9-1 3.6 14.6-3.9 1z"/>'),
+  search: svg('<circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/>'),
+  upload: svg('<path d="M12 16V4M6.5 9.5 12 4l5.5 5.5"/><path d="M4 15v3.5A1.5 1.5 0 0 0 5.5 20h13a1.5 1.5 0 0 0 1.5-1.5V15"/>')
+};
+const DELETE_GLYPH = '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="delete-icon"><path stroke-linecap="round" stroke-linejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0"/></svg>';
+
 const BOOK_META_PREFIX = 'xandrio_book_meta:';
 const RAIL_DISMISSED_KEY = 'xandrio_rail_dismissed';
-const RAIL_PLAY_GLYPH = `
-  <svg viewBox="0 0 24 24" class="rail-play-icon" aria-hidden="true">
-    <circle cx="12" cy="12" r="11" class="rail-play-bg"></circle>
-    <path d="M9.5 7.5v9l7-4.5-7-4.5z" class="rail-play-tri"></path>
-  </svg>
-`;
-const OFFLINE_DOWNLOAD_GLYPH = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M12 3v12m0 0l-4-4m4 4l4-4M5 21h14"/></svg>';
-
 const LIBRARY_TAB_KEY = 'xandrio_library_tab';
+const VIEW_MODE_KEY = 'xandrio_library_view';
+const CONTINUE_LIMIT = 5;
+const LONG_PRESS_MS = 500;
+const LONG_PRESS_SLOP = 10;
+const SCOPES = ['shelf', 'downloaded', 'all'];
+const SCOPE_LABELS = { shelf: 'My Shelf', downloaded: 'Downloaded', all: 'Shared Library' };
+const DESKTOP_QUERY = '(min-width: 760px)';
 
 let deps = {};
 let currentShelf = new Set();
 let currentTab = 'shelf';
 let librarySearch = null;
 let sortSelect = null;
-let viewToggleIcon = null;
 let continueRail = null;
 let currentViewMode = 'list';
 let continueRailHasEntries = false;
 let swipeListenersInstalled = false;
 let libraryLoadGeneration = 0;
 let libraryContentState = 'loading';
+let librarySnapshot = { books: [], positions: {} };
+let booksById = new Map();
+let audioActivity = new Map();
+let audioActivityKey = '';
+let fitFrame = 0;
+let bookActionsSheet = null;
+let bookActionsBookId = null;
 const pendingBookDownloads = new Set();
 
 function libraryTabStorageKey() {
   const accountId = getCurrentUser()?.id;
   return accountId ? `${LIBRARY_TAB_KEY}:${accountId}` : LIBRARY_TAB_KEY;
+}
+
+function isDesktop() {
+  return typeof window.matchMedia === 'function' && window.matchMedia(DESKTOP_QUERY).matches;
 }
 
 export function getCachedBookMeta(bookId) {
@@ -57,7 +94,63 @@ export function cacheBookMeta(bookId, meta) {
   writeJSON(BOOK_META_PREFIX + bookId, meta);
 }
 
-export function bookProgressInfo(book, position) {
+// Use the player's semantic structure. A raw section index is not a chapter
+// number: front matter and part dividers do not count as chapters.
+export function resumeChapterLabel(bookId, chapterIndex, { withTotal = false } = {}) {
+  const meta = getCachedBookMeta(bookId);
+  const book = booksById.get(String(bookId));
+  if (book?.chapterStructureKey && meta?.chapterStructureKey !== book.chapterStructureKey) return '';
+  if (!meta?.chapterStructureKey) return '';
+  const chapters = meta?.chapterStructure;
+  const index = Number(chapterIndex);
+  if (!Array.isArray(chapters) || !Number.isInteger(index) || index < 0 || index >= chapters.length) return '';
+  return chapterPositionLabel(chapters, index, { short: true, withTotal });
+}
+
+async function loadResumeChapterStructures(books, positions, generation) {
+  const pending = books.filter(book => positions[book.id]?.chapterIndex !== undefined && !positions[book.id]?.finished)
+    .sort((a, b) => (Date.parse(positions[b.id]?.updatedAt) || 0) - (Date.parse(positions[a.id]?.updatedAt) || 0))
+    .filter(book => {
+      const meta = getCachedBookMeta(book.id);
+      return !book.chapterStructureKey || meta?.chapterStructureKey !== book.chapterStructureKey || !Array.isArray(meta?.chapterStructure);
+    });
+  // Render the usable shelf first. Fill missing labels in sequential bounded
+  // batches, so a large shelf has neither one request per book nor a hard cutoff.
+  for (let start = 0; start < pending.length; start += 50) {
+    if (generation !== libraryLoadGeneration) return;
+    const batch = pending.slice(start, start + 50);
+    const previousKeys = new Map(batch.map(book => [String(book.id), getCachedBookMeta(book.id)?.chapterStructureKey]));
+    try {
+      const ids = batch.map(book => encodeURIComponent(book.id));
+      const data = await apiGet(`/api/library/chapter-labels?bookIds=${ids.join(',')}`);
+      if (generation !== libraryLoadGeneration) return;
+      for (const book of batch) {
+        const id = String(book.id);
+        const summary = data?.summaries?.[id];
+        if (!summary?.structureKey || !Array.isArray(summary.chapters)) continue;
+        if (book.chapterStructureKey && summary.structureKey !== book.chapterStructureKey) continue;
+        const meta = getCachedBookMeta(id);
+        // Opening/rebuilding a book while this read was pending owns newer
+        // metadata. A late library summary cannot replace that structure.
+        if (meta?.chapterStructureKey !== previousKeys.get(id) && meta?.chapterStructureKey !== summary.structureKey) continue;
+        cacheBookMeta(id, {
+          ...(meta || {}),
+          chapterStructure: summary.chapters,
+          chapterStructureKey: summary.structureKey
+        });
+      }
+      refreshLibraryPlayback();
+    } catch {
+      // The shelf stays usable when structure is unavailable. Omit the number.
+      return;
+    }
+  }
+}
+
+// Library-facing progress for one book. Time left comes from the shared
+// time-left module at the book's effective speed (see effectiveSpeedForBook),
+// so library rows, the Continue strip and the player always agree.
+export function bookProgressInfo(book, position, speed = null) {
   if (!position || position.chapterIndex === undefined) return null;
   const info = {
     chapterIndex: position.chapterIndex,
@@ -66,6 +159,7 @@ export function bookProgressInfo(book, position) {
     chapterCount: null,
     percent: null,
     timeLeft: null,
+    speed: null,
     finished: Boolean(position.finished),
   };
   const chapterCount = Number.isInteger(book.chapterCount) && book.chapterCount > 0
@@ -73,105 +167,69 @@ export function bookProgressInfo(book, position) {
     : getCachedBookMeta(book.id)?.chapterCount;
   if (Number.isInteger(chapterCount) && chapterCount > 0) {
     info.chapterCount = chapterCount;
-    const durations = normalizedChapterDurations(book, chapterCount);
-    if (durations) {
-      const durationInfo = durationWeightedProgress(durations, position);
-      info.percent = info.finished ? 100 : durationInfo.percent;
-      info.timeLeft = info.finished ? 0 : durationInfo.timeLeft;
+    const rate = speed ?? effectiveSpeedForBook(book.id);
+    const timing = bookTimeLeft(book, position, rate, chapterCount);
+    info.speed = effectiveSpeed(rate);
+    if (timing) {
+      info.percent = info.finished ? 100 : timing.percent;
+      info.timeLeft = info.finished ? 0 : timing.timeLeft;
     } else {
       info.percent = info.finished ? 100 : Math.min(99, Math.round(100 * position.chapterIndex / chapterCount));
-      if (book.totalDuration) {
-        const rate = position.playbackRate || 1;
-        info.timeLeft = info.finished ? 0 : Math.max(0, book.totalDuration * (1 - position.chapterIndex / chapterCount) / rate);
-      }
     }
   }
   return info;
 }
 
-export function normalizedChapterDurations(book, chapterCount = book?.chapterCount) {
-  const count = Number(chapterCount);
-  if (!book || !Number.isInteger(count) || count <= 0 || !Array.isArray(book.chapterDurations)) return null;
-  const durations = book.chapterDurations.slice(0, count).map(value => Number(value));
-  if (durations.length !== count || !durations.every(value => Number.isFinite(value) && value > 0)) return null;
-  return durations;
+// The live position of the open book, so the Continue strip and the rows
+// describe where the listener actually is rather than the last server save.
+function livePositionFor(bookId) {
+  const live = deps.getCurrentPlayback?.();
+  if (!live || String(live.bookId) !== String(bookId)) return null;
+  return live;
 }
 
-export function durationWeightedProgress(durations, position = {}) {
-  const total = durations.reduce((sum, value) => sum + value, 0);
-  if (!Number.isFinite(total) || total <= 0) return { percent: null, timeLeft: null };
-  const chapterIndex = Math.max(0, Math.min(durations.length - 1, Number(position.chapterIndex) || 0));
-  const elapsedBefore = durations.slice(0, chapterIndex).reduce((sum, value) => sum + value, 0);
-  const chapterTime = Math.max(0, Math.min(durations[chapterIndex] || 0, Number(position.timestamp ?? position.currentTime ?? 0) || 0));
-  const elapsed = Math.min(total, elapsedBefore + chapterTime);
-  const rate = Number(position.playbackRate) > 0 ? Number(position.playbackRate) : 1;
+function positionFor(bookId) {
+  const saved = librarySnapshot.positions[bookId] || null;
+  const live = livePositionFor(bookId);
+  if (!live || !Number.isInteger(live.chapterIndex)) return saved;
   return {
-    percent: Math.min(99, Math.max(0, Math.round((elapsed / total) * 100))),
-    timeLeft: Math.max(0, (total - elapsed) / rate)
+    ...(saved || {}),
+    chapterIndex: live.chapterIndex,
+    timestamp: Number.isFinite(live.timestamp) ? live.timestamp : saved?.timestamp,
+    updatedAtMs: Math.max(saved?.updatedAtMs || 0, Date.now()),
+    updatedAt: saved?.updatedAt || new Date().toISOString(),
+    finished: false
   };
 }
 
-function progressMetaLine(progress) {
-  if (progress.finished) {
-    return ['Finished', progress.updatedAt ? relativeTime(progress.updatedAt) : ''].filter(Boolean).join(' · ');
-  }
-  const parts = [];
-  if (progress.timeLeft != null) parts.push(`${formatDuration(progress.timeLeft)} left`);
-  else if (progress.chapterCount) parts.push(`Chapter ${progress.chapterIndex + 1} of ${progress.chapterCount}`);
-  else parts.push(`Chapter ${progress.chapterIndex + 1}`);
-  if (progress.updatedAt) parts.push(relativeTime(progress.updatedAt));
-  return parts.join(' · ');
+function inProgressEntries() {
+  return librarySnapshot.books
+    .map(book => ({ book, position: positionFor(book.id) }))
+    .map(entry => ({ ...entry, progress: bookProgressInfo(entry.book, entry.position) }))
+    .filter(entry => entry.progress && !entry.progress.finished)
+    .sort((a, b) => (b.progress.updatedAtMs || 0) - (a.progress.updatedAtMs || 0));
 }
 
-const OFFLINE_READY_GLYPH = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="m5 12 4 4L19 6"/></svg>';
-const OFFLINE_BUSY_GLYPH = '<svg class="offline-spinner" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path stroke-linecap="round" d="M12 3a9 9 0 1 1-9 9"/></svg>';
-
-function offlineStateContents(bookId) {
-  const status = offlineStatusForBook(bookId);
-  const cached = Math.max(0, Number(status.cachedChapters) || 0);
-  const total = Math.max(0, Number(status.totalChapters) || 0);
-  const progress = total > 0 ? `${cached}/${total}` : '';
-  const withProgress = label => progress ? `${label} ${progress}` : label;
-  const busy = status.autoResume || pendingBookDownloads.has(String(bookId)) || ['preparing', 'preparation-waiting', 'downloading', 'verifying'].includes(status.kind);
-  const state = (label, title = status.label) => `
-    <span class="book-local-state" title="${safeAttr(title)}" aria-label="${safeAttr(title)}">
-      ${status.downloaded ? OFFLINE_READY_GLYPH : busy ? OFFLINE_BUSY_GLYPH : ''}<span>${escapeHTML(label)}</span>
-    </span>`;
-  const action = (label, title = status.label) => `
-    <button type="button" class="book-local-state" data-download-book="${safeAttr(bookId)}"
-            title="${safeAttr(title)}" aria-label="${safeAttr(`${label}. ${title}`)}">
-      ${OFFLINE_DOWNLOAD_GLYPH}<span>${escapeHTML(label)}</span>
-    </button>`;
-
-  if (pendingBookDownloads.has(String(bookId))) return state('Checking audio…');
-  if (status.downloaded) return state('Downloaded');
-  switch (status.kind) {
-    case 'ready-to-prepare': return action('Download');
-    case 'prepared': return status.autoResume ? state('Waiting to download') : action('Download');
-    case 'preparation-paused': return action('Resume');
-    case 'preparation-error': return action('Retry');
-    case 'preparation-capacity': return action('Try again');
-    case 'partial-download': return action(progress ? `Partial ${progress} · Continue` : 'Partial · Continue');
-    case 'repair-needed': return action('Incomplete · Retry');
-    case 'partial': return action(progress ? `Cached ${progress} · Download full copy` : 'Cached chapters · Download full copy');
-    case 'preparing': return state(`Preparing audio · ${status.preparedChapters || 0}/${total} chapters`);
-    case 'preparation-waiting': return state('Waiting for audio');
-    case 'downloading': return state(withProgress('Downloading'));
-    case 'verifying': return state('Verifying');
-    case 'download-offline': return state('Connect to download');
-    case 'download-unavailable': return state('Downloads unavailable');
-    default: return state(status.label);
-  }
+// Books in progress, most recently played first, from the last library
+// load. Feeds the Recent sheet (one tap resumes) and the coach hint.
+export function getRecentInProgress(limit = 5) {
+  return inProgressEntries()
+    .slice(0, limit)
+    .map(entry => ({ ...entry, chapterLabel: resumeChapterLabel(entry.book.id, entry.progress.chapterIndex) }));
 }
 
-function offlineStatusHTML(bookId) {
-  const status = offlineStatusForBook(bookId);
-  const contents = offlineStateContents(bookId);
-  return `
-    <span class="book-local-control book-local-control--${safeAttr(status.kind)}"
-          data-offline-status="${safeAttr(bookId)}">
-      ${contents}
-    </span>`;
+export function normalizedChapterDurations(book, chapterCount = book?.chapterCount) {
+  return chapterDurationsFor(book, chapterCount);
+}
+
+export function durationWeightedProgress(durations, position = {}) {
+  const timing = bookTimeLeft(
+    { chapterDurations: durations, chapterCount: durations.length },
+    { chapterIndex: 0, ...position },
+    position.playbackRate
+  );
+  if (!timing) return { percent: null, timeLeft: null };
+  return { percent: timing.percent, timeLeft: timing.timeLeft };
 }
 
 // Strictly: is this book fully on this device and proven playable from it?
@@ -179,121 +237,246 @@ function offlineStatusHTML(bookId) {
 // Partial, in-progress and still-verifying downloads previously answered yes,
 // so they were filed under Downloaded and marked as on-device. Opening one and
 // finding it would not play is the failure this guards against. Those states
-// keep their own descriptive card labels — they simply stop claiming to be
+// keep their own descriptive labels — they simply stop claiming to be
 // something the user can rely on offline.
 function isAvailableOnDevice(status) {
   return Boolean(status.downloaded);
 }
 
-function offlineMenuActionContents(bookId) {
-  const status = offlineStatusForBook(bookId);
-  if (pendingBookDownloads.has(String(bookId))) {
-    return '<button type="button" role="menuitem" disabled aria-busy="true">Checking offline audio…</button>';
+// ---- Row model -------------------------------------------------------------
+
+// Everything a row, cell, table row or actions header says about one book,
+// in the one vocabulary (library-status.mjs + time-left.mjs).
+function bookModel(book) {
+  const id = String(book.id || '');
+  const position = positionFor(id);
+  const progress = bookProgressInfo(book, position);
+  const speed = effectiveSpeedForBook(id);
+  const referenceSpeed = getReferencePlaybackSpeed();
+  const status = offlineStatusForBook(id);
+  const device = deviceState(status, { pending: pendingBookDownloads.has(id) });
+  const narration = narrationState(book, audioActivity.get(id) || null, speed);
+  let timeLeft = progress?.timeLeft ?? null;
+  if (timeLeft === null && !progress) {
+    // Not started: the whole book is left.
+    const whole = bookTimeLeft(book, { chapterIndex: 0, timestamp: 0 }, speed);
+    timeLeft = whole?.timeLeft ?? null;
   }
-  if (status.downloaded) {
-    return `<button type="button" role="menuitem" data-remove-offline-book="${safeAttr(bookId)}">Remove download</button>`;
+  const fallbackTime = book.totalDuration ? formatDuration(Number(book.totalDuration) / speed) : '';
+  let context = null;
+  if (progress?.finished) {
+    const when = progress.updatedAt ? relativeTime(progress.updatedAt) : '';
+    context = when ? { long: when, short: when, warn: false } : null;
+  } else if (progress) {
+    const when = progress.updatedAt ? relativeTime(progress.updatedAt) : '';
+    context = when ? { long: `Played ${when}`, short: when, warn: false } : null;
+  } else {
+    context = { long: 'Not played yet', short: 'New', warn: false };
   }
-  if (status.kind === 'downloading') {
-    return `<span class="book-menu-status" role="status">${escapeHTML(status.label)} · Keep Xandrio open</span>
-      <button type="button" role="menuitem" data-download-book="${safeAttr(bookId)}">Cancel download</button>`;
-  }
-  if (status.kind === 'preparing' || (status.kind === 'prepared' && status.autoResume)) {
-    return `<span class="book-menu-status" role="status">${escapeHTML(status.label)}</span>
-      <button type="button" role="menuitem" data-remove-offline-preparation="${safeAttr(bookId)}">Cancel download</button>`;
-  }
-  if (status.kind === 'preparation-waiting') {
-    return `<span class="book-menu-status" role="status">${escapeHTML(status.label)}</span>
-      <button type="button" role="menuitem" data-remove-offline-preparation="${safeAttr(bookId)}">Cancel download</button>`;
-  }
-  if (status.kind === 'prepared') {
-    return `<button type="button" role="menuitem" data-download-book="${safeAttr(bookId)}">Download</button>`;
-  }
-  if (status.kind === 'download-unavailable' || status.kind === 'download-offline') {
-    return `<button type="button" role="menuitem" disabled>${escapeHTML(status.label)}</button>`;
-  }
-  const label = status.kind === 'preparation-error'
-    ? 'Retry download'
-    : status.kind === 'preparation-capacity'
-      ? 'Retry download'
-      : 'Download';
-  return `<button type="button" role="menuitem" data-download-book="${safeAttr(bookId)}">${label}</button>`;
+  const current = Boolean(livePositionFor(id));
+  return {
+    id, book, position, progress, speed, referenceSpeed, status, device, narration, context,
+    chapterLabel: progress && !progress.finished ? resumeChapterLabel(id, progress.chapterIndex, { withTotal: true }) : '',
+    timeLeft, fallbackTime, current,
+    downloaded: isAvailableOnDevice(status),
+    primary: primaryState({ device, narration, context })
+  };
 }
 
-function bookMenuHTML(book, onShelf) {
-  const id = String(book.id || '');
-  const title = book.title || 'Untitled';
-  const author = book.author || 'Unknown Author';
-  const nonfiction = book.studyGuideCategory === 'nonfiction';
-  const admin = !getCurrentUser() || getCurrentUser()?.role === 'admin';
+function stateHTML(word, warn) {
+  return `${escapeHTML(word)}${warn ? GLYPH.warn : ''}`;
+}
+
+function statusVariantHTML(variant) {
+  const time = variant.time ? `<span class="status-time">${escapeHTML(variant.time)}</span>` : '';
+  const state = variant.state
+    ? `<span class="status-state">${variant.time ? '<span class="status-sep" aria-hidden="true"> · </span>' : ''}${stateHTML(variant.state, variant.warn)}</span>`
+    : '';
+  return time + state;
+}
+
+function fitAttr(variants) {
+  return safeAttr(JSON.stringify(variants));
+}
+
+function statusLineHTML(model) {
+  const variants = statusLineVariants({
+    timeLeft: model.timeLeft,
+    speed: model.speed,
+    referenceSpeed: model.referenceSpeed,
+    fallbackTime: model.fallbackTime,
+    stateWord: model.primary
+  }).map(statusVariantHTML);
+  return `<span class="book-status num" data-fit="${fitAttr(variants)}">${variants[0]}</span>`;
+}
+
+function gridLinesHTML(model) {
+  const times = gridTimeVariants({
+    timeLeft: model.timeLeft,
+    speed: model.speed,
+    referenceSpeed: model.referenceSpeed,
+    fallbackTime: model.fallbackTime
+  }).map(text => `<span class="status-time">${escapeHTML(text)}</span>`);
+  const word = model.primary;
+  const states = word
+    ? [...new Set([word.long, word.short])].map(text => `<span class="status-state">${stateHTML(text, word.warn)}</span>`)
+    : [''];
   return `
-    <div class="book-overflow">
-      <button class="book-overflow-trigger" type="button" data-book-menu-toggle aria-expanded="false" aria-haspopup="menu"
-              aria-label="More actions for ${safeAttr(title)}">
-        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg>
-      </button>
-      <div class="book-overflow-menu" role="menu" hidden>
-        <span role="none" data-offline-menu-action="${safeAttr(id)}">${offlineMenuActionContents(id)}</span>
-        <button type="button" role="menuitem" data-shelf-toggle="${safeAttr(id)}">
-          <span data-saved-label>${onShelf ? 'Remove from My Shelf' : 'Save to My Shelf'}</span>
-        </button>
-        <button type="button" role="menuitem" data-queue-add="${safeAttr(id)}">Add to Up Next</button>
-        ${nonfiction ? `<button type="button" role="menuitem" data-book-guide="${safeAttr(id)}">Study guide</button>` : ''}
-        ${admin && !nonfiction ? `<button type="button" role="menuitem" data-book-guide-tag="${safeAttr(id)}">Mark as nonfiction</button>` : ''}
-        ${admin && nonfiction ? `<button type="button" role="menuitem" data-book-guide-untag="${safeAttr(id)}">Remove nonfiction tag</button>` : ''}
-        <button type="button" role="menuitem" data-book-share="${safeAttr(id)}"
-                data-book-title="${safeAttr(title)}" data-book-author="${safeAttr(author)}">Share</button>
-        <button type="button" role="menuitem" class="book-menu-danger"
-                data-delete-book-id="${safeAttr(id)}" data-delete-book-title="${safeAttr(title)}"
-                data-delete-book-author="${safeAttr(author)}">Delete</button>
-      </div>
+    <span class="book-grid-line num" data-fit="${fitAttr(times)}">${times[0]}</span>
+    <span class="book-grid-line" data-fit="${fitAttr(states)}">${states[0]}</span>`;
+}
+
+// Desktop table columns: "9h 12m at 1.25×" (the table has room to state
+// every row's speed) and the narration state in words.
+function tableColumnsHTML(model) {
+  let time = model.fallbackTime || '—';
+  if (model.timeLeft === 0) time = 'Finished';
+  else if (model.timeLeft !== null) time = formatDuration(model.timeLeft);
+  const speed = model.timeLeft ? `<span class="book-col-muted"> at ${escapeHTML(formatSpeed(model.speed))}</span>` : '';
+  const word = model.narration || (model.device.kind === 'prepared' ? model.device : null) || model.context;
+  const status = word ? stateHTML(word.long, word.warn) : '—';
+  return `
+    <span class="book-col book-col-time num" data-open-book="${safeAttr(model.id)}">${escapeHTML(time)}${speed}</span>
+    <span class="book-col book-col-status" data-open-book="${safeAttr(model.id)}">${status}</span>`;
+}
+
+function ringHTML(percent) {
+  if (percent === null || percent === undefined) {
+    return '<span class="offline-ring is-indeterminate" aria-hidden="true"></span>';
+  }
+  return `<span class="offline-ring" style="--pct:${Number(percent)}" aria-hidden="true"><span class="offline-ring-num num">${Number(percent)}</span></span>`;
+}
+
+// The trailing 44px offline control: download arrow, progress ring with a
+// percentage, filled check, or retry glyph. Its label names the state in
+// words (visible in the desktop table, read by screen readers on phones).
+function offlineControlContents(model) {
+  const { id, device, book } = model;
+  const title = book.title || 'Untitled';
+  const glyph = device.glyph === 'ring' ? ringHTML(device.percent)
+    : device.glyph === 'check' ? GLYPH.check
+      : device.glyph === 'retry' ? GLYPH.retry
+        : GLYPH.download;
+  if (device.tap === 'download' && !device.disabled) {
+    const label = device.action || 'Download';
+    return `
+      <button type="button" class="book-local-state offline-btn offline-btn--${safeAttr(device.glyph)}" data-download-book="${safeAttr(id)}"
+              title="${safeAttr(model.status.label || label)}" aria-label="${safeAttr(`${label}: ${title}`)}">
+        ${glyph}<span class="offline-btn-label">${escapeHTML(label)}</span>
+      </button>`;
+  }
+  if (device.tap === 'menu') {
+    const label = device.column || device.long;
+    return `
+      <button type="button" class="book-local-state offline-btn offline-btn--${safeAttr(device.glyph)}" data-offline-menu-book="${safeAttr(id)}"
+              aria-haspopup="menu" title="${safeAttr(model.status.label || device.long)}"
+              aria-label="${safeAttr(`${device.long}. Download options for ${title}`)}">
+        ${glyph}<span class="offline-btn-label">${escapeHTML(label)}</span>
+      </button>`;
+  }
+  const label = device.column && device.column !== '—' ? device.column : device.long;
+  return `
+    <span class="book-local-state offline-btn offline-btn--${safeAttr(device.glyph)} is-inert" role="img"
+          title="${safeAttr(model.status.label || device.long)}" aria-label="${safeAttr(`${device.long}: ${title}`)}">
+      ${glyph}<span class="offline-btn-label">${escapeHTML(label)}</span>
+    </span>`;
+}
+
+function offlineStatusHTML(model) {
+  return `
+    <span class="book-local-control book-local-control--${safeAttr(model.device.kind)}"
+          data-offline-status="${safeAttr(model.id)}">
+      ${offlineControlContents(model)}
+    </span>`;
+}
+
+function progressBarHTML(progress, className = 'book-progress') {
+  if (!progress || progress.percent == null) return '';
+  return `
+    <div class="${className}" role="progressbar" aria-valuenow="${progress.percent}" aria-valuemin="0" aria-valuemax="100" aria-label="${progress.percent}% listened">
+      <div class="${className}-fill" style="width:${progress.percent}%"></div>
     </div>`;
 }
 
-function renderBookCard(book, position, onShelf = false) {
-  const progress = bookProgressInfo(book, position);
-  const id = String(book.id || '');
-  const downloaded = isAvailableOnDevice(offlineStatusForBook(id));
+function bookBylineHTML(model) {
+  const chapter = model.chapterLabel ? `<span class="book-resume num" title="${safeAttr(model.chapterLabel)}">${escapeHTML(model.chapterLabel)}</span>` : '';
+  return `<span class="book-byline"><span class="book-author">${escapeHTML(model.book.author || 'Unknown Author')}</span>${chapter}</span>`;
+}
+
+function renderBookCard(book, onShelf = false) {
+  const model = bookModel(book);
+  const { id, progress } = model;
   const title = book.title || 'Untitled';
   const author = book.author || 'Unknown Author';
-  const metaLine = progress
-    ? `<span class="book-listening-meta">${escapeHTML(progressMetaLine(progress))}</span>`
-    : (book.totalDuration ? `<span class="book-listening-meta">${formatDuration(book.totalDuration)}</span>` : '');
-  const progressBar = progress && progress.percent != null ? `
-        <div class="book-progress" role="progressbar" aria-valuenow="${progress.percent}" aria-valuemin="0" aria-valuemax="100" aria-label="${progress.percent}% listened">
-          <div class="book-progress-fill" style="width:${progress.percent}%"></div>
-        </div>` : '';
-
   return `
-    <div class="book-item${progress?.finished ? ' finished' : ''}"
+    <div class="book-item${progress?.finished ? ' finished' : ''}${model.current ? ' is-current' : ''}"
          data-book-id="${safeAttr(id)}"
          data-on-shelf="${onShelf ? '1' : '0'}"
-         data-downloaded="${downloaded ? '1' : '0'}"
+         data-downloaded="${model.downloaded ? '1' : '0'}"
          data-added="${safeAttr(book.addedAt || '')}"
-         data-last-read="${safeAttr(position?.updatedAt || book.addedAt || '')}"
+         data-last-read="${safeAttr(model.position?.updatedAt || book.addedAt || '')}"
          data-finished="${progress?.finished ? '1' : '0'}">
       <div class="book-item-inner">
         <button class="book-card-open" type="button" data-open-book="${safeAttr(id)}"
-                aria-label="Open ${safeAttr(title)} by ${safeAttr(author)}">
+                aria-label="${progress && !progress.finished ? 'Resume' : 'Play'} ${safeAttr(title)} by ${safeAttr(author)}">
           <span class="book-cover-wrap">
             ${coverImageHTML(book, 'book-item-cover', `Cover of ${title}`)}
           </span>
+          ${progressBarHTML(progress, 'book-cell-progress')}
           <span class="book-item-info">
             <span class="book-title">${escapeHTML(title)}</span>
-            <span class="book-author">${escapeHTML(author)}</span>
-            ${metaLine}
+            ${bookBylineHTML(model)}
+            ${statusLineHTML(model)}
+            ${gridLinesHTML(model)}
           </span>
         </button>
+        ${tableColumnsHTML(model)}
+        ${offlineStatusHTML(model)}
         <div class="book-card-tools">
-          ${bookMenuHTML(book, onShelf)}
+          <div class="book-overflow">
+            <button class="book-overflow-trigger" type="button" data-book-menu-toggle aria-expanded="false" aria-haspopup="menu"
+                    aria-label="More actions for ${safeAttr(title)}">${GLYPH.more}</button>
+            <div class="book-overflow-menu" role="menu" aria-label="Actions for ${safeAttr(title)}" hidden></div>
+          </div>
         </div>
-        ${offlineStatusHTML(id)}
-        ${progressBar}
+        ${progressBarHTML(progress)}
       </div>
       <button class="delete-btn-reveal" tabindex="-1" aria-hidden="true" data-delete-book-id="${safeAttr(id)}" data-delete-book-title="${safeAttr(title)}" data-delete-book-author="${safeAttr(author)}" aria-label="Delete ${safeAttr(title)}">
-        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="delete-icon"><path stroke-linecap="round" stroke-linejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0"/></svg>
+        ${DELETE_GLYPH}
       </button>
     </div>
   `;
+}
+
+// Re-describe one rendered row after its device copy, narration or the
+// open book changed, without rebuilding it (focus and menus survive).
+function refreshRow(card) {
+  const book = booksById.get(card.dataset.bookId);
+  if (!book) return;
+  const model = bookModel(book);
+  card.dataset.downloaded = model.downloaded ? '1' : '0';
+  card.classList.toggle('is-current', model.current);
+  const info = card.querySelector('.book-item-info');
+  if (info) {
+    const byline = info.querySelector('.book-byline');
+    if (byline) byline.outerHTML = bookBylineHTML(model);
+    info.querySelector('.book-status')?.remove();
+    info.querySelectorAll('.book-grid-line').forEach(line => line.remove());
+    info.insertAdjacentHTML('beforeend', statusLineHTML(model) + gridLinesHTML(model));
+  }
+  const columns = card.querySelectorAll('.book-col');
+  if (columns.length) {
+    const template = document.createElement('template');
+    template.innerHTML = tableColumnsHTML(model);
+    columns.forEach((column, index) => column.replaceWith(template.content.children[0] || column));
+  }
+  const control = card.querySelector('[data-offline-status]');
+  if (control) {
+    const hadFocus = control.contains(document.activeElement);
+    control.className = `book-local-control book-local-control--${model.device.kind}`;
+    control.innerHTML = offlineControlContents(model);
+    if (hadFocus) control.querySelector('button')?.focus();
+  }
 }
 
 function skeletonCardsHTML(n) {
@@ -313,6 +496,52 @@ function skeletonCardsHTML(n) {
   `).join('')}`;
 }
 
+// ---- Status line fitting (brief fix 4) ---------------------------------------
+//
+// Each fitted element carries its variants in truncation order. Pass one
+// shows the fullest variant everywhere; each later pass moves only the
+// elements whose time or state is still clipped to their next variant.
+// Reads and writes are batched per pass, so a full library costs three
+// layouts, not one per row.
+
+function isClipped(element) {
+  if (element.scrollWidth > element.clientWidth + 1) return true;
+  for (const child of element.children) {
+    if (child.scrollWidth > child.clientWidth + 1) return true;
+  }
+  return false;
+}
+
+function fitStatusLines() {
+  fitFrame = 0;
+  const list = document.getElementById('library-view');
+  if (!list) return;
+  let pending = [...list.querySelectorAll('[data-fit]')].filter(element => element.offsetParent !== null);
+  const variantsFor = new Map();
+  for (const element of pending) {
+    let variants;
+    try { variants = JSON.parse(element.dataset.fit); } catch { variants = []; }
+    variantsFor.set(element, variants);
+    if (element.dataset.fitStep !== '0' && variants.length) element.innerHTML = variants[0];
+    element.dataset.fitStep = '0';
+  }
+  for (let step = 1; pending.length; step++) {
+    const clipped = pending.filter(element => isClipped(element));
+    pending = clipped.filter(element => variantsFor.get(element).length > step);
+    for (const element of pending) {
+      element.innerHTML = variantsFor.get(element)[step];
+      element.dataset.fitStep = String(step);
+    }
+  }
+}
+
+function scheduleFit() {
+  if (fitFrame || typeof requestAnimationFrame !== 'function') return;
+  fitFrame = requestAnimationFrame(fitStatusLines);
+}
+
+// ---- Continue strip ------------------------------------------------------------
+
 function getRailDismissals() {
   return readJSON(RAIL_DISMISSED_KEY, {});
 }
@@ -329,30 +558,36 @@ function isRailDismissed(bookId, updatedAtMs) {
 }
 
 function railCardHTML(entry) {
-  const { book, progress } = entry;
+  const { book, progress, position } = entry;
   const id = String(book.id || '');
   const title = book.title || 'Untitled';
-  const chapter = `Chapter ${progress.chapterIndex + 1}${progress.chapterCount ? ` of ${progress.chapterCount}` : ''}`;
-  const metaLine = [chapter, progress.percent != null ? `${progress.percent}%` : ''].filter(Boolean).join(' · ');
-  const progressBar = progress.percent != null
-    ? `<div class="rail-progress"><div class="rail-progress-fill" style="width:${progress.percent}%"></div></div>`
-    : '';
-
+  const chapter = resumeChapterLabel(id, progress.chapterIndex, { withTotal: true });
+  const live = livePositionFor(id);
+  const at = Number(position?.timestamp ?? position?.currentTime);
+  const point = live?.isPlaying ? 'Playing' : (Number.isFinite(at) && at > 0 ? formatTime(at) : '');
+  const meta = [chapter, point].filter(Boolean).join(' · ');
+  const metaVariants = [...new Set([meta, chapter || meta])].map(escapeHTML);
+  const label = live?.isPlaying
+    ? `Now playing ${[title, chapter].filter(Boolean).join(', ')}. Open the player`
+    : [`Resume ${title}`, meta].filter(Boolean).join(', ');
+  const percent = progress.percent != null ? progress.percent : 0;
   return `
-    <div class="rail-card" data-book-id="${safeAttr(id)}" data-updated-ms="${safeAttr(progress.updatedAtMs || 0)}" role="button" tabindex="0" aria-label="Resume ${safeAttr(title)}">
-      <div class="rail-cover-wrap">
-        ${coverImageHTML(book, 'rail-cover')}
-        <span class="rail-play-glyph">${RAIL_PLAY_GLYPH}</span>
-        ${progressBar}
-      </div>
-      <p class="rail-title">${escapeHTML(title)}</p>
-      <p class="rail-meta">${escapeHTML(metaLine)}</p>
-      <span class="rail-play-action" aria-hidden="true">Resume${progress.timeLeft != null ? ` · ${escapeHTML(formatDuration(progress.timeLeft))} left` : ''}</span>
-      <button class="rail-dismiss" type="button" aria-label="Remove ${safeAttr(title)} from Continue Listening" title="Remove from Continue Listening">
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="12" height="12" aria-hidden="true"><path stroke-linecap="round" d="M6 18L18 6M6 6l12 12"/></svg>
-      </button>
-    </div>
+    <button type="button" class="rail-card${live ? ' is-playing' : ''}" data-book-id="${safeAttr(id)}"
+            data-updated-ms="${safeAttr(progress.updatedAtMs || 0)}" aria-label="${safeAttr(label)}">
+      <span class="rail-cover-wrap">${coverImageHTML(book, 'rail-cover')}</span>
+      <span class="rail-text">
+        <span class="rail-title">${escapeHTML(title)}</span>
+        <span class="rail-meta num" data-fit="${fitAttr(metaVariants)}" title="${safeAttr(meta)}">${escapeHTML(meta)}</span>
+      </span>
+      <span class="rail-progress" aria-hidden="true"><span class="rail-progress-fill" style="width:${percent}%"></span></span>
+    </button>
   `;
+}
+
+function continueEntries() {
+  return inProgressEntries()
+    .filter(entry => !isRailDismissed(entry.book.id, entry.progress.updatedAtMs) || livePositionFor(entry.book.id))
+    .slice(0, CONTINUE_LIMIT);
 }
 
 function renderContinueRail(entries) {
@@ -364,10 +599,47 @@ function renderContinueRail(entries) {
     return;
   }
   continueRail.innerHTML = `
-    <h2 class="rail-heading">Continue Listening</h2>
-    <div class="rail-track">${entries.map(entry => railCardHTML(entry)).join('')}</div>
+    <h2 class="rail-heading" id="continue-rail-title">Continue</h2>
+    <div class="rail-track" role="list" aria-labelledby="continue-rail-title">${entries.map(entry => `<div role="listitem" class="rail-item">${railCardHTML(entry)}</div>`).join('')}</div>
   `;
-  continueRail.hidden = false;
+  syncContinueVisibility();
+  scheduleFit();
+}
+
+function syncContinueVisibility() {
+  if (!continueRail) return;
+  const query = librarySearch?.value.trim() || '';
+  continueRail.hidden = currentTab === 'downloaded' || query.length > 0 || !continueRailHasEntries;
+}
+
+function refreshContinueRail() {
+  if (libraryContentState !== 'ready') return;
+  renderContinueRail(continueEntries());
+}
+
+// ---- Load --------------------------------------------------------------------
+
+function firstRunHTML() {
+  return `
+    <div class="empty-state-modern library-first-run">
+      <div class="empty-art" aria-hidden="true">${GLYPH.bookshelf}</div>
+      <h3>No books yet</h3>
+      <p>Add an ebook and Xandrio narrates it on your server. You can start listening while the rest is prepared.</p>
+      <button class="btn-primary btn-wide" type="button" data-add-book-empty>${GLYPH.search}<span>Find a book</span></button>
+      <button class="btn-secondary btn-wide" type="button" data-upload-book-empty>${GLYPH.upload}<span>Upload a file</span></button>
+      <p class="empty-fine">EPUB, MOBI, AZW, AZW3, PRC or PDF</p>
+    </div>
+  `;
+}
+
+function setLibraryShape(state) {
+  const view = document.getElementById('library-view');
+  if (view) view.dataset.libraryState = state;
+  const searchToggle = document.getElementById('library-search-toggle');
+  if (searchToggle) {
+    // Search is disabled until there is something to search.
+    searchToggle.disabled = state === 'empty';
+  }
 }
 
 export async function loadLibrary() {
@@ -377,6 +649,7 @@ export async function loadLibrary() {
   const hasRenderedBooks = !!libraryList?.querySelector('.book-item:not(.skeleton)');
   if (!hasRenderedBooks) {
     libraryContentState = 'loading';
+    setLibraryShape('loading');
     libraryList.innerHTML = skeletonCardsHTML(6);
     filterLibrary();
   }
@@ -413,6 +686,7 @@ export async function loadLibrary() {
         ]));
       } else {
         libraryContentState = 'error';
+        setLibraryShape('error');
         renderContinueRail([]);
         libraryList.classList.remove('offline-library-fallback');
         libraryList.innerHTML = `
@@ -431,63 +705,62 @@ export async function loadLibrary() {
 
     if (generation !== libraryLoadGeneration) return;
     libraryContentState = data.books.length ? 'ready' : 'empty';
+    setLibraryShape(libraryContentState);
     currentShelf = new Set(Array.isArray(data.shelf) ? data.shelf : []);
     // A new account opens on its own shelf. Preserve an explicit tab choice.
     const storedTab = readText(libraryTabStorageKey(), 'shelf');
-    currentTab = ['shelf', 'downloaded', 'all'].includes(storedTab) ? storedTab : 'shelf';
+    currentTab = SCOPES.includes(storedTab) ? storedTab : 'shelf';
     if (offlineFallback) currentTab = 'downloaded';
+    librarySnapshot = { books: data.books, positions };
+    booksById = new Map(data.books.map(book => [String(book.id), book]));
     syncLibraryTabs();
     if (data.books.length === 0) {
       renderContinueRail([]);
       libraryList.classList.remove('offline-library-fallback');
-      libraryList.innerHTML = `
-        <div class="empty-state-modern">
-          <div class="empty-icon"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="icon-lg"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6.042A8.967 8.967 0 006 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 016 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 016-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0018 18a8.967 8.967 0 00-6 2.292m0-14.25v14.25"/></svg></div>
-          <h3>Your library is empty</h3>
-          <p>Add your first audiobook to get started</p>
-          <button class="btn-primary" data-add-book-empty>+ Add Book</button>
-        </div>
-      `;
+      libraryList.innerHTML = firstRunHTML();
       filterLibrary();
       return;
     }
 
     if ('ontouchstart' in window || navigator.maxTouchPoints > 0) document.body.classList.add('touch-device');
-    libraryList.innerHTML = data.books.map(book => renderBookCard(book, positions[book.id] || null, currentShelf.has(book.id))).join('');
+    libraryList.innerHTML = data.books.map(book => renderBookCard(book, currentShelf.has(book.id))).join('');
     libraryList.classList.toggle('offline-library-fallback', offlineFallback);
-    const continueEntries = data.books
-      .map(book => ({ book, progress: bookProgressInfo(book, positions[book.id]) }))
-      .filter(entry => entry.progress && !entry.progress.finished)
-      .filter(entry => !isRailDismissed(entry.book.id, entry.progress.updatedAtMs))
-      .sort((a, b) => (b.progress.updatedAtMs || 0) - (a.progress.updatedAtMs || 0))
-      .slice(0, 3);
-    renderContinueRail(continueEntries);
-    if (continueRail && librarySearch?.value.trim()) continueRail.hidden = true;
+    document.dispatchEvent(new CustomEvent('xandrio:libraryloaded', {
+      detail: { inProgressCount: getRecentInProgress(Infinity).length }
+    }));
+    renderContinueRail(continueEntries());
+    syncSpeedNote();
     sortLibrary();
     filterLibrary();
     setupSwipeDelete();
+    if (!offlineFallback) void loadResumeChapterStructures(data.books, positions, generation);
   } finally {
     if (generation === libraryLoadGeneration) libraryList.setAttribute('aria-busy', 'false');
   }
 }
 
 function refreshOfflineIndicators() {
-  document.querySelectorAll('[data-offline-status]').forEach(element => {
-    const status = offlineStatusForBook(element.dataset.offlineStatus);
-    const contents = offlineStateContents(element.dataset.offlineStatus);
-    const card = element.closest('.book-item');
-    if (card) card.dataset.downloaded = isAvailableOnDevice(status) ? '1' : '0';
-    element.className = `book-local-control book-local-control--${status.kind}`;
-    element.hidden = !contents;
-    element.innerHTML = contents;
-  });
+  document.querySelectorAll('#library-list .book-item:not(.skeleton)').forEach(refreshRow);
   document.querySelectorAll('[data-offline-menu-action]').forEach(element => {
     const hadFocus = element.contains(document.activeElement);
     element.innerHTML = offlineMenuActionContents(element.dataset.offlineMenuAction);
     if (hadFocus) element.querySelector('[role="menuitem"]:not(:disabled)')?.focus();
   });
+  if (bookActionsBookId) syncBookActionsHeader(bookActionsBookId);
   filterLibrary();
 }
+
+// Re-describe rows and the strip when the open book or its playback state
+// changes (the library shows the live position of the playing book).
+export function refreshLibraryPlayback() {
+  if (libraryContentState !== 'ready') return;
+  document.querySelectorAll('#library-list .book-item:not(.skeleton)').forEach(refreshRow);
+  refreshContinueRail();
+  syncSpeedNote();
+  scheduleFit();
+}
+
+// ---- Scope (My Shelf / Downloaded / Shared Library) ---------------------------
 
 function syncLibraryTabs() {
   document.querySelectorAll('[data-library-tab]').forEach(btn => {
@@ -496,10 +769,44 @@ function syncLibraryTabs() {
     btn.setAttribute('aria-selected', active ? 'true' : 'false');
     btn.tabIndex = active ? 0 : -1;
   });
+  document.querySelectorAll('[data-scope-option]').forEach(item => {
+    item.setAttribute('aria-checked', item.dataset.scopeOption === currentTab ? 'true' : 'false');
+  });
+  const label = SCOPE_LABELS[currentTab] || SCOPE_LABELS.shelf;
+  const scopeLabel = document.getElementById('library-scope-label');
+  if (scopeLabel) scopeLabel.textContent = label;
+  const title = document.getElementById('library-title-text');
+  if (title) title.textContent = label;
+  document.getElementById('library-scope-button')
+    ?.setAttribute('aria-label', `${label}. Change library scope`);
   document.getElementById('library-panel')
     ?.setAttribute('aria-labelledby', `library-tab-${currentTab}`);
+  syncDeviceHint();
+  document.dispatchEvent(new CustomEvent('xandrio:libraryscope', { detail: { scope: currentTab } }));
+}
+
+// The long device-transfer paragraph helps once there is a download to
+// manage; on an empty Downloaded tab it buried the one useful action.
+function syncDeviceHint() {
   const deviceHint = document.getElementById('downloaded-device-hint');
-  if (deviceHint) deviceHint.hidden = currentTab !== 'downloaded';
+  if (!deviceHint) return;
+  const hasDownloads = Boolean(document.querySelector('#library-list .book-item[data-downloaded="1"]'));
+  deviceHint.hidden = currentTab !== 'downloaded' || !hasDownloads;
+}
+
+function syncScopeCounts() {
+  const items = [...document.querySelectorAll('#library-list .book-item:not(.skeleton)')];
+  const ready = libraryContentState === 'ready' || libraryContentState === 'empty';
+  const counts = {
+    shelf: items.filter(item => item.dataset.onShelf === '1').length,
+    downloaded: items.filter(item => item.dataset.downloaded === '1').length,
+    all: items.length
+  };
+  document.querySelectorAll('[data-shell-count]').forEach(element => {
+    const value = counts[element.dataset.shellCount];
+    element.textContent = ready && value !== undefined ? String(value) : '';
+  });
+  return counts;
 }
 
 function filterEmptyStateHTML() {
@@ -539,24 +846,136 @@ function filterLibrary() {
     item.classList.toggle('hidden', !visible);
     if (visible) visibleCount++;
   });
-  if (continueRail) continueRail.hidden = currentTab === 'downloaded' || query.length > 0 || !continueRailHasEntries;
+  syncContinueVisibility();
   const emptyShelfHint = document.getElementById('shelf-empty-hint');
   if (emptyShelfHint) emptyShelfHint.hidden = !(libraryContentState === 'ready' && currentTab === 'shelf' && visibleCount === 0 && !query);
   const emptyDownloadedHint = document.getElementById('downloaded-empty-hint');
   if (emptyDownloadedHint) emptyDownloadedHint.hidden = !(libraryContentState === 'ready' && currentTab === 'downloaded' && visibleCount === 0 && !query);
   updateFilterEmptyState(query, visibleCount);
+  syncDeviceHint();
+  syncScopeCounts();
+  const count = document.getElementById('library-count');
+  if (count) count.textContent = libraryContentState === 'ready' ? `${visibleCount} ${visibleCount === 1 ? 'book' : 'books'}` : '';
+  const view = document.getElementById('library-view');
+  if (view) view.dataset.libraryVisible = String(visibleCount);
+  scheduleFit();
 }
 
 function setLibraryTab(tab) {
-  currentTab = ['shelf', 'downloaded', 'all'].includes(tab) ? tab : 'shelf';
+  currentTab = SCOPES.includes(tab) ? tab : 'shelf';
   writeText(libraryTabStorageKey(), currentTab);
   syncLibraryTabs();
   filterLibrary();
 }
 
+export function getLibraryScope() {
+  return currentTab;
+}
+
+export function setLibraryScope(scope) {
+  setLibraryTab(scope);
+}
+
+// Phone scope menu: a large-title button opening a native-style menu of the
+// three scopes, with a check on the active one. Arrow keys, Home/End and
+// typing move focus; Escape and Tab close it and focus returns to the title.
+function scopeMenuItems() {
+  return [...document.querySelectorAll('#library-scope-menu [role^="menuitem"]')];
+}
+
+function openScopeMenu(focus = 'checked') {
+  const menu = document.getElementById('library-scope-menu');
+  const button = document.getElementById('library-scope-button');
+  if (!menu || !button) return;
+  menu.hidden = false;
+  button.setAttribute('aria-expanded', 'true');
+  const items = scopeMenuItems();
+  const target = focus === 'last' ? items[items.length - 1]
+    : focus === 'first' ? items[0]
+      : items.find(item => item.getAttribute('aria-checked') === 'true') || items[0];
+  target?.focus();
+}
+
+function closeScopeMenu({ restoreFocus = true } = {}) {
+  const menu = document.getElementById('library-scope-menu');
+  const button = document.getElementById('library-scope-button');
+  if (!menu || menu.hidden) return;
+  const hadFocus = menu.contains(document.activeElement);
+  menu.hidden = true;
+  button?.setAttribute('aria-expanded', 'false');
+  if (restoreFocus && hadFocus) button?.focus();
+}
+
+function initScopeMenu() {
+  const button = document.getElementById('library-scope-button');
+  const menu = document.getElementById('library-scope-menu');
+  if (!button || !menu) return;
+  button.addEventListener('click', () => {
+    if (menu.hidden) openScopeMenu();
+    else closeScopeMenu();
+  });
+  button.addEventListener('keydown', event => {
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault();
+      openScopeMenu(event.key === 'ArrowUp' ? 'last' : 'checked');
+    }
+  });
+  menu.addEventListener('click', event => {
+    const option = event.target.closest('[data-scope-option]');
+    if (option) {
+      setLibraryTab(option.dataset.scopeOption);
+      closeScopeMenu();
+      return;
+    }
+    if (event.target.closest('[data-scope-stats]')) {
+      closeScopeMenu({ restoreFocus: false });
+      deps.navigateTo?.('stats');
+    }
+  });
+  menu.addEventListener('keydown', event => {
+    const items = scopeMenuItems();
+    const index = items.indexOf(document.activeElement);
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
+      closeScopeMenu();
+      return;
+    }
+    if (event.key === 'Tab') {
+      closeScopeMenu({ restoreFocus: false });
+      return;
+    }
+    let next = null;
+    if (event.key === 'ArrowDown') next = (index + 1) % items.length;
+    else if (event.key === 'ArrowUp') next = (index - 1 + items.length) % items.length;
+    else if (event.key === 'Home') next = 0;
+    else if (event.key === 'End') next = items.length - 1;
+    else if (event.key.length === 1 && /\S/.test(event.key)) {
+      const letter = event.key.toLowerCase();
+      const ordered = [...items.slice(index + 1), ...items.slice(0, index + 1)];
+      const match = ordered.find(item => item.textContent.trim().toLowerCase().startsWith(letter));
+      if (match) next = items.indexOf(match);
+    }
+    if (next === null) return;
+    event.preventDefault();
+    items[next]?.focus();
+  });
+  document.addEventListener('pointerdown', event => {
+    if (menu.hidden) return;
+    if (!menu.contains(event.target) && !button.contains(event.target)) closeScopeMenu({ restoreFocus: false });
+  });
+  menu.addEventListener('focusout', event => {
+    if (event.relatedTarget && !menu.contains(event.relatedTarget) && event.relatedTarget !== button) {
+      closeScopeMenu({ restoreFocus: false });
+    }
+  });
+}
+
+// ---- Shelf, study-guide tag --------------------------------------------------
+
 async function toggleShelfMembership(bookId, button) {
   const onShelf = currentShelf.has(bookId);
-  button.disabled = true;
+  if (button) button.disabled = true;
   try {
     if (onShelf) {
       await apiSend('DELETE', `/api/shelf/${encodeURIComponent(bookId)}`);
@@ -565,29 +984,22 @@ async function toggleShelfMembership(bookId, button) {
       await apiSend('POST', `/api/shelf/${encodeURIComponent(bookId)}`);
       currentShelf.add(bookId);
     }
-    const card = button.closest('.book-item');
+    const card = document.querySelector(`#library-list .book-item[data-book-id="${cssEscape(bookId)}"]`);
     if (card) card.dataset.onShelf = currentShelf.has(bookId) ? '1' : '0';
-    const label = button.querySelector('[data-saved-label]');
-    if (label) label.textContent = currentShelf.has(bookId) ? 'Remove from My Shelf' : 'Save to My Shelf';
+    document.querySelectorAll(`[data-shelf-toggle="${cssEscape(bookId)}"] [data-saved-label]`).forEach(label => {
+      label.textContent = currentShelf.has(bookId) ? 'Remove from My Shelf' : 'Save to My Shelf';
+    });
     filterLibrary();
+    showToast(currentShelf.has(bookId) ? 'Saved to My Shelf' : 'Removed from My Shelf', '', { key: `shelf:${bookId}` });
   } catch (err) {
     console.error('Shelf update failed:', err);
     showToast('Could not update My Shelf', 'error');
   } finally {
-    button.disabled = false;
+    if (button) button.disabled = false;
   }
 }
 
-async function setStudyGuideCategory(bookId, category) {
-  try {
-    await apiSend('PUT', `/api/book/${encodeURIComponent(bookId)}/guide/category`, { category });
-    showToast(category === 'nonfiction' ? 'Marked as nonfiction' : 'Nonfiction tag removed');
-    await loadLibrary();
-  } catch (error) {
-    console.error('Study-guide category update failed:', error);
-    showToast(error.message || 'Could not update the study-guide tag', 'error');
-  }
-}
+// ---- Sort, view mode, density --------------------------------------------------
 
 function sortLibrary() {
   const sortBy = sortSelect.value;
@@ -626,20 +1038,56 @@ function sortLibrary() {
   } else {
     bookItems.forEach(item => libraryList.appendChild(item));
   }
+  const empty = libraryList.querySelector('[data-library-filter-empty]');
+  if (empty) libraryList.appendChild(empty);
+}
+
+// The sort control reads as words ("Last played ⌄"), so it is only as
+// wide as the chosen option rather than the longest one.
+let measureCanvas = null;
+function sizeSortSelect() {
+  if (!sortSelect || typeof document.createElement !== 'function') return;
+  const text = sortSelect.selectedOptions?.[0]?.textContent || '';
+  const style = getComputedStyle(sortSelect);
+  measureCanvas ||= document.createElement('canvas');
+  const context = measureCanvas.getContext?.('2d');
+  if (!context) return;
+  context.font = `${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+  const padding = (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0);
+  sortSelect.style.width = `${Math.ceil(context.measureText(text).width + padding + 2)}px`;
+}
+
+// "Time left at 1.25×": the speed is stated once for the whole list; a row
+// whose book has its own speed says so inline.
+function syncSpeedNote() {
+  const note = document.getElementById('library-speed-note');
+  if (note) note.textContent = `Time left at ${formatSpeed(getReferencePlaybackSpeed())}`;
+}
+
+function setViewMode(mode) {
+  currentViewMode = mode === 'grid' ? 'grid' : 'list';
+  writeText(VIEW_MODE_KEY, currentViewMode);
+  document.getElementById('library-list')?.classList.toggle('grid-view', currentViewMode === 'grid');
+  document.querySelectorAll('[data-view-mode]').forEach(button => {
+    const on = button.dataset.viewMode === currentViewMode;
+    button.classList.toggle('is-on', on);
+    button.setAttribute('aria-pressed', on ? 'true' : 'false');
+  });
+  scheduleFit();
 }
 
 function toggleView() {
-  const libraryList = document.getElementById('library-list');
-  if (currentViewMode === 'list') {
-    currentViewMode = 'grid';
-    libraryList.classList.add('grid-view');
-    viewToggleIcon.innerHTML = ICON_LIST;
-  } else {
-    currentViewMode = 'list';
-    libraryList.classList.remove('grid-view');
-    viewToggleIcon.innerHTML = ICON_GRID;
-  }
+  setViewMode(currentViewMode === 'list' ? 'grid' : 'list');
 }
+
+function applyRowDensity() {
+  const density = getClientSettings().shelfRowDensity === 'comfortable' ? 'comfortable' : 'compact';
+  const list = document.getElementById('library-list');
+  if (list) list.dataset.density = density;
+  scheduleFit();
+}
+
+// ---- Open, download, remove ----------------------------------------------------
 
 async function openBookFromLibrary(bookId) {
   const escapedId = cssEscape(bookId);
@@ -647,7 +1095,7 @@ async function openBookFromLibrary(bookId) {
   let loadingTimer = null;
   if (card) loadingTimer = setTimeout(() => card.classList.add('loading'), 300);
   try {
-    return await deps.openBook(bookId);
+    return await deps.resumeBook(bookId);
   } catch (err) {
     console.error('Error opening book:', err);
     return false;
@@ -712,26 +1160,292 @@ async function removeDownloadedBookFromLibrary(bookId) {
   }
 }
 
+// ---- Book actions (menu on desktop, bottom sheet on phone) ----------------------
+
+function menuItem(attrs, glyph, label, sub = '') {
+  return `<button type="button" role="menuitem" ${attrs}><span class="menu-glyph">${glyph}</span><span class="menu-label">${label}</span>${sub ? `<span class="menu-sub" aria-hidden="true">${escapeHTML(sub)}</span>` : ''}</button>`;
+}
+
+function offlineMenuActionContents(bookId) {
+  const status = offlineStatusForBook(bookId);
+  if (pendingBookDownloads.has(String(bookId))) {
+    return `<button type="button" role="menuitem" disabled aria-busy="true"><span class="menu-glyph">${GLYPH.download}</span>Checking offline audio…</button>`;
+  }
+  if (status.downloaded) {
+    return `<button type="button" role="menuitem" data-remove-offline-book="${safeAttr(bookId)}"><span class="menu-glyph">${GLYPH.remove}</span><span class="menu-label">Remove download</span><span class="menu-sub" aria-hidden="true">Keeps server audio</span></button>`;
+  }
+  if (status.kind === 'downloading') {
+    return `<span class="book-menu-status" role="status">${escapeHTML(status.label)} · Keep Xandrio open</span>
+      <button type="button" role="menuitem" data-download-book="${safeAttr(bookId)}"><span class="menu-glyph">${GLYPH.cancel}</span>Cancel download</button>`;
+  }
+  if (status.kind === 'preparing' || (status.kind === 'prepared' && status.autoResume)) {
+    return `<span class="book-menu-status" role="status">${escapeHTML(status.label)}</span>
+      <button type="button" role="menuitem" data-remove-offline-preparation="${safeAttr(bookId)}"><span class="menu-glyph">${GLYPH.cancel}</span>Cancel download</button>`;
+  }
+  if (status.kind === 'preparation-waiting') {
+    return `<span class="book-menu-status" role="status">${escapeHTML(status.label)}</span>
+      <button type="button" role="menuitem" data-remove-offline-preparation="${safeAttr(bookId)}"><span class="menu-glyph">${GLYPH.cancel}</span>Cancel download</button>`;
+  }
+  if (status.kind === 'prepared') {
+    return `<button type="button" role="menuitem" data-download-book="${safeAttr(bookId)}"><span class="menu-glyph">${GLYPH.download}</span>Download</button>`;
+  }
+  if (status.kind === 'download-unavailable' || status.kind === 'download-offline') {
+    return `<button type="button" role="menuitem" disabled><span class="menu-glyph">${GLYPH.download}</span>${escapeHTML(status.label)}</button>`;
+  }
+  const label = status.kind === 'preparation-error'
+    ? 'Retry download'
+    : status.kind === 'preparation-capacity'
+      ? 'Retry download'
+      : 'Download';
+  const glyph = label === 'Download' ? GLYPH.download : GLYPH.retry;
+  return `<button type="button" role="menuitem" data-download-book="${safeAttr(bookId)}"><span class="menu-glyph">${glyph}</span>${label}</button>`;
+}
+
+function inContinueStrip(bookId) {
+  return Boolean(continueRail?.querySelector(`.rail-card[data-book-id="${cssEscape(bookId)}"]`));
+}
+
+// Items in the mockup's order: the offline action in its current state,
+// Add to Up Next, My Shelf, Share, Study guide (tagged nonfiction only),
+// then Delete set apart. The admin nonfiction tag lives in
+// Settings › Study guides.
+function bookActionsItemsHTML(bookId) {
+  const id = String(bookId);
+  const book = booksById.get(id) || { id };
+  const title = book.title || 'Untitled';
+  const author = book.author || 'Unknown Author';
+  const onShelf = currentShelf.has(id);
+  const nonfiction = book.studyGuideCategory === 'nonfiction';
+  return `
+    <div class="book-menu-group" role="none">
+      <span role="none" data-offline-menu-action="${safeAttr(id)}">${offlineMenuActionContents(id)}</span>
+      ${menuItem(`data-queue-add="${safeAttr(id)}"`, GLYPH.queue, 'Add to Up Next')}
+      ${menuItem(`data-shelf-toggle="${safeAttr(id)}"`, GLYPH.shelf, `<span data-saved-label>${onShelf ? 'Remove from My Shelf' : 'Save to My Shelf'}</span>`)}
+      ${menuItem(`data-book-share="${safeAttr(id)}" data-book-title="${safeAttr(title)}" data-book-author="${safeAttr(author)}"`, GLYPH.share, 'Share')}
+      ${nonfiction ? menuItem(`data-book-guide="${safeAttr(id)}"`, GLYPH.info, 'Study guide', 'Nonfiction') : ''}
+      ${inContinueStrip(id) ? menuItem(`data-rail-dismiss="${safeAttr(id)}"`, GLYPH.hide, 'Remove from Continue') : ''}
+    </div>
+    <div class="book-menu-group book-menu-group--danger" role="none">
+      ${menuItem(`class="book-menu-danger" data-delete-book-id="${safeAttr(id)}" data-delete-book-title="${safeAttr(title)}" data-delete-book-author="${safeAttr(author)}"`, GLYPH.trash, 'Delete from library')}
+    </div>`;
+}
+
+function syncBookActionsHeader(bookId) {
+  const head = document.getElementById('book-actions-head');
+  const book = booksById.get(String(bookId));
+  if (!head || !book) return;
+  const model = bookModel(book);
+  const parts = [];
+  if (model.timeLeft === 0) parts.push('Finished');
+  else if (model.timeLeft !== null) parts.push(`${formatDuration(model.timeLeft)} left at ${formatSpeed(model.speed)}`);
+  if (model.primary && model.primary !== model.context) parts.push(model.primary.long);
+  const bytes = Number(model.status.bytesTotal) || 0;
+  if (bytes > 0) parts.push(`${Math.round(bytes / 1e6)} MB`);
+  const titleFocused = document.activeElement?.id === 'book-actions-title';
+  head.innerHTML = `
+    ${coverImageHTML(book, 'book-actions-cover')}
+    <div class="book-actions-text">
+      <h3 id="book-actions-title" class="book-actions-title" tabindex="-1">${escapeHTML(book.title || 'Untitled')}</h3>
+      <p class="book-actions-author">${escapeHTML(book.author || 'Unknown Author')}</p>
+      <p class="book-actions-meta num">${escapeHTML(parts.join(' · '))}</p>
+    </div>`;
+  if (titleFocused) document.getElementById('book-actions-title')?.focus();
+}
+
+function openBookActionsSheet(bookId) {
+  const list = document.getElementById('book-actions-list');
+  if (!bookActionsSheet || !list || !booksById.has(String(bookId))) return;
+  closeBookMenus();
+  bookActionsBookId = String(bookId);
+  syncBookActionsHeader(bookId);
+  list.innerHTML = bookActionsItemsHTML(bookId);
+  list.setAttribute('aria-label', `Actions for ${booksById.get(String(bookId))?.title || 'book'}`);
+  bookActionsSheet.open();
+}
+
+function dismissBookActionsSheet() {
+  if (!bookActionsBookId) return;
+  bookActionsSheet?.dismiss();
+}
+
+function openBookActions(bookId) {
+  const card = document.querySelector(`#library-list .book-item[data-book-id="${cssEscape(bookId)}"]`);
+  const trigger = card?.querySelector('[data-book-menu-toggle]');
+  if (isDesktop() && trigger && card.offsetParent !== null) {
+    const menu = trigger.closest('.book-overflow')?.querySelector('.book-overflow-menu');
+    if (menu?.hidden) toggleBookMenu(trigger);
+    else trigger.focus();
+    return;
+  }
+  openBookActionsSheet(bookId);
+}
+
 function closeBookMenus(except = null) {
   document.querySelectorAll('.book-overflow-menu:not([hidden])').forEach(menu => {
     if (menu === except) return;
     const trigger = menu.closest('.book-overflow')?.querySelector('[data-book-menu-toggle]');
     if (menu.contains(document.activeElement)) trigger?.focus();
     menu.hidden = true;
+    menu.innerHTML = '';
     menu.closest('.book-item')?.classList.remove('menu-open');
     trigger?.setAttribute('aria-expanded', 'false');
   });
 }
 
 function toggleBookMenu(trigger) {
+  const card = trigger.closest('.book-item');
+  if (!isDesktop() && card) {
+    openBookActionsSheet(card.dataset.bookId);
+    return;
+  }
   const menu = trigger.closest('.book-overflow')?.querySelector('.book-overflow-menu');
   if (!menu) return;
   const opening = menu.hidden;
   closeBookMenus(opening ? menu : null);
+  if (opening) menu.innerHTML = bookActionsItemsHTML(card?.dataset.bookId || '');
   menu.hidden = !opening;
-  menu.closest('.book-item')?.classList.toggle('menu-open', opening);
+  card?.classList.toggle('menu-open', opening);
   trigger.setAttribute('aria-expanded', opening ? 'true' : 'false');
-  if (opening) menu.querySelector('[role="menuitem"]:not(:disabled)')?.focus();
+  if (opening) {
+    // Open upward when the row sits low in the viewport.
+    menu.classList.remove('opens-up');
+    const rect = menu.getBoundingClientRect();
+    const bottomLimit = window.innerHeight - (parseFloat(getComputedStyle(document.body).getPropertyValue('--shell-bottom')) || 0);
+    if (rect.bottom > bottomLimit && rect.height < trigger.getBoundingClientRect().top) menu.classList.add('opens-up');
+    menu.querySelector('[role="menuitem"]:not(:disabled)')?.focus();
+  }
+}
+
+function initBookActionsSheet() {
+  const sheetEl = document.getElementById('book-actions-sheet');
+  const list = document.getElementById('book-actions-list');
+  if (!sheetEl || !list) return;
+  bookActionsSheet = registerSheet(sheetEl, {
+    backdrop: document.getElementById('book-actions-backdrop'),
+    closeBtn: document.getElementById('book-actions-cancel'),
+    focusTarget: () => sheetEl,
+    initialFocus: () => document.getElementById('book-actions-title'),
+    onClose: () => {
+      bookActionsBookId = null;
+    }
+  });
+  list.addEventListener('keydown', event => {
+    if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
+    const items = [...list.querySelectorAll('[role="menuitem"]:not(:disabled)')];
+    if (!items.length) return;
+    event.preventDefault();
+    const index = items.indexOf(document.activeElement);
+    const next = event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1
+      : (index + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
+    items[next].focus();
+  });
+  sheetEl.addEventListener('keydown', event => {
+    if (event.key === 'Escape' && bookActionsBookId) {
+      event.preventDefault();
+      dismissBookActionsSheet();
+    }
+  });
+  // Close the sheet first, then act once its history entry is consumed, so
+  // an action that opens another sheet (Delete's confirmation) or navigates
+  // (Study guide) never races the sheet's own history.back().
+  list.addEventListener('click', event => {
+    const action = event.target.closest('button[role="menuitem"]:not(:disabled)');
+    if (!action || !list.contains(action)) return;
+    event.stopPropagation();
+    const proxy = { target: action, stopPropagation() {} };
+    const backPending = Boolean(window.history.state?.xandrioSheet);
+    let done = false;
+    const run = () => {
+      if (done) return;
+      done = true;
+      window.removeEventListener('popstate', run);
+      handleBookAction(proxy);
+    };
+    if (backPending) {
+      window.addEventListener('popstate', run);
+      setTimeout(run, 400);
+    }
+    dismissBookActionsSheet();
+    if (!backPending) run();
+  });
+}
+
+// One handler for every book action, from a row menu or the phone sheet.
+// Returns true when it handled the click.
+function handleBookAction(e) {
+  const deleteBtn = e.target.closest('[data-delete-book-id]');
+  if (deleteBtn) {
+    e.stopPropagation();
+    closeBookMenus();
+    showDeleteModal(deleteBtn.dataset.deleteBookId, deleteBtn.dataset.deleteBookTitle, deleteBtn.dataset.deleteBookAuthor);
+    return true;
+  }
+  const shelfBtn = e.target.closest('[data-shelf-toggle]');
+  if (shelfBtn) {
+    e.stopPropagation();
+    closeBookMenus();
+    toggleShelfMembership(shelfBtn.dataset.shelfToggle, shelfBtn);
+    return true;
+  }
+  const queueBtn = e.target.closest('[data-queue-add]');
+  if (queueBtn) {
+    e.stopPropagation();
+    closeBookMenus();
+    deps.addToListeningQueue?.(queueBtn.dataset.queueAdd);
+    return true;
+  }
+  const shareBtn = e.target.closest('[data-book-share]');
+  if (shareBtn) {
+    e.stopPropagation();
+    closeBookMenus();
+    void shareBook({
+      id: shareBtn.dataset.bookShare,
+      title: shareBtn.dataset.bookTitle,
+      author: shareBtn.dataset.bookAuthor
+    });
+    return true;
+  }
+  const guideBtn = e.target.closest('[data-book-guide]');
+  if (guideBtn) {
+    e.stopPropagation();
+    closeBookMenus();
+    deps.openBookGuide?.(guideBtn.dataset.bookGuide);
+    return true;
+  }
+  const railDismissBtn = e.target.closest('[data-rail-dismiss]');
+  if (railDismissBtn) {
+    e.stopPropagation();
+    closeBookMenus();
+    const card = continueRail?.querySelector(`.rail-card[data-book-id="${cssEscape(railDismissBtn.dataset.railDismiss)}"]`);
+    if (card) dismissRailEntryWithUndo(card);
+    return true;
+  }
+  const removeOfflineBtn = e.target.closest('[data-remove-offline-book]');
+  if (removeOfflineBtn) {
+    e.stopPropagation();
+    closeBookMenus();
+    void removeDownloadedBookFromLibrary(removeOfflineBtn.dataset.removeOfflineBook);
+    return true;
+  }
+  const removePreparationBtn = e.target.closest('[data-remove-offline-preparation]');
+  if (removePreparationBtn) {
+    e.stopPropagation();
+    closeBookMenus();
+    const id = removePreparationBtn.dataset.removeOfflinePreparation;
+    void cancelOfflinePreparation(id).catch(error => {
+      console.error('Could not cancel download:', error);
+      showToast('Could not cancel download. Try again.', 'error');
+    });
+    return true;
+  }
+  const downloadBtn = e.target.closest('[data-download-book]');
+  if (downloadBtn) {
+    e.stopPropagation();
+    closeBookMenus();
+    void downloadBookFromLibrary(downloadBtn.dataset.downloadBook);
+    return true;
+  }
+  return false;
 }
 
 async function showDeleteModal(bookId, title) {
@@ -769,13 +1483,16 @@ async function deleteBook(id) {
       const card = libraryList?.querySelector(`.book-item[data-book-id="${escapedId}"]`);
       const hadFocus = card?.contains(document.activeElement);
       card?.remove();
-      continueRail?.querySelector(`.rail-card[data-book-id="${escapedId}"]`)?.remove();
+      continueRail?.querySelector(`.rail-card[data-book-id="${escapedId}"]`)?.closest('.rail-item')?.remove();
       currentShelf.delete(id);
+      booksById.delete(String(id));
+      librarySnapshot = { ...librarySnapshot, books: librarySnapshot.books.filter(book => String(book.id) !== String(id)) };
       continueRailHasEntries = Boolean(continueRail?.querySelector('.rail-card'));
       if (!libraryList?.querySelector('.book-item')) await loadLibrary();
       else filterLibrary();
       if (hadFocus) {
         (libraryList?.querySelector('.book-item:not(.hidden) [data-open-book]')
+          || document.getElementById('library-scope-button')
           || document.querySelector(`[data-library-tab="${currentTab}"]`))?.focus();
       }
       showToast(
@@ -790,6 +1507,8 @@ async function deleteBook(id) {
     showToast('Error deleting book', 'error');
   }
 }
+
+// ---- Gestures: swipe to delete, press and hold for actions ----------------------
 
 function setupSwipeDelete() {
   if (swipeListenersInstalled) return;
@@ -814,9 +1533,11 @@ function setupSwipeDelete() {
     openItem = null;
   }
   document.addEventListener('pointerdown', (e) => {
-    const bookItem = e.target.closest('.book-item');
+    const bookItem = e.target.closest('#library-list .book-item');
     if (openItem && bookItem !== openItem && !e.target.closest('.delete-btn-reveal')) closeOpen(true);
     if (!bookItem || e.target.closest('.delete-btn-reveal')) return;
+    // The grid and the desktop table have no swipe affordance.
+    if (bookItem.closest('.grid-view') || isDesktop()) return;
     startX = e.clientX;
     startY = e.clientY;
     currentItem = bookItem;
@@ -869,13 +1590,106 @@ function setupSwipeDelete() {
   });
 }
 
+// Press and hold (or right-click / the context-menu key) on a row or a
+// Continue card opens that book's actions — the phone's only path besides
+// the focusable "More actions" button screen readers and keyboards reach.
+function setupLongPress(surface) {
+  if (!surface) return;
+  let timer = null;
+  let start = null;
+  let fired = false;
+  const targetFor = event => event.target.closest('.book-item:not(.skeleton), .rail-card');
+  const cancel = () => {
+    clearTimeout(timer);
+    timer = null;
+    start = null;
+  };
+  surface.addEventListener('pointerdown', event => {
+    if (event.button !== 0) return;
+    const target = targetFor(event);
+    if (!target || event.target.closest('.offline-btn, .book-overflow, .delete-btn-reveal')) return;
+    fired = false;
+    start = { x: event.clientX, y: event.clientY };
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      timer = null;
+      fired = true;
+      navigator.vibrate?.(10);
+      openBookActions(target.dataset.bookId);
+    }, LONG_PRESS_MS);
+  });
+  surface.addEventListener('pointermove', event => {
+    if (!start) return;
+    if (Math.hypot(event.clientX - start.x, event.clientY - start.y) > LONG_PRESS_SLOP) cancel();
+  });
+  ['pointerup', 'pointercancel', 'pointerleave'].forEach(type => surface.addEventListener(type, cancel));
+  surface.addEventListener('click', event => {
+    if (!fired) return;
+    fired = false;
+    event.preventDefault();
+    event.stopPropagation();
+  }, true);
+  surface.addEventListener('contextmenu', event => {
+    const target = targetFor(event);
+    if (!target || event.target.closest('.book-overflow-menu')) return;
+    event.preventDefault();
+    if (!fired) openBookActions(target.dataset.bookId);
+  });
+  surface.addEventListener('keydown', event => {
+    if (!((event.key === 'F10' && event.shiftKey) || event.key === 'ContextMenu')) return;
+    const target = targetFor(event);
+    if (!target) return;
+    event.preventDefault();
+    openBookActions(target.dataset.bookId);
+  });
+}
+
+// ---- Audio activity (narration preparation) ---------------------------------------
+
+function onAudioActivity(event) {
+  const books = Array.isArray(event?.detail?.books) ? event.detail.books : [];
+  const next = new Map(books.filter(book => book && typeof book.id === 'string').map(book => [book.id, book]));
+  const key = JSON.stringify([...next.values()].map(book => [
+    book.id, book.failed, book.preparationStatus, book.readyChapters, book.totalChapters,
+    Math.round((Number(book.readyAudioSeconds) || 0) / 60), Number(book.active) > 0, Number(book.queued) > 0
+  ]));
+  if (key === audioActivityKey) return;
+  const changed = new Set([...audioActivity.keys(), ...next.keys()]);
+  audioActivity = next;
+  audioActivityKey = key;
+  if (libraryContentState !== 'ready') return;
+  changed.forEach(id => {
+    const card = document.querySelector(`#library-list .book-item[data-book-id="${cssEscape(id)}"]`);
+    if (card) refreshRow(card);
+  });
+  scheduleFit();
+}
+
+// ---- Init ------------------------------------------------------------------------
+
 export function initLibrary(options = {}) {
   deps = options;
   librarySearch = document.getElementById('library-search');
   sortSelect = document.getElementById('sort-select');
-  viewToggleIcon = document.getElementById('view-toggle-icon');
   continueRail = document.getElementById('continue-rail');
   document.addEventListener('xandrio:offlinechange', refreshOfflineIndicators);
+  document.addEventListener('xandrio:audioactivity', onAudioActivity);
+  document.addEventListener('xandrio:listeningqueue', refreshLibraryPlayback);
+  document.addEventListener('xandrio:client-settings', event => {
+    const key = event.detail?.key;
+    if (key === 'shelfRowDensity' || key === '*') applyRowDensity();
+    if (key === 'defaultSpeed' || key === '*') refreshLibraryPlayback();
+  });
+  document.addEventListener('xandrio:viewchange', event => {
+    if (event.detail?.view === 'library') refreshLibraryPlayback();
+    closeScopeMenu({ restoreFocus: false });
+  });
+
+  initScopeMenu();
+  initBookActionsSheet();
+  setViewMode(readText(VIEW_MODE_KEY, 'list'));
+  applyRowDensity();
+  syncSpeedNote();
 
   document.getElementById('library-search-toggle')?.addEventListener('click', () => {
     const searchBar = document.getElementById('library-search-bar');
@@ -894,7 +1708,11 @@ export function initLibrary(options = {}) {
     searchBar?.setAttribute('inert', '');
   });
   librarySearch?.addEventListener('input', filterLibrary);
-  sortSelect?.addEventListener('change', sortLibrary);
+  sortSelect?.addEventListener('change', () => {
+    sizeSortSelect();
+    sortLibrary();
+  });
+  sizeSortSelect();
   document.getElementById('library-tabs')?.addEventListener('click', (e) => {
     const tabBtn = e.target.closest('[data-library-tab]');
     if (tabBtn) setLibraryTab(tabBtn.dataset.libraryTab);
@@ -922,13 +1740,39 @@ export function initLibrary(options = {}) {
   document.getElementById('downloaded-empty-hint')?.addEventListener('click', (e) => {
     if (e.target.closest('[data-browse-shelf]')) setLibraryTab('shelf');
   });
-  document.getElementById('view-toggle-btn')?.addEventListener('click', toggleView);
+  document.querySelectorAll('[data-view-mode]').forEach(button => {
+    button.addEventListener('click', () => setViewMode(button.dataset.viewMode));
+  });
+  document.getElementById('view-toggle-btn')?.addEventListener('click', event => {
+    if (!event.currentTarget.dataset.viewMode) toggleView();
+  });
 
   const libraryList = document.getElementById('library-list');
+  if (typeof ResizeObserver === 'function' && libraryList) {
+    let lastWidth = 0;
+    new ResizeObserver(entries => {
+      const width = Math.round(entries[0]?.contentRect?.width || 0);
+      if (width && width !== lastWidth) {
+        lastWidth = width;
+        scheduleFit();
+      }
+    }).observe(libraryList);
+  }
+  document.fonts?.ready?.then(() => {
+    sizeSortSelect();
+    scheduleFit();
+  }).catch(() => {});
+  setupLongPress(libraryList);
+  setupLongPress(continueRail);
+
   libraryList?.addEventListener('keydown', (e) => {
     const trigger = e.target.closest('[data-book-menu-toggle]');
     if (trigger && ['ArrowDown', 'ArrowUp'].includes(e.key)) {
       e.preventDefault();
+      if (!isDesktop()) {
+        toggleBookMenu(trigger);
+        return;
+      }
       const menu = trigger.closest('.book-overflow')?.querySelector('.book-overflow-menu');
       if (menu?.hidden) toggleBookMenu(trigger);
       const items = menu?.querySelectorAll('[role="menuitem"]:not(:disabled)');
@@ -960,6 +1804,11 @@ export function initLibrary(options = {}) {
       document.getElementById('add-book-btn')?.click();
       return;
     }
+    if (e.target.closest('[data-upload-book-empty]')) {
+      e.preventDefault();
+      deps.openUpload?.();
+      return;
+    }
     const clearFilterBtn = e.target.closest('[data-clear-library-filter]');
     if (clearFilterBtn) {
       e.preventDefault();
@@ -976,84 +1825,14 @@ export function initLibrary(options = {}) {
       toggleBookMenu(menuTrigger);
       return;
     }
-    const deleteBtn = e.target.closest('[data-delete-book-id]');
-    if (deleteBtn) {
+    const offlineMenuBtn = e.target.closest('[data-offline-menu-book]');
+    if (offlineMenuBtn) {
       e.stopPropagation();
-      closeBookMenus();
-      showDeleteModal(deleteBtn.dataset.deleteBookId, deleteBtn.dataset.deleteBookTitle, deleteBtn.dataset.deleteBookAuthor);
+      openBookActions(offlineMenuBtn.dataset.offlineMenuBook);
       return;
     }
-    const shelfBtn = e.target.closest('[data-shelf-toggle]');
-    if (shelfBtn) {
-      e.stopPropagation();
-      closeBookMenus();
-      toggleShelfMembership(shelfBtn.dataset.shelfToggle, shelfBtn);
-      return;
-    }
-    const queueBtn = e.target.closest('[data-queue-add]');
-    if (queueBtn) {
-      e.stopPropagation();
-      closeBookMenus();
-      deps.addToListeningQueue?.(queueBtn.dataset.queueAdd);
-      return;
-    }
-    const shareBtn = e.target.closest('[data-book-share]');
-    if (shareBtn) {
-      e.stopPropagation();
-      closeBookMenus();
-      void shareBook({
-        id: shareBtn.dataset.bookShare,
-        title: shareBtn.dataset.bookTitle,
-        author: shareBtn.dataset.bookAuthor
-      });
-      return;
-    }
-    const guideBtn = e.target.closest('[data-book-guide]');
-    if (guideBtn) {
-      e.stopPropagation();
-      closeBookMenus();
-      deps.openBookGuide?.(guideBtn.dataset.bookGuide);
-      return;
-    }
-    const guideTagBtn = e.target.closest('[data-book-guide-tag]');
-    if (guideTagBtn) {
-      e.stopPropagation();
-      closeBookMenus();
-      void setStudyGuideCategory(guideTagBtn.dataset.bookGuideTag, 'nonfiction');
-      return;
-    }
-    const guideUntagBtn = e.target.closest('[data-book-guide-untag]');
-    if (guideUntagBtn) {
-      e.stopPropagation();
-      closeBookMenus();
-      void setStudyGuideCategory(guideUntagBtn.dataset.bookGuideUntag, 'unknown');
-      return;
-    }
-    const removeOfflineBtn = e.target.closest('[data-remove-offline-book]');
-    if (removeOfflineBtn) {
-      e.stopPropagation();
-      closeBookMenus();
-      void removeDownloadedBookFromLibrary(removeOfflineBtn.dataset.removeOfflineBook);
-      return;
-    }
-    const removePreparationBtn = e.target.closest('[data-remove-offline-preparation]');
-    if (removePreparationBtn) {
-      e.stopPropagation();
-      closeBookMenus();
-      const id = removePreparationBtn.dataset.removeOfflinePreparation;
-      void cancelOfflinePreparation(id).catch(error => {
-        console.error('Could not cancel download:', error);
-        showToast('Could not cancel download. Try again.', 'error');
-      });
-      return;
-    }
-    const downloadBtn = e.target.closest('[data-download-book]');
-    if (downloadBtn) {
-      e.stopPropagation();
-      closeBookMenus();
-      void downloadBookFromLibrary(downloadBtn.dataset.downloadBook);
-      return;
-    }
+    if (e.target.closest('.offline-btn.is-inert')) return;
+    if (handleBookAction(e)) return;
     const openBtn = e.target.closest('[data-open-book]');
     if (openBtn) openBookFromLibrary(openBtn.dataset.openBook);
   });
@@ -1069,46 +1848,43 @@ export function initLibrary(options = {}) {
     trigger?.focus();
   });
   continueRail?.addEventListener('click', (e) => {
-    const dismiss = e.target.closest('.rail-dismiss');
     const card = e.target.closest('.rail-card');
     if (!card) return;
-    if (dismiss) {
-      e.stopPropagation();
-      dismissRailEntryWithUndo(card);
-      return;
-    }
     openBookFromLibrary(card.dataset.bookId);
   });
-  continueRail?.addEventListener('keydown', (e) => {
-    if (e.key !== 'Enter' && e.key !== ' ') return;
-    const card = e.target.closest('.rail-card');
-    if (!card || e.target !== card) return;
-    e.preventDefault();
-    openBookFromLibrary(card.dataset.bookId);
-  });
+
+  // The playing book's card and row follow play/pause.
+  const miniPlay = document.getElementById('mini-player-play');
+  if (miniPlay && typeof MutationObserver === 'function') {
+    new MutationObserver(() => {
+      if (document.getElementById('library-view')?.classList.contains('active')) refreshContinueRail();
+    }).observe(miniPlay, { attributes: true, attributeFilter: ['aria-label'] });
+  }
 }
 
-// Remove a Continue-Listening card from the UI immediately, but defer the
-// persisted dismissal (localStorage) ~5s so Undo can restore the exact card.
+// Remove a Continue card from the UI immediately, but defer the persisted
+// dismissal (localStorage) ~5s so Undo can restore the exact card. Reached
+// from the book actions ("Remove from Continue").
 function dismissRailEntryWithUndo(card) {
   const bookId = card.dataset.bookId;
   const updatedMs = Number(card.dataset.updatedMs) || Date.now();
-  const track = card.parentElement;
-  const nextSibling = card.nextElementSibling;
+  const item = card.closest('.rail-item') || card;
+  const track = item.parentElement;
+  const nextSibling = item.nextElementSibling;
 
-  card.remove();
+  item.remove();
   if (continueRail && !continueRail.querySelector('.rail-card')) {
     continueRailHasEntries = false;
     continueRail.hidden = true;
   }
 
-  showUndoToast('Removed from Continue Listening', {
+  showUndoToast('Removed from Continue', {
     onUndo: () => {
       if (!track) return;
-      if (nextSibling && nextSibling.parentElement === track) track.insertBefore(card, nextSibling);
-      else track.appendChild(card);
+      if (nextSibling && nextSibling.parentElement === track) track.insertBefore(item, nextSibling);
+      else track.appendChild(item);
       continueRailHasEntries = true;
-      if (continueRail) continueRail.hidden = false;
+      syncContinueVisibility();
     },
     onCommit: () => dismissRailEntry(bookId, updatedMs)
   });

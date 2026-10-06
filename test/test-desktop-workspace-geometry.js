@@ -4,6 +4,9 @@
  * share the bounded shell while phone and tablet retain their stacked layout.
  */
 const assert = require('node:assert');
+const fs = require('node:fs/promises');
+const path = require('node:path');
+const output = path.resolve(__dirname, '../output/ui-rewrite-fixes/desktop-geometry');
 const { chromium } = require('playwright');
 const { startScenarioEnvironment } = require('./fixtures/scenarios/lib/environment');
 
@@ -49,9 +52,13 @@ async function run() {
   });
   const browser = await chromium.launch({ headless: true });
   let passed = 0;
+  const results = [];
+  await fs.mkdir(output, { recursive: true });
   try {
     for (const viewport of VIEWPORTS) {
       for (const testCase of CASES) {
+        const label = `${viewport.name}-${testCase.view}-${testCase.state}`;
+        console.log(`checking ${label}`);
         const context = await browser.newContext({
           viewport: { width: viewport.width, height: viewport.height },
           isMobile: Boolean(viewport.mobile),
@@ -79,21 +86,40 @@ async function run() {
             `${viewport.name} ${testCase.view}:${testCase.state} keeps primary evidence in the viewport (${JSON.stringify(primary)})`);
 
           if (viewport.wide) {
-            assert(geometry.shell >= 1080 && geometry.shell <= 1120, `${viewport.name} ${testCase.view}:${testCase.state} uses the shared bounded shell`);
+            const available = viewport.width - 232;
+            assert(geometry.shell > available * 0.85 && geometry.shell <= available + 1 && geometry.shell <= 1120,
+              `${viewport.name} ${testCase.view}:${testCase.state} fills the bounded region beside the 232px sidebar (${geometry.shell}px)`);
             if (testCase.view === 'library' && testCase.state === 'full') {
               assert.notStrictEqual(geometry.library, 'none', 'wide library exposes the context and primary columns');
             }
             if (testCase.view === 'library' && testCase.state === 'empty') {
               const workspace = await visibleBox(page, '.library-workspace');
-              assert(Math.abs(primary.x - workspace.x) < 1 && Math.abs(primary.width - workspace.width) < 1,
-                'wide empty library uses the full primary region without a stranded rail');
+              // The first-run state is a centered column inside the full
+              // primary region (no stranded rail beside it).
+              const centerOffset = Math.abs((primary.x + primary.width / 2) - (workspace.x + workspace.width / 2));
+              assert(centerOffset < 2 && primary.width <= workspace.width + 1,
+                'wide empty library centers in the full primary region without a stranded rail');
             }
             if (testCase.view === 'search') {
               const support = await visibleBox(page, '.search-workspace');
               assert.notStrictEqual(geometry.search, 'none', 'wide search exposes the support and primary columns');
               assert(primary.x > support.x, 'wide search primary content starts beside its support column');
               if (testCase.state === 'full') {
-                assert(primary.width >= 200 && primary.width <= 240, 'wide search cards retain a readable bounded width');
+                const results = await visibleBox(page, '.search-results-list');
+                assert(Math.abs(primary.x - results.x) < 2 && Math.abs(primary.width - results.width) < 2,
+                  'wide search result rows fill and align with their result column');
+                assert(primary.width >= 440 && primary.height >= 80 && primary.height <= 220,
+                  'wide search rows preserve a readable title and metadata region');
+                const rows = await page.locator('.result-card:not(.skeleton-result)').evaluateAll(elements => elements.map(el => {
+                  const row = el.getBoundingClientRect();
+                  const button = el.querySelector('button.result-download-btn, button.result-add-btn, button');
+                  const action = button?.getBoundingClientRect();
+                  return { row: { x: row.x, width: row.width }, action: action && { x: action.x, right: action.right, width: action.width, height: action.height }, overflow: el.scrollWidth > el.clientWidth };
+                }));
+                assert(rows.length > 0 && rows.every(row => !row.overflow && Math.abs(row.row.x - primary.x) < 2 && Math.abs(row.row.width - primary.width) < 2),
+                  'wide result rows align without internal overflow');
+                assert(rows.every(row => row.action && row.action.width >= 44 && row.action.height >= 44 && row.action.right <= row.row.x + row.row.width + 1),
+                  'wide result rows keep reachable 44px Add controls inside their bounds');
               }
             }
             if (testCase.view === 'stats' && testCase.state === 'full') {
@@ -110,7 +136,13 @@ async function run() {
             const grid = testCase.view === 'library' ? geometry.library : testCase.view === 'search' ? geometry.search : geometry.stats;
             assert(!grid || grid === 'none', `${viewport.name} ${testCase.view}:${testCase.state} preserves the stacked topology below 1200px`);
           }
+          results.push({ label, passed: true, primary, geometry });
+          await page.screenshot({ path: path.join(output, `${label}.png`), fullPage: true });
           passed++;
+        } catch (error) {
+          results.push({ label, passed: false, error: error.message, errors: await page.locator('body').innerText() });
+          await page.screenshot({ path: path.join(output, `${label}.png`), fullPage: true });
+          throw error;
         } finally {
           await context.close();
         }
@@ -119,6 +151,7 @@ async function run() {
   } finally {
     await browser.close();
     await environment.close();
+    await fs.writeFile(path.join(output, 'results.json'), JSON.stringify(results, null, 2));
   }
   console.log(`desktop workspace geometry: ${passed} cases passed`);
 }
