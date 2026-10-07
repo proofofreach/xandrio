@@ -167,9 +167,12 @@ function tone() {
     });
     await check('keyboard speed changes select the adjacent preset from a custom speed', async page => {
       await open(page); await sheet(page);
+      // Sheets own keyboard input while open, so the shortcut runs after Done.
       await page.locator('#speed-stepper-down').click(); // 1.45x
+      await page.locator('#close-speed-sheet-btn').click();
       await page.keyboard.press('ArrowUp'); const up = await state(page); assert.equal(up.rate, 1.5, JSON.stringify(up));
-      await page.locator('#speed-stepper-up').click(); // 1.55x
+      await sheet(page); await page.locator('#speed-stepper-up').click(); // 1.55x
+      await page.locator('#close-speed-sheet-btn').click();
       await page.keyboard.press('ArrowDown'); const down = await state(page); assert.equal(down.rate, 1.5, JSON.stringify(down)); return { up, down };
     });
     // The Readable player has no top-bar cycle button (#speed-btn); its Speed
