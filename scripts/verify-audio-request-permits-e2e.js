@@ -7,6 +7,8 @@
 // routes, then verify native browser playback still works.
 // A catalog entry must not let a requested voice escape the samples directory.
 // Uncancellable HLS setup must retain request and session capacity until it ends.
+// Mixed ready/preparing sessions must evict a cancellable encoder before new
+// admission. A failed initial directory removal must still get its final retry.
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const os = require('node:os');
@@ -67,6 +69,10 @@ function abortDownload(url, headers = {}) {
     app.use(limiter);
     let finishBackend;
     let backendStarted = false;
+    let readySourceAborted = false;
+    let cleanupAttempts = 0;
+    let failedCleanupDirectory;
+    const originalRemove = fs.rm;
     app.post('/api/search', async (_req, res) => {
       backendStarted = true;
       await new Promise(resolve => { finishBackend = resolve; });
@@ -82,11 +88,26 @@ function abortDownload(url, headers = {}) {
         });
       }
     });
-    const hls = createHlsAudioStreamer({ serveAudioFile, rootDir: path.join(temp, 'hls'), maintenanceIntervalMs: 0, maxActiveSessions: options.hlsSessions || 3 });
+    const hlsRoot = path.join(temp, 'hls');
+    if (options.failInitialCleanup) fs.rm = async (directory, ...args) => {
+      if (path.dirname(directory) === hlsRoot) {
+        cleanupAttempts++;
+        if (cleanupAttempts === 1) {
+          failedCleanupDirectory = directory;
+          throw Object.assign(new Error('temporary directory removal failure'), { code: 'EBUSY' });
+        }
+      }
+      return originalRemove(directory, ...args);
+    };
+    const hls = createHlsAudioStreamer({ serveAudioFile, rootDir: hlsRoot, maintenanceIntervalMs: 0, maxActiveSessions: options.hlsSessions || 3, maxActiveSessionsPerAccount: options.hlsAccountSessions || 4 });
     app.get('/api/audio-hls/:book/0/index.m3u8', async (req, res) => {
       try { await hls.servePlaylist(req, res, {
         key: req.params.book, ownerKey: req.params.book, rateKey: 'fixture',
         createSource: async signal => {
+          if (req.params.book === 'ready') {
+            signal.addEventListener('abort', () => { readySourceAborted = true; }, { once: true });
+            return { async *iterateInputs() { yield audioPath; } };
+          }
           if (req.params.book === 'overflow') throw new Error('unexpected concurrent setup');
           backendStarted = true;
           await new Promise((resolve, reject) => {
@@ -107,10 +128,10 @@ function abortDownload(url, headers = {}) {
     const server = await new Promise(resolve => { const s = app.listen(0, '127.0.0.1', () => resolve(s)); });
     const origin = `http://127.0.0.1:${server.address().port}`;
     try {
-      const evidence = await run({ origin, limiter, backendStarted: () => backendStarted, finishBackend: () => finishBackend?.() });
+      const evidence = await run({ origin, limiter, backendStarted: () => backendStarted, finishBackend: () => finishBackend?.(), readySourceAborted: () => readySourceAborted, cleanup: () => ({ attempts: cleanupAttempts, directory: failedCleanupDirectory }) });
       results.push({ name, passed: true, evidence });
     } catch (error) { results.push({ name, passed: false, error: error.message, active: limiter.groups.map(g => ({ name: g.name, active: g.gate.active })) }); }
-    finally { finishBackend?.(); await hls.dispose(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
+    finally { fs.rm = originalRemove; finishBackend?.(); await hls.dispose(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
   }
   try {
     for (const ranged of [false, true]) {
@@ -182,6 +203,28 @@ function abortDownload(url, headers = {}) {
       finishBackend(); await until(() => limiter.isIdle());
       return { blockedStatus: blocked.status, idleAfterCompletion: limiter.isIdle() };
     }, { hlsRequests: 2, hlsSessions: 1 });
+    await check('mixed account capacity cancels a ready encoder before admitting another source', async ({ origin, limiter, backendStarted, finishBackend, readySourceAborted }) => {
+      const controller = new AbortController();
+      const request = fetch(`${origin}/api/audio-hls/held/0/index.m3u8`, { signal: controller.signal }).catch(() => {});
+      await until(backendStarted); controller.abort(); await request; await sleep(50);
+      const ready = await fetch(`${origin}/api/audio-hls/ready/0/index.m3u8`);
+      assert.equal(ready.status, 200); await ready.text();
+      const next = await fetch(`${origin}/api/audio-hls/overflow/0/index.m3u8`);
+      await next.text();
+      assert(readySourceAborted(), 'new source was admitted without cancelling the account\'s ready encoder');
+      finishBackend(); await until(() => limiter.isIdle());
+      return { readyStatus: ready.status, priorEncoderCancelled: readySourceAborted() };
+    }, { hlsRequests: 3, hlsSessions: 4, hlsAccountSessions: 2 });
+    await check('abandoned source retries directory removal after initial cleanup fails', async ({ origin, limiter, backendStarted, finishBackend, cleanup }) => {
+      const controller = new AbortController();
+      const request = fetch(`${origin}/api/audio-hls/held/0/index.m3u8`, { signal: controller.signal }).catch(() => {});
+      await until(backendStarted); controller.abort(); await request;
+      await until(() => cleanup().attempts === 1);
+      finishBackend(); await until(() => limiter.isIdle());
+      assert(cleanup().attempts >= 2, 'final directory removal was skipped');
+      await assert.rejects(fs.stat(cleanup().directory), { code: 'ENOENT' });
+      return { removalAttempts: cleanup().attempts, directoryRemoved: true };
+    }, { failInitialCleanup: true });
     await check('disconnect does not release unfinished backend work', async ({ origin, limiter, backendStarted, finishBackend }) => {
       const controller = new AbortController();
       const request = fetch(`${origin}/api/search`, { method: 'POST', signal: controller.signal }).catch(() => {});
