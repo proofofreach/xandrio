@@ -110,6 +110,7 @@
     "verify:voice-switch-races": "node scripts/verify-voice-switch-races-e2e.js",
     "verify:native-interruption": "node scripts/verify-native-interruption-e2e.js",
     "verify:audio-cache-recovery": "node scripts/verify-audio-cache-recovery-e2e.js",
+    "verify:audio-request-permits": "node scripts/verify-audio-request-permits-e2e.js",
     "verify:library-interactions": "node scripts/verify-library-interactions-e2e.js",
     "verify:library-data-lifecycle": "node scripts/verify-library-data-lifecycle-e2e.js",
     "verify:settings-ordering": "node scripts/verify-settings-ordering-e2e.js",
