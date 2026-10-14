@@ -416,21 +416,24 @@ summary:focus-visible,
 .book-item:nth-child(9)  { animation-delay: 320ms; }
 .book-item:nth-child(10) { animation-delay: 360ms; }
 
-/* Loading state: spinner only — clean and minimal */
+/* Opening feedback belongs to the book, away from the offline controls. */
 .book-item.loading .book-item-inner {
   pointer-events: none;
 }
-.book-item.loading .book-item-inner::after {
+.book-item.loading .book-cover-wrap::before {
   content: '';
   position: absolute;
-  top: 50%; right: 20px;
+  top: 50%; left: 50%;
   z-index: 6;
   width: 20px; height: 20px;
   margin-top: -10px;
-  border: 2.5px solid color-mix(in oklab, var(--text) 10%, transparent);
+  margin-left: -10px;
+  background: var(--surface);
+  border: 2.5px solid var(--border-strong);
   border-top-color: var(--accent);
   border-radius: 50%;
   animation: spin 0.7s linear infinite;
+  pointer-events: none;
 }
 .book-item.loading .book-item-cover,
 .book-item.loading .book-item-info {
