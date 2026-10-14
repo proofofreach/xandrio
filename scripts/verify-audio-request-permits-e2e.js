@@ -13,6 +13,8 @@
 // still waits for an uncancellable audio preparation.
 // Owner replacement at a full global limit must cancel its old stream; at an
 // account limit it must leave another owner's stream alone.
+// Input cleanup can take longer than 300ms. A retry must remain blocked during
+// cleanup and regain admission after actual backend settlement, not a timer.
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const os = require('node:os');
@@ -47,6 +49,20 @@ function abortDownload(url, headers = {}) {
     });
     req.on('error', error => { if (error.code !== 'ECONNRESET') reject(error); });
   });
+}
+
+async function awaitBackendCompletion(session) {
+  assert(session?.backendCompletion, 'cancelled session has no backend completion promise');
+  let deadline;
+  try {
+    await Promise.race([
+      session.backendCompletion,
+      new Promise((_, reject) => {
+        deadline = setTimeout(() => reject(new Error('cancelled backend did not settle within five seconds')), 5000);
+      })
+    ]);
+  } finally { clearTimeout(deadline); }
+  assert.equal(session.running, false, 'cancelled encoder is still running');
 }
 
 (async () => {
@@ -97,7 +113,9 @@ function abortDownload(url, headers = {}) {
         });
       }
     });
-    const hlsRoot = path.join(temp, 'hls');
+    // Detached cleanup from one case must not consume another case's injected
+    // removal failure or startup cleanup. Each HTTP fixture owns its directory.
+    const hlsRoot = path.join(temp, 'hls', String(results.length));
     if (options.failInitialCleanup) fs.rm = async (directory, ...args) => {
       if (path.dirname(directory) === hlsRoot) {
         cleanupAttempts++;
@@ -128,7 +146,10 @@ function abortDownload(url, headers = {}) {
                 yield firstSegmentPath;
                 backendStarted = true;
                 await new Promise(resolve => { finishBackend = resolve; });
-              } else yield audioPath;
+              } else {
+                try { yield audioPath; }
+                finally { if (options.inputCleanupDelayMs) await sleep(options.inputCleanupDelayMs); }
+              }
             } };
           }
           if (req.params.book === 'overflow') throw new Error('unexpected concurrent setup');
@@ -151,7 +172,7 @@ function abortDownload(url, headers = {}) {
     const server = await new Promise(resolve => { const s = app.listen(0, '127.0.0.1', () => resolve(s)); });
     const origin = `http://127.0.0.1:${server.address().port}`;
     try {
-      const evidence = await run({ origin, limiter, backendStarted: () => backendStarted, finishBackend: () => finishBackend?.(), readySourceAborted: (book = 'ready') => Boolean(readySourceAborts.get(book)), cleanup: () => ({ attempts: cleanupAttempts, directory: failedCleanupDirectory }) });
+      const evidence = await run({ origin, limiter, backendStarted: () => backendStarted, finishBackend: () => finishBackend?.(), readySourceAborted: (book = 'ready') => Boolean(readySourceAborts.get(book)), sessionForKey: key => hls.sessionsByKey.get(key), cleanup: () => ({ attempts: cleanupAttempts, directory: failedCleanupDirectory }) });
       results.push({ name, passed: true, evidence });
     } catch (error) { results.push({ name, passed: false, error: error.message, active: limiter.groups.map(g => ({ name: g.name, active: g.gate.active })) }); }
     finally { fs.rm = originalRemove; finishBackend?.(); await hls.dispose(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
@@ -270,7 +291,7 @@ function abortDownload(url, headers = {}) {
       return { blockedStatus: blocked.status, idleAfterInputCompletion: limiter.isIdle() };
     }, { hlsRequests: 2, hlsSessions: 1 });
     for (const [accountLimit, newOwner] of [[false, false], [true, false], [true, true]]) {
-      await check(`${newOwner ? 'new owner admission' : 'owner replacement'} at full ${accountLimit ? 'account' : 'global'} capacity cancels only one stream`, async ({ origin, limiter, readySourceAborted, backendStarted, finishBackend }) => {
+      await check(`${newOwner ? 'new owner admission' : 'owner replacement'} at full ${accountLimit ? 'account' : 'global'} capacity cancels only one stream`, async ({ origin, limiter, readySourceAborted, backendStarted, finishBackend, sessionForKey }) => {
         if (accountLimit && !newOwner) {
           const other = await fetch(`${origin}/api/audio-hls/ready-other/0/index.m3u8?owner=other`);
           assert.equal(other.status, 200); await other.text();
@@ -278,6 +299,8 @@ function abortDownload(url, headers = {}) {
         const ownBook = accountLimit ? 'ready-held' : 'ready-own';
         const own = await fetch(`${origin}/api/audio-hls/${ownBook}/0/index.m3u8?owner=shared`);
         assert.equal(own.status, 200); await own.text();
+        const priorSession = sessionForKey(ownBook);
+        assert(priorSession, 'ready encoder was not tracked');
         if (accountLimit) await until(backendStarted);
         if (newOwner) {
           const other = await fetch(`${origin}/api/audio-hls/ready-other/0/index.m3u8?owner=other`);
@@ -295,19 +318,20 @@ function abortDownload(url, headers = {}) {
             assert(!readySourceAborted('ready-other'), 'retry cancelled another device while the prior input still ran');
           }
           finishBackend();
+        } else {
+          await sleep(100);
+          const duringCleanup = await fetch(replacementUrl);
+          assert.equal(duringCleanup.status, 503, 'capacity was released during delayed input cleanup');
+          await duringCleanup.text();
         }
-        let admittedStatus;
-        for (let attempt = 0; attempt < 10; attempt++) {
-          await sleep(30);
-          const retry = await fetch(replacementUrl);
-          admittedStatus = retry.status; await retry.text();
-          if (admittedStatus !== 503) break;
-        }
+        await awaitBackendCompletion(priorSession);
+        const retry = await fetch(replacementUrl);
+        const admittedStatus = retry.status; await retry.text();
         assert.equal(admittedStatus, 500, 'replacement stayed blocked after its prior backend stopped');
         assert(!readySourceAborted('ready-other'), 'retry cancelled another owner\'s stream');
         await until(() => limiter.isIdle());
         return { initialStatus: replacement.status, priorCancelled: true, otherOwnerPreserved: true, admittedAfterCompletion: admittedStatus };
-      }, { hlsSessions: accountLimit ? 4 : 1, hlsAccountSessions: accountLimit ? 2 : 4 });
+      }, { hlsSessions: accountLimit ? 4 : 1, hlsAccountSessions: accountLimit ? 2 : 4, inputCleanupDelayMs: accountLimit ? 0 : 500 });
     }
     await check('disconnect does not release unfinished backend work', async ({ origin, limiter, backendStarted, finishBackend }) => {
       const controller = new AbortController();
