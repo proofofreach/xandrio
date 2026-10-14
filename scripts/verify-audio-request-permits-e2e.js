@@ -2,8 +2,9 @@
 
 // Failure modes recorded before implementation: cancelled full/Range file
 // downloads retain TTS permits; cancelling a cached or generating voice sample
-// does the same; releasing on socket close lets unfinished backend work bypass
-// its cap. Use real HTTP routes, then verify native browser playback still works.
+// does the same; cancelled HLS preparation retains its waiter permit; releasing
+// on socket close lets unfinished backend work bypass its cap. Use real HTTP
+// routes, then verify native browser playback still works.
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const os = require('node:os');
@@ -15,6 +16,7 @@ const { createConcurrencyLimitMiddleware, defaultConcurrencyGroups } = require('
 const { registerPlaybackRoutes } = require('../lib/routes/playback-routes');
 const { registerPreferencesRoutes } = require('../lib/routes/preferences-routes');
 const { serveAudioFile } = require('../lib/audio-response');
+const { createHlsAudioStreamer } = require('../lib/hls-audio-stream');
 
 const output = path.resolve(__dirname, '../output/audio-request-permits');
 const phase = process.env.AUDIO_REQUEST_PERMITS_PHASE || 'verified';
@@ -53,7 +55,7 @@ function abortDownload(url, headers = {}) {
   await fs.writeFile(audioPath, bytes);
   const results = [];
   async function check(name, run) {
-    const limiter = createConcurrencyLimitMiddleware({ groups: defaultConcurrencyGroups({ tts: 1, search: 1 }) });
+    const limiter = createConcurrencyLimitMiddleware({ groups: defaultConcurrencyGroups({ tts: 1, search: 1, hls: 1 }) });
     const app = express(); app.use(express.json()); app.use(limiter);
     let finishBackend;
     let backendStarted = false;
@@ -61,12 +63,6 @@ function abortDownload(url, headers = {}) {
       backendStarted = true;
       await new Promise(resolve => { finishBackend = resolve; });
       res.json({ done: true });
-    });
-    registerPlaybackRoutes(app, {
-      playbackOrchestrator: {
-        prepareChapterAudio: async () => ({ path: audioPath }),
-        startChapterAudio: async () => ({ ready: true })
-      }, serveAudioFile, sendServerError: (res, error) => res.status(500).json({ error: error.message })
     });
     registerPreferencesRoutes(app, {
       availableVoices: [{ id: 'cached' }, { id: 'generated' }], voiceSamplesDir: temp,
@@ -78,6 +74,25 @@ function abortDownload(url, headers = {}) {
         });
       }
     });
+    const hls = createHlsAudioStreamer({ serveAudioFile, rootDir: path.join(temp, 'hls'), maintenanceIntervalMs: 0 });
+    app.get('/api/audio-hls/book/0/index.m3u8', async (req, res) => {
+      await hls.servePlaylist(req, res, {
+        key: 'cancelled-playlist', ownerKey: 'fixture', rateKey: 'fixture',
+        createSource: async signal => {
+          backendStarted = true;
+          await new Promise((resolve, reject) => {
+            signal.addEventListener('abort', () => reject(Object.assign(new Error('cancelled'), { name: 'AbortError' })), { once: true });
+            if (signal.aborted) reject(new Error('already cancelled'));
+          });
+        }
+      });
+    });
+    registerPlaybackRoutes(app, {
+      playbackOrchestrator: {
+        prepareChapterAudio: async () => ({ path: audioPath }),
+        startChapterAudio: async () => ({ ready: true })
+      }, serveAudioFile, sendServerError: (res, error) => res.status(500).json({ error: error.message })
+    });
     app.get('/fixture', (_req, res) => res.type('html').send('<!doctype html><title>Playback after cancelled downloads</title><h1>Playback after cancelled downloads</h1><audio controls src="/api/audio/book/0"></audio>'));
     const server = await new Promise(resolve => { const s = app.listen(0, '127.0.0.1', () => resolve(s)); });
     const origin = `http://127.0.0.1:${server.address().port}`;
@@ -85,7 +100,7 @@ function abortDownload(url, headers = {}) {
       const evidence = await run({ origin, limiter, backendStarted: () => backendStarted, finishBackend: () => finishBackend?.() });
       results.push({ name, passed: true, evidence });
     } catch (error) { results.push({ name, passed: false, error: error.message, active: limiter.groups.map(g => ({ name: g.name, active: g.gate.active })) }); }
-    finally { finishBackend?.(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
+    finally { finishBackend?.(); await hls.dispose(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
   }
   try {
     for (const ranged of [false, true]) {
@@ -122,6 +137,13 @@ function abortDownload(url, headers = {}) {
     await check('cancelled voice generation releases after synthesis settles', async ({ origin, limiter, backendStarted }) => {
       const controller = new AbortController();
       const request = fetch(`${origin}/api/voice-sample/generated`, { signal: controller.signal }).catch(() => {});
+      await until(backendStarted); controller.abort(); await request;
+      await until(() => limiter.isIdle());
+      return { idle: limiter.isIdle() };
+    });
+    await check('cancelled HLS playlist preparation releases its request permit', async ({ origin, limiter, backendStarted }) => {
+      const controller = new AbortController();
+      const request = fetch(`${origin}/api/audio-hls/book/0/index.m3u8`, { signal: controller.signal }).catch(() => {});
       await until(backendStarted); controller.abort(); await request;
       await until(() => limiter.isIdle());
       return { idle: limiter.isIdle() };
