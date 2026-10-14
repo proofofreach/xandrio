@@ -47,8 +47,9 @@ cases after changing playback ownership, recovery, or cache maintenance.
 
 The audio-request permit check uses real chapter and voice-preview HTTP routes.
 It cancels full and Range downloads repeatedly, verifies preparation still works,
-and starts native browser playback. It also cancels voice synthesis and confirms
-that disconnected backend work keeps its permit until it settles. JSON reports,
+and starts native browser playback. It also cancels voice synthesis and HLS
+playlist preparation, and confirms that disconnected backend work keeps its
+permit until it settles. JSON reports,
 browser screenshots, and traces are saved in `output/audio-request-permits/`.
 
 ## Limits
