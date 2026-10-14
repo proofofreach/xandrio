@@ -850,6 +850,66 @@ async function verifyLibraryLoadStates(page, fixtureState) {
   fixtureState.libraryMode = 'populated';
 }
 
+async function verifyBookOpeningIndicator(page, fixtureState) {
+  // Failure modes: the row-level spinner overlaps the download control;
+  // grid and desktop positioning diverge; feedback shifts the row layout;
+  // completed opening leaves its indicator behind.
+  const output = path.join(__dirname, '..', 'output', 'library-opening-loading');
+  await fs.mkdir(output, { recursive: true });
+  const evidence = [];
+  fixtureState.operatorPolicy.acknowledged = true;
+  for (const width of [390, 1280]) {
+    for (const grid of [false, true]) {
+      await page.setViewportSize({ width, height: 844 });
+      await page.goto(`${origin}/?opening-indicator=${width}-${grid}#/library`, { waitUntil: 'networkidle' });
+      await page.waitForSelector('#library-list .book-item[data-book-id="smoke"]', { state: 'attached' });
+      await page.locator('[data-scope-option="all"]').evaluate(option => option.click());
+      await page.waitForSelector('#library-list .book-item[data-book-id="smoke"]:not(.hidden)');
+      await page.locator('#library-list').evaluate((list, enabled) => list.classList.toggle('grid-view', enabled), grid);
+      const card = page.locator('#library-list .book-item[data-book-id="smoke"]');
+      const downloadBefore = await card.locator('.book-local-control').boundingBox();
+      let releaseBook;
+      const pendingBook = new Promise(resolve => { releaseBook = resolve; });
+      const holdBook = async route => { await pendingBook; await route.fallback(); };
+      await page.route('**/api/book/smoke', holdBook);
+      try {
+        await card.locator('.book-card-open').click();
+        await page.waitForSelector('#library-list .book-item.loading');
+        const name = `${width === 390 ? 'phone' : 'desktop'}-${grid ? 'grid' : 'list'}`;
+        await page.screenshot({ path: path.join(output, `${name}.png`) });
+        const placement = await card.evaluate(row => {
+          const cover = row.querySelector('.book-cover-wrap');
+          const spinner = getComputedStyle(cover, '::before');
+          const rowSpinner = getComputedStyle(row.querySelector('.book-item-inner'), '::after');
+          return {
+            content: spinner.content, display: spinner.display,
+            rowContent: rowSpinner.content,
+            centerX: parseFloat(spinner.left) + parseFloat(spinner.marginLeft) + parseFloat(spinner.width) / 2,
+            centerY: parseFloat(spinner.top) + parseFloat(spinner.marginTop) + parseFloat(spinner.height) / 2,
+            coverWidth: cover.clientWidth, coverHeight: cover.clientHeight
+          };
+        });
+        if (placement.content === 'none' || placement.display === 'none' || placement.rowContent !== 'none' ||
+            Math.abs(placement.centerX - placement.coverWidth / 2) > 1 ||
+            Math.abs(placement.centerY - placement.coverHeight / 2) > 1) {
+          throw new Error(`Opening spinner is not centered on the book cover (${name}): ${JSON.stringify(placement)}`);
+        }
+        const downloadAfter = await card.locator('.book-local-control').boundingBox();
+        if (JSON.stringify(downloadBefore) !== JSON.stringify(downloadAfter)) throw new Error(`Opening shifted the download control (${name})`);
+        evidence.push({ name, placement, downloadUnchanged: true });
+      } finally {
+        releaseBook();
+        await page.unroute('**/api/book/smoke', holdBook);
+      }
+      await page.waitForFunction(() => !document.querySelector('#library-list .book-item.loading'));
+    }
+  }
+  await fs.writeFile(path.join(output, 'verified.json'), JSON.stringify({ passed: true, evidence }, null, 2));
+  await page.locator('[data-scope-option="shelf"]').evaluate(option => option.click());
+  fixtureState.operatorPolicy.acknowledged = false;
+  await page.setViewportSize({ width: 1280, height: 800 });
+}
+
 async function verifyPronunciations(page, fixtureState) {
   await page.evaluate(() => window.__setSmokeOnline(true));
   await page.selectOption('#chapter-select', '0');
@@ -1908,6 +1968,8 @@ async function main() {
     traceSmoke('fixtures installed');
     await verifyLibraryLoadStates(page, fixtureState);
     traceSmoke('library load states verified');
+    await verifyBookOpeningIndicator(page, fixtureState);
+    traceSmoke('book opening indicator verified');
     await verifyPlayback(page, fixtureState);
     traceSmoke('playback verified');
     await verifyInterruptedViewTransition(page);
