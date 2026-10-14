@@ -11,6 +11,7 @@ VOICE_SWITCH_BROWSER=webkit npm run verify:voice-switch-races
 npm run verify:native-interruption
 NATIVE_INTERRUPTION_BROWSER=webkit npm run verify:native-interruption
 npm run verify:audio-cache-recovery
+npm run verify:audio-request-permits
 ```
 
 Each script writes JSON evidence under `output/playback-interruption/`, in the
@@ -43,6 +44,25 @@ and Playwright traces. Keep baseline failure artifacts beside passing runs.
 Run the existing [reliability checks](deep-reliability-verification.md) and
 [earlier playback checks](playback-reliability-verification.md) alongside these
 cases after changing playback ownership, recovery, or cache maintenance.
+
+The audio-request permit check uses real chapter and voice-preview HTTP routes.
+It cancels full and Range downloads repeatedly, verifies preparation still works,
+and starts native browser playback. It also cancels voice synthesis and HLS
+playlist preparation, and confirms that disconnected backend work keeps its
+permit until it settles. JSON reports,
+browser screenshots, and traces are saved in `output/audio-request-permits/`.
+The fixture has an explicit rate limit and rejects catalog voice identifiers
+that could traverse outside the samples directory.
+Uncancellable HLS setup retains request and active-session capacity until it
+finishes, even after its client disconnects.
+Mixed ready encoders and abandoned preparations share the account limit. The
+check also verifies that final directory cleanup retries an initial failure.
+An encoder exit does not release capacity while its input task still prepares
+audio. A replacement waits for the cancelled encoder and input to settle.
+At a full global or account limit, a chapter/seek replacement cancels its own
+prior stream before rejection. Retries preserve another owner's active stream.
+New-device retries also wait for an existing account eviction to settle before
+they can select another encoder, preserving other listeners.
 
 ## Limits
 
