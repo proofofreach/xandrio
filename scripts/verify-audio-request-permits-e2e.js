@@ -11,6 +11,8 @@
 // admission. A failed initial directory removal must still get its final retry.
 // Killing ffmpeg must not free request/session capacity while its input task
 // still waits for an uncancellable audio preparation.
+// Owner replacement at a full global limit must cancel its old stream; at an
+// account limit it must leave another owner's stream alone.
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const os = require('node:os');
@@ -62,6 +64,11 @@ function abortDownload(url, headers = {}) {
   bytes.writeUInt16LE(2, 32); bytes.writeUInt16LE(16, 34);
   bytes.write('data', 36); bytes.writeUInt32LE(bytes.length - 44, 40);
   await fs.writeFile(audioPath, bytes);
+  const firstSegmentPath = path.join(temp, 'first-segment.wav');
+  const firstSegment = Buffer.from(bytes.subarray(0, 44 + 24000 * 2 * 6));
+  firstSegment.writeUInt32LE(firstSegment.length - 8, 4);
+  firstSegment.writeUInt32LE(firstSegment.length - 44, 40);
+  await fs.writeFile(firstSegmentPath, firstSegment);
   await fs.writeFile(outsidePath, bytes);
   const results = [];
   async function check(name, run, options = {}) {
@@ -71,7 +78,7 @@ function abortDownload(url, headers = {}) {
     app.use(limiter);
     let finishBackend;
     let backendStarted = false;
-    let readySourceAborted = false;
+    const readySourceAborts = new Map();
     let cleanupAttempts = 0;
     let failedCleanupDirectory;
     const originalRemove = fs.rm;
@@ -104,7 +111,7 @@ function abortDownload(url, headers = {}) {
     const hls = createHlsAudioStreamer({ serveAudioFile, rootDir: hlsRoot, maintenanceIntervalMs: 0, maxActiveSessions: options.hlsSessions || 3, maxActiveSessionsPerAccount: options.hlsAccountSessions || 4 });
     app.get('/api/audio-hls/:book/0/index.m3u8', async (req, res) => {
       try { await hls.servePlaylist(req, res, {
-        key: req.params.book, ownerKey: req.params.book, rateKey: 'fixture',
+        key: req.params.book, ownerKey: req.query.owner || req.params.book, rateKey: 'fixture',
         createSource: async signal => {
           if (req.params.book === 'held-input') return {
             async *iterateInputs() {
@@ -113,9 +120,16 @@ function abortDownload(url, headers = {}) {
               yield audioPath;
             }
           };
-          if (req.params.book === 'ready') {
-            signal.addEventListener('abort', () => { readySourceAborted = true; }, { once: true });
-            return { async *iterateInputs() { yield audioPath; } };
+          if (req.params.book.startsWith('ready')) {
+            readySourceAborts.set(req.params.book, false);
+            signal.addEventListener('abort', () => { readySourceAborts.set(req.params.book, true); }, { once: true });
+            return { async *iterateInputs() {
+              if (req.params.book === 'ready-held') {
+                yield firstSegmentPath;
+                backendStarted = true;
+                await new Promise(resolve => { finishBackend = resolve; });
+              } else yield audioPath;
+            } };
           }
           if (req.params.book === 'overflow') throw new Error('unexpected concurrent setup');
           backendStarted = true;
@@ -137,7 +151,7 @@ function abortDownload(url, headers = {}) {
     const server = await new Promise(resolve => { const s = app.listen(0, '127.0.0.1', () => resolve(s)); });
     const origin = `http://127.0.0.1:${server.address().port}`;
     try {
-      const evidence = await run({ origin, limiter, backendStarted: () => backendStarted, finishBackend: () => finishBackend?.(), readySourceAborted: () => readySourceAborted, cleanup: () => ({ attempts: cleanupAttempts, directory: failedCleanupDirectory }) });
+      const evidence = await run({ origin, limiter, backendStarted: () => backendStarted, finishBackend: () => finishBackend?.(), readySourceAborted: (book = 'ready') => Boolean(readySourceAborts.get(book)), cleanup: () => ({ attempts: cleanupAttempts, directory: failedCleanupDirectory }) });
       results.push({ name, passed: true, evidence });
     } catch (error) { results.push({ name, passed: false, error: error.message, active: limiter.groups.map(g => ({ name: g.name, active: g.gate.active })) }); }
     finally { fs.rm = originalRemove; finishBackend?.(); await hls.dispose(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
@@ -253,6 +267,42 @@ function abortDownload(url, headers = {}) {
       finishBackend(); await until(() => limiter.isIdle());
       return { blockedStatus: blocked.status, idleAfterInputCompletion: limiter.isIdle() };
     }, { hlsRequests: 2, hlsSessions: 1 });
+    for (const accountLimit of [false, true]) {
+      await check(`owner replacement at full ${accountLimit ? 'account' : 'global'} capacity cancels only its prior stream`, async ({ origin, limiter, readySourceAborted, backendStarted, finishBackend }) => {
+        if (accountLimit) {
+          const other = await fetch(`${origin}/api/audio-hls/ready-other/0/index.m3u8?owner=other`);
+          assert.equal(other.status, 200); await other.text();
+        }
+        const ownBook = accountLimit ? 'ready-held' : 'ready-own';
+        const own = await fetch(`${origin}/api/audio-hls/${ownBook}/0/index.m3u8?owner=shared`);
+        assert.equal(own.status, 200); await own.text();
+        if (accountLimit) await until(backendStarted);
+        const replacementUrl = `${origin}/api/audio-hls/overflow/0/index.m3u8?owner=shared`;
+        const replacement = await fetch(replacementUrl);
+        assert.equal(replacement.status, 503); await replacement.text();
+        assert(readySourceAborted(ownBook), 'capacity rejection did not cancel the replaced stream');
+        assert(!readySourceAborted('ready-other'), 'replacement cancelled another owner\'s stream');
+        if (accountLimit) {
+          for (let attempt = 0; attempt < 2; attempt++) {
+            const retry = await fetch(replacementUrl);
+            assert.equal(retry.status, 503); await retry.text();
+            assert(!readySourceAborted('ready-other'), 'retry cancelled another device while the prior input still ran');
+          }
+          finishBackend();
+        }
+        let admittedStatus;
+        for (let attempt = 0; attempt < 10; attempt++) {
+          await sleep(30);
+          const retry = await fetch(replacementUrl);
+          admittedStatus = retry.status; await retry.text();
+          if (admittedStatus !== 503) break;
+        }
+        assert.equal(admittedStatus, 500, 'replacement stayed blocked after its prior backend stopped');
+        assert(!readySourceAborted('ready-other'), 'retry cancelled another owner\'s stream');
+        await until(() => limiter.isIdle());
+        return { initialStatus: replacement.status, priorCancelled: true, otherOwnerPreserved: true, admittedAfterCompletion: admittedStatus };
+      }, { hlsSessions: accountLimit ? 4 : 1, hlsAccountSessions: accountLimit ? 2 : 4 });
+    }
     await check('disconnect does not release unfinished backend work', async ({ origin, limiter, backendStarted, finishBackend }) => {
       const controller = new AbortController();
       const request = fetch(`${origin}/api/search`, { method: 'POST', signal: controller.signal }).catch(() => {});
