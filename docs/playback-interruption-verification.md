@@ -61,6 +61,8 @@ An encoder exit does not release capacity while its input task still prepares
 audio. A replacement waits for the cancelled encoder and input to settle.
 At a full global or account limit, a chapter/seek replacement cancels its own
 prior stream before rejection. Retries preserve another owner's active stream.
+New-device retries also wait for an existing account eviction to settle before
+they can select another encoder, preserving other listeners.
 
 ## Limits
 

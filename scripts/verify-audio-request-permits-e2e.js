@@ -7,8 +7,8 @@
 // routes, then verify native browser playback still works.
 // A catalog entry must not let a requested voice escape the samples directory.
 // Uncancellable HLS setup must retain request and session capacity until it ends.
-// Mixed ready/preparing sessions must evict a cancellable encoder before new
-// admission. A failed initial directory removal must still get its final retry.
+// Mixed ready/preparing sessions share the account limit; retries must wait
+// for an in-flight eviction. Failed initial cleanup must get its final retry.
 // Killing ffmpeg must not free request/session capacity while its input task
 // still waits for an uncancellable audio preparation.
 // Owner replacement at a full global limit must cancel its old stream; at an
@@ -226,7 +226,7 @@ function abortDownload(url, headers = {}) {
       finishBackend(); await until(() => limiter.isIdle());
       return { blockedStatus: blocked.status, idleAfterCompletion: limiter.isIdle() };
     }, { hlsRequests: 2, hlsSessions: 1 });
-    await check('mixed account capacity cancels a ready encoder before admitting another source', async ({ origin, limiter, backendStarted, finishBackend, readySourceAborted }) => {
+    await check('mixed account capacity preserves ready playback while abandoned preparation settles', async ({ origin, limiter, backendStarted, finishBackend, readySourceAborted }) => {
       const controller = new AbortController();
       const request = fetch(`${origin}/api/audio-hls/held/0/index.m3u8`, { signal: controller.signal }).catch(() => {});
       await until(backendStarted); controller.abort(); await request; await sleep(50);
@@ -234,8 +234,9 @@ function abortDownload(url, headers = {}) {
       assert.equal(ready.status, 200); await ready.text();
       const next = await fetch(`${origin}/api/audio-hls/overflow/0/index.m3u8`);
       await next.text();
-      assert(readySourceAborted(), 'new source was admitted without cancelling the account\'s ready encoder');
-      assert.equal(next.status, 503, 'replacement was admitted before the cancelled encoder and its input settled');
+      assert(!readySourceAborted(), 'another listener was cancelled while the abandoned preparation still ran');
+      assert.equal(next.status, 503, 'replacement was admitted before abandoned preparation settled');
+      finishBackend();
       let admittedStatus;
       for (let attempt = 0; attempt < 10; attempt++) {
         await sleep(30);
@@ -244,8 +245,9 @@ function abortDownload(url, headers = {}) {
         if (admittedStatus !== 503) break;
       }
       assert.equal(admittedStatus, 500, 'capacity did not return after the prior encoder stopped');
-      finishBackend(); await until(() => limiter.isIdle());
-      return { readyStatus: ready.status, priorEncoderCancelled: readySourceAborted(), heldDuringCancellation: next.status, admittedAfterCompletion: admittedStatus };
+      assert(!readySourceAborted(), 'retry cancelled another listener after capacity returned');
+      await until(() => limiter.isIdle());
+      return { readyStatus: ready.status, readyEncoderPreserved: true, heldDuringCancellation: next.status, admittedAfterCompletion: admittedStatus };
     }, { hlsRequests: 3, hlsSessions: 4, hlsAccountSessions: 2 });
     await check('abandoned source retries directory removal after initial cleanup fails', async ({ origin, limiter, backendStarted, finishBackend, cleanup }) => {
       const controller = new AbortController();
@@ -267,9 +269,9 @@ function abortDownload(url, headers = {}) {
       finishBackend(); await until(() => limiter.isIdle());
       return { blockedStatus: blocked.status, idleAfterInputCompletion: limiter.isIdle() };
     }, { hlsRequests: 2, hlsSessions: 1 });
-    for (const accountLimit of [false, true]) {
-      await check(`owner replacement at full ${accountLimit ? 'account' : 'global'} capacity cancels only its prior stream`, async ({ origin, limiter, readySourceAborted, backendStarted, finishBackend }) => {
-        if (accountLimit) {
+    for (const [accountLimit, newOwner] of [[false, false], [true, false], [true, true]]) {
+      await check(`${newOwner ? 'new owner admission' : 'owner replacement'} at full ${accountLimit ? 'account' : 'global'} capacity cancels only one stream`, async ({ origin, limiter, readySourceAborted, backendStarted, finishBackend }) => {
+        if (accountLimit && !newOwner) {
           const other = await fetch(`${origin}/api/audio-hls/ready-other/0/index.m3u8?owner=other`);
           assert.equal(other.status, 200); await other.text();
         }
@@ -277,7 +279,11 @@ function abortDownload(url, headers = {}) {
         const own = await fetch(`${origin}/api/audio-hls/${ownBook}/0/index.m3u8?owner=shared`);
         assert.equal(own.status, 200); await own.text();
         if (accountLimit) await until(backendStarted);
-        const replacementUrl = `${origin}/api/audio-hls/overflow/0/index.m3u8?owner=shared`;
+        if (newOwner) {
+          const other = await fetch(`${origin}/api/audio-hls/ready-other/0/index.m3u8?owner=other`);
+          assert.equal(other.status, 200); await other.text();
+        }
+        const replacementUrl = `${origin}/api/audio-hls/overflow/0/index.m3u8?owner=${newOwner ? 'entrant' : 'shared'}`;
         const replacement = await fetch(replacementUrl);
         assert.equal(replacement.status, 503); await replacement.text();
         assert(readySourceAborted(ownBook), 'capacity rejection did not cancel the replaced stream');
