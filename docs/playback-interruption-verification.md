@@ -53,6 +53,8 @@ permit until it settles. JSON reports,
 browser screenshots, and traces are saved in `output/audio-request-permits/`.
 The fixture has an explicit rate limit and rejects catalog voice identifiers
 that could traverse outside the samples directory.
+Uncancellable HLS setup retains request and active-session capacity until it
+finishes, even after its client disconnects.
 
 ## Limits
 

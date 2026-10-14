@@ -6,6 +6,7 @@
 // on socket close lets unfinished backend work bypass its cap. Use real HTTP
 // routes, then verify native browser playback still works.
 // A catalog entry must not let a requested voice escape the samples directory.
+// Uncancellable HLS setup must retain request and session capacity until it ends.
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const os = require('node:os');
@@ -59,8 +60,8 @@ function abortDownload(url, headers = {}) {
   await fs.writeFile(audioPath, bytes);
   await fs.writeFile(outsidePath, bytes);
   const results = [];
-  async function check(name, run) {
-    const limiter = createConcurrencyLimitMiddleware({ groups: defaultConcurrencyGroups({ tts: 1, search: 1, hls: 1 }) });
+  async function check(name, run, options = {}) {
+    const limiter = createConcurrencyLimitMiddleware({ groups: defaultConcurrencyGroups({ tts: 1, search: 1, hls: options.hlsRequests || 1 }) });
     const app = express(); app.use(express.json());
     app.use(rateLimit({ windowMs: 60000, limit: 1000 }));
     app.use(limiter);
@@ -81,18 +82,20 @@ function abortDownload(url, headers = {}) {
         });
       }
     });
-    const hls = createHlsAudioStreamer({ serveAudioFile, rootDir: path.join(temp, 'hls'), maintenanceIntervalMs: 0 });
-    app.get('/api/audio-hls/book/0/index.m3u8', async (req, res) => {
-      await hls.servePlaylist(req, res, {
-        key: 'cancelled-playlist', ownerKey: 'fixture', rateKey: 'fixture',
+    const hls = createHlsAudioStreamer({ serveAudioFile, rootDir: path.join(temp, 'hls'), maintenanceIntervalMs: 0, maxActiveSessions: options.hlsSessions || 3 });
+    app.get('/api/audio-hls/:book/0/index.m3u8', async (req, res) => {
+      try { await hls.servePlaylist(req, res, {
+        key: req.params.book, ownerKey: req.params.book, rateKey: 'fixture',
         createSource: async signal => {
+          if (req.params.book === 'overflow') throw new Error('unexpected concurrent setup');
           backendStarted = true;
           await new Promise((resolve, reject) => {
+            if (req.params.book === 'held') { finishBackend = resolve; return; }
             signal.addEventListener('abort', () => reject(Object.assign(new Error('cancelled'), { name: 'AbortError' })), { once: true });
             if (signal.aborted) reject(new Error('already cancelled'));
           });
         }
-      });
+      }); } catch (error) { if (!res.destroyed) res.status(500).json({ error: error.message }); }
     });
     registerPlaybackRoutes(app, {
       playbackOrchestrator: {
@@ -160,6 +163,25 @@ function abortDownload(url, headers = {}) {
       await until(() => limiter.isIdle());
       return { idle: limiter.isIdle() };
     });
+    await check('cancelled uncancellable HLS setup retains its request permit until completion', async ({ origin, limiter, backendStarted, finishBackend }) => {
+      const controller = new AbortController();
+      const request = fetch(`${origin}/api/audio-hls/held/0/index.m3u8`, { signal: controller.signal }).catch(() => {});
+      await until(backendStarted); controller.abort(); await request; await sleep(50);
+      assert.equal(limiter.groups.find(group => group.name === 'hls').gate.active, 1);
+      const blocked = await fetch(`${origin}/api/audio-hls/overflow/0/index.m3u8`);
+      assert.equal(blocked.status, 503); await blocked.text();
+      finishBackend(); await until(() => limiter.isIdle());
+      return { blockedStatus: blocked.status, idleAfterCompletion: limiter.isIdle() };
+    });
+    await check('abandoned HLS setup counts toward active-session capacity', async ({ origin, limiter, backendStarted, finishBackend }) => {
+      const controller = new AbortController();
+      const request = fetch(`${origin}/api/audio-hls/held/0/index.m3u8`, { signal: controller.signal }).catch(() => {});
+      await until(backendStarted); controller.abort(); await request; await sleep(50);
+      const blocked = await fetch(`${origin}/api/audio-hls/overflow/0/index.m3u8`);
+      assert.equal(blocked.status, 503); await blocked.text();
+      finishBackend(); await until(() => limiter.isIdle());
+      return { blockedStatus: blocked.status, idleAfterCompletion: limiter.isIdle() };
+    }, { hlsRequests: 2, hlsSessions: 1 });
     await check('disconnect does not release unfinished backend work', async ({ origin, limiter, backendStarted, finishBackend }) => {
       const controller = new AbortController();
       const request = fetch(`${origin}/api/search`, { method: 'POST', signal: controller.signal }).catch(() => {});
