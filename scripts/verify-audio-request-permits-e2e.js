@@ -5,12 +5,14 @@
 // does the same; cancelled HLS preparation retains its waiter permit; releasing
 // on socket close lets unfinished backend work bypass its cap. Use real HTTP
 // routes, then verify native browser playback still works.
+// A catalog entry must not let a requested voice escape the samples directory.
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const http = require('node:http');
 const express = require('express');
+const { rateLimit } = require('express-rate-limit');
 const { chromium } = require('playwright');
 const { createConcurrencyLimitMiddleware, defaultConcurrencyGroups } = require('../lib/concurrency-limit');
 const { registerPlaybackRoutes } = require('../lib/routes/playback-routes');
@@ -44,6 +46,8 @@ function abortDownload(url, headers = {}) {
   await fs.mkdir(output, { recursive: true });
   const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'xandrio-audio-permits-'));
   const audioPath = path.join(temp, 'cached.mp3');
+  const unsafeVoiceId = `../${path.basename(temp)}-outside`;
+  const outsidePath = path.resolve(temp, `${unsafeVoiceId}.mp3`);
   // Large enough that the first client read cannot consume the whole response.
   const bytes = Buffer.alloc(44 + 24000 * 2 * 600);
   bytes.write('RIFF'); bytes.writeUInt32LE(bytes.length - 8, 4);
@@ -53,10 +57,13 @@ function abortDownload(url, headers = {}) {
   bytes.writeUInt16LE(2, 32); bytes.writeUInt16LE(16, 34);
   bytes.write('data', 36); bytes.writeUInt32LE(bytes.length - 44, 40);
   await fs.writeFile(audioPath, bytes);
+  await fs.writeFile(outsidePath, bytes);
   const results = [];
   async function check(name, run) {
     const limiter = createConcurrencyLimitMiddleware({ groups: defaultConcurrencyGroups({ tts: 1, search: 1, hls: 1 }) });
-    const app = express(); app.use(express.json()); app.use(limiter);
+    const app = express(); app.use(express.json());
+    app.use(rateLimit({ windowMs: 60000, limit: 1000 }));
+    app.use(limiter);
     let finishBackend;
     let backendStarted = false;
     app.post('/api/search', async (_req, res) => {
@@ -65,7 +72,7 @@ function abortDownload(url, headers = {}) {
       res.json({ done: true });
     });
     registerPreferencesRoutes(app, {
-      availableVoices: [{ id: 'cached' }, { id: 'generated' }], voiceSamplesDir: temp,
+      availableVoices: [{ id: 'cached' }, { id: 'generated' }, { id: unsafeVoiceId }], voiceSamplesDir: temp,
       voiceSampleGenerator: async ({ signal }) => {
         backendStarted = true;
         await new Promise((resolve, reject) => {
@@ -134,6 +141,11 @@ function abortDownload(url, headers = {}) {
       await until(() => limiter.isIdle());
       return { idle: limiter.isIdle() };
     });
+    await check('catalog voice identifiers cannot escape the sample directory', async ({ origin }) => {
+      const response = await fetch(`${origin}/api/voice-sample/${encodeURIComponent(unsafeVoiceId)}`, { method: 'HEAD' });
+      assert.equal(response.status, 400);
+      return { status: response.status };
+    });
     await check('cancelled voice generation releases after synthesis settles', async ({ origin, limiter, backendStarted }) => {
       const controller = new AbortController();
       const request = fetch(`${origin}/api/voice-sample/generated`, { signal: controller.signal }).catch(() => {});
@@ -157,7 +169,7 @@ function abortDownload(url, headers = {}) {
       finishBackend(); await until(() => limiter.isIdle());
       return { blockedStatus: blocked.status, idleAfterCompletion: limiter.isIdle() };
     });
-  } finally { await fs.rm(temp, { recursive: true, force: true }); }
+  } finally { await fs.rm(temp, { recursive: true, force: true }); await fs.unlink(outsidePath); }
   const report = { phase, passed: results.every(r => r.passed), results };
   await fs.writeFile(path.join(output, `${phase}.json`), JSON.stringify(report, null, 2));
   for (const result of results) console.log(`${result.passed ? 'PASS' : 'FAIL'} ${result.name}: ${JSON.stringify(result.evidence || result.error)}`);
