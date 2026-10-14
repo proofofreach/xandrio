@@ -11,6 +11,7 @@ VOICE_SWITCH_BROWSER=webkit npm run verify:voice-switch-races
 npm run verify:native-interruption
 NATIVE_INTERRUPTION_BROWSER=webkit npm run verify:native-interruption
 npm run verify:audio-cache-recovery
+npm run verify:audio-request-permits
 ```
 
 Each script writes JSON evidence under `output/playback-interruption/`, in the
@@ -43,6 +44,12 @@ and Playwright traces. Keep baseline failure artifacts beside passing runs.
 Run the existing [reliability checks](deep-reliability-verification.md) and
 [earlier playback checks](playback-reliability-verification.md) alongside these
 cases after changing playback ownership, recovery, or cache maintenance.
+
+The audio-request permit check uses real chapter and voice-preview HTTP routes.
+It cancels full and Range downloads repeatedly, verifies preparation still works,
+and starts native browser playback. It also cancels voice synthesis and confirms
+that disconnected backend work keeps its permit until it settles. JSON reports,
+browser screenshots, and traces are saved in `output/audio-request-permits/`.
 
 ## Limits
 
