@@ -55,6 +55,8 @@ The fixture has an explicit rate limit and rejects catalog voice identifiers
 that could traverse outside the samples directory.
 Uncancellable HLS setup retains request and active-session capacity until it
 finishes, even after its client disconnects.
+Mixed ready encoders and abandoned preparations share the account limit. The
+check also verifies that final directory cleanup retries an initial failure.
 
 ## Limits
 
