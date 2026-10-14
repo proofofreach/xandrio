@@ -59,6 +59,8 @@ Mixed ready encoders and abandoned preparations share the account limit. The
 check also verifies that final directory cleanup retries an initial failure.
 An encoder exit does not release capacity while its input task still prepares
 audio. A replacement waits for the cancelled encoder and input to settle.
+At a full global or account limit, a chapter/seek replacement cancels its own
+prior stream before rejection. Retries preserve another owner's active stream.
 
 ## Limits
 
