@@ -9,6 +9,8 @@
 // Uncancellable HLS setup must retain request and session capacity until it ends.
 // Mixed ready/preparing sessions must evict a cancellable encoder before new
 // admission. A failed initial directory removal must still get its final retry.
+// Killing ffmpeg must not free request/session capacity while its input task
+// still waits for an uncancellable audio preparation.
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const os = require('node:os');
@@ -104,6 +106,13 @@ function abortDownload(url, headers = {}) {
       try { await hls.servePlaylist(req, res, {
         key: req.params.book, ownerKey: req.params.book, rateKey: 'fixture',
         createSource: async signal => {
+          if (req.params.book === 'held-input') return {
+            async *iterateInputs() {
+              backendStarted = true;
+              await new Promise(resolve => { finishBackend = resolve; });
+              yield audioPath;
+            }
+          };
           if (req.params.book === 'ready') {
             signal.addEventListener('abort', () => { readySourceAborted = true; }, { once: true });
             return { async *iterateInputs() { yield audioPath; } };
@@ -212,8 +221,17 @@ function abortDownload(url, headers = {}) {
       const next = await fetch(`${origin}/api/audio-hls/overflow/0/index.m3u8`);
       await next.text();
       assert(readySourceAborted(), 'new source was admitted without cancelling the account\'s ready encoder');
+      assert.equal(next.status, 503, 'replacement was admitted before the cancelled encoder and its input settled');
+      let admittedStatus;
+      for (let attempt = 0; attempt < 10; attempt++) {
+        await sleep(30);
+        const retry = await fetch(`${origin}/api/audio-hls/overflow/0/index.m3u8`);
+        admittedStatus = retry.status; await retry.text();
+        if (admittedStatus !== 503) break;
+      }
+      assert.equal(admittedStatus, 500, 'capacity did not return after the prior encoder stopped');
       finishBackend(); await until(() => limiter.isIdle());
-      return { readyStatus: ready.status, priorEncoderCancelled: readySourceAborted() };
+      return { readyStatus: ready.status, priorEncoderCancelled: readySourceAborted(), heldDuringCancellation: next.status, admittedAfterCompletion: admittedStatus };
     }, { hlsRequests: 3, hlsSessions: 4, hlsAccountSessions: 2 });
     await check('abandoned source retries directory removal after initial cleanup fails', async ({ origin, limiter, backendStarted, finishBackend, cleanup }) => {
       const controller = new AbortController();
@@ -225,6 +243,16 @@ function abortDownload(url, headers = {}) {
       await assert.rejects(fs.stat(cleanup().directory), { code: 'ENOENT' });
       return { removalAttempts: cleanup().attempts, directoryRemoved: true };
     }, { failInitialCleanup: true });
+    await check('cancelled encoder retains capacity until its uncancellable input task settles', async ({ origin, limiter, backendStarted, finishBackend }) => {
+      const controller = new AbortController();
+      const request = fetch(`${origin}/api/audio-hls/held-input/0/index.m3u8`, { signal: controller.signal }).catch(() => {});
+      await until(backendStarted); controller.abort(); await request; await sleep(50);
+      assert.equal(limiter.groups.find(group => group.name === 'hls').gate.active, 1, 'request capacity was freed while input preparation still ran');
+      const blocked = await fetch(`${origin}/api/audio-hls/overflow/0/index.m3u8`);
+      assert.equal(blocked.status, 503); await blocked.text();
+      finishBackend(); await until(() => limiter.isIdle());
+      return { blockedStatus: blocked.status, idleAfterInputCompletion: limiter.isIdle() };
+    }, { hlsRequests: 2, hlsSessions: 1 });
     await check('disconnect does not release unfinished backend work', async ({ origin, limiter, backendStarted, finishBackend }) => {
       const controller = new AbortController();
       const request = fetch(`${origin}/api/search`, { method: 'POST', signal: controller.signal }).catch(() => {});
