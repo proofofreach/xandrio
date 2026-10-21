@@ -965,6 +965,51 @@ trackAsyncTest('Chunk seek planning', (async () => {
   console.error(`  ❌ Chunk seek planning — ${error.stack || error.message}`);
 }));
 
+section('Cache eviction reconciliation');
+
+trackAsyncTest('Cache eviction reconciliation', (async () => {
+  const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'xandrio-evict-'));
+  try {
+    const jobs = new Map([['live', { status: 'generating' }]]);
+    const queue = { getStatus: id => jobs.get(id) || null, on() {}, off() {}, removeListener() {} };
+    const tts = new ChunkedTTS(dir, queue);
+    const present = tts.chunkPath('book', 0, 0);
+    await fsp.writeFile(present, 'audio');
+    const idle = {
+      bookId: 'book', chapterIndex: 1, totalChunks: 1,
+      chunks: [{ index: 0, status: 'ready', path: tts.chunkPath('book', 1, 0), jobId: null }]
+    };
+    const busy = {
+      bookId: 'book', chapterIndex: 0, totalChunks: 3,
+      chunks: [
+        { index: 0, status: 'ready', path: present, jobId: null },
+        { index: 1, status: 'ready', path: tts.chunkPath('book', 0, 1), jobId: null },
+        { index: 2, status: 'generating', path: null, jobId: 'live' }
+      ]
+    };
+    tts.manifests.set(tts._manifestKey('book', 1), idle);
+    tts.manifests.set(tts._manifestKey('book', 0), busy);
+    assert(tts.chapterBusy('book', 0) === true, 'a chapter with a live job is busy');
+    assert(tts.chapterBusy('book', 1) === false, 'a fully ready chapter is idle');
+
+    await tts.releaseEvictedChapter('book', 1);
+    assert(tts.getChapterManifest('book', 1) === null, 'an idle evicted manifest is dropped');
+
+    await tts.releaseEvictedChapter('book', 0);
+    const kept = tts.getChapterManifest('book', 0);
+    assert(kept === busy, 'a busy manifest keeps its live generation');
+    assert(kept.chunks[0].status === 'ready', 'a chunk whose file survived stays ready');
+    assert(kept.chunks[1].status === 'pending' && kept.chunks[1].path === null,
+      'a ready chunk whose file was evicted returns to pending');
+    assert(kept.chunks[2].jobId === 'live', 'running chunks keep their job');
+  } finally {
+    await fsp.rm(dir, { recursive: true, force: true });
+  }
+})().catch(error => {
+  failed++;
+  console.error(`  ❌ Cache eviction reconciliation — ${error.stack || error.message}`);
+}));
+
 // ─── Summary ─────────────────────────────────────────────────────────────────
 
 void (async () => {
