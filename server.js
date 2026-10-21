@@ -1828,7 +1828,9 @@ const audioCacheBudget = createAudioCacheBudget({
   jsonStore,
   workers: () => [chunkedTTS, instantChunkedTTS, bookGuideNarrationTTS, ...premiumVariantTtsWorkers.values()]
 });
-const AUDIO_USE_PATH = /^\/api\/(?:audio(?:-chunked|-continuous|-ios|-stream)?|chunks|offline\/audio|voice-cache)\/([^/]+)\/(\d+)(?:\/|$)/;
+// Every route that serves or prepares one chapter's audio names it as
+// /api/<audio route>/:bookId/:chapterIndex.
+const AUDIO_USE_PATH = /^\/api\/(?:audio(?:-[a-z]+)?|chunks|offline\/audio|voice-cache)\/([^/]+)\/(\d+)(?:\/|$)/;
 app.use((req, _res, next) => {
   const match = req.path.match(AUDIO_USE_PATH);
   if (match && requestGuardIsSafeBookId(match[1])) audioCacheBudget.recordUse(match[1], Number(match[2]));
@@ -1849,6 +1851,20 @@ async function rejectWhenStorageFull(res) {
     res.status(507).json({ error: error.message, code: error.code });
     return true;
   }
+}
+
+// Every import path writes through the importer, so storage admission is
+// enforced here rather than per route.
+async function importWithStorageAdmission(command, progress) {
+  try {
+    await audioCacheBudget.ensureWritableSpace();
+  } catch (error) {
+    if (error.code !== 'INSUFFICIENT_STORAGE') throw error;
+    error.statusCode = error.status;
+    error.response = { error: error.message, code: error.code };
+    throw error;
+  }
+  return bookImporter.import(command, progress);
 }
 
 function pronunciationChunkVariants() {
@@ -3351,7 +3367,7 @@ async function importDownloadedBook(body, progress, { addedBy = null } = {}) {
   return bookMutationLocks.withBookMutationLocks(candidateIds, async () => {
     await assertImportTargetAvailable(command.id, addedBy);
     deletedBookIds.delete(command.id);
-    const result = await bookImporter.import(command, progress);
+    const result = await importWithStorageAdmission(command, progress);
     // A fallback candidate can persist under an id other than command.id, so
     // clearing only command.id left the real book tombstoned and exposed to a
     // later artifact sweep.
@@ -3566,7 +3582,7 @@ async function handleUploadImport(req, res) {
   const uploadUserId = positionUserId(req);
   const importUpload = async (progress = () => {}) => {
     const imported = await bookMutationLocks.withBookMutationLock(bookId, async () => {
-      const result = await bookImporter.import({
+      const result = await importWithStorageAdmission({
         kind: 'upload',
         id: bookId,
         originalName,
@@ -3652,7 +3668,7 @@ registerCalibreRoutes(app, {
   },
   loadBooks: () => loadJSON(BOOKS_FILE, {}),
   updateBooks: mutator => updateJSON(BOOKS_FILE, mutator),
-  importBook: command => bookImporter.import(command),
+  importBook: command => importWithStorageAdmission(command),
   withBookMutationLock: (bookId, task) => bookMutationLocks.withBookMutationLock(bookId, async () => {
     // Calibre ids are deterministic, so a legitimate re-import is the
     // lifecycle event that retires the prior deletion guard.

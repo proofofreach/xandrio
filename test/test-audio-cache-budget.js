@@ -183,6 +183,28 @@ const quiet = { log() {}, warn() {} };
     }
   });
 
+  await test('spares a chapter whose use is recorded while the sweep runs', async () => {
+    const { root, cacheDir } = fixture();
+    try {
+      write(cacheDir, 'first_ch0_chunk0.mp3', 1000, 90);
+      write(cacheDir, 'second_ch0_chunk0.mp3', 1000, 80);
+      const fsp = fakeFs(1);
+      let budget;
+      const removeFile = fsp.unlink;
+      fsp.unlink = async filePath => {
+        // A playback request for the second chapter lands mid-sweep.
+        if (filePath.endsWith('first_ch0_chunk0.mp3')) budget.recordUse('second', 0);
+        return removeFile(filePath);
+      };
+      budget = createAudioCacheBudget({ cacheDir, fsp, now: () => NOW, log: quiet });
+      const result = await budget.sweep();
+      assert.equal(result.evictedChapters, 1);
+      assert.deepEqual(fs.readdirSync(cacheDir), ['second_ch0_chunk0.mp3']);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   await test('counts hard-linked audio once and only when every link is evicted', async () => {
     const { root, cacheDir } = fixture();
     try {
