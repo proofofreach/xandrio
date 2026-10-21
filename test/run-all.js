@@ -91,6 +91,7 @@ const tests = [
   'test-write-file-atomic.js',
   'test-books-store.js',
   'test-book-artifact-paths.js',
+  'test-audio-cache-budget.js',
   'test-auth.js',
   'test-login-offline-ui.js',
   'test-accounts.js',

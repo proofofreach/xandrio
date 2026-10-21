@@ -654,6 +654,25 @@ function recipe(adapter, overrides = {}) {
     }
   });
 
+  await test('verified publication shares the output inode instead of copying it', async () => {
+    const { NarrationArtifactCache } = require('../lib/narration-artifact-cache');
+    const cacheDir = await fs.mkdtemp(path.join(os.tmpdir(), 'xandrio-artifact-link-'));
+    try {
+      const outputPath = path.join(cacheDir, 'book_ch0_chunk0.mp3');
+      await fs.writeFile(outputPath, Buffer.alloc(2048, 7));
+      const cache = new NarrationArtifactCache(cacheDir);
+      const request = { bookId: 'book', chapterIndex: 0, fingerprint: 'a'.repeat(64), outputPath };
+      assert.strictEqual(await cache.publishVerified(request), true);
+      const output = await fs.stat(outputPath);
+      const artifact = await fs.stat(path.join(cacheDir, 'book_narration_artifacts_v1', 'ch0', `${'a'.repeat(64)}.mp3`));
+      assert.strictEqual(artifact.ino, output.ino);
+      assert.strictEqual(output.nlink, 2);
+      assert.strictEqual((await cache.inspect(request)).provenance, 'verified');
+    } finally {
+      await fs.rm(cacheDir, { recursive: true, force: true });
+    }
+  });
+
   console.log(`narration-artifact-cache tests: ${passed} passed, ${failed} failed`);
   if (failed > 0) process.exitCode = 1;
 })();

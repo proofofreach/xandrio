@@ -55,6 +55,7 @@ const {
 const GenerationScheduler = require('./lib/generation-scheduler');
 const GenerationJournal = require('./lib/generation-journal');
 const { createPronunciationService, createCacheInvalidator, effectiveRules } = require('./lib/pronunciation-repair');
+const { createAudioCacheBudget } = require('./lib/audio-cache-budget');
 const { createOfflineReadyPackages, sourceTextRevision } = require('./lib/offline-ready-packages');
 const { registerOfflineRecoveryRoutes } = require('./lib/routes/offline-recovery-routes');
 const { registerPronunciationRoutes } = require('./lib/routes/pronunciation-routes');
@@ -1819,6 +1820,37 @@ const bookGuideNarrationTTS = new ChunkedTTS(CACHE_DIR, ttsQueue, {
   splitPolicyProvider: () => getSplitPolicyForVoice(getActiveVoice())
 });
 
+// Generated audio is bounded by disk headroom, not by a fixed size: least
+// recently used chapters are evicted when free space drops below the floor.
+const audioCacheBudget = createAudioCacheBudget({
+  cacheDir: CACHE_DIR,
+  usageFile: path.join(DATA_DIR, 'audio-cache-usage.json'),
+  jsonStore,
+  workers: () => [chunkedTTS, instantChunkedTTS, bookGuideNarrationTTS, ...premiumVariantTtsWorkers.values()]
+});
+const AUDIO_USE_PATH = /^\/api\/(?:audio(?:-chunked|-continuous|-ios|-stream)?|chunks|offline\/audio|voice-cache)\/([^/]+)\/(\d+)(?:\/|$)/;
+app.use((req, _res, next) => {
+  const match = req.path.match(AUDIO_USE_PATH);
+  if (match && requestGuardIsSafeBookId(match[1])) audioCacheBudget.recordUse(match[1], Number(match[2]));
+  next();
+});
+
+// Imports write sources, artifacts and covers. Reclaim audio cache space first
+// and refuse a new import only when the disk stays below the hard floor.
+async function rejectWhenStorageFull(res) {
+  try {
+    await audioCacheBudget.ensureWritableSpace();
+    return false;
+  } catch (error) {
+    if (error.code !== 'INSUFFICIENT_STORAGE') {
+      console.warn(`Storage admission check failed: ${error.message}`);
+      return false;
+    }
+    res.status(507).json({ error: error.message, code: error.code });
+    return true;
+  }
+}
+
 function pronunciationChunkVariants() {
   const variants = [chunkedTTS, instantChunkedTTS].map(tts => ({
     variantSegment: tts.currentVariantSegment(),
@@ -3416,6 +3448,7 @@ app.post('/api/download', async (req, res) => {
     job.ownerId === importUserId && job.status === 'running' &&
     job.requestHash && job.requestHash === req.body?.hash);
   if (existing) return res.status(202).json({ jobId: existing.id });
+  if (await rejectWhenStorageFull(res)) return;
   const releaseImportPermit = downloadImportGate.tryAcquire();
   if (!releaseImportPermit) {
     res.setHeader('Retry-After', '1');
@@ -3553,6 +3586,10 @@ async function handleUploadImport(req, res) {
     };
   };
   const respondsAsync = /(?:^|,)\s*respond-async\s*(?:,|$)/i.test(req.get('Prefer') || '');
+  if (await rejectWhenStorageFull(res)) {
+    await removeUploadedFile(req.file.path).catch(() => {});
+    return;
+  }
   const releaseImportPermit = downloadImportGate.tryAcquire();
   if (!releaseImportPermit) {
     await removeUploadedFile(req.file.path).catch(() => {});
@@ -5049,6 +5086,7 @@ if (require.main === module) {
     runningServer = server;
     server.listen(PORT, HOST, () => {
       console.log(`Xandrio running at ${protocol}://${HOST}:${PORT}`);
+      audioCacheBudget.start();
       // Non-blocking backfill
       backfillDurations()
         .catch(err => console.error('Backfill failed:', err.message))
@@ -5084,6 +5122,7 @@ const shutdownController = createGracefulShutdown({
     chunkedTTS.stopReconcileLoop?.();
     instantChunkedTTS.stopReconcileLoop?.();
     bookGuideNarrationTTS.stopReconcileLoop?.();
+    await audioCacheBudget.stop().catch(err => console.warn(`Audio cache usage flush failed: ${err.message}`));
     await hlsAudioStreamer.dispose();
     // Give the scraper's Chromium a moment to close, but never block exit.
     try {
