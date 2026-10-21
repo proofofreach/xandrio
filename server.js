@@ -1859,10 +1859,16 @@ async function importWithStorageAdmission(command, progress) {
   try {
     await audioCacheBudget.ensureWritableSpace();
   } catch (error) {
-    if (error.code !== 'INSUFFICIENT_STORAGE') throw error;
-    error.statusCode = error.status;
-    error.response = { error: error.message, code: error.code };
-    throw error;
+    // An unavailable disk probe must not become an import outage. Refuse
+    // only when the hard-floor condition is known.
+    if (error.code !== 'INSUFFICIENT_STORAGE') {
+      console.warn(`Storage admission check failed: ${error.message}`);
+    } else {
+      throw new BookImportError(error.message, {
+        statusCode: error.status,
+        response: { error: error.message, code: error.code }
+      });
+    }
   }
   return bookImporter.import(command, progress);
 }
