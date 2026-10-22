@@ -74,6 +74,49 @@ async function main() {
     assert.strictEqual(exits, 1);
   });
 
+  await test('an open-ended stream does not hold shutdown once background work is idle', async () => {
+    const calls = [];
+    const server = {
+      // A listening client keeps one connection open, so close never completes.
+      close() { calls.push('close'); },
+      closeIdleConnections() { calls.push('close-idle'); },
+      closeAllConnections() { calls.push('close-all'); }
+    };
+    let drainedFlag = null;
+    const started = Date.now();
+    await createGracefulShutdown({
+      getServer: () => server,
+      onStart: () => { calls.push('start'); },
+      isIdle: () => true,
+      cleanup: async ({ drained }) => { drainedFlag = drained; },
+      exit: () => {},
+      timeoutMs: 5000,
+      pollMs: 2,
+      connectionGraceMs: 20
+    }).shutdown(0);
+    assert.ok(Date.now() - started < 1000, 'shutdown finished well before the deadline');
+    assert.strictEqual(calls[0], 'start');
+    assert.ok(calls.includes('close-all'), 'remaining connections are closed');
+    assert.strictEqual(drainedFlag, true);
+  });
+
+  await test('busy background work still waits for the deadline', async () => {
+    const calls = [];
+    const server = { close() {}, closeIdleConnections() {}, closeAllConnections() { calls.push('close-all'); } };
+    let drainedFlag = null;
+    await createGracefulShutdown({
+      getServer: () => server,
+      isIdle: () => false,
+      cleanup: async ({ drained }) => { drainedFlag = drained; },
+      exit: () => {},
+      timeoutMs: 60,
+      pollMs: 2,
+      connectionGraceMs: 0
+    }).shutdown(0);
+    assert.strictEqual(drainedFlag, false);
+    assert.deepStrictEqual(calls, ['close-all']);
+  });
+
   console.log(`\ngraceful-shutdown tests: ${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);
 }

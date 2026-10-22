@@ -57,6 +57,27 @@ async function main() {
     assert(run(middleware, '/api/search').nextCalled);
   });
 
+  await test('shutdown idleness can ignore open-ended audio streams but not finite work', async () => {
+    const middleware = createConcurrencyLimitMiddleware({
+      groups: [{ name: 'tts', max: 4, match: path => path.startsWith('/api/audio') || path.startsWith('/api/chunks/') }]
+    });
+    const stream = run(middleware, '/api/audio-continuous/book/3');
+    assert(stream.nextCalled);
+    assert.strictEqual(middleware.isIdle(), false);
+    assert.strictEqual(middleware.isIdle({ ignoreOpenEndedStreams: true }), true);
+    const prepare = run(middleware, '/api/chunks/book/3/prepare-chapter-audio');
+    assert.strictEqual(middleware.isIdle({ ignoreOpenEndedStreams: true }), false);
+    prepare.res.end();
+    prepare.res.emit('finish');
+    assert.strictEqual(middleware.isIdle({ ignoreOpenEndedStreams: true }), true);
+    // Repeated completion signals settle the stream count exactly once.
+    stream.res.end();
+    stream.res.emit('finish');
+    stream.res.emit('close');
+    assert.strictEqual(middleware.isIdle(), true);
+    assert.strictEqual(middleware.groups[0].openEnded, 0);
+  });
+
   await test('a permit has no elapsed-time bypass', async () => {
     const middleware = createConcurrencyLimitMiddleware({
       groups: [{ name: 'search', max: 1, match: path => path === '/api/search' }],

@@ -115,6 +115,8 @@ function getJson(base, pathname, headers = {}) {
     runningSubscriber = await openEventStream(base, runningJob.id);
     check(runningJob.subscribers.size === 1,
       'a running import job keeps its SSE subscriber connected');
+    check(runningSubscriber.response.headers['x-accel-buffering'] === 'no',
+      'the event stream asks a reverse proxy not to buffer events');
 
     const subscribers = [];
     for (let index = 0; index < 10; index++) {

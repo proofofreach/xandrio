@@ -870,6 +870,148 @@ section('Successful direct import');
   assert(allowedResult.usedAlternative && allowedResult.book.id === 'free',
     'still probes an alternative whose id is confirmed available');
 
+  section('Single extraction per import');
+  const qualityInputs = [];
+  const persistedChapters = [];
+  const singleExtraction = createFixture({
+    checkChapterQuality: async (source, options) => {
+      qualityInputs.push({ source, chapters: options?.chapters });
+      return { isGoodStructure: true, structureVerified: true, reasons: [], contentChapters: 1, maxChapterSize: 20_000 };
+    },
+    afterPersist: async (_record, _path, extra) => { persistedChapters.push(extra?.chapters); }
+  });
+  await singleExtraction.importer.import(command());
+  const extractionCalls = singleExtraction.calls.filter(call => call.startsWith('chapters:'));
+  assert(extractionCalls.length === 1,
+    `extracts a retained-source EPUB once for validation, quality and persistence (${extractionCalls.length})`);
+  assert(Array.isArray(qualityInputs[0]?.chapters) && persistedChapters[0] === qualityInputs[0].chapters,
+    'the quality check and the post-persist hook receive the one extracted chapter list');
+
+  const failingExtraction = [];
+  const fallbackQuality = createFixture({
+    normalizeBook: async ({ id }) => ({
+      finalPath: `/library/${id}.epub`, filename: `${id}.epub`, originalFormat: 'EPUB',
+      originalSize: 12 * 1024, finalSize: 12 * 1024, largeSource: false, resized: false
+    }),
+    document: {
+      extractChapters: async source => {
+        if (source.includes('primary')) throw new Error('import extractor failed');
+        return [readableChapter()];
+      }
+    },
+    checkChapterQuality: async (source, options) => {
+      failingExtraction.push({ source, hasChapters: Boolean(options?.chapters) });
+      return source.includes('primary')
+        ? { isGoodStructure: false, structureVerified: false, reasons: ['quality check extraction failed'] }
+        : { isGoodStructure: true, structureVerified: true, reasons: [], contentChapters: 3, maxChapterSize: 20_000 };
+    }
+  });
+  const fallbackResult = await fallbackQuality.importer.import(command({
+    id: 'primary',
+    sourcePath: '/uploads/primary.epub',
+    alternatives: [{ id: 'healthy', originalName: 'healthy.epub', sourcePath: '/uploads/healthy.epub' }]
+  }));
+  assert(failingExtraction[0]?.hasChapters === false,
+    'a failed import extraction leaves the quality check to its own extraction');
+  assert(fallbackResult.usedAlternative && fallbackResult.book.id === 'healthy',
+    'a primary whose extraction fails can still be replaced by a healthy alternative');
+
+  const artifactChapters = [readableChapter(), readableChapter()];
+  let artifactQualityChapters;
+  const artifactExtraction = createFixture({
+    normalizeBook: async ({ id }) => ({
+      finalPath: `/library/${id}.pdf`, filename: `${id}.pdf`, originalFormat: 'PDF',
+      originalSize: 12 * 1024, finalSize: 12 * 1024, largeSource: false, resized: false
+    }),
+    document: {
+      extractChapters: async source => {
+        artifactExtraction.calls.push(`chapters:${source}`);
+        return artifactChapters;
+      }
+    },
+    checkChapterQuality: async (_source, options) => {
+      artifactQualityChapters = options?.chapters;
+      return { isGoodStructure: true, structureVerified: true, reasons: [], contentChapters: 2, maxChapterSize: 20_000 };
+    },
+    shouldDiscardSourceAfterExtract: () => true,
+    createArtifact: async () => ({
+      xbookPath: '/library/book-1.xbook.json',
+      artifact: { sourceFormat: 'PDF', metadata: { title: 'Embedded title', author: 'Embedded author', language: 'en' }, chapters: artifactChapters }
+    }),
+    proveArtifactRecovery: async () => ({ proven: true, reason: 'round-trip-equivalent' })
+  });
+  await artifactExtraction.importer.import(command({ originalName: 'book.pdf' }));
+  assert(artifactExtraction.calls.filter(call => call.startsWith('chapters:')).length === 1 &&
+    artifactQualityChapters === artifactChapters,
+  'a compacted PDF is extracted once and its quality check reuses that extraction');
+  const artifactWrites = artifactExtraction.calls.filter(call => call === 'write-artifact:/library/book-1.xbook.json');
+  assert(artifactWrites.length === 2,
+    `writes the artifact twice after creation: the durable deletion intent and the final record (${artifactWrites.length})`);
+  const intentWrite = artifactExtraction.calls.indexOf('write-artifact:/library/book-1.xbook.json');
+  assert(intentWrite >= 0 && intentWrite < artifactExtraction.calls.indexOf('remove:/library/book-1.pdf'),
+    'the deletion intent is still durable before the original source is removed');
+
+  section('Concurrent metadata lookups');
+  const lookupEvents = [];
+  let releaseLookups;
+  const lookupsReleased = new Promise(resolve => { releaseLookups = resolve; });
+  const concurrentLookups = createFixture({
+    shouldDiscardSourceAfterExtract: () => true,
+    createArtifact: async () => {
+      await new Promise(resolve => setTimeout(resolve, 5));
+      lookupEvents.push('artifact-written');
+      return {
+        xbookPath: '/library/book-1.xbook.json',
+        artifact: { sourceFormat: 'EPUB', metadata: undefined, chapters: [readableChapter()] }
+      };
+    },
+    metadata: {
+      enrich: async () => {
+        lookupEvents.push('enrich-start');
+        await lookupsReleased;
+        lookupEvents.push('enrich-end');
+        return {};
+      },
+      resolveIdentity: async () => {
+        lookupEvents.push('identity-start');
+        releaseLookups();
+        return { openLibraryWorkKey: 'OL1W' };
+      }
+    }
+  });
+  const concurrentResult = await Promise.race([
+    concurrentLookups.importer.import(command()),
+    new Promise(resolve => setTimeout(() => resolve(null), 1000))
+  ]);
+  releaseLookups();
+  assert(concurrentResult?.book?.openLibraryWorkKey === 'OL1W',
+    'enrichment and identity resolution run concurrently instead of one after the other');
+  assert(lookupEvents.indexOf('identity-start') < lookupEvents.indexOf('enrich-end') &&
+    lookupEvents.indexOf('enrich-start') < lookupEvents.indexOf('artifact-written'),
+  'catalog lookups run while the artifact is materialized');
+
+  const seeds = [];
+  const substitutedMetadata = createFixture({
+    shouldDiscardSourceAfterExtract: () => true,
+    createArtifact: async () => ({
+      xbookPath: '/library/book-1.xbook.json',
+      artifact: {
+        sourceFormat: 'PDF',
+        metadata: { title: 'Artifact title', author: 'Artifact author', language: 'en' },
+        chapters: [readableChapter()]
+      }
+    }),
+    metadata: {
+      enrich: async title => {
+        seeds.push(title);
+        return {};
+      }
+    }
+  });
+  const substitutedResult = await substitutedMetadata.importer.import(command({ originalName: 'book.pdf' }));
+  assert(seeds.at(-1) === 'Artifact title' && substitutedResult.book.title === 'Artifact title',
+    'lookups restart from the artifact metadata when an artifact writer substitutes it');
+
   console.log(`\nBook Importer tests: ${passed} passed, ${failed} failed`);
   if (failed) process.exit(1);
 })().catch(error => {

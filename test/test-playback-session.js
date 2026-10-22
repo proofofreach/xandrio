@@ -450,6 +450,8 @@ function fakeAudio() {
     appImports.overlays = [];
     appImports.resumePromptStates = [];
     appImports.timeoutDelays = [];
+    appImports.healthProbes = [];
+    appImports.serverDown = false;
     appImports.pendingTimeouts = [];
     appImports.nextTimeoutId = 1;
     appImports.toasts = [];
@@ -493,7 +495,7 @@ function fakeAudio() {
         invalidatePlaybackRecoveryForUserSeek,
         offerManualPlaybackRecovery
       };`;
-    const previousGlobals = new Map(['window', 'document', 'navigator', 'setInterval', '__playbackAppImports', '__playbackAppHarness']
+    const previousGlobals = new Map(['window', 'document', 'navigator', 'fetch', 'setInterval', '__playbackAppImports', '__playbackAppHarness']
       .map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
     const restoreGlobals = () => {
       for (const [key, descriptor] of previousGlobals) {
@@ -546,6 +548,17 @@ function fakeAudio() {
         },
         document: { configurable: true, writable: true, value: { addEventListener() {} } },
         navigator: { configurable: true, writable: true, value: { onLine: true } },
+        // Recovery probes /health once its retry budget is spent. The server is
+        // reachable unless a scenario takes it down.
+        fetch: {
+          configurable: true,
+          writable: true,
+          value: async url => {
+            appImports.healthProbes.push(url);
+            if (appImports.serverDown) throw new TypeError('Failed to fetch');
+            return { ok: true, status: 200 };
+          }
+        },
         setInterval: { configurable: true, writable: true, value: () => 0 },
         __playbackAppImports: { configurable: true, writable: true, value: appImports }
       });
@@ -1381,6 +1394,54 @@ function fakeAudio() {
         globalThis.__playbackAppHarness.currentChapter(),
         1,
         'the next chapter is the resume position after a chapter-limit stop'
+      );
+
+      // A server restart outlasts both automatic attempts. Recovery waits for
+      // the server instead of parking on a manual prompt, then retries.
+      globalThis.__playbackAppHarness.cancelPlaybackRecovery();
+      appImports.pendingTimeouts.length = 0;
+      appImports.transitionRequests.length = 0;
+      appImports.resumePromptStates.length = 0;
+      appImports.healthProbes.length = 0;
+      const restartPlayer = engine('server-restart', { backend: 'audio-stream' });
+      restartPlayer.isContinuous = true;
+      restartPlayer.getCurrentTime = () => 42;
+      globalThis.__playbackAppHarness.configure({
+        book: { id: 'book-a' },
+        chapters: [{ title: 'One' }, { title: 'Two' }],
+        player: restartPlayer,
+        chapter: uiElement
+      });
+      const restartError = Object.assign(new Error('stream died'), { code: 'MEDIA_STALLED', recoverable: true, chapterTime: 42 });
+      const settle = async () => {
+        for (let index = 0; index < 6; index++) await new Promise(resolve => setImmediate(resolve));
+      };
+      const runTimer = async delay => {
+        const pending = appImports.pendingTimeouts.find(entry => !entry.cancelled && entry.delay === delay);
+        assert(pending, `expected a pending ${delay}ms timer`);
+        pending.cancelled = true;
+        await pending.callback();
+        await settle();
+      };
+      appImports.serverDown = true;
+      globalThis.__playbackAppHarness.handleChunkError(restartError);
+      await runTimer(250);
+      globalThis.__playbackAppHarness.handleChunkError(restartError);
+      await runTimer(500);
+      globalThis.__playbackAppHarness.handleChunkError(restartError);
+      await settle();
+      const attemptsWhileDown = appImports.transitionRequests.length;
+      assert(appImports.healthProbes.includes('/health'), 'a spent budget probes server reachability');
+      assert(!appImports.resumePromptStates.includes(true), 'an unreachable server does not park on a manual prompt');
+      await runTimer(1000);
+      assert.strictEqual(appImports.transitionRequests.length, attemptsWhileDown, 'no load is attempted while the server is down');
+      appImports.serverDown = false;
+      await runTimer(2000);
+      await runTimer(250);
+      assert(appImports.transitionRequests.length > attemptsWhileDown, 'recovery retries once the server answers again');
+      assert(
+        appImports.transitionRequests.slice(attemptsWhileDown).every(request => request.sourceTuple?.startOffsetSeconds === 42),
+        'the retry resumes at the captured position'
       );
     } finally {
       process.removeListener('unhandledRejection', onUnhandled);

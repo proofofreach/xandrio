@@ -102,4 +102,34 @@ assert.throws(() => createExtractionResult({
 }), /positive integer count/,
 'mutation activations cannot omit a measurable positive count');
 
-console.log('13 passed, 0 failed');
+// Narration planning dominates import CPU time. The compatibility adapter must
+// plan each chapter once and reuse that plan for its importability diagnostic.
+{
+  const ttsText = require('../lib/tts-text');
+  const resultPath = require.resolve('../lib/extraction-result');
+  const originalPlan = ttsText.planNarration;
+  let plans = 0;
+  delete require.cache[resultPath];
+  ttsText.planNarration = (...args) => { plans++; return originalPlan(...args); };
+  let counted;
+  try {
+    counted = require('../lib/extraction-result');
+  } finally {
+    ttsText.planNarration = originalPlan;
+    delete require.cache[resultPath];
+  }
+  const chapters = () => [chapter(meaningful), chapter(meaningful.toUpperCase()), chapter('')];
+  const reference = createExtractionResult({
+    chapters: chapters(),
+    diagnostics: [],
+    sourceFormat: 'epub'
+  });
+  const shared = counted.fromLegacyChapters(chapters(), { sourceFormat: 'epub' });
+  assert.strictEqual(plans, 3, 'fromLegacyChapters plans each chapter exactly once');
+  assert.deepStrictEqual(
+    { narration: shared.narration, integrity: shared.textIntegrity, codes: shared.diagnostics.map(item => item.code) },
+    { narration: reference.narration, integrity: reference.textIntegrity, codes: fromLegacyChapters(chapters(), { sourceFormat: 'epub' }).diagnostics.map(item => item.code) },
+    'the shared narration plan yields the same assessment and diagnostics');
+}
+
+console.log('15 passed, 0 failed');

@@ -139,8 +139,9 @@ function fakeAudio() {
           request.url.includes('/chapter-audio-status')
           && request.url.includes('purpose=playback-runway')
           && request.url.includes('endChapter=3')
+          && request.url.includes('playbackRate=1.25')
         )),
-        'readiness is polled without holding a media encoder open'
+        'readiness is polled with the listener speed and without holding a media encoder open'
       );
       const mediaUrl = new URL(audio.src, 'https://xandrio.test');
       assert.strictEqual(
@@ -154,6 +155,33 @@ function fakeAudio() {
       audio.emit('loadedmetadata');
       await load;
     }
+  });
+
+  await test('runway polls briskly at first so fast engines are not held by the poll interval', async () => {
+    const audio = fakeAudio();
+    const pollTimes = [];
+    const { player } = makePlayer(audio, {
+      preparePlaybackRunway: true,
+      runwayPollIntervalMs: 1000,
+      fetch: async (url, options = {}) => {
+        if (options.method !== 'POST') pollTimes.push(Date.now());
+        const ready = pollTimes.length >= 2;
+        return {
+          ok: true,
+          status: 200,
+          async json() {
+            return { ready, status: ready ? 'ready' : 'generating', readyChunks: ready ? 2 : 1, totalChunks: 4 };
+          }
+        };
+      }
+    });
+    const startedAt = Date.now();
+    // Only the runway timing matters here; the fake media never loads.
+    const load = player.loadChapter('book1', 0, { startOffsetSeconds: 0 }).catch(() => {});
+    await new Promise(resolve => setTimeout(resolve, 700));
+    assert(pollTimes.length >= 2, 'at least two status polls within the first second');
+    assert(pollTimes[1] - startedAt < 700, `second poll after ${pollTimes[1] - startedAt} ms`);
+    await load;
   });
 
   await test('a failed runway stops preparation instead of polling forever', async () => {

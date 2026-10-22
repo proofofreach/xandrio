@@ -26,8 +26,9 @@ class BlackholedSocket extends EventEmitter {
 
 class CompletingSocket extends EventEmitter {
   static latest = null;
-  constructor() {
+  constructor(url) {
     super();
+    this.url = url;
     this.sent = [];
     this.closed = false;
     CompletingSocket.latest = this;
@@ -73,6 +74,9 @@ class CompletingSocket extends EventEmitter {
   assert(CompletingSocket.latest.sent.some(payload => payload.includes('Path:speech.config')), 'full synthesis sends speech configuration');
   assert(CompletingSocket.latest.sent.some(payload => payload.includes('A &lt;safe&gt; test')), 'full synthesis sends escaped SSML');
   assert(CompletingSocket.latest.closed === true, 'full synthesis closes its socket after turn end');
+  const endpoint = new URL(CompletingSocket.latest.url);
+  assert(endpoint.host === 'api.msedgeservices.com' && endpoint.searchParams.has('Ocp-Apim-Subscription-Key'),
+    'synthesis uses the current read-aloud endpoint');
   fs.rmSync(tempDir, { recursive: true, force: true });
   console.log(`${passed} passed, ${failed} failed`);
   if (failed) process.exit(1);

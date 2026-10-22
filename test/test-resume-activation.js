@@ -206,5 +206,36 @@ assert(
   );
 }
 
+// --- Server restarts --------------------------------------------------------
+// Production incident 2026-10-21: a deploy restart took ~40 s. Both automatic
+// attempts failed within a second, the client fell back to a manual Resume a
+// locked phone never showed, and the listener stayed silent after the server
+// came back.
+{
+  const schedule = functionBody('scheduleAutomaticPlaybackRecovery');
+  assert(
+    /automaticRecoveryAttempts >= MAX_AUTOMATIC_RECOVERY_ATTEMPTS\) \{\s*return waitForServerThenRecover\(error, lineageSnapshot\);/.test(schedule),
+    'an exhausted recovery budget waits for an unreachable server instead of giving up'
+  );
+  const wait = functionBody('waitForServerThenRecover');
+  const probe = functionBody('serverReachable');
+  assert(/fetch\('\/health', \{ cache: 'no-store'/.test(probe), 'server reachability uses the uncached liveness endpoint');
+  assert(/SERVER_PROBE_TIMEOUT_MS/.test(probe), 'a hung reachability probe is abandoned');
+  const reachableNow = wait.indexOf('if (reachable) {');
+  const manualIfUp = wait.indexOf('offerManualPlaybackRecovery(error, snapshot);');
+  assert(reachableNow !== -1 && manualIfUp > reachableNow,
+    'a reachable server keeps the bounded budget and hands over to manual resume');
+  assert(/SERVER_RECOVERY_DEADLINE_MS/.test(wait), 'waiting for the server is bounded by a deadline');
+  const reset = wait.indexOf('automaticRecoveryAttempts = 0;');
+  const loopEnd = wait.lastIndexOf('reachable = await serverReachable();');
+  assert(reset > loopEnd, 'a fresh budget starts only after the server is reachable again');
+  assert((wait.match(/token\.cancelled/g) || []).length >= 3,
+    'navigation, pause or a new intent cancels the server wait at every await');
+  assert(/waitingForServer = false;/.test(functionBody('stopPendingAutomaticRecovery')),
+    'stopping recovery clears the server wait');
+  assert(/\|\| waitingForServer/.test(functionBody('isPlaybackSourcePreparing')),
+    'idle recovery does not start a second load while the server wait runs');
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

@@ -732,6 +732,22 @@ function metadataHarness(options = {}) {
     assert.strictEqual(result.status, STRUCTURE_RECONCILE_RESULT.RESEGMENTED);
   });
 
+  await test('a compacted import fingerprint still certifies and rejects relabels', async () => {
+    const { compactImportValidation } = require('../lib/import-validation');
+    const h = relabelHarness();
+    h.files.books.book_1.importValidation = compactImportValidation(h.files.books.book_1.importValidation);
+    const stored = h.files.books.book_1.importValidation.content.extractionResult.chapters[0];
+    assert.strictEqual(stored.text, undefined, 'the record no longer carries chapter text');
+    assert.strictEqual(typeof stored.textSha256, 'string');
+    const changed = [{ ...h.next[0], text: 'Different narration.' }];
+    const rejected = await relabelHarness();
+    rejected.files.books.book_1.importValidation = compactImportValidation(rejected.files.books.book_1.importValidation);
+    assert.strictEqual((await rejected.service.reconcileChapterStructure('book_1', changed)).status,
+      STRUCTURE_RECONCILE_RESULT.RESEGMENTED);
+    assert.strictEqual((await h.service.reconcileChapterStructure('book_1', h.next)).status, 'relabeled');
+    assert(!h.operations.some(op => op.startsWith('invalidate-audio:')));
+  });
+
   await test('read-time re-segmentation drops positions instead of moving the reader', async () => {
     const harness = metadataHarness({ chapterStructureKey: 'structure-old', chapterCount: 5 });
     const chapters = Array.from({ length: 7 }, (_unused, index) => ({

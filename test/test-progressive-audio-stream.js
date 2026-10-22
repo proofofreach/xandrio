@@ -87,7 +87,8 @@ function routeHarness(source, streamerOptions = {}) {
         ready: streamerOptions.runwayReadyByChapter
           ? streamerOptions.runwayReadyByChapter[chapterIndex] !== false
           : streamerOptions.runwayReady !== false,
-        servedTier: requestedTier || streamerOptions.autoServedTierByChapter?.[chapterIndex]
+        servedTier: requestedTier || streamerOptions.autoServedTierByChapter?.[chapterIndex],
+        ...(streamerOptions.runwayStatus || {})
       };
     }
   }, {
@@ -395,6 +396,38 @@ function zeroCrossingRate(pcm) {
         }
       } finally {
         await new Promise(resolve => server.close(resolve));
+      }
+    });
+
+    await test('the transport gate honors a measured one-chunk early start and nothing weaker', async () => {
+      const currentPath = path.join(dir, 'early-start-current.mp3');
+      await createTone(currentPath, 0.35, 440);
+      const source = {
+        bookId: 'book_early_start',
+        chapterIndex: 0,
+        endChapterIndex: 0,
+        format: 'mp3',
+        async *iterateInputs() {
+          yield currentPath;
+        }
+      };
+      const partial = { ready: false, status: 'generating', totalChunks: 4, readyChunks: 1,
+        targetChunk: 0, runwayRequiredChunks: 2, runwayReadyChunks: 1 };
+      const cases = [
+        [{ ...partial, runwayEarlyStart: true }, 200],
+        [{ ...partial, runwayEarlyStart: false }, 425],
+        [{ ...partial, runwayEarlyStart: true, runwayErrorChunks: 1 }, 425]
+      ];
+      for (const [runwayStatus, expected] of cases) {
+        const server = await listen(routeHarness(source, { runwayStatus }));
+        const origin = `http://127.0.0.1:${server.address().port}`;
+        try {
+          const response = await fetch(`${origin}/api/audio-continuous/book_early_start/0`);
+          assert.strictEqual(response.status, expected, JSON.stringify(runwayStatus));
+          await response.arrayBuffer().catch(() => {});
+        } finally {
+          await new Promise(resolve => server.close(resolve));
+        }
       }
     });
 

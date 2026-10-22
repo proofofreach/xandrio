@@ -69,6 +69,23 @@ async function runTests() {
     assert.strictEqual(status.status, 'complete');
   });
 
+  await test('a suspended queue finishes active work and starts nothing new', async () => {
+    const q = new TestableQueue({ maxConcurrent: 1, generateDelay: 30 });
+    const activeId = await q.enqueue({ text: 'active', outputPath: '/tmp/suspend-active.mp3', priority: 'immediate' });
+    const queuedId = await q.enqueue({ text: 'queued', outputPath: '/tmp/suspend-queued.mp3', priority: 'background' });
+    const startedBy = Date.now() + 2000;
+    while (q.getStatus(activeId).status !== 'generating' && Date.now() < startedBy) {
+      await new Promise(resolve => setTimeout(resolve, 2));
+    }
+    assert.strictEqual(q.getStatus(activeId).status, 'generating');
+    q.suspend();
+    await q.waitFor(activeId);
+    await new Promise(resolve => setTimeout(resolve, 60));
+    assert.strictEqual(q.getStatus(activeId).status, 'complete');
+    assert.strictEqual(q.getStatus(queuedId).status, 'queued');
+    assert.strictEqual(q.getQueueStatus().active, 0);
+  });
+
   // ----- 2. Immediate priority jobs run before background -----
   await test('immediate-priority jobs run before background jobs', async () => {
     const q = new TestableQueue({ maxConcurrent: 1, generateDelay: 30 });
@@ -1580,6 +1597,43 @@ async function runTests() {
       });
       await q.waitFor(forcedId);
       assert.strictEqual(q.generationLog.length, 2, 'reuse stays opt-in');
+    } finally {
+      await fsp.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test('queue records noise-validated Edge output and forgets replaced files', async () => {
+    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'xandrio-runway-validated-'));
+    const outputPath = path.join(dir, 'chunk0.mp3');
+    const queue = new TTSQueue({ maxConcurrent: 1, cacheDir: dir });
+    const probes = [];
+    queue._generateEdgeTTSOnce = async () => { await fsp.writeFile(outputPath, Buffer.alloc(4000, 1)); };
+    queue._probeChunkDurationSeconds = async file => { probes.push(['duration', file]); return 30; };
+    queue._probeStaticNoiseProfile = async file => {
+      probes.push(['noise', file]);
+      return { staticNoise: false, meanSpectralFlatness: 0.1, frameCount: 10 };
+    };
+    try {
+      await queue._generateEdgeTTS({ text: 'A sentence that is long enough to narrate.', outputPath });
+      assert.deepStrictEqual(probes.map(probe => probe[0]).sort(), ['duration', 'noise']);
+      assert.strictEqual(await queue.isNoiseValidatedOutput(outputPath), true);
+      const tts = new ChunkedTTS(dir, queue);
+      assert.strictEqual(await tts.chunkAudioValidated(outputPath), true);
+
+      // A different file at the same path is not covered by the record.
+      await new Promise(resolve => setTimeout(resolve, 20));
+      await fsp.writeFile(outputPath, Buffer.alloc(5000, 2));
+      assert.strictEqual(await queue.isNoiseValidatedOutput(outputPath), false);
+
+      await queue._generateEdgeTTS({ text: 'A sentence that is long enough to narrate.', outputPath });
+      assert.strictEqual(await queue.isNoiseValidatedOutput(outputPath), true);
+      await queue._cleanupOutputArtifacts(outputPath);
+      assert.strictEqual(await queue.isNoiseValidatedOutput(outputPath), false);
+
+      // A failed noise analysis is acceptance without validation.
+      queue._probeStaticNoiseProfile = async () => null;
+      await queue._generateEdgeTTS({ text: 'A sentence that is long enough to narrate.', outputPath });
+      assert.strictEqual(await queue.isNoiseValidatedOutput(outputPath), false);
     } finally {
       await fsp.rm(dir, { recursive: true, force: true });
     }
