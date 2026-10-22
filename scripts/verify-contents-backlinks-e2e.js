@@ -38,6 +38,18 @@ const { createBookDocument } = require('../lib/book-document');
     await fs.writeFile(document.getChapterCachePath(source), JSON.stringify({ _cacheVersion: 31, chapters: [genuine] }));
     assert.deepEqual(await createBookDocument().getChaptersCached(source), [genuine]);
     evidence.cases.push('genuine contents retained');
+    // Navigation labels can name a contents page "Navigation" or the work.
+    // Such pages are trusted NCX targets too, but contain no chapter prose.
+    for (const rawTitle of ['Navigation', 'Synthetic Import Benchmark']) {
+      const titledContents = { ...genuine, fromToc: true, rawTitle, rawType: 'content',
+        text: `${rawTitle}\nContents\nChapter 1\nChapter 2\nChapter 3` };
+      await fs.writeFile(document.getChapterCachePath(source), JSON.stringify({ _cacheVersion: 31, chapters: [titledContents] }));
+      const retained = await createBookDocument().getChaptersCached(source);
+      assert.equal(retained[0].title, 'Contents');
+      assert.equal(retained[0].type, 'toc');
+      assert.equal(retained[0].text, titledContents.text);
+    }
+    evidence.cases.push('trusted navigation titles do not expose genuine contents as prose');
     evidence.passed = true;
     console.log('PASS contents backlink import and stored-cache repair');
     console.log(`${evidence.cases.length} passed, 0 failed`);
