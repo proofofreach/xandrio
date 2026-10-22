@@ -25,7 +25,7 @@ const { createBookDocument } = require('../lib/book-document');
     assert.deepEqual(chapters.map(c => c.title), ['Chapter 1', 'Chapter 2', 'Chapter 3']);
     assert(chapters.every(c => !['toc', 'frontmatter'].includes(c.type)));
     evidence.cases.push('EPUB import retains chapters with contents return links');
-    const legacy = chapters.map(c => ({ ...c, title: 'Contents', type: 'toc', rawTitle: c.title, rawType: c.type }));
+    const legacy = chapters.map(({ contentsBacklink, ...c }) => ({ ...c, title: 'Contents', type: 'toc', rawTitle: c.title, rawType: c.type }));
     await fs.writeFile(document.getChapterCachePath(source), JSON.stringify({ _cacheVersion: 31, chapters: legacy }));
     const cached = await createBookDocument().getChaptersCached(source);
     assert.deepEqual(cached.map(c => c.title), chapters.map(c => c.title));
@@ -50,6 +50,21 @@ const { createBookDocument } = require('../lib/book-document');
       assert.equal(retained[0].text, titledContents.text);
     }
     evidence.cases.push('trusted navigation titles do not expose genuine contents as prose');
+    const longContents = { ...genuine, fromToc: true, rawTitle: 'Navigation', rawType: 'content',
+      text: `Navigation\nContents\n${'A detailed description of the first chapter. '.repeat(10)}\nChapter 2` };
+    await fs.writeFile(document.getChapterCachePath(source), JSON.stringify({ _cacheVersion: 31, chapters: [longContents] }));
+    assert.deepEqual(await createBookDocument().getChaptersCached(source), [longContents]);
+    evidence.cases.push('long contents descriptions cannot supply return-link evidence');
+    await fs.writeFile(path.join(oebps, 'chapter-1.xhtml'),
+      `<html><body><h1>Navigation</h1><h2>Contents</h2><p>${'A detailed chapter description. '.repeat(20)}</p><a href="chapter-2.xhtml">Chapter 2</a></body></html>`);
+    const ncxPath = path.join(oebps, 'toc.ncx');
+    await fs.writeFile(ncxPath, (await fs.readFile(ncxPath, 'utf8')).replace('<text>Chapter 1</text>', '<text>Navigation</text>'));
+    execFileSync('zip', ['-qr9', source, 'OEBPS'], { cwd: path.join(root, 'epub-source') });
+    const importedContents = await createBookDocument().extractChapters(source);
+    assert.equal(importedContents[0].type, 'toc');
+    assert.equal(importedContents[0].title, 'Contents');
+    assert(importedContents.slice(1).every(c => ['content', 'chapter'].includes(c.type)));
+    evidence.cases.push('fresh EPUB import distinguishes long contents descriptions from HTML return links');
     evidence.passed = true;
     console.log('PASS contents backlink import and stored-cache repair');
     console.log(`${evidence.cases.length} passed, 0 failed`);
