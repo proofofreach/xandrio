@@ -8,6 +8,7 @@ const { execSync } = require('child_process');
 const path = require('path');
 
 const tests = [
+  '../scripts/verify-contents-backlinks-e2e.js',
   'test-processing-judgments-benchmark.js',
   'test-generation-scheduler.js',
   'test-generation-journal-indexes.js',
