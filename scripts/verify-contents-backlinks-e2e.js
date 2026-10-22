@@ -1,0 +1,76 @@
+// Failure modes: TOC return links hide prose chapters; genuine contents pages
+// lose their type; repairing a stored cache changes narration or indices.
+const assert = require('node:assert/strict');
+const fs = require('node:fs/promises');
+const os = require('node:os');
+const path = require('node:path');
+const { execFileSync } = require('node:child_process');
+const { createSyntheticImportEpub } = require('./lib/import-benchmark-fixtures');
+const { createBookDocument } = require('../lib/book-document');
+
+(async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'contents-backlinks-'));
+  const evidence = { passed: false, cases: [] };
+  try {
+    const source = await createSyntheticImportEpub(root);
+    const oebps = path.join(root, 'epub-source/OEBPS');
+    for (const number of [1, 2, 3]) {
+      const file = path.join(oebps, `chapter-${number}.xhtml`);
+      const html = await fs.readFile(file, 'utf8');
+      await fs.writeFile(file, html.replace('</h1>', '</h1><div><a href="contents.xhtml">Table of Contents</a></div>'));
+    }
+    execFileSync('zip', ['-qr9', source, 'OEBPS'], { cwd: path.join(root, 'epub-source') });
+    const document = createBookDocument();
+    const chapters = await document.extractChapters(source);
+    assert.deepEqual(chapters.map(c => c.title), ['Chapter 1', 'Chapter 2', 'Chapter 3']);
+    assert(chapters.every(c => !['toc', 'frontmatter'].includes(c.type)));
+    evidence.cases.push('EPUB import retains chapters with contents return links');
+    const legacy = chapters.map(({ contentsBacklink, ...c }) => ({ ...c, title: 'Contents', type: 'toc', rawTitle: c.title, rawType: c.type }));
+    await fs.writeFile(document.getChapterCachePath(source), JSON.stringify({ _cacheVersion: 31, chapters: legacy }));
+    const cached = await createBookDocument().getChaptersCached(source);
+    assert.deepEqual(cached.map(c => c.title), chapters.map(c => c.title));
+    assert.deepEqual(cached.map(c => c.type), chapters.map(c => c.type));
+    assert.deepEqual(cached.map(c => [c.index, c.text, c.estimatedDuration]), legacy.map(c => [c.index, c.text, c.estimatedDuration]));
+    const persisted = JSON.parse(await fs.readFile(document.getChapterCachePath(source), 'utf8'));
+    assert.deepEqual(persisted.chapters, cached);
+    evidence.cases.push('existing cache repaired without changing text, indices, or duration');
+    const genuine = { index: 0, title: 'Contents', type: 'toc', text: 'Table of Contents\nChapter 1\nChapter 2', estimatedDuration: 1 };
+    await fs.writeFile(document.getChapterCachePath(source), JSON.stringify({ _cacheVersion: 31, chapters: [genuine] }));
+    assert.deepEqual(await createBookDocument().getChaptersCached(source), [genuine]);
+    evidence.cases.push('genuine contents retained');
+    // Navigation labels can name a contents page "Navigation" or the work.
+    // Such pages are trusted NCX targets too, but contain no chapter prose.
+    for (const rawTitle of ['Navigation', 'Synthetic Import Benchmark']) {
+      const titledContents = { ...genuine, fromToc: true, rawTitle, rawType: 'content',
+        text: `${rawTitle}\nContents\nChapter 1\nChapter 2\nChapter 3` };
+      await fs.writeFile(document.getChapterCachePath(source), JSON.stringify({ _cacheVersion: 31, chapters: [titledContents] }));
+      const retained = await createBookDocument().getChaptersCached(source);
+      assert.equal(retained[0].title, 'Contents');
+      assert.equal(retained[0].type, 'toc');
+      assert.equal(retained[0].text, titledContents.text);
+    }
+    evidence.cases.push('trusted navigation titles do not expose genuine contents as prose');
+    const longContents = { ...genuine, fromToc: true, rawTitle: 'Navigation', rawType: 'content',
+      text: `Navigation\nContents\n${'A detailed description of the first chapter. '.repeat(10)}\nChapter 2` };
+    await fs.writeFile(document.getChapterCachePath(source), JSON.stringify({ _cacheVersion: 31, chapters: [longContents] }));
+    assert.deepEqual(await createBookDocument().getChaptersCached(source), [longContents]);
+    evidence.cases.push('long contents descriptions cannot supply return-link evidence');
+    await fs.writeFile(path.join(oebps, 'chapter-1.xhtml'),
+      `<html><body><h1>Navigation</h1><h2>Contents</h2><p>${'A detailed chapter description. '.repeat(20)}</p><a href="chapter-2.xhtml">Chapter 2</a></body></html>`);
+    const ncxPath = path.join(oebps, 'toc.ncx');
+    await fs.writeFile(ncxPath, (await fs.readFile(ncxPath, 'utf8')).replace('<text>Chapter 1</text>', '<text>Navigation</text>'));
+    execFileSync('zip', ['-qr9', source, 'OEBPS'], { cwd: path.join(root, 'epub-source') });
+    const importedContents = await createBookDocument().extractChapters(source);
+    assert.equal(importedContents[0].type, 'toc');
+    assert.equal(importedContents[0].title, 'Contents');
+    assert(importedContents.slice(1).every(c => ['content', 'chapter'].includes(c.type)));
+    evidence.cases.push('fresh EPUB import distinguishes long contents descriptions from HTML return links');
+    evidence.passed = true;
+    console.log('PASS contents backlink import and stored-cache repair');
+    console.log(`${evidence.cases.length} passed, 0 failed`);
+  } finally {
+    await fs.mkdir('output/playback-processing', { recursive: true });
+    await fs.writeFile('output/playback-processing/contents-backlinks.json', JSON.stringify(evidence, null, 2));
+    await fs.rm(root, { recursive: true, force: true });
+  }
+})().catch(error => { console.error(error); process.exitCode = 1; });
