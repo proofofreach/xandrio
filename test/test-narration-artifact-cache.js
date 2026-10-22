@@ -673,6 +673,57 @@ function recipe(adapter, overrides = {}) {
     }
   });
 
+  await test('verification hashes each unchanged file once and re-hashes a replacement', async () => {
+    const realFs = require('fs');
+    const { NarrationArtifactCache } = require('../lib/narration-artifact-cache');
+    const cacheDir = await fs.mkdtemp(path.join(os.tmpdir(), 'xandrio-artifact-memo-'));
+    try {
+      const outputPath = path.join(cacheDir, 'book_ch0_chunk0.mp3');
+      await fs.writeFile(outputPath, Buffer.alloc(2048, 3));
+      const reads = [];
+      const cache = new NarrationArtifactCache(cacheDir, {
+        createReadStream: (filePath, ...rest) => {
+          reads.push(filePath);
+          return realFs.createReadStream(filePath, ...rest);
+        }
+      });
+      const request = { bookId: 'book', chapterIndex: 0, fingerprint: 'b'.repeat(64), outputPath };
+      assert.strictEqual(await cache.publishVerified(request), true);
+      const afterPublish = reads.length;
+      assert.strictEqual((await cache.inspect(request)).provenance, 'verified');
+      assert.strictEqual((await cache.resolve(request)), true);
+      assert.strictEqual(reads.length, afterPublish, 'unchanged files are not read again');
+
+      // An atomic replacement with different bytes is a new identity.
+      const staged = `${outputPath}.staged`;
+      await fs.writeFile(staged, Buffer.alloc(2048, 4));
+      await fs.rename(staged, outputPath);
+      assert.strictEqual((await cache.inspect(request)).provenance, 'invalid');
+      assert.ok(reads.length > afterPublish, 'a replaced file is hashed again');
+    } finally {
+      await fs.rm(cacheDir, { recursive: true, force: true });
+    }
+  });
+
+  await test('startup indexing recognises indexed outputs from markers alone', async () => {
+    const { NarrationArtifactCache } = require('../lib/narration-artifact-cache');
+    const cacheDir = await fs.mkdtemp(path.join(os.tmpdir(), 'xandrio-artifact-indexed-'));
+    try {
+      const outputPath = path.join(cacheDir, 'book_ch0_chunk0.mp3');
+      await fs.writeFile(outputPath, Buffer.alloc(1024, 5));
+      const cache = new NarrationArtifactCache(cacheDir);
+      const request = { bookId: 'book', chapterIndex: 0, fingerprint: 'c'.repeat(64), outputPath };
+      assert.strictEqual(await cache.isIndexed(request), false);
+      await cache.publishVerified(request);
+      assert.strictEqual(await cache.isIndexed(request), true);
+      const artifactPath = path.join(cacheDir, 'book_narration_artifacts_v1', 'ch0', `${'c'.repeat(64)}.mp3`);
+      await fs.unlink(`${artifactPath}.narration-artifact.json`);
+      assert.strictEqual(await cache.isIndexed(request), false);
+    } finally {
+      await fs.rm(cacheDir, { recursive: true, force: true });
+    }
+  });
+
   console.log(`narration-artifact-cache tests: ${passed} passed, ${failed} failed`);
   if (failed > 0) process.exitCode = 1;
 })();

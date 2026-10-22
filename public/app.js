@@ -67,6 +67,7 @@ let persistedPlaybackEventLedger = restoredPlaybackEventLedger.slice();
 let automaticRecoveryAttempts = 0;
 let automaticRecoveryTimer = null;
 let waitingForOnline = false;
+let waitingForServer = false;
 let recoveryOnlineListener = null;
 let playbackPausedByUser = false;
 let rateLimitedUntil = 0;
@@ -514,6 +515,66 @@ function resumeFromPreparedSource() {
 // session churn a single failed resume could produce.
 const MAX_AUTOMATIC_RECOVERY_ATTEMPTS = 2;
 
+// A server restart (deploy, crash, host reboot) makes both attempts fail within
+// a second, long before the server is back, and a locked phone never sees the
+// manual Resume prompt. When the budget is spent and the server itself is
+// unreachable, wait for it instead, then start a fresh budget. The deadline
+// covers a slow restart without polling a dead server forever.
+const SERVER_RECOVERY_DEADLINE_MS = 3 * 60 * 1000;
+const SERVER_PROBE_INTERVALS_MS = [1000, 2000, 3000, 5000];
+const SERVER_PROBE_TIMEOUT_MS = 4000;
+
+async function serverReachable() {
+  try {
+    const signal = typeof AbortSignal?.timeout === 'function' ? AbortSignal.timeout(SERVER_PROBE_TIMEOUT_MS) : undefined;
+    const response = await fetch('/health', { cache: 'no-store', signal });
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
+function waitForServerThenRecover(error, snapshot) {
+  if (waitingForServer) return true;
+  waitingForServer = true;
+  const token = recoveryToken;
+  const startedAt = Date.now();
+  void (async () => {
+    let probes = 0;
+    let reachable = await serverReachable();
+    if (token.cancelled) return;
+    if (reachable) {
+      // The server is up, so the failure is not a restart. Keep the existing
+      // budget semantics and hand over to the user.
+      waitingForServer = false;
+      offerManualPlaybackRecovery(error, snapshot);
+      return;
+    }
+    setPlaybackReliabilityState('preparing', 'Reconnecting to server…');
+    recordPlaybackEvent({
+      type: 'server-wait',
+      reason: error?.code || 'playback-error',
+      chapterIndex: snapshot?.chapterIndex ?? currentChapter,
+      chapterTime: snapshot?.startOffsetSeconds ?? 0
+    });
+    while (!reachable && Date.now() - startedAt < SERVER_RECOVERY_DEADLINE_MS) {
+      const delay = SERVER_PROBE_INTERVALS_MS[Math.min(probes, SERVER_PROBE_INTERVALS_MS.length - 1)];
+      probes += 1;
+      await new Promise(resolve => window.setTimeout(resolve, delay));
+      if (token.cancelled) return;
+      reachable = await serverReachable();
+      if (token.cancelled) return;
+    }
+    waitingForServer = false;
+    if (reachable) {
+      automaticRecoveryAttempts = 0;
+      if (scheduleAutomaticPlaybackRecovery(error, snapshot)) return;
+    }
+    offerManualPlaybackRecovery(error, snapshot);
+  })();
+  return true;
+}
+
 function stopPendingAutomaticRecovery({ preserveReadySource = false } = {}) {
   recoveryToken.cancelled = true;
   recoveryToken = { cancelled: false };
@@ -522,6 +583,7 @@ function stopPendingAutomaticRecovery({ preserveReadySource = false } = {}) {
     recoveryOnlineListener = null;
   }
   waitingForOnline = false;
+  waitingForServer = false;
   if (automaticRecoveryTimer !== null) {
     window.clearTimeout?.(automaticRecoveryTimer);
     automaticRecoveryTimer = null;
@@ -635,7 +697,9 @@ function scheduleAutomaticPlaybackRecovery(error, snapshot) {
   }
 
   if (automaticRecoveryTimer !== null || automaticRecoveryInFlight || manualRecoveryInFlight) return true;
-  if (automaticRecoveryAttempts >= MAX_AUTOMATIC_RECOVERY_ATTEMPTS) return false;
+  if (automaticRecoveryAttempts >= MAX_AUTOMATIC_RECOVERY_ATTEMPTS) {
+    return waitForServerThenRecover(error, lineageSnapshot);
+  }
   automaticRecoveryAttempts += 1;
   const attempt = automaticRecoveryAttempts;
   // The whole attempt runs under one token and one in-flight flag. Both are
@@ -2469,6 +2533,7 @@ function isPlaybackSourcePreparing() {
     || automaticRecoveryInFlight
     || manualRecoveryInFlight
     || waitingForOnline
+    || waitingForServer
   );
 }
 

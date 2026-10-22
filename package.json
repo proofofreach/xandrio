@@ -36,6 +36,7 @@
     "benchmark:processing-real": "node scripts/benchmark-real-processing.js",
     "benchmark:book-guides": "node scripts/benchmark-book-guides.js",
     "benchmark:tts": "node scripts/benchmark-tts.js",
+    "benchmark:first-audio": "node scripts/benchmark-first-audio.js",
     "benchmark:first-play": "node scripts/benchmark-mobile-playback-continuity.js",
     "benchmark:mobile-playback": "node scripts/benchmark-mobile-playback-continuity.js",
     "build:calibre-plugin": "node scripts/build-calibre-plugin.mjs",

@@ -968,19 +968,89 @@ async function finishSuccessfulImport(data, options = {}) {
   const shouldOpen = downloadProgress?.shouldOpen() ?? isSearchRoute();
   downloadProgress?.complete(data);
   downloadError.style.display = 'none';
-  await loadLibrary().catch(error => console.warn('Library refresh after import failed:', error));
+  // Opening reads the book directly, so it does not wait for the library.
+  const libraryRefresh = loadLibrary().catch(error => console.warn('Library refresh after import failed:', error));
   const bookId = data.bookId || data?.book?.id;
   if (shouldOpen && (downloadProgress?.shouldOpen() ?? isSearchRoute()) && bookId && typeof deps.openBook === 'function') {
     await deps.openBook(bookId).catch(error => console.warn('Opening imported book failed:', error));
   }
+  await libraryRefresh;
 }
 
 function startDownloadProgress(result) {
   return beginImport(result);
 }
 
+const IMPORT_STATUS_POLL_MS = 1200;
+// The server sends a snapshot as soon as the stream opens and a heartbeat
+// every 15 s. Silence beyond these bounds means a proxy is buffering or the
+// connection stalled, so the client falls back to polling.
+const IMPORT_EVENTS_FIRST_BYTE_MS = 3000;
+const IMPORT_EVENTS_STALL_MS = 20000;
+const isTerminalImportStatus = status => status === 'complete' || status === 'cancelled' || status === 'failed';
+
+function importJobOutcome(status) {
+  if (status.status === 'complete') return status.result;
+  if (status.status === 'cancelled') throw { code: 'IMPORT_CANCELLED' };
+  throw status.error || { error: 'Download failed' };
+}
+
+// Follows the job's server-sent events so completion is seen immediately
+// instead of at the next poll. fetch() carries the same identity headers as
+// every other API call, which EventSource cannot. Resolves with the terminal
+// snapshot, or null when the stream is unavailable or ends early.
+async function streamImportJob(jobId, downloadProgress) {
+  if (typeof TextDecoder !== 'function' || typeof AbortController !== 'function') return null;
+  const controller = new AbortController();
+  let watchdog;
+  const expectDataWithin = ms => {
+    clearTimeout(watchdog);
+    watchdog = setTimeout(() => controller.abort(), ms);
+  };
+  try {
+    expectDataWithin(IMPORT_EVENTS_FIRST_BYTE_MS);
+    const response = await fetch(`${API_BASE}/api/download/${encodeURIComponent(jobId)}/events`, {
+      headers: syncHeaders({ Accept: 'text/event-stream' }),
+      cache: 'no-store',
+      signal: controller.signal
+    });
+    if (!response.ok || typeof response.body?.getReader !== 'function') return null;
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffered = '';
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) return null;
+      expectDataWithin(IMPORT_EVENTS_STALL_MS);
+      buffered += decoder.decode(value, { stream: true }).replace(/\r\n?/g, '\n');
+      let boundary;
+      while ((boundary = buffered.indexOf('\n\n')) >= 0) {
+        const block = buffered.slice(0, boundary);
+        buffered = buffered.slice(boundary + 2);
+        const data = block.split('\n')
+          .filter(line => line.startsWith('data:'))
+          .map(line => line.slice(5).replace(/^ /, ''))
+          .join('\n');
+        if (!data) continue;
+        let status;
+        try { status = JSON.parse(data); } catch { continue; }
+        if (!status || typeof status !== 'object') continue;
+        downloadProgress.render(status);
+        if (isTerminalImportStatus(status.status)) return status;
+      }
+    }
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(watchdog);
+    controller.abort();
+  }
+}
+
 async function waitForImportJob(jobId, result, downloadProgress) {
   downloadProgress.attach(jobId);
+  const streamed = await streamImportJob(jobId, downloadProgress);
+  if (streamed) return importJobOutcome(streamed);
   while (true) {
     let status;
     try {
@@ -992,10 +1062,8 @@ async function waitForImportJob(jobId, result, downloadProgress) {
       continue;
     }
     downloadProgress.render(status);
-    if (status.status === 'complete') return status.result;
-    if (status.status === 'cancelled') throw { code: 'IMPORT_CANCELLED' };
-    if (status.status === 'failed') throw status.error || { error: 'Download failed' };
-    await new Promise(resolve => setTimeout(resolve, 1200));
+    if (isTerminalImportStatus(status.status)) return importJobOutcome(status);
+    await new Promise(resolve => setTimeout(resolve, IMPORT_STATUS_POLL_MS));
   }
 }
 

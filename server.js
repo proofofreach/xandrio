@@ -52,6 +52,7 @@ const {
   GENERATION_ORIGIN,
   GENERATION_PRIORITY
 } = require('./lib/audio-generation-intent');
+const { playbackChunkPriority } = require('./lib/playback-runway');
 const GenerationScheduler = require('./lib/generation-scheduler');
 const GenerationJournal = require('./lib/generation-journal');
 const { createPronunciationService, createCacheInvalidator, effectiveRules } = require('./lib/pronunciation-repair');
@@ -1265,14 +1266,9 @@ function getTTSConcurrency() {
   }
 }
 
-function getChapterGenerationPriority(targetChunk = 0) {
-  return (chunkIndex, isFirstPending) => {
-    if (chunkIndex === targetChunk) return 'immediate';
-    if (chunkIndex === targetChunk + 1) return 'next';
-    if (isFirstPending && targetChunk === 0) return 'immediate';
-    return 'background';
-  };
-}
+// Playback priority: target immediate, its playback buffer ahead of any
+// chapter look-ahead, the rest background (lib/playback-runway.js).
+const getChapterGenerationPriority = playbackChunkPriority;
 
 function startProviderServersForVoice(voice) {
   return narrationEngines.start(voice);
@@ -1433,7 +1429,7 @@ async function maybeRelaxMissingTocValidation(bookPath, validation, context = {}
   if (!gutenbergId && !publisher.includes('project gutenberg')) return validation;
 
   try {
-    const chapters = await extractBookChapters(bookPath);
+    const chapters = await (context.extractChapters || extractBookChapters)(bookPath);
     const contentValidation = assessExtractedContent(chapters, {
       format: getBookFormatFromName(bookPath) || 'epub'
     });
@@ -1657,15 +1653,18 @@ const bookImporter = createBookImporter({
   // refresh exemption must never open an occupied alternative id.
   isImportTargetAvailable: (id, addedBy) =>
     assertImportTargetAvailable(id, addedBy, false).then(() => true).catch(() => false),
+  // Validation, the quality check and persistence use the import document
+  // service, so one import extracts each candidate once.
   document: {
-    validateBook,
-    validateExtractedChapters: bookDocument.validateExtractedChapters,
-    extractMetadata: bookDocument.extractMetadata,
+    validateBook: importBookDocument.validateBook,
+    validateExtractedChapters: importBookDocument.validateExtractedChapters,
+    extractMetadata: importBookDocument.extractMetadata,
     extractChapters: importBookDocument.extractChapters,
     getChaptersCached: bookDocument.getChaptersCached
   },
   checkChapterQuality,
-  relaxValidation: maybeRelaxMissingTocValidation,
+  relaxValidation: (bookPath, validation, context) =>
+    maybeRelaxMissingTocValidation(bookPath, validation, { ...context, extractChapters: importBookDocument.extractChapters }),
   shouldDiscardSourceAfterExtract,
   createArtifact: writeXBookArtifact,
   writeArtifactData: (artifactPath, artifact) =>
@@ -1702,7 +1701,14 @@ const bookImporter = createBookImporter({
     return { existingBook };
   },
   removeFile: removeFileIfExists,
-  afterPersist: (record, bookPath) => {
+  afterPersist: async (record, bookPath, { chapters } = {}) => {
+    // The import and playback document services differ only in optional PDF
+    // page repair. For every other source format the import's chapters are
+    // exactly what playback would extract, so the first open and the audio
+    // warmup reuse them instead of extracting the book again.
+    if (chapters && getBookFormatFromName(bookPath) !== 'pdf') {
+      await bookDocument.primeExtractedChapters(bookPath, chapters).catch(() => false);
+    }
     if (!PREGENERATE_ON_IMPORT) return;
     console.log(`Warming starting chapter for ${record.id}`);
     warmImportedBookAudio(record.id, bookPath).catch(error => {
@@ -3550,6 +3556,8 @@ app.get('/api/download/:jobId/events', (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache, no-transform');
   res.setHeader('Connection', 'keep-alive');
+  // nginx buffers proxied responses by default; events must arrive as sent.
+  res.setHeader('X-Accel-Buffering', 'no');
   res.flushHeaders?.();
 
   for (const event of job.events) writeSseEvent(res, event);
@@ -5026,9 +5034,18 @@ let runningServer = null;
 if (require.main === module) {
   // Start server
   ensureDirectories().then(async () => {
+    // Restart downtime is listener-visible, so record where startup goes.
+    const startupPhases = [];
+    let startupMark = Date.now();
+    const startupPhase = name => {
+      const now = Date.now();
+      startupPhases.push(`${name} ${now - startupMark}ms`);
+      startupMark = now;
+    };
     await updateJSON(BOOKS_FILE, books => (
       removeLegacyImportReviewState(books) ? undefined : jsonStore.SKIP_SAVE
     ));
+    startupPhase('library migration');
     const artifactRepair = await reconcileBookArtifactPaths({
       cacheDir: CACHE_DIR,
       loadBooks: () => booksStore.load(),
@@ -5040,10 +5057,12 @@ if (require.main === module) {
         `for ${artifactRepair.repairedBooks} book(s)`
       );
     }
+    startupPhase('artifact paths');
     const recoveredRebuilds = await chapterRebuildService.recoverAll();
     if (recoveredRebuilds.length) {
       console.log(`Recovered ${recoveredRebuilds.length} interrupted chapter rebuild(s)`);
     }
+    startupPhase('chapter rebuilds');
     const recoveredGuides = await bookGuideService.restore();
     if (recoveredGuides.resumed) {
       console.log(`Recovered ${recoveredGuides.resumed} interrupted book guide job(s)`);
@@ -5051,6 +5070,7 @@ if (require.main === module) {
     narrationEngines.start('kokoro:af_heart');
     narrationEngines.start('chatterbox:brick-scott');
     startProviderServersForVoice(getActiveVoice());
+    startupPhase('guide jobs');
     const generationCleanup = await generationJournal.discardLegacySpeculativeChapters();
     if (generationCleanup.discarded) {
       console.log(`Discarded ${generationCleanup.discarded} transient chapter generation intent(s)`);
@@ -5080,7 +5100,9 @@ if (require.main === module) {
         mossNanoModelsUnavailable = (await response.json()).status === 'models-uninstalled';
       } catch { /* An offline worker may still be starting; existing retry applies. */ }
     }
+    startupPhase('generation journal');
     await premiumPrep.restore().catch(err => console.warn(`Premium prep recovery failed: ${err.message}`));
+    startupPhase('premium prep');
     const ordinaryRecovery = await Promise.all([
       chunkedTTS.resumePendingChapters({ recoverAllVariants: true, fixedWorkers: true })
     ]).catch(err => {
@@ -5092,6 +5114,7 @@ if (require.main === module) {
     if (resumedChapters || failedChapters) {
       console.log(`Chapter generation recovery: ${resumedChapters} resumed, ${failedChapters} failed`);
     }
+    startupPhase('generation recovery');
     const offlineRecovery = await replayOfflinePreparations({
       offlinePreparationCoordinator
     }).catch(err => {
@@ -5104,10 +5127,13 @@ if (require.main === module) {
         `${offlineRecovery.resumedChapters} chapter(s), ${offlineRecovery.failedBooks.length} failed`
       );
     }
+    startupPhase('offline recovery');
     const { server, protocol } = createConfiguredServer();
     runningServer = server;
     server.listen(PORT, HOST, () => {
+      startupPhase('listen');
       console.log(`Xandrio running at ${protocol}://${HOST}:${PORT}`);
+      console.log(`[startup] ${Math.round(process.uptime() * 1000)}ms since process start: ${startupPhases.join(', ')}`);
       audioCacheBudget.start();
       // Non-blocking backfill
       backfillDurations()
@@ -5125,10 +5151,13 @@ if (require.main === module) {
 
 const shutdownController = createGracefulShutdown({
   getServer: () => runningServer,
+  onStart: () => ttsQueue.suspend(),
+  // Finite work only. Queued narration resumes from durable chapter intents,
+  // and open-ended audio streams reconnect after restart.
   isIdle: () => {
     const queue = ttsQueue.getQueueStatus();
-    return requestConcurrencyLimiter.isIdle() && downloadImportGate.active === 0 &&
-      queue.active === 0 && queue.queued === 0 && bookGuideService.isIdle();
+    return requestConcurrencyLimiter.isIdle({ ignoreOpenEndedStreams: true }) &&
+      downloadImportGate.active === 0 && queue.active === 0 && bookGuideService.isIdle();
   },
   cleanup: async ({ drained }) => {
     await offlineRecovery.close();
@@ -5174,10 +5203,12 @@ process.on('uncaughtException', (err) => {
   shutdown(1);
 });
 
-// Check if a book has good chapter structure for audiobook playback
-async function checkChapterQuality(epubPath) {
+// Check if a book has good chapter structure for audiobook playback.
+// Imports pass the chapters they already extracted; the EPUB TOC and spine
+// checks below still read the source document.
+async function checkChapterQuality(epubPath, options = {}) {
   try {
-    const chapters = await extractBookChapters(epubPath);
+    const chapters = options.chapters || await extractBookChapters(epubPath);
     let tocCount = 0;
     let conversionSource = false;
     let spineLinearityVerified = true;

@@ -601,6 +601,30 @@ section('Format dispatch, metadata, and covers');
   assert(!unsafeTransition.safe && unsafeTransition.reason === 'narration-text-mismatch',
     'refuses a transition that loses narration text');
 
+  section('Priming the extraction cache');
+  let primedExtractions = 0;
+  let identity = { mtimeMs: 1, size: 10 };
+  const primed = createBookDocument({
+    getFileIdentity: async () => identity,
+    getXBookStore: () => ({ isXBookPath: value => /\.xbook\.json$/.test(value) }),
+    extractEpubChapters: async () => {
+      primedExtractions++;
+      return [chapter('Extracted')];
+    },
+    log: { log() {}, error() {} }
+  });
+  const importedChapters = [chapter('Imported')];
+  assert(await primed.primeExtractedChapters('/library/primed.epub', importedChapters) === true,
+    'accepts chapters extracted from the same file elsewhere');
+  assert(await primed.extractChapters('/library/primed.epub') === importedChapters && primedExtractions === 0,
+    'serves primed chapters without extracting the file again');
+  identity = { mtimeMs: 2, size: 10 };
+  const changed = await primed.extractChapters('/library/primed.epub');
+  assert(changed[0].title === 'Extracted' && primedExtractions === 1,
+    'a changed file identity bypasses the primed chapters');
+  assert(await primed.primeExtractedChapters('/library/primed.xbook.json', importedChapters) === false,
+    'never primes an XBook artifact path');
+
   console.log(`\nBook Document tests: ${passed} passed, ${failed} failed`);
   if (failed) process.exit(1);
 })().catch(err => {

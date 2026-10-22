@@ -489,6 +489,87 @@ function harness(overrides = {}) {
     assert.strictEqual(source.endChapterIndex, 0);
   });
 
+  await test('skips the stream-open static check for chunks validated at generation', async () => {
+    const existing = {
+      totalChunks: 2,
+      chunks: [{ index: 0, status: 'ready' }, { index: 1, status: 'ready' }]
+    };
+    const { orchestrator, calls, tts } = harness({ manifest: existing, ready: false });
+    const checked = [];
+    tts.chunkAudioValidated = async chunkPath => { checked.push(chunkPath); return true; };
+    await orchestrator.prepareManifest({
+      bookId: 'book', chapterIndex: 2, text: 'Long enough narration text for testing.', targetChunk: 1
+    });
+    assert.deepStrictEqual(checked, ['/cache/book-2-1.mp3']);
+    assert(!calls.some(call => call[0] === 'inspectStatic'));
+
+    // Unvalidated (e.g. legacy or reused) audio is still analyzed.
+    tts.chunkAudioValidated = async () => false;
+    await orchestrator.prepareManifest({
+      bookId: 'book', chapterIndex: 3, text: 'Long enough narration text for testing.', targetChunk: 1
+    });
+    assert(calls.some(call => call[0] === 'inspectStatic' && call[1].endsWith('book-3-1.mp3')));
+  });
+
+  function runwayHarness({ readyTiming, nextTiming, durationSeconds = 27, nextStatus = 'generating' }) {
+    const ready = { index: 0, status: 'ready', textLength: 400, path: '/cache/c0.mp3' };
+    const next = { index: 1, status: nextStatus, textLength: 800 };
+    const manifest = { totalChunks: 3, chunks: [ready, next, { index: 2, status: 'pending', textLength: 1600 }] };
+    const context = harness({ manifest, ready: false, premium: false });
+    const timings = new Map([[ready, readyTiming], [next, nextTiming]]);
+    context.tts.chunkGenerationTiming = chunk => timings.get(chunk) || null;
+    context.tts.readyChunkDurationSeconds = async () => durationSeconds;
+    return { ...context, manifest, timings, ready, next };
+  }
+
+  await test('runway opens on one chunk when measured speed covers the next', async () => {
+    const now = Date.now();
+    const { orchestrator } = runwayHarness({
+      readyTiming: { startedAt: now - 900, synthesisMs: 900 },
+      nextTiming: { startedAt: now - 900, synthesisMs: null }
+    });
+    const status = await orchestrator.chapterAudioStatus({ bookId: 'book', chapterIndex: 0, startOffsetSeconds: 0 });
+    assert.strictEqual(status.runwayReadyChunks, 1);
+    assert.strictEqual(status.runwayRequiredChunks, 2);
+    assert.strictEqual(status.runwayEarlyStart, true);
+  });
+
+  await test('runway early start stays granted for the manifest once given', async () => {
+    const now = Date.now();
+    const { orchestrator, timings, next } = runwayHarness({
+      readyTiming: { startedAt: now - 900, synthesisMs: 900 },
+      nextTiming: { startedAt: now - 900, synthesisMs: null }
+    });
+    assert.strictEqual((await orchestrator.chapterAudioStatus({
+      bookId: 'book', chapterIndex: 0, startOffsetSeconds: 0
+    })).runwayEarlyStart, true);
+    // The next chunk is now far past its prediction. A media request that
+    // follows the granted status poll must still agree with it.
+    timings.set(next, { startedAt: now - 600000, synthesisMs: null });
+    assert.strictEqual((await orchestrator.chapterAudioStatus({
+      bookId: 'book', chapterIndex: 0, startOffsetSeconds: 0
+    })).runwayEarlyStart, true);
+  });
+
+  await test('runway keeps the two-chunk rule without trustworthy speed evidence', async () => {
+    const now = Date.now();
+    const cases = [
+      // Slower than real time: 30 s to make 27 s of audio.
+      { readyTiming: { startedAt: now - 30000, synthesisMs: 30000 }, nextTiming: { startedAt: now - 1000, synthesisMs: null } },
+      // Reused or adopted audio carries no timing.
+      { readyTiming: null, nextTiming: { startedAt: now - 100, synthesisMs: null } },
+      // The next chunk has not started synthesis.
+      { readyTiming: { startedAt: now - 900, synthesisMs: 900 }, nextTiming: null },
+      // The next chunk is not scheduled.
+      { readyTiming: { startedAt: now - 900, synthesisMs: 900 }, nextTiming: null, nextStatus: 'pending' }
+    ];
+    for (const input of cases) {
+      const { orchestrator } = runwayHarness(input);
+      const status = await orchestrator.chapterAudioStatus({ bookId: 'book', chapterIndex: 0, startOffsetSeconds: 0 });
+      assert.strictEqual(status.runwayEarlyStart, false, JSON.stringify(input));
+    }
+  });
+
   console.log(`playback-orchestrator tests: ${passed} passed, ${failed} failed`);
   if (failed) process.exitCode = 1;
 })();

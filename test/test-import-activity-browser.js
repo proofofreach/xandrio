@@ -359,6 +359,118 @@ async function verifyUploadHandoff(browser, environment) {
   }
 }
 
+function sseBody(events) {
+  return events.map(([event, data]) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`).join('');
+}
+
+// Completion arrives over the job's event stream instead of the next poll,
+// and the book opens without waiting for the library refresh.
+async function verifyEventStreamCompletion(browser, environment) {
+  const context = await browser.newContext({
+    viewport: { width: 1280, height: 800 },
+    reducedMotion: 'reduce',
+    serviceWorkers: 'block'
+  });
+  const page = await context.newPage();
+  let statusChecks = 0;
+  let streamHeaders;
+  let holdLibrary = false;
+  const heldLibraryRoutes = [];
+  let bookRequested = false;
+
+  try {
+    await routeSearch(page);
+    await page.route('**/api/imports', route => route.fulfill({ json: { jobs: [] } }));
+    await page.route('**/api/library', route => {
+      if (!holdLibrary) return route.continue();
+      heldLibraryRoutes.push(route);
+    });
+    await page.route('**/api/download', route => {
+      holdLibrary = true;
+      return route.fulfill({ status: 202, json: { jobId: 'job-stream' } });
+    });
+    await page.route('**/api/download/job-stream/status', route => {
+      statusChecks++;
+      return route.fulfill({ json: { jobId: 'job-stream', status: 'running', label: 'Polling' } });
+    });
+    await page.route('**/api/download/job-stream/events', route => {
+      streamHeaders = route.request().headers();
+      return route.fulfill({
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' },
+        body: sseBody([
+          ['progress', { jobId: 'job-stream', status: 'running', step: 5, label: 'Validating chapters' }],
+          ['complete', {
+            jobId: 'job-stream', status: 'complete', step: 7, label: 'Adding to library',
+            result: { success: true, bookId: 'book-stream', title: 'The Patient Book' }
+          }]
+        ])
+      });
+    });
+    await page.route('**/api/book/book-stream', route => {
+      bookRequested = true;
+      return route.fulfill({ status: 404, json: { error: 'Book not found' } });
+    });
+
+    await page.goto(`${environment.origin}/?q=patient&sources=gutenberg#/search`, { waitUntil: 'domcontentloaded' });
+    await page.locator('#search-results [data-work-add]').waitFor({ state: 'visible' });
+    await page.locator('#search-results [data-work-add]').click();
+    const card = page.locator('[data-import-job="job-stream"]');
+    await card.locator('[data-import-label]').filter({ hasText: 'Added to library' }).waitFor({ timeout: 5000 });
+    assert.equal(statusChecks, 0, 'a completed event stream must not fall back to status polling');
+    assert(streamHeaders?.['x-xandrio-device-id'], 'the event stream must carry the API identity headers');
+    for (let attempt = 0; attempt < 50 && !bookRequested; attempt++) await page.waitForTimeout(50);
+    assert(bookRequested, 'the imported book must open while the library refresh is still pending');
+    assert(heldLibraryRoutes.length > 0, 'the library refresh must still be requested');
+    for (const route of heldLibraryRoutes) await route.continue().catch(() => {});
+  } finally {
+    await context.close();
+  }
+}
+
+// A stream that ends before a terminal event hands over to status polling.
+async function verifyEventStreamFallback(browser, environment) {
+  const context = await browser.newContext({
+    viewport: { width: 1280, height: 800 },
+    reducedMotion: 'reduce',
+    serviceWorkers: 'block'
+  });
+  const page = await context.newPage();
+  let statusChecks = 0;
+  let streams = 0;
+
+  try {
+    await routeSearch(page);
+    await page.route('**/api/imports', route => route.fulfill({ json: { jobs: [] } }));
+    await page.route('**/api/download', route => route.fulfill({ status: 202, json: { jobId: 'job-fallback' } }));
+    await page.route('**/api/download/job-fallback/events', route => {
+      streams++;
+      return route.fulfill({
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream' },
+        body: sseBody([['snapshot', { jobId: 'job-fallback', status: 'running', step: 4, label: 'Reading book metadata' }]])
+      });
+    });
+    await page.route('**/api/download/job-fallback/status', route => {
+      statusChecks++;
+      return route.fulfill({ json: {
+        jobId: 'job-fallback', status: 'complete', label: 'Complete',
+        result: { success: true, bookId: 'book-fallback', title: 'The Patient Book' }
+      } });
+    });
+
+    await page.goto(`${environment.origin}/?q=patient&sources=gutenberg#/search`, { waitUntil: 'domcontentloaded' });
+    await page.locator('#search-results [data-work-add]').waitFor({ state: 'visible' });
+    await page.locator('#search-results [data-work-add]').click();
+    await page.locator('[data-import-job="job-fallback"] [data-import-label]')
+      .filter({ hasText: 'Added to library' }).waitFor({ timeout: 5000 });
+    assert.equal(streams, 1, 'the client opens the event stream once');
+    assert(statusChecks >= 1, 'an early end of the stream must fall back to status polling');
+  } finally {
+    await context.close();
+  }
+}
+
 async function main() {
   await fs.mkdir(SCREENSHOT_DIR, { recursive: true });
   const environment = await startScenarioEnvironment({ proxyPort: 0, datasets: ['full'], defaultDataset: 'full' });
@@ -376,7 +488,9 @@ async function main() {
     await verifyCancellation(browser, environment, { width: 390, height: 844 });
     await verifyCancellation(browser, environment, { width: 1280, height: 800 });
     await verifyUploadHandoff(browser, environment);
-    console.log('11 passed, 0 failed');
+    await verifyEventStreamCompletion(browser, environment);
+    await verifyEventStreamFallback(browser, environment);
+    console.log('13 passed, 0 failed');
   } finally {
     await browser.close();
     await environment.close();

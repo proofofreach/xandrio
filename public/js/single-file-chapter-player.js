@@ -67,6 +67,10 @@ const CHAPTER_BOUNDARY_PREWARM_TIMEOUT_MS = 30000;
 // After a late swap whose play() was NotAllowedError, wait this long for
 // native `playing` (autoplay) before reporting a recoverable failure.
 const CHAPTER_ADVANCE_PLAY_WATCHDOG_MS = 10000;
+// Runway status polls: 250 ms for the first ~6 s of preparation, then the
+// configured interval. Well inside the media rate limit (lib/routes/playback-routes.js).
+const RUNWAY_FAST_POLL_INTERVAL_MS = 250;
+const RUNWAY_FAST_POLLS = 24;
 const { DisposableScope, LifecycleCancelledError, waitForMediaEvents } = globalThis.XandrioLifecycle || {};
 
 export class SingleFileChapterPlayer {
@@ -661,7 +665,10 @@ export class SingleFileChapterPlayer {
       const endChapter = Number.isInteger(endChapterIndex)
         ? `&endChapter=${endChapterIndex}`
         : '';
-      return `/api/chunks/${encodedBookId}/${chapterIndex}/${action}${query}${separator}purpose=playback-runway&offsetSeconds=${startOffsetSeconds}${endChapter}`;
+      // The listener's speed lets the server start on one chunk when the
+      // next will be ready in time at that speed (lib/playback-runway.js).
+      const rate = Number(this.playbackRate) > 0 ? `&playbackRate=${Number(this.playbackRate)}` : '';
+      return `/api/chunks/${encodedBookId}/${chapterIndex}/${action}${query}${separator}purpose=playback-runway&offsetSeconds=${startOffsetSeconds}${endChapter}${rate}`;
     };
     const cancelled = () => controller.signal.aborted || generation !== this._generation;
     const cancellationError = () => timedOut
@@ -732,6 +739,7 @@ export class SingleFileChapterPlayer {
           endChapterIndex
         })
       });
+      let polls = 0;
       while (!status?.ready) {
         if (status?.status === 'error') {
           throw new Error('Narration generation failed while preparing playback runway');
@@ -743,7 +751,14 @@ export class SingleFileChapterPlayer {
           totalChunks: Math.max(0, Number(status?.totalChunks) || 0),
           purpose: 'playback-runway'
         });
-        await this._waitForRunwayPoll(controller.signal, cancellationError);
+        // Fast engines open the gate within seconds; a coarse poll would add
+        // most of an interval to every cold start. Poll briskly at first, then
+        // settle to the normal interval for slow engines.
+        const delayMs = polls < RUNWAY_FAST_POLLS
+          ? Math.min(this.runwayPollIntervalMs, RUNWAY_FAST_POLL_INTERVAL_MS)
+          : this.runwayPollIntervalMs;
+        polls += 1;
+        await this._waitForRunwayPoll(controller.signal, cancellationError, delayMs);
         status = await readStatus(runwayUrl('chapter-audio-status'));
       }
       this.onPreparing?.({
