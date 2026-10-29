@@ -4,6 +4,11 @@ import { showToast } from '../ui/toast.js';
 
 let deps = {};
 let state = { queue: { bookIds: [], autoContinue: true, bookSettings: {} }, books: [] };
+let stateUserId = null;
+let stateLoadedAt = 0;
+const BOOK_SETTINGS_CACHE_MS = 30_000;
+let queueLoadGeneration = 0;
+const bookSettingsRevisions = new Map();
 
 function bookMap() {
   return new Map((state.books || []).map(book => [book.id, book]));
@@ -51,13 +56,31 @@ function renderListeningQueue() {
 // The queued books in order, for read-only views (the docked player's Up
 // Next list). Changes are announced with the xandrio:listeningqueue event.
 export function getListeningQueueBooks() {
+  if (stateUserId !== getCurrentUserId()) return [];
   const books = bookMap();
   return (state.queue?.bookIds || []).map(id => books.get(id) || { id, title: 'Untitled', author: '' });
 }
 
 export async function loadListeningQueue() {
+  const userId = getCurrentUserId();
+  const generation = ++queueLoadGeneration;
+  const revisions = new Map(bookSettingsRevisions);
   try {
-    state = await apiGet('/api/listening-queue');
+    const loaded = await apiGet('/api/listening-queue', { timeoutMs: 3000 });
+    if (userId !== getCurrentUserId() || generation !== queueLoadGeneration) return state;
+    // A queue refresh that started before a per-book edit cannot restore the
+    // old speed after the save has completed.
+    if (stateUserId === userId) {
+      for (const [bookId, revision] of bookSettingsRevisions) {
+        if (revision !== revisions.get(bookId)) {
+          loaded.queue.bookSettings = loaded.queue.bookSettings || {};
+          loaded.queue.bookSettings[bookId] = state.queue.bookSettings?.[bookId] || {};
+        }
+      }
+    }
+    state = loaded;
+    stateUserId = userId;
+    stateLoadedAt = Date.now();
     renderListeningQueue();
     // Per-book speeds live in this state; the library re-states each row's
     // time left at its own speed once they arrive.
@@ -86,25 +109,38 @@ export async function advanceListeningQueue(finishedBookId) {
 
 // Saved per-book speed from the loaded queue state, or null.
 export function getBookSpeedSetting(bookId) {
-  if (bookId == null) return null;
+  if (bookId == null || stateUserId !== getCurrentUserId()) return null;
   const value = Number(state.queue?.bookSettings?.[String(bookId)]?.playbackSpeed);
   return Number.isFinite(value) && value > 0 ? value : null;
 }
 
-export async function getBookPlaybackSettings(bookId) {
+export async function getBookPlaybackSettings(bookId, options = {}) {
+  const userId = getCurrentUserId();
+  if (stateUserId === userId && Date.now() - stateLoadedAt < BOOK_SETTINGS_CACHE_MS) {
+    return { ...(state.queue?.bookSettings?.[bookId] || {}) };
+  }
+  const revision = bookSettingsRevisions.get(bookId);
   try {
-    const result = await apiGet(`/api/listening-queue/books/${encodeURIComponent(bookId)}/settings`);
+    const result = await apiGet(`/api/listening-queue/books/${encodeURIComponent(bookId)}/settings`, { timeoutMs: 1500, ...options });
+    if (userId !== getCurrentUserId() || options.signal?.aborted) return {};
+    if (revision !== bookSettingsRevisions.get(bookId)) {
+      return stateUserId === userId ? { ...(state.queue?.bookSettings?.[bookId] || {}) } : {};
+    }
     return result.settings || {};
   } catch {
-    return {};
+    return userId === getCurrentUserId() && stateUserId === userId
+      ? { ...(state.queue?.bookSettings?.[bookId] || {}) }
+      : {};
   }
 }
 
 export async function saveBookPlaybackSettings(bookId, settings) {
   if (!bookId) return {};
   const userId = getCurrentUserId();
+  bookSettingsRevisions.set(bookId, (bookSettingsRevisions.get(bookId) || 0) + 1);
   const result = await apiSend('PUT', `/api/listening-queue/books/${encodeURIComponent(bookId)}/settings`, { settings });
-  if (getCurrentUserId() === userId) {
+  if (getCurrentUserId() === userId && (!stateUserId || stateUserId === userId)) {
+    bookSettingsRevisions.set(bookId, (bookSettingsRevisions.get(bookId) || 0) + 1);
     state.queue.bookSettings = state.queue.bookSettings || {};
     state.queue.bookSettings[bookId] = { ...(result.settings || {}) };
   }

@@ -117,7 +117,7 @@ async function verifyViewport(browser, environment, viewport) {
       fullPage: true
     });
 
-    await page.route('**/api/book/scn-fieldnotes', route => route.abort());
+    await page.route(url => url.pathname === '/api/book/scn-fieldnotes', route => route.abort());
     const routeBeforeDownload = page.url();
     await partialCard.locator('[data-offline-status] [data-download-book]').click();
     await page.waitForTimeout(250);

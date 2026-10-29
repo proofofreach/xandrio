@@ -64,19 +64,40 @@ function unverifiedDeploymentGuard() {
   };
 }
 
+async function fetchDeployment(fetchImpl, timeoutMs) {
+  const controller = new AbortController();
+  let timer;
+  try {
+    return await Promise.race([
+      (async () => {
+        const response = await fetchImpl('/api/deployment', { cache: 'no-store', signal: controller.signal });
+        return response.ok ? response.json() : null;
+      })(),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => {
+          controller.abort();
+          reject(new Error('Deployment verification timed out'));
+        }, timeoutMs);
+      })
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function resolveDeploymentGuard({
   fetchImpl,
   currentUrl,
   isSecureContext,
   storage,
-  requireFresh = false
+  requireFresh = false,
+  timeoutMs = 3000
 }) {
   let deployment = readStoredDeployment(storage);
   let verifiedFresh = false;
   try {
-    const response = await fetchImpl('/api/deployment', { cache: 'no-store' });
-    if (response.ok) {
-      const payload = await response.json();
+    const payload = await fetchDeployment(fetchImpl, timeoutMs);
+    if (payload) {
       const canonicalOrigin = String(payload?.canonicalOrigin || '');
       deployment = { canonicalOrigin };
       storeDeployment(storage, canonicalOrigin);
@@ -125,7 +146,8 @@ export async function initDeploymentGuard({
   currentUrl = globalThis.location?.href,
   isSecureContext = globalThis.isSecureContext,
   storage = globalThis.window?.localStorage,
-  onChange = null
+  onChange = null,
+  timeoutMs = 3000
 } = {}) {
   const apply = result => {
     if (globalThis.document?.documentElement?.dataset) {
@@ -146,7 +168,8 @@ export async function initDeploymentGuard({
     currentUrl,
     isSecureContext,
     storage,
-    requireFresh
+    requireFresh,
+    timeoutMs
   });
 
   const result = await resolve();

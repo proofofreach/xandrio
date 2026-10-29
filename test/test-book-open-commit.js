@@ -38,7 +38,8 @@ function createHarness({
   apiGet,
   getBookPlaybackSettings,
   loadRestoredChapterImpl,
-  restorePreviousSessionImpl
+  restorePreviousSessionImpl,
+  overrides = {}
 } = {}) {
   const appSource = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
   const openBookSource = appSource.slice(
@@ -63,11 +64,15 @@ function createHarness({
     navigator: { onLine: true },
     window: { addEventListener() {} },
     API_BASE: '',
+    AbortController,
     encodeURIComponent,
     apiGet,
     getBookPlaybackSettings,
+    bindPlaybackAttemptToOpen() {},
+    recordPlaybackEvent() {},
     shouldUseOfflineBookFallback: () => false,
     getOfflineBookData: () => null,
+    hasOfflineBookData: () => false,
     syncPlayerHash(bookId) { events.hashes.push(bookId); },
     prioritizeForegroundBook: async () => true,
     offlineUnavailableOnlineRetry: { clear() {} },
@@ -127,11 +132,12 @@ function createHarness({
       events.restored = previous;
     }),
     setTimeout,
-    clearTimeout
+    clearTimeout,
+    ...overrides
   };
   vm.createContext(context);
   vm.runInContext(`let loadChapterToken = 0;\n${openBookSource}\nthis.harness = { openBook, currentBook: () => currentBook };`, context);
-  return { ...context.harness, events, player };
+  return { ...context.harness, events, player, context };
 }
 
 async function run() {
@@ -151,6 +157,110 @@ async function run() {
       'a failure BEFORE commit never triggers restoration');
   });
 
+  await test('book, settings, and position reads overlap and superseding an open aborts its reads', async () => {
+    const metadata = deferred();
+    const position = deferred();
+    const settings = deferred();
+    const calls = [];
+    const harness = createHarness({
+      apiGet: (url, options) => {
+        calls.push({ url, options });
+        if (url === '/api/book/first?playback=1') return metadata.promise;
+        if (url === '/api/position/first') return position.promise;
+        return url.startsWith('/api/book/')
+          ? Promise.reject(Object.assign(new Error('missing'), { status: 404 }))
+          : Promise.resolve({});
+      },
+      getBookPlaybackSettings: (id, options) => {
+        calls.push({ url: `settings/${id}`, options });
+        return id === 'first' ? settings.promise : Promise.resolve({});
+      }
+    });
+    const earlier = harness.openBook('first');
+    assert.deepStrictEqual(calls.map(call => call.url).sort(), [
+      '/api/book/first?playback=1', '/api/position/first', 'settings/first'
+    ].sort(), 'all three reads begin while every response is still pending');
+    assert.strictEqual(calls.find(call => call.url.includes('/api/book/')).options.timeoutMs, 6000);
+    assert.strictEqual(await harness.openBook('second'), false);
+    for (const call of calls.filter(call => call.url.includes('first'))) {
+      assert.strictEqual(call.options.signal.aborted, true, `${call.url} is cancelled`);
+    }
+    metadata.resolve(bookData('first'));
+    position.resolve({ position: { timestamp: 999 } });
+    settings.resolve({ playbackSpeed: 3 });
+    assert.strictEqual(await earlier, false);
+    assert.strictEqual(harness.currentBook().id, 'prior');
+    assert.deepStrictEqual(harness.events.hashes, []);
+  });
+
+  await test('a downloaded book uses its snapshot after a bounded metadata failure', async () => {
+    let snapshots = 0;
+    let bookBudget;
+    const harness = createHarness({
+      apiGet: async (url, options) => {
+        if (url.startsWith('/api/book/')) {
+          bookBudget = options.timeoutMs;
+          throw Object.assign(new Error('timed out'), { name: 'TimeoutError' });
+        }
+        return {};
+      },
+      getBookPlaybackSettings: async () => ({}),
+      overrides: {
+        hasOfflineBookData: () => true,
+        getOfflineBookData: () => { snapshots++; return bookData('downloaded'); },
+        shouldUseOfflineBookFallback: error => error.name === 'TimeoutError'
+      }
+    });
+    assert.strictEqual(await harness.openBook('downloaded'), true);
+    assert.strictEqual(bookBudget, 1500);
+    assert.strictEqual(snapshots, 1);
+    assert.strictEqual(harness.currentBook().id, 'downloaded');
+    assert.strictEqual(harness.context.currentBookOfflineFallback, true);
+  });
+
+  await test('a successful downloaded-book read does not clone its offline snapshot', async () => {
+    let snapshots = 0;
+    const harness = createHarness({
+      apiGet: async () => bookData('downloaded'),
+      getBookPlaybackSettings: async () => ({}),
+      overrides: {
+        hasOfflineBookData: () => true,
+        getOfflineBookData: () => { snapshots++; return bookData('downloaded'); }
+      }
+    });
+    assert.strictEqual(await harness.openBook('downloaded'), true);
+    assert.strictEqual(snapshots, 0);
+  });
+
+  await test('backward reconciliation sync cannot hold up the prepared book', async () => {
+    const save = deferred();
+    const local = { chapterIndex: 0, timestamp: 18 };
+    let saved = 0;
+    const harness = createHarness({
+      apiGet: async () => bookData('ready'),
+      getBookPlaybackSettings: async () => ({}),
+      overrides: {
+        getLocalPlaybackCheckpoint: () => local,
+        positionMatchesChapterStructure: () => true,
+        chooseFreshestPosition: () => local,
+        shouldAllowBackwardReconciliation: () => true,
+        savePosition(options) {
+          assert.strictEqual(options.allowBackward, true);
+          saved++;
+          return save.promise;
+        }
+      }
+    });
+    const opening = harness.openBook('ready');
+    const result = await Promise.race([
+      opening,
+      new Promise(resolve => setImmediate(() => resolve('blocked')))
+    ]);
+    save.resolve();
+    assert.strictEqual(result, true, 'opening returns before the sync acknowledgement');
+    assert.strictEqual(saved, 1);
+  });
+
   await test('playback-settings failure leaves the active session playing and route unchanged', async () => {
     const harness = createHarness({
       apiGet: async () => bookData('settings-fail'),
@@ -167,7 +277,7 @@ async function run() {
   await test('only the latest overlapping open commits', async () => {
     const first = deferred();
     const harness = createHarness({
-      apiGet: async url => url === '/api/book/first' ? first.promise : bookData('second'),
+      apiGet: async url => url === '/api/book/first?playback=1' ? first.promise : bookData('second'),
       getBookPlaybackSettings: async () => ({ playbackSpeed: 1 })
     });
 
@@ -219,7 +329,7 @@ async function run() {
   await test('stale failure cannot restore a snapshot from an older open', async () => {
     const first = deferred();
     const harness = createHarness({
-      apiGet: async url => url === '/api/book/slow' ? first.promise : bookData('fast'),
+      apiGet: async url => url === '/api/book/slow?playback=1' ? first.promise : bookData('fast'),
       getBookPlaybackSettings: async () => ({})
     });
     const earlierOpen = harness.openBook('slow');
@@ -238,7 +348,7 @@ async function run() {
     const restoreGate = new Promise(resolve => { releaseGate = resolve; });
     let loadCount = 0;
     const harness = createHarness({
-      apiGet: async url => url === '/api/book/replacement'
+      apiGet: async url => url === '/api/book/replacement?playback=1'
         ? bookData('replacement')
         : bookData('target'),
       getBookPlaybackSettings: async () => ({}),
@@ -305,8 +415,8 @@ async function run() {
         events2.fetches.push(url);
         // Gate ONLY the fresh-path fetch (second prior fetch); the stale
         // discard path returns immediately since its result is unused.
-        if (url === '/api/book/prior' && gateReleased) await gate;
-        return { book: { id: url.split('/').pop(), title: 'T' }, chapters: [{ title: 'C' }] };
+        if (url === '/api/book/prior?playback=1' && gateReleased) await gate;
+        return { book: { id: url.split('/').pop().split('?')[0], title: 'T' }, chapters: [{ title: 'C' }] };
       },
       getBookPlaybackSettings: async () => ({}),
       shouldUseOfflineBookFallback: () => false,
@@ -386,3 +496,4 @@ async function run() {
 }
 
 run();
+

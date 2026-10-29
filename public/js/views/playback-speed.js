@@ -17,6 +17,7 @@ const PLAYBACK_SPEED_KEY = 'xandrio_playback_speed';
 let deps = {};
 let currentPlaybackSpeed = 1.0;
 let playbackSpeedRevision = 0;
+let speedUsesDefault = true;
 const pendingBookSaves = new Map();
 let speedBtn = null;
 let skipBackBtn = null;
@@ -40,6 +41,14 @@ let bookRollingOfflineControl = null;
 
 export function initPlaybackSpeed(options = {}) {
   deps = options;
+  document.addEventListener('xandrio:client-settings', event => {
+    if (event.detail?.key !== '*' && event.detail?.key !== 'defaultSpeed') return;
+    // A background profile refresh may supply the default after a book opens.
+    // Explicit user choices and book overrides retain ownership of live speed.
+    if (speedUsesDefault && savedBookSpeed() === null && readJSON(PLAYBACK_SPEED_KEY, null) === null) {
+      loadPlaybackSpeed();
+    }
+  });
   speedBtn = document.getElementById('speed-btn');
   skipBackBtn = document.getElementById('skip-back-btn');
   skipForwardBtn = document.getElementById('skip-forward-btn');
@@ -238,6 +247,7 @@ export function applySkipIntervalLabels() {
 
 export function loadPlaybackSpeed(bookSpeed = null) {
   playbackSpeedRevision += 1;
+  speedUsesDefault = false;
   const preferredBookSpeed = Number(bookSpeed);
   if (Number.isFinite(preferredBookSpeed) && preferredBookSpeed >= SPEED_MIN && preferredBookSpeed <= SPEED_MAX) {
     currentPlaybackSpeed = preferredBookSpeed;
@@ -252,6 +262,7 @@ export function loadPlaybackSpeed(bookSpeed = null) {
       ? parsed
       : 1.0;
   } else {
+    speedUsesDefault = true;
     const defaultSpeed = getDefaultSpeed();
     currentPlaybackSpeed = (Number.isFinite(defaultSpeed) && defaultSpeed >= SPEED_MIN && defaultSpeed <= SPEED_MAX)
       ? defaultSpeed
@@ -349,6 +360,7 @@ function speedSheetTimeLeft() {
 }
 
 function setPlaybackSpeed(value, { remember = true } = {}) {
+  speedUsesDefault = false;
   playbackSpeedRevision += 1;
   currentPlaybackSpeed = Math.min(SPEED_MAX, Math.max(SPEED_MIN, Math.round(value * 100) / 100));
   applyPlaybackSpeed();

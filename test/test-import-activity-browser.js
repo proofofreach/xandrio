@@ -289,17 +289,23 @@ async function verifyOpenFailureAndRetry(browser, environment) {
   const context = await browser.newContext({ serviceWorkers: 'block', reducedMotion: 'reduce' });
   const page = await context.newPage();
   let bookRoute;
+  let markBookRequested;
+  const bookRequested = new Promise(resolve => { markBookRequested = resolve; });
+  const playbackBook = url => url.pathname === '/api/book/scn-meridian' && url.searchParams.get('playback') === '1';
   try {
     await page.clock.install();
     await page.route('**/api/imports', route => route.fulfill({ json: { jobs: [{
       jobId: 'job-retry', title: 'The Meridian Line', status: 'complete',
       result: { success: true, bookId: 'scn-meridian' }
     }] } }));
-    await page.route('**/api/book/scn-meridian', route => { bookRoute = route; });
+    await page.route(playbackBook, route => { bookRoute = route; markBookRequested(); });
     await page.goto(`${environment.origin}/#/library`, { waitUntil: 'domcontentloaded' });
     const card = page.locator('[data-import-job="job-retry"]');
     await card.getByRole('button', { name: 'Open book' }).click();
-    await page.clock.fastForward(7000);
+    await bookRequested;
+    // Playback metadata now times out at 6 seconds, so inspect the in-flight
+    // state immediately before that deadline instead of advancing past it.
+    await page.clock.fastForward(5900);
     assert.equal(await card.isVisible(), true, 'an in-flight Open book must not expire');
     assert.equal(await card.getByRole('button', { name: 'Opening…' }).isDisabled(), true);
     await bookRoute.fulfill({ status: 503, json: { error: 'Temporarily unavailable' } });
@@ -307,7 +313,7 @@ async function verifyOpenFailureAndRetry(browser, environment) {
     await page.clock.fastForward(7000);
     assert.equal(await card.isVisible(), true, 'a failed open must remain available for retry');
     assert.equal(await card.locator('[data-import-detail]').textContent(), 'Could not open this book. Try again.');
-    await page.unroute('**/api/book/scn-meridian');
+    await page.unroute(playbackBook);
     await card.getByRole('button', { name: 'Open book' }).click();
     await page.locator('#player-view.active').waitFor();
     await card.waitFor({ state: 'detached' });
@@ -407,7 +413,7 @@ async function verifyEventStreamCompletion(browser, environment) {
         ])
       });
     });
-    await page.route('**/api/book/book-stream', route => {
+    await page.route(url => url.pathname === '/api/book/book-stream' && url.searchParams.get('playback') === '1', route => {
       bookRequested = true;
       return route.fulfill({ status: 404, json: { error: 'Book not found' } });
     });

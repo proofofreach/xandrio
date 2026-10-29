@@ -1,7 +1,7 @@
 importScripts('/js/offline-range.js');
 importScripts('/js/offline-store.js');
 
-const CACHE_VERSION = 'xandrio-v206';
+const CACHE_VERSION = 'xandrio-v207';
 const OFFLINE_ROUTE_CONTRACT_VERSION = 2;
 const OFFLINE_AUDIO_CACHE = 'xandrio-offline-audio';
 const OFFLINE_TITLE_CACHE = 'xandrio-offline-titles';
@@ -22,7 +22,7 @@ const ASSET_VERSIONS = {
   '/find.css': 2,
   '/js/ios-focus-zoom.js': 2,
   '/js/lifecycle.js': 2,
-  '/app.js': 156
+  '/app.js': 157
 };
 const versionedAsset = (path) => `${path}?v=${ASSET_VERSIONS[path]}`;
 const APP_SHELL = [
@@ -203,6 +203,26 @@ function isAppShell(request) {
   return url.origin === self.location.origin && APP_SHELL_PATHS.has(url.pathname);
 }
 
+async function appShellResponse(request) {
+  // An installed build is a complete snapshot. Serve that snapshot immediately
+  // rather than waiting for a slow connection, and never replace individual
+  // modules with files from a different build. Installation fills the next
+  // version's cache; the idle-page worker handoff activates it as a unit.
+  let cached;
+  try {
+    const cache = await caches.open(CACHE_VERSION);
+    cached = await cache.match(request);
+    const url = new URL(request.url);
+    if (!cached && (url.pathname === '/' || url.pathname === '/index.html')) {
+      // Navigation queries do not select a different application build.
+      cached = await cache.match(url.pathname);
+    }
+  } catch {
+    // A browser storage failure must not prevent an otherwise online launch.
+  }
+  return cached || fetch(request);
+}
+
 function isOfflineAudioRequest(request) {
   if (request.method !== 'GET') return false;
   const url = new URL(request.url);
@@ -352,13 +372,6 @@ self.addEventListener('fetch', event => {
   } else if (isOfflineTitleRequest(request)) {
     event.respondWith(fetch(request, { cache: 'no-store' }).catch(() => cachedTitleResponse(request)));
   } else if (isAppShell(request)) {
-    const networkResponse = fetch(request);
-    event.respondWith(networkResponse.catch(() => caches.match(request)));
-    event.waitUntil(networkResponse.then(async response => {
-        if (response.ok) {
-          const cache = await caches.open(CACHE_VERSION);
-          await cache.put(request, response.clone());
-        }
-      }).catch(() => {}));
+    event.respondWith(appShellResponse(request));
   }
 });

@@ -28,7 +28,7 @@ const baseline = process.argv.includes('--baseline');
           await page.route('**/api/narration/scn-meridian', route => route.fulfill({ json: { voiceId: 'premium:ryan', premiumActive: true, inherited: false, fallbackPolicy: 'instant' } }));
           await page.route('**/api/premium-prep/scn-meridian/status?*', route => route.fulfill({ json: { status: 'generating', chapters: [true, true, true, true, true], firstUnreadyChapter: null, totalChapters: 5, readyChapters: 5, readyAudioSeconds: 120, chapterIndex: 2, offsetSeconds: 0, instantVoice: 'edge:andrew', enabled: true } }));
           await page.route('**/api/position/scn-meridian', route => route.fulfill({ json: { position: null } }));
-          await page.route('**/api/book/scn-meridian', async route => {
+          await page.route(url => url.pathname === '/api/book/scn-meridian', async route => {
             const response = await route.fetch(); const data = await response.json();
             data.chapters = data.chapters.slice(0, 3).map((chapter, index) => ({ ...chapter, title: `Chapter ${[2, 7, 9][index]}`, type: 'chapter', empty: false }));
             data.chapters.unshift({ ...data.chapters[0], title: 'Copyright', type: 'copyright' }, { ...data.chapters[0], title: 'Acknowledgements', type: 'frontmatter' });

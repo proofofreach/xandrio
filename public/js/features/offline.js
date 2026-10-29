@@ -27,7 +27,7 @@ const OFFLINE_CONTRACT_MARKER = 'x-xandrio-offline-contract';
  * with OFFLINE_ROUTE_CONTRACT_VERSION instead of tying downloads to a build id.
  * This value MUST equal CACHE_VERSION in public/sw.js.
  */
-export const EXPECTED_OFFLINE_SW_VERSION = 'xandrio-v206';
+export const EXPECTED_OFFLINE_SW_VERSION = 'xandrio-v207';
 export const MINIMUM_OFFLINE_ROUTE_CONTRACT = 1;
 const BLOCK_OFFLINE_ROUTE_CONTRACT = 2;
 // A chapter is only ever invalidated after this many playback failures whose
@@ -469,7 +469,9 @@ function downloadProgressTracker(book, chapters, working, showOverlay) {
   const weights = chapters.map(chapter => {
     const duration = Number(chapter?.estimatedDuration);
     if (Number.isFinite(duration) && duration > 0) return duration;
-    const textLength = String(chapter?.text || '').length;
+    const suppliedLength = Number(chapter?.textLength);
+    const textLength = Number.isFinite(suppliedLength) && suppliedLength >= 0
+      ? suppliedLength : String(chapter?.text || '').length;
     return textLength > 0 ? textLength : 1;
   });
   const totalWeight = weights.reduce((sum, weight) => sum + weight, 0) || chapters.length;
@@ -552,7 +554,10 @@ function offlineChapterSnapshot(chapter, index) {
     // The start-chapter heuristic only needs to distinguish substantial
     // narrative content. Keeping a short prefix avoids duplicating the book
     // text into localStorage while preserving that behavior offline.
-    text: text.slice(0, 256)
+    text: text.slice(0, 256),
+    textTruncated: Boolean(chapter?.textTruncated || text.length > 256),
+    ...(Number.isFinite(chapter?.textLength) ? { textLength: chapter.textLength } : {}),
+    ...(Number.isFinite(chapter?.normalizedTextLength) ? { normalizedTextLength: chapter.normalizedTextLength } : {})
   };
 }
 
@@ -611,6 +616,11 @@ function hasCachedChapter(entry) {
   return Array.isArray(entry?.chapterEntries) && entry.chapterEntries.some(Boolean);
 }
 
+export function hasOfflineBookData(bookId) {
+  const entry = offlineEntryForBook(bookId);
+  return isHydratableOfflineEntry(entry) && hasCachedChapter(entry);
+}
+
 export function getOfflineBookData(bookId) {
   const entry = offlineEntryForBook(bookId);
   if (!isHydratableOfflineEntry(entry) || !hasCachedChapter(entry)) return null;
@@ -664,8 +674,8 @@ function availableDownloadStatus(cachedChapters = 0, totalChapters = 0) {
   };
 }
 
-export function offlineStatusForBook(bookId) {
-  const entry = offlineEntryForBook(bookId);
+export function offlineStatusForBook(bookId, manifest = getOfflineManifest()) {
+  const entry = manifest[bookId] || null;
   if (!entry) return availableDownloadStatus();
   const cachedChapters = Array.isArray(entry.chapterEntries)
     ? entry.chapterEntries.filter(Boolean).length

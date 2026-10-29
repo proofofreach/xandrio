@@ -68,19 +68,19 @@ function harness(overrides = {}) {
     inspectChapterAudio: async (...args) => {
       calls.push(['inspectAudio', ...args]);
       return {
-        ready: overrides.audioReady ?? false,
+        ready: overrides.audioReadyByChapter?.[args[1]] ?? overrides.audioReady ?? false,
         variantKey: 'variant',
         url: '/api/audio/book-explicit-tier/0'
       };
     },
     prefetchNextChapter: (...args) => calls.push(['prefetch', ...args]),
-    getChapterContext: async () => ({
+    getChapterContext: async (_bookId, chapterIndex) => ({
       book: { language: 'en' },
-      chapter: {
+      chapter: overrides.chapters?.[chapterIndex] || {
         text: 'Current chapter narration text is long enough for testing.',
         estimatedDuration: overrides.estimatedDuration
       },
-      chapters: [
+      chapters: overrides.chapters || [
         { text: 'Current chapter narration text is long enough for testing.' },
         { text: 'Next chapter narration text is also long enough for testing.' }
       ]
@@ -489,6 +489,80 @@ function harness(overrides = {}) {
     assert.strictEqual(source.endChapterIndex, 0);
   });
 
+  await test('continuous streams preserve indexes and zero durations across structural and trailing empty chapters', async () => {
+    const chapters = [
+      { text: 'First playable chapter.' },
+      { text: '', empty: true },
+      { text: '   ' },
+      { text: '***' },
+      { text: 'Second playable chapter.' },
+      { text: '', empty: true }
+    ];
+    const { orchestrator, calls } = harness({ chapters, audioReady: true });
+    const source = await orchestrator.prepareContinuousAudioStream({
+      bookId: 'book', chapterIndex: 0, sessionId: 'structural-session'
+    });
+    const inputs = [];
+    for await (const input of source.iterateInputs()) {
+      inputs.push(input);
+      source.onInputDecoded(input, 3 * 24000 * 2);
+    }
+    assert.deepStrictEqual(inputs.map(input => input.chapterIndex), [0, 4]);
+    assert(inputs.every(input => input.seekable && input.lastInChapter));
+    assert.deepStrictEqual(calls.filter(call => call[0] === 'inspectAudio').map(call => call[2]), [0, 4]);
+    const timeline = orchestrator.continuousTimeline('structural-session');
+    assert.deepStrictEqual(timeline.durations, [3, 0, 0, 0, 3, 0]);
+    assert.strictEqual(timeline.complete, true);
+  });
+
+  await test('continuous structural-only ranges complete without creating audio inputs', async () => {
+    const { orchestrator, calls } = harness({ chapters: [{ text: '', empty: true }, { text: '   ' }] });
+    const source = await orchestrator.prepareContinuousAudioStream({
+      bookId: 'book', chapterIndex: 0, startOffsetSeconds: 10, sessionId: 'empty-session'
+    });
+    assert.strictEqual(source.decodeStartOffsetSeconds, 0);
+    for await (const _input of source.iterateInputs()) assert.fail('empty chapter yielded audio');
+    assert(!calls.some(call => call[0] === 'generate' || call[0] === 'inspectAudio'));
+    assert.deepStrictEqual(orchestrator.continuousTimeline('empty-session').durations, [0, 0]);
+    assert.strictEqual(orchestrator.continuousTimeline('empty-session').complete, true);
+  });
+
+  await test('continuous traversal skips terminal unspeakable text but surfaces other generation errors', async () => {
+    for (const code of ['CHAPTER_UNSPEAKABLE', 'ENGINE_UNAVAILABLE']) {
+      const { orchestrator, tts } = harness({ audioReadyByChapter: [true, false] });
+      tts.generateChapter = async () => { throw Object.assign(new Error(code), { code }); };
+      const source = await orchestrator.prepareContinuousAudioStream({
+        bookId: 'book', chapterIndex: 0, sessionId: 'normalization-session'
+      });
+      const iterator = source.iterateInputs();
+      const first = await iterator.next();
+      source.onInputDecoded(first.value, 24000 * 2);
+      if (code === 'CHAPTER_UNSPEAKABLE') {
+        assert.strictEqual((await iterator.next()).done, true);
+        assert.deepStrictEqual(orchestrator.continuousTimeline('normalization-session').durations, [1, 0]);
+        assert.strictEqual(orchestrator.continuousTimeline('normalization-session').complete, true);
+      } else {
+        await assert.rejects(iterator.next(), { code });
+        assert.strictEqual(orchestrator.continuousTimeline('normalization-session').complete, false);
+      }
+    }
+  });
+
+  await test('cancelled traversal does not prepare later chapters or complete its timeline', async () => {
+    const { orchestrator, calls } = harness({ audioReady: true });
+    const source = await orchestrator.prepareContinuousAudioStream({
+      bookId: 'book', chapterIndex: 0, sessionId: 'cancelled-session'
+    });
+    const controller = new AbortController();
+    const iterator = source.iterateInputs(controller.signal);
+    const first = await iterator.next();
+    source.onInputDecoded(first.value, 24000 * 2);
+    controller.abort();
+    await assert.rejects(iterator.next(), { name: 'AbortError' });
+    assert.deepStrictEqual(calls.filter(call => call[0] === 'inspectAudio').map(call => call[2]), [0]);
+    assert.strictEqual(orchestrator.continuousTimeline('cancelled-session').complete, false);
+  });
+
   await test('skips the stream-open static check for chunks validated at generation', async () => {
     const existing = {
       totalChunks: 2,
@@ -573,3 +647,4 @@ function harness(overrides = {}) {
   console.log(`playback-orchestrator tests: ${passed} passed, ${failed} failed`);
   if (failed) process.exitCode = 1;
 })();
+

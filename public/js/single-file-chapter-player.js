@@ -846,10 +846,12 @@ export class SingleFileChapterPlayer {
   _startTimelinePolling() {
     if (!this.fetch || !this.playbackSessionId || !this._eventScope) return;
     const sessionId = this.playbackSessionId;
+    let complete = false;
+    let stopInterval = null;
     const refresh = async () => {
       // Timeline data is best effort. A stalled read must not queue a fresh
       // request on every tick and exhaust the browser's per-origin connections.
-      if (sessionId !== this.playbackSessionId || this._timelineController) return;
+      if (complete || sessionId !== this.playbackSessionId || this._timelineController) return;
       const controller = new AbortController();
       this._timelineController = controller;
       const timer = setTimeout(() => controller.abort(), this.timelineRequestTimeoutMs);
@@ -871,6 +873,16 @@ export class SingleFileChapterPlayer {
           }
         });
         this._syncContinuousChapter();
+        const start = Number(timeline.startChapterIndex);
+        const expectedStart = this.startChapterIndex;
+        const expectedEnd = this._chapterCount() - 1;
+        if (timeline.complete === true && Number.isInteger(start) && start === expectedStart
+          && expectedEnd >= start && timeline.durations.length === expectedEnd - start + 1
+          && timeline.durations.every(value => value !== null && value !== undefined
+            && Number.isFinite(Number(value)) && Number(value) >= 0)) {
+          complete = true;
+          stopInterval?.();
+        }
       } catch {
         // Playback remains valid when diagnostics/timeline polling is offline.
       } finally {
@@ -886,16 +898,20 @@ export class SingleFileChapterPlayer {
     // entire length of a book, for a payload that changes only as narration is
     // generated.
     let ticks = 0;
-    this._eventScope.interval(
+    stopInterval = this._eventScope.interval(
       () => {
         ticks += 1;
         const hidden = globalThis.document?.hidden;
+        if (this.audio.paused && ticks % 15 !== 0) return;
         if (hidden && ticks % TIMELINE_HIDDEN_POLL_RATIO !== 0) return;
         void refresh();
       },
       TIMELINE_POLL_INTERVAL_MS,
       this.clock
     );
+    this._eventScope.listen(this.audio, 'play', () => {
+      if (!this.audio.paused) void refresh();
+    });
   }
 
   _estimatedDuration(chapterIndex) {
@@ -994,6 +1010,7 @@ export class SingleFileChapterPlayer {
   _emitDiagnostic(type, detail = {}) {
     this.onDiagnosticEvent?.({
       type,
+      bookId: this.bookId,
       chapterIndex: this.chapterIndex,
       streamTime: Number(this.audio.currentTime) || 0,
       chapterTime: this.getCurrentTime(),
@@ -1284,7 +1301,9 @@ export class SingleFileChapterPlayer {
     const duration = Number(this.audio.duration);
     if (!Number.isFinite(duration) || duration <= 0) return;
     const remaining = duration - (Number(this.audio.currentTime) || 0);
-    if (remaining > this.prewarmLeadSeconds) return;
+    const rate = Number(this.audio.playbackRate);
+    const effectiveRate = Number.isFinite(rate) && rate > 0 ? rate : 1;
+    if (remaining / effectiveRate > this.prewarmLeadSeconds) return;
     void this._prewarmChapter(nextChapterIndex);
   }
 

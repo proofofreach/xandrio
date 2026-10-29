@@ -125,7 +125,7 @@ export function narrationState(book = {}, activity = null, speed = 1) {
     }
     const readySeconds = Number(activity.readyAudioSeconds) / (Number(speed) || 1);
     if (['paused', 'idle'].includes(activity.preparationStatus) && Number.isFinite(readySeconds) && readySeconds >= 60) {
-      const ready = `${formatDuration(readySeconds)} ready`;
+      const ready = `${activity.durationEstimated ? '~' : ''}${formatDuration(readySeconds)} ready`;
       return state(ready, ready);
     }
     if (Number(activity.active) > 0 || Number(activity.queued) > 0) return state('Preparing');

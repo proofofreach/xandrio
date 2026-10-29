@@ -870,10 +870,17 @@ async function verifyBookOpeningIndicator(page, fixtureState) {
       const downloadBefore = await card.locator('.book-local-control').boundingBox();
       let releaseBook;
       const pendingBook = new Promise(resolve => { releaseBook = resolve; });
-      const holdBook = async route => { await pendingBook; await route.fallback(); };
-      await page.route('**/api/book/smoke', holdBook);
+      let markBookRequested;
+      const bookRequested = new Promise(resolve => { markBookRequested = resolve; });
+      const playbackBook = url => url.pathname === '/api/book/smoke' && url.searchParams.get('playback') === '1';
+      const holdBook = async route => { markBookRequested(); await pendingBook; await route.fallback(); };
+      await page.route(playbackBook, holdBook);
       try {
         await card.locator('.book-card-open').click();
+        await Promise.race([
+          bookRequested,
+          new Promise((_, reject) => setTimeout(() => reject(new Error('Opening did not request playback metadata')), 5000))
+        ]);
         await page.waitForSelector('#library-list .book-item.loading');
         const name = `${width === 390 ? 'phone' : 'desktop'}-${grid ? 'grid' : 'list'}`;
         await page.screenshot({ path: path.join(output, `${name}.png`) });
@@ -899,7 +906,7 @@ async function verifyBookOpeningIndicator(page, fixtureState) {
         evidence.push({ name, placement, downloadUnchanged: true });
       } finally {
         releaseBook();
-        await page.unroute('**/api/book/smoke', holdBook);
+        await page.unroute(playbackBook, holdBook);
       }
       await page.waitForFunction(() => !document.querySelector('#library-list .book-item.loading'));
     }

@@ -91,7 +91,7 @@ export async function loadClientSettings(options = {}) {
   loadPromise = (async () => {
     settings = options.preferLocal === false ? { ...DEFAULTS } : { ...DEFAULTS, ...readLocalSettings() };
     try {
-      const data = await apiGet('/api/settings/client');
+      const data = await apiGet('/api/settings/client', { timeoutMs: 3000, ...options.requestOptions });
       if (generation !== loadGeneration || userId !== getCurrentUserId()) return { ...settings };
       const remote = sanitize(data.settings || {});
       // Profile loading may finish after the listener has made a new choice.

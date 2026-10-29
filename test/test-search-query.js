@@ -52,6 +52,9 @@ async function run() {
   equal(response.searchCorrection?.originalQuery, 'Slaugterhouse-Five', 'The response retains the user query for disclosure');
 
   const discovered = await resolveSearchQueryCorrection({ query: 'Slaugterhouse-Five', language: 'en' }, {
+    // Keep DNS deterministic alongside the mocked HTTP response. The remote
+    // fetch guard still validates this public address before invoking fetchImpl.
+    lookupImpl: async () => [{ address: '93.184.216.34', family: 4 }],
     fetchImpl: async url => {
       const parsed = new URL(url);
       return {

@@ -73,6 +73,7 @@ function test(name, fn) {
     assert.strictEqual(narrationState({}, { failed: true }).long, 'Narration failed');
     assert.strictEqual(narrationState({}, { preparationStatus: 'generating', readyChapters: 23, totalChapters: 50 }).long, 'Preparing 46%');
     assert.strictEqual(narrationState({}, { preparationStatus: 'paused', readyAudioSeconds: 7800 }, 1).long, '2h 10m ready');
+    assert.strictEqual(narrationState({}, { preparationStatus: 'paused', readyAudioSeconds: 7800, durationEstimated: true }, 1).long, '~2h 10m ready');
     assert.strictEqual(narrationState({}, { preparationStatus: 'paused', readyAudioSeconds: 7800 }, 1.25).long, '1h 44m ready');
   });
   test('the library record covers import warm-up failures', () => {

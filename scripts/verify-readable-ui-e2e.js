@@ -215,7 +215,7 @@ async function focusAtTitle(page, titleId, dialog) {
             let release, hit;
             const waiting = new Promise(resolve => { release = resolve; });
             const metadataHit = new Promise(resolve => { hit = resolve; });
-            await page.route('**/api/book/scn-meridian', async route => { hit(); await waiting; await route.continue(); });
+            await page.route(url => url.pathname === '/api/book/scn-meridian', async route => { hit(); await waiting; await route.continue(); });
             await page.evaluate(() => { window.__readableMediaCalls = []; });
             await card.click(); await metadataHit;
             const coldCalls = await page.evaluate(() => window.__readableMediaCalls);
@@ -253,7 +253,7 @@ async function focusAtTitle(page, titleId, dialog) {
             let release, hit;
             const waiting = new Promise(resolve => { release = resolve; });
             const metadataHit = new Promise(resolve => { hit = resolve; });
-            await page.route('**/api/book/scn-meridian', async route => { hit(); await waiting; await route.continue(); });
+            await page.route(url => url.pathname === '/api/book/scn-meridian', async route => { hit(); await waiting; await route.continue(); });
             await page.evaluate(() => { window.__readableAutoplayChanges = []; });
             await page.locator('#player-recent-btn').click(); await page.locator('[data-recent-book="scn-meridian"]').click();
             await metadataHit;
@@ -272,7 +272,7 @@ async function focusAtTitle(page, titleId, dialog) {
           if (viewport.name === 'phone') await check('resume-races-and-failed-open', async page => {
             await openPlayer(page, environment.origin, 'scn-fieldnotes');
             const plans = [];
-            await page.route('**/api/book/scn-meridian', async route => {
+            await page.route(url => url.pathname === '/api/book/scn-meridian', async route => {
               const plan = plans.shift();
               if (!plan) return route.continue();
               plan.hit(); await plan.wait;
@@ -291,10 +291,11 @@ async function focusAtTitle(page, titleId, dialog) {
             }
             const slow = gate();
             await recent('scn-meridian'); await slow.hitPromise;
+            const staleRequest = page.waitForEvent('requestfailed', request => new URL(request.url()).pathname === '/api/book/scn-meridian');
             await recent('scn-lighthouse'); await page.waitForURL('**/#/player/scn-lighthouse');
             const winningAudio = await requirePlaying(page);
-            const staleResponse = page.waitForResponse(response => response.url().endsWith('/api/book/scn-meridian'));
-            slow.release(); await staleResponse;
+            await staleRequest;
+            slow.release();
             await page.waitForTimeout(200);
             assert(page.url().endsWith('/#/player/scn-lighthouse'), 'late book response changed the winning route');
             assert((await playingEvidence(page)).src.includes('scn-lighthouse'), 'late book response started the wrong audio');
@@ -311,7 +312,7 @@ async function focusAtTitle(page, titleId, dialog) {
             await page.locator('#play-pause-btn').click(); await requirePlaying(page);
             await recent('scn-lighthouse'); await requirePlaying(page);
             const failure = gate(true); await recent('scn-meridian'); await failure.hitPromise;
-            const failedResponse = page.waitForResponse(response => response.url().endsWith('/api/book/scn-meridian') && response.status() === 503);
+            const failedResponse = page.waitForResponse(response => new URL(response.url()).pathname === '/api/book/scn-meridian' && response.status() === 503);
             failure.release(); await failedResponse;
             await waitFor(page, () => document.getElementById('audio-player').paused, 'failed resume left an unrelated book playing');
             assert(page.url().endsWith('/#/player/scn-lighthouse'), 'failed open changed the current route');
