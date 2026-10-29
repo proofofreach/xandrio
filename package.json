@@ -13,7 +13,7 @@
   },
   "homepage": "https://github.com/ProofOfReach/alexandrio#readme",
   "engines": {
-    "node": ">=24 <25",
+    "node": ">=24.22.1 <25",
     "npm": ">=11"
   },
   "packageManager": "npm@11.14.1",
@@ -70,6 +70,7 @@
     "sbom:npm": "npx @cyclonedx/cyclonedx-npm --omit dev --output-format JSON --output-file artifacts/xandrio-npm.cdx.json",
     "sbom:python": "node scripts/release/generate-python-sboms.mjs",
     "notices": "node scripts/generate-third-party-notices.mjs",
+    "playback-health": "node scripts/playback-health-report.js",
     "check:docker-context": "node scripts/release/check-docker-context.mjs",
     "check:release-assets": "node scripts/release/check-release-assets.mjs",
     "check:release-approvals": "node scripts/release/check-release-approvals.mjs",
@@ -107,6 +108,8 @@
     "verify:moss-nano-recovery": "node scripts/verify-moss-nano-recovery.js",
     "verify:voice-filters": "node scripts/verify-voice-filters-e2e.js",
     "verify:narration": "node scripts/verify-narration-workflow-e2e.js",
+    "verify:tool-free-guides": "node scripts/verify-tool-free-guides-e2e.js",
+    "verify:security-boundaries": "node scripts/verify-security-boundaries-e2e.js",
     "verify:moss-nano-book": "node scripts/verify-moss-nano-book-playback.js",
     "verify:voice-switch-races": "node scripts/verify-voice-switch-races-e2e.js",
     "verify:native-interruption": "node scripts/verify-native-interruption-e2e.js",

@@ -24,6 +24,7 @@ assert(begin >= 0 && end > begin);
     premiumPrep: { getState: () => ({ variantKey: 'variant', status: 'generating' }) },
     isPreparedVoice: () => true, registeredVoiceEntries: () => [{ id: 'voice', name: 'Voice' }],
     isPremiumPrepEnabled: () => true, getInstantVoiceFor: () => 'instant',
+    isPlayableChapter: require('../lib/chapter-playability').isPlayableChapter,
     Promise, Map
   };
   vm.createContext(context);

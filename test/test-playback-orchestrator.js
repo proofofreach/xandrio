@@ -25,6 +25,7 @@ function harness(overrides = {}) {
       || (overrides.manifest === undefined ? null : overrides.manifest),
     generateChapter: async (...args) => {
       calls.push(['generate', ...args]);
+      if (overrides.generateError) throw overrides.generateError;
       // The real ChunkedTTS retains the manifest before generation resolves.
       generatedManifests.set(`${args[0]}:${args[1]}`, manifest);
       return manifest;
@@ -101,6 +102,83 @@ function harness(overrides = {}) {
     assert.equal(status.retryable, false);
     assert.equal(status.code, 'CHAPTER_UNSPEAKABLE');
     assert(!calls.some(call => call[0] === 'generate'));
+  });
+
+  // Production 2026-10-18: a section divider reached prepare-chapter-audio
+  // and every attempt returned HTTP 500 from CHAPTER_UNSPEAKABLE.
+  const dividerBook = () => [
+    { title: 'Chapter 11', type: 'chapter', text: 'Chapter eleven has enough narration to speak aloud.' },
+    { title: 'Part 2', type: 'divider', empty: true, text: 'Part 2 \nSEX' },
+    { title: 'Chapter 12', type: 'chapter', text: 'Chapter twelve also has enough narration to speak.' }
+  ];
+  const unspeakable = () => Object.assign(new Error('Chapter has no speakable text for TTS'), { code: 'CHAPTER_UNSPEAKABLE' });
+
+  await test('runway preparation of a section divider is a typed terminal result, not an error', async () => {
+    const { orchestrator, calls } = harness({ chapters: dividerBook() });
+    const status = await orchestrator.startChapterAudio({
+      bookId: 'book', chapterIndex: 1, priority: 'immediate', startOffsetSeconds: 0, completeChapter: true
+    });
+    assert.strictEqual(status.status, 'unplayable');
+    assert.strictEqual(status.ready, false);
+    assert.strictEqual(status.retryable, false);
+    assert.strictEqual(status.code, 'CHAPTER_UNSPEAKABLE');
+    assert.strictEqual(status.nextPlayableChapterIndex, 2);
+    assert(!calls.some(call => ['generate', 'ensureAudio', 'tts', 'prep'].includes(call[0])),
+      'no tier, provider or generation work starts for a structural section');
+  });
+
+  await test('text that TTS cannot speak is reported as unplayable instead of thrown', async () => {
+    const chapters = dividerBook();
+    chapters[1] = { title: 'Chapter 5', type: 'chapter', text: '* * *' };
+    const { orchestrator } = harness({ chapters, generateError: unspeakable() });
+    const status = await orchestrator.startChapterAudio({
+      bookId: 'book', chapterIndex: 1, priority: 'immediate', startOffsetSeconds: 0, completeChapter: true
+    });
+    assert.strictEqual(status.status, 'unplayable');
+    assert.strictEqual(status.nextPlayableChapterIndex, 2);
+  });
+
+  await test('status and media preparation report unplayable sections with typed results', async () => {
+    const { orchestrator } = harness({ chapters: dividerBook() });
+    const status = await orchestrator.chapterAudioStatus({ bookId: 'book', chapterIndex: 1, startOffsetSeconds: 0 });
+    assert.strictEqual(status.status, 'unplayable');
+    assert.strictEqual((await orchestrator.chunkStatus({ bookId: 'book', chapterIndex: 1 })).status, 'unplayable');
+    for (const prepare of [
+      () => orchestrator.prepareChapterAudio({ bookId: 'book', chapterIndex: 1 }),
+      () => orchestrator.prepareAudioStream({ bookId: 'book', chapterIndex: 1 }),
+      () => orchestrator.prepareContinuousAudioStream({ bookId: 'book', chapterIndex: 1, sessionId: 's1' })
+    ]) {
+      await assert.rejects(prepare, error => error.code === 'CHAPTER_UNSPEAKABLE'
+        && error.statusCode === 422 && error.retryable === false && error.nextPlayableChapterIndex === 2);
+    }
+  });
+
+  await test('continuous playback streams past a section divider with a zero-length timeline entry', async () => {
+    const { orchestrator, manifest } = harness({ chapters: dividerBook(), audioReady: true });
+    manifest.chunks.forEach(chunk => { chunk.status = 'ready'; });
+    const source = await orchestrator.prepareContinuousAudioStream({ bookId: 'book', chapterIndex: 0, sessionId: 'divider' });
+    assert.deepStrictEqual(orchestrator.continuousTimeline('divider').durations, [null, 0, null],
+      'the divider is known to carry no audio before the stream reaches it');
+    const inputs = [];
+    for await (const input of source.iterateInputs()) inputs.push(input.chapterIndex);
+    assert.deepStrictEqual(inputs, [0, 2], 'no input is requested for the divider');
+  });
+
+  await test('continuous playback skips a chapter that TTS finds unspeakable', async () => {
+    const chapters = dividerBook();
+    chapters[1] = { title: 'Chapter 5', type: 'chapter', text: '* * *' };
+    const { orchestrator, tts } = harness({ chapters, audioReady: false });
+    const manifest = { totalChunks: 1, textLength: 40, chunks: [{ index: 0, status: 'ready' }] };
+    tts.getChapterManifest = (_bookId, chapterIndex) => chapterIndex === 1 ? null : manifest;
+    tts.generateChapter = async (_bookId, chapterIndex) => {
+      if (chapterIndex === 1) throw unspeakable();
+      return manifest;
+    };
+    const source = await orchestrator.prepareContinuousAudioStream({ bookId: 'book', chapterIndex: 0, sessionId: 'heading' });
+    const inputs = [];
+    for await (const input of source.iterateInputs()) inputs.push(input.chapterIndex);
+    assert.deepStrictEqual(inputs, [0, 2]);
+    assert.strictEqual(orchestrator.continuousTimeline('heading').durations[1], 0);
   });
 
   await test('serves instant while premium audio is not ready', async () => {
@@ -341,6 +419,25 @@ function harness(overrides = {}) {
       source.waitForChunk(0, controller.signal),
       new Promise((_, reject) => setTimeout(() => reject(new Error('abort was not observed')), 50))
     ]), error => error?.name === 'AbortError');
+  });
+
+  await test('continuous stream reports first-audio cache state before any wait', async () => {
+    const cold = await harness({ ready: false }).orchestrator.prepareContinuousAudioStream({
+      bookId: 'book', chapterIndex: 0, requestedTier: 'instant'
+    });
+    assert.deepStrictEqual(cold.firstAudioDiagnostics, {
+      origin: 'chunks',
+      startChunkStatus: 'pending',
+      readyChunks: 0,
+      totalChunks: 2,
+      seek: false,
+      voiceId: 'kokoro:instant',
+      tier: 'instant'
+    });
+    const final = await harness({ ready: false, audioReady: true }).orchestrator.prepareContinuousAudioStream({
+      bookId: 'book', chapterIndex: 0, requestedTier: 'instant'
+    });
+    assert.strictEqual(final.firstAudioDiagnostics.origin, 'final');
   });
 
   await test('continuous stream pins one tier without creating an unowned look-ahead chain', async () => {

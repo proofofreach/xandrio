@@ -73,3 +73,51 @@ included in certification and checkpoint identity; prior GLM/Codex certification
 cannot authorize Jev judgments. Confidence is not a correctness guarantee, and
 80 authored controls do not establish production certification. The provider
 alias can change; model-version pinning remains unavailable through this route.
+
+
+## Inbound authority and shared narration edits
+
+Xandrio rejects unknown or malformed HTTP Host authorities before parsing bodies
+or resolving users, including in trusted-LAN mode. The default allowlist contains
+localhost, the machine hostname (and its `.local` form for a short hostname),
+local interface addresses at startup, and the configured bind hostname. The
+`XANDRIO_CANONICAL_ORIGIN` host is also allowed. Configure exact additional
+reverse-proxy, Tailscale, or custom DNS names in `XANDRIO_ALLOWED_HOSTS`.
+Ports do not distinguish allowed hostnames. No wildcard or request-driven DNS
+resolution is used. `X-Forwarded-Host` does not authorize an inbound authority;
+proxies must preserve an allowed Host or send an explicitly configured one.
+Restart the server after local interface addresses change. CSRF checks remain
+separate and continue to reject mismatched origins and cross-site mutations.
+This closes server acceptance of arbitrary authorities; it is not a demonstration
+of browser DNS-rebinding exploitability or an assessment of deployed ingress.
+
+Global pronunciation mutations require an admin. Members may mutate book rules
+only for a book whose `addedBy` matches their account, consistent with metadata
+refresh and chapter rebuild permissions. Shared pronunciation reads remain
+available. Ownerless legacy books require an admin for pronunciation mutations.
+A scoped Calibre connection may update/link only a book explicitly owned by its
+user; it cannot claim an ownerless legacy record through stable IDs or fuzzy
+deduplication. Existing owner synchronization and new imports remain supported.
+
+Search-cover URL downloads use the shared remote-fetch transport. It validates
+all DNS answers and every redirect, pins the selected address in the connector,
+preserves the URL authority for TLS/Host, and bounds response bytes and duration.
+No proxy is introduced for this path.
+
+
+### Tool-free guide inference
+
+The optional `openai-api` provider replaces Codex CLI execution. Its invocation
+is a single fixed-destination HTTPS text request, with no tools offered and no
+host tool executor or agent subprocess. Model-returned tool calls and non-text
+items (except reasoning metadata) fail closed. Neither prompt injection nor a
+response path/URL can authorize host operations through this adapter. This does
+not prevent a model from generating false text; evidence and quality gates still
+apply. It does not isolate the rest of the server process from its own files.
+
+Provider-tagged keys prevent cross-provider reuse. Migration requires a new key,
+processing acknowledgement and model identity; old Codex configuration cannot
+become ready automatically. Time/byte limits, redirect denial and safe errors
+bound HTTP failures. OpenAI `store: false` is not a ZDR guarantee. No live-account
+availability, quality, account retention policy or deployed ingress was verified
+by the offline security regression. See BOOK_GUIDES.md for migration details.

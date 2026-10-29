@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
+  <meta name="xandrio-version" content="1.1.0">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -384,6 +385,12 @@
         <aside id="settings-hub" class="settings-hub" aria-label="Settings">
           <header class="settings-hub-header">
             <h2>Settings</h2>
+            <div class="settings-row settings-row-stacked">
+              <span id="app-version" class="settings-label-text"></span>
+              <span id="app-version-status" class="settings-label-hint" role="status">Not checked yet</span>
+              <button id="app-version-check" type="button" class="btn btn-secondary">Check for updates</button>
+              <button id="app-version-reload" type="button" class="btn btn-secondary" hidden>Reload to update</button>
+            </div>
           </header>
 
           <a id="settings-identity" class="settings-identity" href="#/settings/account" hidden>
@@ -981,10 +988,10 @@
                   </div>
                 </div>
                 <div id="book-guides-api-key-group" class="settings-field">
-                  <label for="book-guides-api-key">PPQ.ai API key</label>
+                  <label for="book-guides-api-key">Provider API key</label>
                   <input id="book-guides-api-key" name="book-guides-api-key" type="password" placeholder="Enter a dedicated API key…" autocomplete="new-password" spellcheck="false" />
                 </div>
-                <p id="book-guides-key-note" class="settings-hint">The API key is write-only. Use a dedicated PPQ.ai key with a strict spending limit. The connection test sends a small paid request.</p>
+                <p id="book-guides-key-note" class="settings-hint">The API key is write-only. Use a dedicated provider key with a strict spending limit. The connection test sends a small paid request.</p>
               </div>
               <h3 class="settings-subheading"><span class="settings-step">2</span>Models</h3>
               <div class="settings-card guide-model-grid">
@@ -1695,6 +1702,6 @@
   </div>
 
   <script src="/js/lifecycle.js?v=2"></script>
-  <script type="module" src="app.js?v=157"></script>
+  <script type="module" src="app.js?v=162"></script>
 </body>
 </html>
