@@ -221,7 +221,7 @@ function fakeResponse() {
 
   const createResponse = fakeResponse();
   await routes['POST /api/pronunciations'](
-    { body: { scope: 'book', bookId: 'beta', source: 'relevant', replacement: 'REL-uh-vunt' }, query: {} },
+    { user: { id: 'fixture-admin', role: 'admin' }, body: { scope: 'book', bookId: 'beta', source: 'relevant', replacement: 'REL-uh-vunt' }, query: {} },
     createResponse
   );
   assertEqual(createResponse.statusCode, 201, 'route creates a book pronunciation rule');

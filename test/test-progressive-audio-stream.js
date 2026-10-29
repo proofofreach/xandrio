@@ -12,7 +12,8 @@ const { createChapterAudioStreamer, createOutputPacer } = require('../lib/chapte
 const {
   DEFAULT_MAX_ACTIVE_SESSIONS,
   cleanupStaleSessionRoots,
-  createHlsAudioStreamer
+  createHlsAudioStreamer,
+  formatFirstSegmentLog
 } = require('../lib/hls-audio-stream');
 const { serveAudioFile } = require('../lib/audio-response');
 const { createConcurrencyLimitMiddleware } = require('../lib/concurrency-limit');
@@ -1124,6 +1125,24 @@ function zeroCrossingRate(pcm) {
       }
     });
 
+    await test('the first-segment log line attributes the wait without identifiers', async () => {
+      const line = formatFirstSegmentLog({
+        waitedMs: 3851,
+        stages: { prepareMs: 40, firstChunkMs: 3600, encodeMs: 211 },
+        source: { origin: 'chunks', startChunkStatus: 'pending', readyChunks: 0, totalChunks: 42, seek: true, voiceId: 'af_heart', tier: 'active' },
+        backgroundWorkInFlight: true
+      });
+      assert.strictEqual(
+        line,
+        '[playback] first HLS segment in 3851ms (prepare 40ms, first chunk 3600ms, encode 211ms; ' +
+        'source chunks start=pending ready=0/42 seek; voice af_heart; tier active; TTS generation already in flight)'
+      );
+      assert.strictEqual(
+        formatFirstSegmentLog({ waitedMs: 300, source: { origin: 'final' } }),
+        '[playback] first HLS segment in 300ms (source final file)'
+      );
+    });
+
     // Instrumentation is diagnostics. A hook that throws — a logger with a bad
     // format string, a metrics client that is down — must never reject session
     // readiness or evict a session a listener is waiting on.
@@ -1136,7 +1155,9 @@ function zeroCrossingRate(pcm) {
         chapterIndex: 0,
         endChapterIndex: 0,
         format: 'mp3',
+        firstAudioDiagnostics: { origin: 'chunks', startChunkStatus: 'generating', readyChunks: 0, totalChunks: 3, seek: false },
         async *iterateInputs() {
+          await new Promise(resolve => setTimeout(resolve, 120));
           yield { path: tonePath, chapterIndex: 0, lastInChapter: true };
         }
       };
@@ -1171,6 +1192,14 @@ function zeroCrossingRate(pcm) {
           false,
           'a throwing background probe degrades to false rather than propagating'
         );
+        const { stages } = observed[0];
+        assert(stages.firstChunkMs >= 100, `the wait for the first input is its own stage (${stages.firstChunkMs}ms)`);
+        assert(
+          stages.prepareMs + stages.firstChunkMs + stages.encodeMs <= observed[0].waitedMs + 1,
+          'stages do not exceed the measured total'
+        );
+        assert(observed[0].waitedMs >= stages.firstChunkMs, 'the total includes the first-input wait');
+        assert.strictEqual(observed[0].source.startChunkStatus, 'generating', 'source attribution is passed through');
       } finally {
         await app.locals.hlsAudioStreamer.dispose();
         await new Promise(resolve => server.close(resolve));

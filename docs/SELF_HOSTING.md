@@ -294,7 +294,7 @@ No data migration or automatic reprocessing is required. Existing artifacts stay
 Set `XANDRIO_JEV_GUIDE_VERIFIER_ENABLED=true`,
 `XANDRIO_JEV_EXTERNAL_TEXT_ACKNOWLEDGED=true`, and a server-side
 `AI_GATEWAY_API_KEY` to use `typesafe-ai/jev` through Vercel AI Gateway for
-study-guide evidence checks. This also works with the private Codex guide
+study-guide evidence checks. This also works with the optional OpenAI API guide
 provider; uncertain answers use whichever verifier is already configured.
 Generation, composition and repair stay with the existing provider.
 

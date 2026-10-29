@@ -259,6 +259,13 @@ trackAsyncTest('Manifest tracking', (async () => {
     try { await operation(); } catch (caught) { error = caught; }
     assertEqual(error?.code, 'CHAPTER_UNSPEAKABLE', 'heading-only text reports a terminal error code');
   }
+  assertEqual(await tts.hasSpeakableText('heading-only', 0, 'Chapter One'), false,
+    'heading-only text is detected as unspeakable without building a manifest');
+  assertEqual(await tts.hasSpeakableText('divider', 12, 'Part 2 \nSEX'), false,
+    'the production section divider has nothing to speak');
+  assertEqual(await tts.hasSpeakableText('prose', 0, 'Then Anshar spoke to the gathered gods at length.'), true,
+    'ordinary prose is speakable');
+  assertEqual(tts.getChapterManifest('heading-only', 0), null, 'the speakability check leaves no manifest behind');
 
 
   // Override _fileExists so nothing is "cached"

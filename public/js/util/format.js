@@ -137,7 +137,8 @@ export function coverPlaceholderSrc(title) {
 // wrapper-specific sizing class the call site needs.
 export function coverImageHTML(book, className = '', alt = '') {
   const id = String(book?.id || '');
-  const hasCover = Boolean(id) && Boolean(book?.hasCover || book?.coverPath);
+  // Missing metadata must not prevent the server from recovering a cover.
+  const hasCover = Boolean(id);
   const placeholder = coverPlaceholderSrc(book?.title);
   const src = hasCover
     ? (book?.coverUrl || `${API_BASE}/api/cover/${encodeURIComponent(id)}`)

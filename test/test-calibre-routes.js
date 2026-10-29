@@ -71,7 +71,7 @@ async function run(handlers, req) {
         throw error;
       }
       imported.push(command);
-      books[command.id] = { id: command.id, title: command.catalogMetadata.title, calibre: command.calibre };
+      books[command.id] = { id: command.id, title: command.catalogMetadata.title, addedBy: command.addedBy, calibre: command.calibre };
       return { bookId: command.id, book: books[command.id], validation: { valid: true, warnings: [] } };
     },
     withBookMutationLock: async (bookId, task) => {
@@ -153,7 +153,7 @@ async function run(handlers, req) {
   assert.strictEqual(res.body.books.length, 1);
   assert.strictEqual(res.body.books[0].bookUuid, 'book-a');
 
-  books.existing_upload = { id: 'existing_upload', title: 'Existing Upload', author: 'Ada Author' };
+  books.existing_upload = { id: 'existing_upload', addedBy: 'usr_a', title: 'Existing Upload', author: 'Ada Author' };
   duplicateExistingId = 'existing_upload';
   res = await run(routes.get('POST /api/integrations/calibre/import'), {
     headers: { authorization: 'Bearer xcal_token' },

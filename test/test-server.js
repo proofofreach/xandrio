@@ -2267,6 +2267,18 @@ pendingAsyncTests.push((async () => {
     openLibraryWorkKey: '/works/OL827364W',
     coverSource: 'embedded'
   }), 'Embedded cached catalog book cover refreshes');
+  {
+    const smallCover = { dimensions: { width: 275, height: 400 } };
+    const book = { openLibraryWorkKey: '/works/OL827364W', coverSource: 'openlibrary-work' };
+    assert(serverTestHooks.shouldRefreshCachedCover(book, false, smallCover),
+      'A small catalog cover is eligible for an automatic refresh');
+    assert(!serverTestHooks.shouldRefreshCachedCover({ ...book, coverCheckedAt: new Date().toISOString() }, false, smallCover),
+      'A cover checked this week is not refreshed again on every view');
+    assert(serverTestHooks.shouldRefreshCachedCover({ ...book, coverCheckedAt: new Date(Date.now() - 8 * 864e5).toISOString() }, false, smallCover),
+      'A cover checked over a week ago is refreshed again');
+    assert(serverTestHooks.shouldRefreshCachedCover({ ...book, coverCheckedAt: new Date().toISOString() }, true, smallCover),
+      'A forced refresh ignores the recheck interval');
+  }
   assert(!serverTestHooks.shouldRefreshCachedCover({
     path: '/tmp/book.epub',
     downloadSource: 'upload',

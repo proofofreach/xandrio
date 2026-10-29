@@ -868,6 +868,109 @@ function fakeAudio() {
     player.dispose();
   });
 
+  // Production 2026-10-18: a section divider followed chapter 11 and its
+  // audio request returned 500 three times. Sections without narration are
+  // never pre-warmed or advanced into.
+  await test('the boundary pre-warm skips a section without narration', async () => {
+    const audio = fakeAudio();
+    const { player, fetched, advances } = downloadedPlayer(audio, {
+      getChapterCount: () => 4,
+      isChapterPlayable: (_bookId, chapterIndex) => chapterIndex !== 1
+    });
+    await playDownloadedChapter(player, audio);
+    assert.deepStrictEqual(fetched, ['/offline/book1/2'], 'only the next narrated chapter is fetched');
+
+    audio.currentTime = 10;
+    audio.ended = true;
+    audio.emit('ended');
+    assert.strictEqual(player.chapterIndex, 2);
+    assert.deepStrictEqual(advances, [{ previousChapterIndex: 0, chapterIndex: 2, chapterTime: 0 }]);
+    player.dispose();
+  });
+
+  await test('an unplayable runway result is a typed terminal error without retries', async () => {
+    const audio = fakeAudio();
+    const requests = [];
+    const errors = [];
+    const { player } = makePlayer(audio, {
+      getChapterCount: () => 3,
+      preparePlaybackRunway: true,
+      runwayPollIntervalMs: 1,
+      onError: error => errors.push(error),
+      fetch: async (url, options = {}) => {
+        requests.push({ url, method: options.method || 'GET' });
+        return {
+          ok: true,
+          status: 200,
+          async json() {
+            return {
+              ready: false,
+              status: 'unplayable',
+              code: 'CHAPTER_UNSPEAKABLE',
+              retryable: false,
+              nextPlayableChapterIndex: 2
+            };
+          }
+        };
+      }
+    });
+    await assert.rejects(player.loadChapter('book1', 1), error => (
+      error.unplayable === true
+      && error.code === 'CHAPTER_UNSPEAKABLE'
+      && error.chapterIndex === 1
+      && error.nextPlayableChapterIndex === 2
+    ));
+    assert.strictEqual(requests.length, 1, 'the terminal result is not retried or polled');
+    assert.strictEqual(audio.src, '', 'no media request is made for the section');
+    assert.strictEqual(errors.length, 1);
+    assert.strictEqual(errors[0].unplayable, true);
+    player.dispose();
+  });
+
+  await test('a typed 422 from an older route is also terminal', async () => {
+    const audio = fakeAudio();
+    let requests = 0;
+    const { player } = makePlayer(audio, {
+      getChapterCount: () => 3,
+      preparePlaybackRunway: true,
+      runwayPollIntervalMs: 1,
+      fetch: async () => {
+        requests += 1;
+        return {
+          ok: false,
+          status: 422,
+          headers: { get: () => null },
+          async json() { return { error: 'Chapter has no narration', code: 'CHAPTER_UNSPEAKABLE', retryable: false }; }
+        };
+      }
+    });
+    await assert.rejects(player.loadChapter('book1', 1), error => error.unplayable === true);
+    assert.strictEqual(requests, 1);
+    player.dispose();
+  });
+
+  await test('continuous time maps past a section without narration even before the server reports it', async () => {
+    const audio = fakeAudio();
+    audio.duration = Infinity;
+    const transitions = [];
+    const { player } = makePlayer(audio, {
+      getChapterCount: () => 3,
+      getEstimatedDuration: () => 10,
+      isChapterPlayable: (_bookId, chapterIndex) => chapterIndex !== 1,
+      onChapterTransition: detail => transitions.push(detail)
+    });
+    const load = player.loadChapter('book1', 0);
+    audio.emit('loadedmetadata');
+    await load;
+    player._timelineDurations.set(0, 10);
+    audio.currentTime = 12;
+    audio.emit('timeupdate');
+    assert.strictEqual(player.chapterIndex, 2);
+    assert.strictEqual(player.getCurrentTime(), 2);
+    assert.deepStrictEqual(transitions.map(item => item.chapterIndex), [2]);
+    player.dispose();
+  });
+
   await test('a chapter with no local successor still ends the ordinary way', async () => {
     const audio = fakeAudio();
     const { player, fetched, advances, chapterEnds } = downloadedPlayer(audio, {
