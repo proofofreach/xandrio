@@ -1,3 +1,4 @@
+const { rateLimit: hostRateLimit } = require('express-rate-limit');
 const express = require('express');
 const bodyParser = require('body-parser');
 const cors = require('cors');
@@ -27,7 +28,7 @@ const gutenberg = require('./lib/gutenberg');
 const { isSafeBookId: requestGuardIsSafeBookId, parseNonNegativeInteger } = require('./lib/request-guards');
 const { serveAudioFile } = require('./lib/audio-response');
 const { createChapterAudioStreamer } = require('./lib/chapter-audio-stream');
-const { createHlsAudioStreamer } = require('./lib/hls-audio-stream');
+const { createHlsAudioStreamer, formatFirstSegmentLog } = require('./lib/hls-audio-stream');
 const {
   registerPlaybackRoutes,
   replayOfflinePreparations
@@ -36,6 +37,7 @@ const { getTtsOutputFormatForVoice } = require('./lib/tts-output-format');
 const { createNarrationEngineRegistry } = require('./lib/narration-engine-registry');
 const { createNarrationRuntime } = require('./lib/narration-runtime');
 const { createPlaybackOrchestrator } = require('./lib/playback-orchestrator');
+const { isPlayableChapter } = require('./lib/chapter-playability');
 const { createPlaybackPrefetchCoordinator } = require('./lib/playback-prefetch');
 const { createOfflinePreparationCoordinator } = require('./lib/offline-preparation-coordinator');
 const { createOfflineTransferManifest } = require('./lib/offline-transfer-manifest');
@@ -95,6 +97,7 @@ const { createOpdsProvider } = require('./lib/search-providers/opds');
 const { registerPreferencesRoutes } = require('./lib/routes/preferences-routes');
 const { registerDiagnosticsRoutes } = require('./lib/routes/diagnostics-routes');
 const { createOperatorDiagnostics } = require('./lib/operator-diagnostics');
+const { createPlaybackHealthStore, registerPlaybackHealthRoutes } = require('./lib/playback-health');
 const { registerBookmarksRoutes, removeBookBookmarks } = require('./lib/routes/bookmarks-routes');
 const { registerListeningQueueRoutes } = require('./lib/routes/listening-queue-routes');
 const { registerOperatorPolicyRoutes } = require('./lib/routes/operator-policy-routes');
@@ -104,8 +107,7 @@ const { registerAudioPrepRoutes } = require('./lib/routes/audio-prep-routes');
 const { registerSyncPositionRoutes } = require('./lib/routes/sync-position-routes');
 const { createBookGuideJournal } = require('./lib/book-guide-journal');
 const { createJevGuideVerifier } = require('./lib/jev-guide-verifier');
-const { createPpqBookGuideProvider } = require('./lib/book-guide-provider');
-const { createCodexBookGuideProvider } = require('./lib/book-guide-codex-provider');
+const { createConfiguredBookGuideProvider } = require('./lib/book-guide-provider-config');
 const { createBookGuideService } = require('./lib/book-guide-service');
 const { createBookGuideStore } = require('./lib/book-guide-store');
 const { buildBookGuideNarration, narrationArtifactId, narrationBookPrefix } = require('./lib/book-guide-narration');
@@ -127,6 +129,7 @@ const { parseVoiceProviders, filterVoicesByProvider } = require('./lib/voice-cat
 const { registerAccountRoutes } = require('./lib/routes/accounts-routes');
 const { createRateLimitMiddleware, positiveInteger } = require('./lib/rate-limit');
 const { createCsrfMiddleware } = require('./lib/csrf');
+const { createHostGuard } = require('./lib/host-guard');
 const { createGracefulShutdown } = require('./lib/graceful-shutdown');
 const {
   normalizeCanonicalOrigin,
@@ -303,12 +306,19 @@ const corsOptions = {
   optionsSuccessStatus: 204
 };
 
+// Validate authority before body parsing, authentication or any route.
+const canonicalOrigin = normalizeCanonicalOrigin(process.env.XANDRIO_CANONICAL_ORIGIN);
 // Middleware
 app.use(securityHeaders);
+app.use(hostRateLimit({ windowMs: 60_000, limit: 6000, standardHeaders: 'draft-7', legacyHeaders: false }), createHostGuard({ canonicalOrigin, bindHost: HOST }));
 app.use(cors(corsOptions));
 app.use(bodyParser.json());
-const canonicalOrigin = normalizeCanonicalOrigin(process.env.XANDRIO_CANONICAL_ORIGIN);
-registerDeploymentRoute(app, { canonicalOrigin });
+registerDeploymentRoute(app, {
+  canonicalOrigin,
+  appVersion: require('./package.json').version,
+  appBuild: require('node:fs').readFileSync(require('node:path').join(__dirname, 'public/js/features/offline.js'), 'utf8')
+    .match(/export const EXPECTED_OFFLINE_SW_VERSION = '([^']+)'/)[1]
+});
 
 // Set XANDRIO_TOKEN for private-instance mode. Without it, this is the
 // documented trusted-LAN mode: all API routes are reachable by anyone who can
@@ -418,6 +428,7 @@ const RUNTIME_DIR = path.join(DATA_DIR, 'runtime');
 const BOOKS_FILE = path.join(DATA_DIR, 'books.json');
 const booksStore = createBooksStore({ filePath: BOOKS_FILE, jsonStore, maxBackups: 5 });
 const POSITIONS_FILE = path.join(DATA_DIR, 'positions.json');
+const PLAYBACK_HEALTH_FILE = path.join(DATA_DIR, 'playback-health.json');
 const SETTINGS_FILE = path.join(DATA_DIR, 'settings.json');
 const ANNAS_AUTH_FILE = path.join(DATA_DIR, 'annas-auth.json');
 const USERS_FILE = path.join(DATA_DIR, 'users.json');
@@ -1622,6 +1633,17 @@ function coverSourceSteps(book, bookFormat, force = false) {
   return steps;
 }
 
+// An automatic refresh that cannot find a better cover finds the same one on
+// the next library view. Without a recheck interval, books with only a small
+// or embedded cover re-ran the network search on every view forever, and the
+// shared refresh gate turned the overflow into 503/429 cover failures.
+const COVER_RECHECK_MS = 7 * 24 * 60 * 60 * 1000;
+
+function coverRecentlyChecked(book, now = Date.now()) {
+  const checkedAt = Date.parse(book?.coverCheckedAt || '');
+  return Number.isFinite(checkedAt) && now - checkedAt < COVER_RECHECK_MS;
+}
+
 function shouldRefreshCachedCover(book, force = false, cachedCover = null) {
   if (!book) return false;
   const source = String(book.coverSource || '');
@@ -1631,6 +1653,7 @@ function shouldRefreshCachedCover(book, force = false, cachedCover = null) {
     return false;
   }
   if (force) return true;
+  if (cachedCover && coverRecentlyChecked(book)) return false;
   const openLibraryWorkKey = trustedOpenLibraryWorkKey(book);
   if (book.openLibraryWorkKey && !openLibraryWorkKey && source === 'openlibrary-work') return true;
   const hasCatalogIdentity = Boolean(book.gutenbergId || openLibraryWorkKey);
@@ -2477,7 +2500,7 @@ async function getPreparationStatus(bookId, book, query = {}, options = {}) {
   const tts = fixedNarrationWorker(voiceId);
   const variantKey = String(tts.variantKeyProvider());
   const chapters = await getChaptersCached(book.path);
-  const playable = chapters.map(chapter => !chapter.empty && chapter.type !== 'part' && Boolean(chapter.text?.trim()));
+  const playable = chapters.map(isPlayableChapter);
   const durations = await Promise.all(chapters.map(async (chapter, index) => {
     if (!playable[index]) return { ready: true, seconds: 0, estimated: false };
     const audioPath = tts.chapterPath(bookId, index);
@@ -2644,9 +2667,8 @@ const hlsAudioStreamer = createHlsAudioStreamer({
   // whether background generation was running when they asked, so any future
   // preemption work starts from measurement rather than inference.
   backgroundWorkProbe: () => ttsQueue.hasActiveBackgroundWork(),
-  onFirstSegment: ({ waitedMs, backgroundWorkInFlight }) => {
-    console.log(`[playback] first HLS segment in ${waitedMs}ms` +
-      `${backgroundWorkInFlight ? ' (TTS generation already in flight)' : ''}`);
+  onFirstSegment: details => {
+    console.log(formatFirstSegmentLog(details));
   }
 });
 
@@ -2781,17 +2803,9 @@ const bookGuideJournal = createBookGuideJournal({
   filePath: BOOK_GUIDE_JOBS_FILE,
   jsonStore
 });
-const usePrivateCodexGuides = process.env.XANDRIO_PRIVATE_CODEX_GUIDES === '1';
-const bookGuideProvider = usePrivateCodexGuides ? createCodexBookGuideProvider({
-  codexHome: process.env.XANDRIO_CODEX_HOME || path.join(DATA_DIR, 'codex'),
-  binary: process.env.XANDRIO_CODEX_BIN || 'codex',
+const bookGuideProvider = createConfiguredBookGuideProvider({
+  store: bookGuideStore,
   timeoutMs: positiveInteger(process.env.XANDRIO_BOOK_GUIDE_MODEL_TIMEOUT_MS, 180_000)
-}) : createPpqBookGuideProvider({
-  timeoutMs: positiveInteger(process.env.XANDRIO_BOOK_GUIDE_MODEL_TIMEOUT_MS, 180_000),
-  getApiKey: async () => {
-    const stored = await bookGuideStore.loadCredentials();
-    return stored.apiKey || process.env.PPQ_API_KEY || '';
-  }
 });
 const bookGuideService = createBookGuideService({
   loadBook: async bookId => (await loadJSON(BOOKS_FILE, {}))[bookId] || null,
@@ -4434,6 +4448,7 @@ registerLibraryBookRoutes(app, {
   canonicalBookCoverPath,
   readValidatedLibraryCover,
   shouldRefreshCachedCover,
+  coverRecentlyChecked,
   removeFileIfExists,
   ensureBookCover,
   persistCanonicalCoverPath,
@@ -4943,13 +4958,17 @@ const preferencesRoutes = registerPreferencesRoutes(app, {
   zlibrary
 });
 
+const playbackHealthStore = createPlaybackHealthStore({ file: PLAYBACK_HEALTH_FILE, jsonStore });
+registerPlaybackHealthRoutes(app, { store: playbackHealthStore });
+
 registerDiagnosticsRoutes(app, {
   requireAdmin,
   collectDiagnostics: createOperatorDiagnostics({
     dataDir: DATA_DIR,
     cacheDir: CACHE_DIR,
     getQueueStatus: () => ttsQueue.getQueueStatus(),
-    getEngineStatus: preferencesRoutes.getEngineStatus
+    getEngineStatus: preferencesRoutes.getEngineStatus,
+    getPlaybackHealth: () => playbackHealthStore.summarize({ days: 7 })
   })
 });
 
@@ -5020,7 +5039,7 @@ registerBookGuideRoutes(app, {
   }
 });
 
-registerPronunciationRoutes(app, { pronunciationService });
+registerPronunciationRoutes(app, { pronunciationService, loadBooks: () => loadJSON(BOOKS_FILE, {}) });
 
 function createConfiguredServer() {
   const keyPath = process.env.HTTPS_KEY_FILE || process.env.SSL_KEY_FILE;

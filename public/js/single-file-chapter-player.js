@@ -73,6 +73,20 @@ const RUNWAY_FAST_POLL_INTERVAL_MS = 250;
 const RUNWAY_FAST_POLLS = 24;
 const { DisposableScope, LifecycleCancelledError, waitForMediaEvents } = globalThis.XandrioLifecycle || {};
 
+// The server reports a chapter with nothing to speak as a typed, terminal
+// result. It is not retried; the app moves on to the next narrated chapter.
+function unplayableChapterError(chapterIndex, detail = {}) {
+  const next = Number(detail?.nextPlayableChapterIndex);
+  return Object.assign(new Error('This section has no narration'), {
+    name: 'ChapterUnplayableError',
+    code: 'CHAPTER_UNSPEAKABLE',
+    unplayable: true,
+    recoverable: false,
+    chapterIndex,
+    nextPlayableChapterIndex: detail?.nextPlayableChapterIndex !== null && Number.isInteger(next) ? next : null
+  });
+}
+
 export class SingleFileChapterPlayer {
   constructor(audio, options = {}) {
     this.audio = audio;
@@ -93,6 +107,9 @@ export class SingleFileChapterPlayer {
     this.isIOSLike = options.isIOSLike || (() => false);
     this.getEstimatedDuration = options.getEstimatedDuration || (() => 0);
     this.getChapterCount = options.getChapterCount || (() => 0);
+    // The app's shared chapter playability rule. Sections without narration
+    // are never pre-warmed, advanced into, or mapped as stream positions.
+    this.isChapterPlayable = options.isChapterPlayable || (() => true);
     this.getContinuousEndChapter = options.getContinuousEndChapter || (() => null);
     this.resolveServedTier = options.resolveServedTier || null;
     this.resolveOfflineAudioUrl = options.resolveOfflineAudioUrl || null;
@@ -690,6 +707,9 @@ export class SingleFileChapterPlayer {
             ? await response.json()
             : await response.json().catch(() => ({}));
           if (cancelled()) throw cancellationError();
+          if (detail?.status === 'unplayable' || detail?.code === 'CHAPTER_UNSPEAKABLE') {
+            throw unplayableChapterError(chapterIndex, detail);
+          }
           if (!response.ok) {
             const error = new Error(detail.error || `Playback runway preparation failed (${response.status})`);
             error.status = response.status;
@@ -707,6 +727,7 @@ export class SingleFileChapterPlayer {
           return detail;
         } catch (error) {
           if (cancelled()) throw cancellationError();
+          if (error?.unplayable) throw error;
           const transient = !error?.status || [408, 500, 502, 503, 504].includes(error.status);
           if (!transient || attempt >= 2) {
             if (request.signal.aborted) {
@@ -914,7 +935,32 @@ export class SingleFileChapterPlayer {
     });
   }
 
+  _chapterPlayable(chapterIndex) {
+    try {
+      return this.isChapterPlayable(this.bookId, chapterIndex) !== false;
+    } catch {
+      return true;
+    }
+  }
+
+  /** Next chapter with narration after the current one, within the limit. */
+  _nextPlayableChapterIndex() {
+    const count = this._chapterCount();
+    for (let index = this.chapterIndex + 1; index < count; index++) {
+      if (this._chapterPlayable(index)) return index;
+    }
+    return null;
+  }
+
+  _lastPlayableChapterIndex(limit) {
+    for (let index = limit; index > this.chapterIndex; index--) {
+      if (this._chapterPlayable(index)) return index;
+    }
+    return this.chapterIndex;
+  }
+
   _estimatedDuration(chapterIndex) {
+    if (chapterIndex !== this.startChapterIndex && !this._chapterPlayable(chapterIndex)) return 0;
     const measured = Number(this._timelineDurations.get(chapterIndex));
     if (Number.isFinite(measured) && measured >= 0) return measured;
     const duration = Number(this.getEstimatedDuration(this.bookId, chapterIndex));
@@ -953,7 +999,10 @@ export class SingleFileChapterPlayer {
       const chapterStartOffset = index === this.startChapterIndex
         ? this.streamStartOffset
         : 0;
-      const measured = this._timelineDurations.get(index);
+      // The server streams nothing for a section without narration.
+      const measured = index !== this.startChapterIndex && !this._chapterPlayable(index)
+        ? 0
+        : this._timelineDurations.get(index);
       const hasMeasuredDuration = Number.isFinite(measured) && measured >= 0;
       const duration = hasMeasuredDuration ? Math.max(0, measured - chapterStartOffset) : 0;
       const isLast = index === count - 1;
@@ -1256,8 +1305,8 @@ export class SingleFileChapterPlayer {
   _shouldAwaitBoundaryPrewarm() {
     if (this.isContinuous || !this._isPlaying) return false;
     if (this._stopsAtCurrentChapter()) return false;
-    const nextChapterIndex = this.chapterIndex + 1;
-    if (nextChapterIndex >= this._chapterCount()) return false;
+    const nextChapterIndex = this._nextPlayableChapterIndex();
+    if (nextChapterIndex === null) return false;
     return this._prewarmInFlight === nextChapterIndex;
   }
 
@@ -1293,8 +1342,8 @@ export class SingleFileChapterPlayer {
     if (!this.resolveNextChapterUrl || !this.fetch) return;
     if (typeof globalThis.URL?.createObjectURL !== 'function') return;
     if (this._stopsAtCurrentChapter()) return;
-    const nextChapterIndex = this.chapterIndex + 1;
-    if (nextChapterIndex >= this._chapterCount()) return;
+    const nextChapterIndex = this._nextPlayableChapterIndex();
+    if (nextChapterIndex === null) return;
     if (this._prewarm?.chapterIndex === nextChapterIndex) return;
     if (this._prewarmDeclined === nextChapterIndex) return;
     if (this._prewarmInFlight !== null) return;
@@ -1376,10 +1425,10 @@ export class SingleFileChapterPlayer {
    */
   _advanceToPrewarmedChapter() {
     if (this.isContinuous || !this._isPlaying) return false;
-    const nextChapterIndex = this.chapterIndex + 1;
+    const nextChapterIndex = this._nextPlayableChapterIndex();
     const prewarmed = this._prewarm;
+    if (nextChapterIndex === null) return false;
     if (!prewarmed || prewarmed.chapterIndex !== nextChapterIndex) return false;
-    if (nextChapterIndex >= this._chapterCount()) return false;
     if (this._stopsAtCurrentChapter()) return false;
 
     this._awaitingBoundaryPrewarm = false;
@@ -1465,7 +1514,7 @@ export class SingleFileChapterPlayer {
       this.audio.autoplay = true;
       this._armBoundaryPrewarmTimeout();
       this._emitDiagnostic('chapter-advance-waiting', {
-        chapterIndex: this.chapterIndex + 1
+        chapterIndex: this._nextPlayableChapterIndex() ?? this.chapterIndex + 1
       });
       return;
     }
@@ -1482,8 +1531,10 @@ export class SingleFileChapterPlayer {
     this.audio.autoplay = false;
     if (this.isContinuous) {
       this._syncContinuousChapter(Number(this.audio.currentTime) || 0);
-      const finalChapterIndex = Number.isInteger(this.endChapterIndex)
-        ? this.endChapterIndex : this._chapterCount() - 1;
+      // Trailing sections without narration carry no audio, so the stream
+      // legitimately ends at the last chapter that has some.
+      const finalChapterIndex = this._lastPlayableChapterIndex(Number.isInteger(this.endChapterIndex)
+        ? this.endChapterIndex : this._chapterCount() - 1);
       const measuredDuration = this._timelineDurations.get(this.chapterIndex);
       const chapterTime = this.getCurrentTime();
       // An end-chapter limit is a requested boundary, not proof that the

@@ -65,7 +65,7 @@ See [docs/PRIVACY.md](docs/PRIVACY.md) for the outbound-data matrix, retention, 
 
 ## Experimental book guides
 
-Book Guides are disabled by default. V1 is for explicitly tagged English nonfiction and uses an operator-configured external provider. PPQ.ai is the default; a deployment-gated, single-operator Codex connection is also available. The admin acknowledges outbound processing once when configuring the provider; only nonfiction-tagged titles expose the study-guide action. Guides are evidence-linked, versioned artifacts with an on-demand TTS playlist in the active Xandrio voice; no EPUB conversion is required. Guides and cached guide audio are deleted with their book. See [docs/BOOK_GUIDES.md](docs/BOOK_GUIDES.md) for provider, certification, privacy, cost, and evaluation requirements. Fiction support is future scope, not a fallback mode.
+Book Guides are disabled by default. V1 is for explicitly tagged English nonfiction and uses an operator-configured external provider. PPQ.ai is the default; an optional tool-free OpenAI Responses API provider replaces the former Codex CLI connection. The admin acknowledges outbound processing once when configuring the provider; only nonfiction-tagged titles expose the study-guide action. Guides are evidence-linked, versioned artifacts with an on-demand TTS playlist in the active Xandrio voice; no EPUB conversion is required. Guides and cached guide audio are deleted with their book. See [docs/BOOK_GUIDES.md](docs/BOOK_GUIDES.md) for provider, certification, privacy, cost, and evaluation requirements. Fiction support is future scope, not a fallback mode.
 
 ## Configuration
 
