@@ -2598,7 +2598,7 @@ async function loadChapterWithIntent(index, options) {
       updatePlaybackUI(false);
     }
   }
-  return { loaded: true, reason: '', loadToken: token };
+  return { loaded: true, reason: '', loadToken: token, chapterIndex: index };
 }
 
 // The server found nothing to speak in a chapter whose structure looked

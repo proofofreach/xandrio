@@ -122,6 +122,8 @@ function tone(frequency) {
         await page.route(`**/api/chunks/a/${mode === 'start-over' ? 0 : 1}/**`, route => route.fulfill({ status: 422, json: {
           code: 'CHAPTER_UNSPEAKABLE', status: 'unplayable', error: 'No speakable text'
         } }));
+        const savedPositions = [];
+        await page.route('**/api/position', route => { savedPositions.push(route.request().postDataJSON()); return route.fulfill({ json: { success: true } }); });
         await page.goto(`${origin}/#/player/a`);
         await page.waitForFunction(() => document.querySelector('#audio-player')?.currentSrc.includes('/a/2'));
         if (mode === 'backward') {
@@ -134,10 +136,15 @@ function tone(frequency) {
           await page.locator('#confirm-start-over-btn').click();
           await page.waitForFunction(() => document.querySelector('#audio-player')?.currentSrc.includes('/a/1'));
         }
+        if (mode === 'backward') await page.waitForFunction(() => document.querySelector('#chapter-select').value === '0');
         const source = await page.locator('#audio-player').evaluate(audio => audio.currentSrc);
         const offset = Number(new URL(source).searchParams.get('offsetSeconds') || 0);
         assert.equal(offset, 0, 'a replacement chapter must start at its beginning');
-        return { mode, source, offset };
+        if (mode === 'backward') {
+          await page.waitForTimeout(200);
+          assert(savedPositions.some(position => position.chapterIndex === 0 && position.allowBackward === true), JSON.stringify(savedPositions));
+        }
+        return { mode, source, offset, savedPositions };
       });
     }
     await check('late outgoing load cannot reclaim the new book player', async page => {
