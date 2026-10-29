@@ -54,12 +54,15 @@ export async function navigateChapterSelection(options = {}) {
     return { changed: false, loaded: false, reason: loaded.reason || 'unavailable' };
   }
 
-  if (getCurrentChapter() !== nextChapter) return { changed: false, stale: true };
+  const finalChapter = getCurrentChapter();
+  const ownsRedirect = loaded?.loaded === true && loaded.chapterIndex === finalChapter;
+  if (finalChapter !== nextChapter && !ownsRedirect) return { changed: false, stale: true };
+  const movedBackward = finalChapter < previousChapter;
 
-  if (isBackward || commitImmediately) {
+  if (movedBackward || commitImmediately) {
     checkpointPlayback({ force: true });
-    await savePosition({ allowBackward: isBackward, force: true });
+    await savePosition({ allowBackward: movedBackward, force: true });
   }
 
-  return { changed: nextChapter !== previousChapter, isBackward, isForward };
+  return { changed: finalChapter !== previousChapter, isBackward: movedBackward, isForward: finalChapter > previousChapter };
 }

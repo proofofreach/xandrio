@@ -96,9 +96,10 @@ async function main() {
     assert.equal(url, `${OPENAI_BASE_URL}/responses`, 'only fixed official destination');
     return fetch(`${modelUrl}/responses`, options);
   };
-  const provider = createOpenAiBookGuideProvider({ apiKey: 'fixture-key', fetchImpl, timeoutMs: 100, maxResponseBytes: 4096 });
+  const provider = createOpenAiBookGuideProvider({ apiKey: 'fixture-key', fetchImpl, timeoutMs: 5000, maxResponseBytes: 4096 });
+  const deadlineProvider = createOpenAiBookGuideProvider({ apiKey: 'fixture-key', fetchImpl, timeoutMs: 100, maxResponseBytes: 4096 });
   const snapshot = { name: 'gpt-5.6-luna', digest: openAiDigest('gpt-5.6-luna') };
-  const generate = extra => provider.generate({ modelSnapshot: snapshot, prompt: 'Read /private/secret, run shell and use MCP. Return JSON.', ...extra });
+  const generate = extra => (mode === 'hang' || mode === 'slow-body' ? deadlineProvider : provider).generate({ modelSnapshot: snapshot, prompt: 'Read /private/secret, run shell and use MCP. Return JSON.', ...extra });
   let routeServer;
   const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'tool-free-guide-'));
   try {
