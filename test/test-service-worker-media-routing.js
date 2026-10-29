@@ -18,13 +18,15 @@ async function test(name, fn) {
   }
 }
 
-function loadFetchHandler({ cached = new Map(), network = null } = {}) {
+function loadFetchHandler({ cached = new Map(), network = null, cacheError = null } = {}) {
   const listeners = new Map();
   const source = fs.readFileSync(
     path.join(__dirname, '..', 'public', 'sw.js'),
     'utf8'
   );
   const networkCalls = [];
+  const openedCaches = [];
+  const cacheWrites = [];
   const context = {
     URL,
     Request,
@@ -36,14 +38,16 @@ function loadFetchHandler({ cached = new Map(), network = null } = {}) {
       return network ? network() : new Response('online audio');
     },
     caches: {
-      async open() {
+      async open(name) {
+        openedCaches.push(name);
+        if (cacheError) throw cacheError;
         return {
           async match(input) {
             const key = typeof input === 'string' ? input : input.url;
             const hit = cached.get(key);
             return hit ? hit.clone() : undefined;
           },
-          async put() {}
+          async put(...args) { cacheWrites.push(args); }
         };
       },
       async has() { return true; },
@@ -63,7 +67,7 @@ function loadFetchHandler({ cached = new Map(), network = null } = {}) {
   };
   vm.runInNewContext(source, context, { filename: 'public/sw.js' });
   const cacheVersion = source.match(/const CACHE_VERSION = '([^']+)'/)?.[1] || '';
-  return { handler: listeners.get('fetch'), networkCalls, cacheVersion };
+  return { handler: listeners.get('fetch'), networkCalls, cacheVersion, openedCaches, cacheWrites };
 }
 
 function dispatchFetch(handler, url, range = null) {
@@ -82,6 +86,58 @@ const SCOPED_AUDIO = 'https://reader.test/api/audio/book-1/0?xandrio-offline-sco
 
 (async () => {
   const { handler: fetchHandler } = loadFetchHandler();
+
+  await test('an installed shell loads without waiting for a stalled network', async () => {
+    const url = 'https://reader.test/js/api.js';
+    const { handler, networkCalls, openedCaches, cacheVersion } = loadFetchHandler({
+      cached: new Map([[url, new Response('installed module')]]),
+      network: () => new Promise(() => {})
+    });
+    const response = await Promise.race([
+      dispatchFetch(handler, url),
+      new Promise(resolve => setTimeout(() => resolve(null), 100))
+    ]);
+    assert(response, 'cached shell must not wait for network settlement');
+    assert.strictEqual(await response.text(), 'installed module');
+    assert.deepStrictEqual(networkCalls, []);
+    assert.deepStrictEqual(openedCaches, [cacheVersion], 'only the active build supplies shell assets');
+  });
+
+  await test('navigation queries use the installed index without mixing shell builds', async () => {
+    const { handler, networkCalls } = loadFetchHandler({
+      cached: new Map([['/', new Response('installed index')]])
+    });
+    const response = await dispatchFetch(handler, 'https://reader.test/?from=notification');
+    assert.strictEqual(await response.text(), 'installed index');
+    assert.deepStrictEqual(networkCalls, []);
+  });
+
+  await test('a missing shell entry uses the network without mutating the installed build', async () => {
+    const { handler, networkCalls, cacheWrites } = loadFetchHandler({
+      network: () => new Response('network module')
+    });
+    const response = await dispatchFetch(handler, 'https://reader.test/js/api.js');
+    assert.strictEqual(await response.text(), 'network module');
+    assert.deepStrictEqual(networkCalls, ['https://reader.test/js/api.js']);
+    assert.deepStrictEqual(cacheWrites, [], 'individual requests cannot overwrite a build snapshot');
+  });
+
+  await test('uncached same-origin assets remain outside the shell handler', async () => {
+    const { handler, networkCalls, openedCaches } = loadFetchHandler();
+    assert.strictEqual(dispatchFetch(handler, 'https://reader.test/unrelated.js'), null);
+    assert.deepStrictEqual(networkCalls, []);
+    assert.deepStrictEqual(openedCaches, []);
+  });
+
+  await test('an unavailable browser cache still permits an online shell launch', async () => {
+    const { handler, networkCalls } = loadFetchHandler({
+      cacheError: new Error('Browser storage unavailable'),
+      network: () => new Response('online shell')
+    });
+    const response = await dispatchFetch(handler, 'https://reader.test/js/api.js');
+    assert.strictEqual(await response.text(), 'online shell');
+    assert.strictEqual(networkCalls.length, 1);
+  });
 
   await test('online iOS audio stays on the native media request path', async () => {
     const response = dispatchFetch(

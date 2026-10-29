@@ -79,10 +79,46 @@ export function setCurrentUser(user, { clearRememberedOfflineScope = false } = {
   return offlineScopeTransition;
 }
 
-export async function fetchAuthStatus() {
-  const response = await window.fetch(`${API_BASE}/api/auth/status`, { credentials: 'same-origin' });
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
-  const status = await response.json();
+// Deadlines are opt-in: generation, uploads, and writes can legitimately take
+// much longer than a foreground metadata read. The race also fences fetch
+// implementations that do not promptly reject when their signal is aborted.
+export async function withRequestDeadline({ timeoutMs = 0, signal } = {}, request) {
+  if (!timeoutMs && !signal) return request(undefined);
+  const controller = new AbortController();
+  let timer = null;
+  let rejectAborted;
+  const aborted = new Promise((_, reject) => { rejectAborted = reject; });
+  const cancel = reason => {
+    const error = reason || Object.assign(new Error('Request cancelled'), { name: 'AbortError' });
+    controller.abort(error);
+    rejectAborted(error);
+  };
+  const onAbort = () => cancel(signal.reason);
+  if (signal?.aborted) onAbort();
+  else signal?.addEventListener('abort', onAbort, { once: true });
+  if (Number.isFinite(timeoutMs) && timeoutMs > 0) {
+    timer = setTimeout(() => cancel(Object.assign(new Error('Request timed out'), { name: 'TimeoutError' })), timeoutMs);
+  }
+  try {
+    return await Promise.race([
+      aborted,
+      Promise.resolve().then(() => {
+        if (controller.signal.aborted) throw controller.signal.reason;
+        return request(controller.signal);
+      })
+    ]);
+  } finally {
+    if (timer !== null) clearTimeout(timer);
+    signal?.removeEventListener('abort', onAbort);
+  }
+}
+
+export async function fetchAuthStatus(options = {}) {
+  const status = await withRequestDeadline(options, async signal => {
+    const response = await window.fetch(`${API_BASE}/api/auth/status`, { credentials: 'same-origin', signal });
+    if (!response.ok) throw Object.assign(new Error(`HTTP ${response.status}`), { status: response.status });
+    return response.json();
+  });
   authenticationRequired = Boolean(status.authenticationRequired);
   setCurrentUser(status.user, {
     clearRememberedOfflineScope: status.authenticationRequired && !status.authenticated
@@ -251,7 +287,7 @@ export function syncHeaders(extra = {}) {
 }
 
 export async function apiSend(method, path, body = null, options = {}) {
-  const { headers: optionHeaders = {}, ...fetchOptions } = options;
+  const { headers: optionHeaders = {}, timeoutMs, signal, ...fetchOptions } = options;
   const headers = syncHeaders(optionHeaders);
   const init = { ...fetchOptions, method, headers };
   if (body !== null && body !== undefined) {
@@ -263,14 +299,21 @@ export async function apiSend(method, path, body = null, options = {}) {
       init.body = headers['Content-Type'] === 'application/json' ? JSON.stringify(body) : body;
     }
   }
-  const response = await fetch(`${API_BASE}${path}`, init);
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    const error = new Error(data.error || `HTTP ${response.status}`);
-    Object.assign(error, data, { status: response.status });
-    throw error;
-  }
-  return data;
+  return withRequestDeadline({ timeoutMs, signal }, async requestSignal => {
+    const response = await fetch(`${API_BASE}${path}`, { ...init, signal: requestSignal });
+    // An authoritative access/deletion response wins even if its error body
+    // never arrives. A read deadline must not turn it into an offline fallback.
+    if (timeoutMs && [401, 403, 404].includes(response.status)) {
+      throw Object.assign(new Error(`HTTP ${response.status}`), { status: response.status });
+    }
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const error = new Error(data.error || `HTTP ${response.status}`);
+      Object.assign(error, data, { status: response.status });
+      throw error;
+    }
+    return data;
+  });
 }
 
 export function apiGet(path, options = {}) {

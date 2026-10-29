@@ -47,10 +47,12 @@ const tests = [
   'test-engine-registry.js',
   'test-narration-runtime.js',
   'test-playback-orchestrator.js',
+  'test-finalized-audio-seek.js',
   'test-playback-runway.js',
   'test-playback-prefetch.js',
   'test-playback-routes.js',
   'test-audio-prep-routes.js',
+  'test-preparation-status-cached-duration.js',
   'test-pronunciation-repair.js',
   'test-narration-artifact-cache.js',
   'test-queue.js',
@@ -71,6 +73,7 @@ const tests = [
   'test-time-left.js',
   'test-library-status.js',
   'test-client-settings.js',
+  'test-foreground-read-bounds.js',
   'test-bookmarks-routes.js',
   'test-client-offline-identity.js',
   'test-smart-rewind.js',
@@ -171,6 +174,7 @@ const tests = [
   'test-playback-notice-policy.js',
   'test-playback-session.js',
   'test-book-open-commit.js',
+  'test-playback-book-metadata.js',
   'test-lifecycle.js',
   'test-sleep-timer-lifecycle.js',
   'test-auto-sleep-schedule.js',
@@ -190,6 +194,7 @@ const tests = [
   'test-service-worker-media-routing.js',
   'test-offline-range.js',
   'test-offline-cache.js',
+  'test-library-offline-snapshot.js',
   'test-audio-streaming.js',
   'test-progressive-audio-stream.js',
   'test-audio-child-lifecycle.js',
@@ -303,3 +308,4 @@ if (totalFailed > 0 || suitesFailed > 0) {
   console.log('\n🎉 All tests passed!\n');
   process.exit(0);
 }
+

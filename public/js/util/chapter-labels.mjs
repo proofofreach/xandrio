@@ -280,7 +280,10 @@ export function findPreferredStartChapterIndex(chapters) {
     const chapter = list[index] || {};
     if (isChapterOneTitle(chapter.title)) return index;
     if (firstNamedChapter === -1 && chapter.type === 'chapter') firstNamedChapter = index;
-    if (firstContent === -1 && isNarrativeChapter(chapter) && String(chapter.text || '').trim().length > 200) {
+    const textLength = Number.isFinite(chapter.textLength)
+      ? chapter.textLength
+      : String(chapter.text || '').trim().length;
+    if (firstContent === -1 && isNarrativeChapter(chapter) && textLength > 200) {
       firstContent = index;
     }
   }

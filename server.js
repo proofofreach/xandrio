@@ -2471,7 +2471,7 @@ function probeNarrationDuration(audioPath) {
   narrationProbeLanes[lane] = pending;
   return pending;
 }
-async function getPreparationStatus(bookId, book, query = {}) {
+async function getPreparationStatus(bookId, book, query = {}, options = {}) {
   const preference = getBookNarration(bookId);
   const voiceId = preference.voiceId;
   const tts = fixedNarrationWorker(voiceId);
@@ -2485,13 +2485,27 @@ async function getPreparationStatus(bookId, book, query = {}) {
       const stat = await fs.stat(audioPath);
       if (!stat.size) throw new Error('Empty audio');
       const key = `${audioPath}:${stat.size}:${stat.mtimeMs}`;
-      let pending = narrationDurations.get(key);
-      if (!pending) {
-        pending = probeNarrationDuration(audioPath);
-        narrationDurations.set(key, pending);
+      let duration = narrationDurations.get(key);
+      if (!duration) {
+        duration = { settled: false, value: null, error: null, promise: null };
+        duration.promise = probeNarrationDuration(audioPath).then(value => {
+          duration.settled = true;
+          duration.value = value;
+          return value;
+        }, error => {
+          duration.settled = true;
+          duration.error = error;
+          throw error;
+        });
+        // Background queue-status reads may not await this promise.
+        void duration.promise.catch(() => {});
+        narrationDurations.set(key, duration);
         if (narrationDurations.size > 10000) narrationDurations.delete(narrationDurations.keys().next().value);
       }
-      const measured = await pending;
+      if (duration.error) throw duration.error;
+      const measured = options.cachedDurationsOnly
+        ? (duration.settled ? duration.value : null)
+        : await duration.promise;
       return { ready: true, seconds: measured ?? Math.max(0, Number(chapter.estimatedDuration) || 0), estimated: measured === null };
     } catch { return { ready: false, seconds: 0, estimated: false }; }
   }));

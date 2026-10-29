@@ -16,6 +16,7 @@ import {
   downloadBookForOffline,
   enableOfflineReadyNotifications,
   getVerifiedOfflineLibraryBooks,
+  getOfflineManifest,
   offlineDownloadsSupported,
   offlineStatusForBook,
   prepareAndDownloadBookForOffline,
@@ -247,13 +248,13 @@ function isAvailableOnDevice(status) {
 
 // Everything a row, cell, table row or actions header says about one book,
 // in the one vocabulary (library-status.mjs + time-left.mjs).
-function bookModel(book) {
+function bookModel(book, offlineManifest) {
   const id = String(book.id || '');
   const position = positionFor(id);
   const progress = bookProgressInfo(book, position);
   const speed = effectiveSpeedForBook(id);
   const referenceSpeed = getReferencePlaybackSpeed();
-  const status = offlineStatusForBook(id);
+  const status = offlineStatusForBook(id, offlineManifest);
   const device = deviceState(status, { pending: pendingBookDownloads.has(id) });
   const narration = narrationState(book, audioActivity.get(id) || null, speed);
   let timeLeft = progress?.timeLeft ?? null;
@@ -403,8 +404,8 @@ function bookBylineHTML(model) {
   return `<span class="book-byline"><span class="book-author">${escapeHTML(model.book.author || 'Unknown Author')}</span>${chapter}</span>`;
 }
 
-function renderBookCard(book, onShelf = false) {
-  const model = bookModel(book);
+function renderBookCard(book, onShelf = false, offlineManifest) {
+  const model = bookModel(book, offlineManifest);
   const { id, progress } = model;
   const title = book.title || 'Untitled';
   const author = book.author || 'Unknown Author';
@@ -450,10 +451,10 @@ function renderBookCard(book, onShelf = false) {
 
 // Re-describe one rendered row after its device copy, narration or the
 // open book changed, without rebuilding it (focus and menus survive).
-function refreshRow(card) {
+function refreshRow(card, offlineManifest) {
   const book = booksById.get(card.dataset.bookId);
   if (!book) return;
-  const model = bookModel(book);
+  const model = bookModel(book, offlineManifest);
   card.dataset.downloaded = model.downloaded ? '1' : '0';
   card.classList.toggle('is-current', model.current);
   const info = card.querySelector('.book-item-info');
@@ -723,7 +724,8 @@ export async function loadLibrary() {
     }
 
     if ('ontouchstart' in window || navigator.maxTouchPoints > 0) document.body.classList.add('touch-device');
-    libraryList.innerHTML = data.books.map(book => renderBookCard(book, currentShelf.has(book.id))).join('');
+    const offlineManifest = getOfflineManifest();
+    libraryList.innerHTML = data.books.map(book => renderBookCard(book, currentShelf.has(book.id), offlineManifest)).join('');
     libraryList.classList.toggle('offline-library-fallback', offlineFallback);
     document.dispatchEvent(new CustomEvent('xandrio:libraryloaded', {
       detail: { inProgressCount: getRecentInProgress(Infinity).length }
@@ -740,7 +742,8 @@ export async function loadLibrary() {
 }
 
 function refreshOfflineIndicators() {
-  document.querySelectorAll('#library-list .book-item:not(.skeleton)').forEach(refreshRow);
+  const offlineManifest = getOfflineManifest();
+  document.querySelectorAll('#library-list .book-item:not(.skeleton)').forEach(card => refreshRow(card, offlineManifest));
   document.querySelectorAll('[data-offline-menu-action]').forEach(element => {
     const hadFocus = element.contains(document.activeElement);
     element.innerHTML = offlineMenuActionContents(element.dataset.offlineMenuAction);
@@ -754,7 +757,8 @@ function refreshOfflineIndicators() {
 // changes (the library shows the live position of the playing book).
 export function refreshLibraryPlayback() {
   if (libraryContentState !== 'ready') return;
-  document.querySelectorAll('#library-list .book-item:not(.skeleton)').forEach(refreshRow);
+  const offlineManifest = getOfflineManifest();
+  document.querySelectorAll('#library-list .book-item:not(.skeleton)').forEach(card => refreshRow(card, offlineManifest));
   refreshContinueRail();
   syncSpeedNote();
   scheduleFit();
@@ -1651,16 +1655,17 @@ function onAudioActivity(event) {
   const next = new Map(books.filter(book => book && typeof book.id === 'string').map(book => [book.id, book]));
   const key = JSON.stringify([...next.values()].map(book => [
     book.id, book.failed, book.preparationStatus, book.readyChapters, book.totalChapters,
-    Math.round((Number(book.readyAudioSeconds) || 0) / 60), Number(book.active) > 0, Number(book.queued) > 0
+    Math.round((Number(book.readyAudioSeconds) || 0) / 60), Boolean(book.durationEstimated), Number(book.active) > 0, Number(book.queued) > 0
   ]));
   if (key === audioActivityKey) return;
   const changed = new Set([...audioActivity.keys(), ...next.keys()]);
   audioActivity = next;
   audioActivityKey = key;
   if (libraryContentState !== 'ready') return;
+  const offlineManifest = getOfflineManifest();
   changed.forEach(id => {
     const card = document.querySelector(`#library-list .book-item[data-book-id="${cssEscape(id)}"]`);
-    if (card) refreshRow(card);
+    if (card) refreshRow(card, offlineManifest);
   });
   scheduleFit();
 }
