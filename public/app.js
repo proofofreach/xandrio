@@ -2373,6 +2373,8 @@ async function loadChapterWithIntent(index, options) {
   // most recent call may keep mutating player state after its awaits.
   const token = ++loadChapterToken;
   const previousChapter = currentChapter;
+  const navigationDirection = options.direction === -1 ? -1
+    : options.direction === 1 ? 1 : index < previousChapter ? -1 : 1;
 
   recordPlaybackEvent({
     type: 'load-chapter',
@@ -2540,7 +2542,7 @@ async function loadChapterWithIntent(index, options) {
   } catch (error) {
     if (error?.unplayable) {
       if (token !== loadChapterToken) return { loaded: false, reason: 'stale' };
-      return await skipUnplayableChapter(index, error, { ...options, wasPlaying });
+      return await skipUnplayableChapter(index, error, { ...options, direction: navigationDirection, wasPlaying });
     }
     // Local playback failed. Hand off to the network exactly once, and say so:
     // silently streaming a book the user downloaded is how this stopped being
@@ -2604,7 +2606,8 @@ async function loadChapterWithIntent(index, options) {
 // with narration, keeping the listener's play/pause intent.
 async function skipUnplayableChapter(index, error, options = {}) {
   markChapterUnplayable(index);
-  const next = adjacentPlayableChapter(index, 1);
+  const direction = options.direction === -1 ? -1 : 1;
+  const next = adjacentPlayableChapter(index, direction);
   recordPlaybackEvent({
     type: 'skip-unplayable-chapter',
     reason: 'server',
@@ -2619,7 +2622,7 @@ async function skipUnplayableChapter(index, error, options = {}) {
   }
   return await loadChapter(next, {
     ...options,
-    direction: 1,
+    direction,
     reason: 'skip-unplayable',
     sourceTuple: null,
     seekToSeconds: undefined,

@@ -110,6 +110,30 @@ function tone(frequency) {
         return audio.currentSrc.includes(`/api/audio-continuous/${book}/`) && audio.readyState >= 3;
       }, book);
     }
+    for (const mode of ['backward', 'restore']) {
+      await check(`unspeakable chapter preserves ${mode} navigation`, async page => {
+        await page.route('**/api/book/a?*', route => route.fulfill({ json: {
+          book: { ...books[0], chapterCount: 3 },
+          chapters: [0, 1, 2].map(i => ({ ...chapters[0], title: `Chapter ${i + 1}` }))
+        } }));
+        await page.route('**/api/position/a', route => route.fulfill({ json: {
+          position: { chapterIndex: mode === 'backward' ? 2 : 1, timestamp: mode === 'restore' ? 20 : 0, updatedAt: Date.now() }
+        } }));
+        await page.route('**/api/chunks/a/1/**', route => route.fulfill({ status: 422, json: {
+          code: 'CHAPTER_UNSPEAKABLE', status: 'unplayable', error: 'No speakable text'
+        } }));
+        await page.goto(`${origin}/#/player/a`);
+        await page.waitForFunction(() => document.querySelector('#audio-player')?.currentSrc.includes('/a/2'));
+        if (mode === 'backward') {
+          await page.locator('#chapter-select').selectOption('1');
+          await page.waitForFunction(() => document.querySelector('#audio-player')?.currentSrc.includes('/a/0'));
+        }
+        const source = await page.locator('#audio-player').evaluate(audio => audio.currentSrc);
+        const offset = Number(new URL(source).searchParams.get('offsetSeconds') || 0);
+        assert.equal(offset, 0, 'a replacement chapter must start at its beginning');
+        return { mode, source, offset };
+      });
+    }
     await check('late outgoing load cannot reclaim the new book player', async page => {
       const oldAudio = gate('audio:a');
       await open(page); await hit(oldAudio);
