@@ -62,6 +62,10 @@ async function waitUntil(predicate, message, timeoutMs = 2000) {
 function routeHarness(source, streamerOptions = {}) {
   const app = express();
   app.use(express.json());
+  if (streamerOptions.identifyUser) app.use((req, _res, next) => {
+    req.user = streamerOptions.identifyUser(req);
+    next();
+  });
   if (streamerOptions.concurrencyMiddleware) {
     app.use(streamerOptions.concurrencyMiddleware);
   }
@@ -72,6 +76,16 @@ function routeHarness(source, streamerOptions = {}) {
     ...(streamerOptions.hlsOptions || {})
   });
   const playbackOrchestrator = new Proxy({
+    resolveTier: async (_bookId, chapterIndex, requestedTier) => {
+      streamerOptions.identityChecks?.push({ chapterIndex, requestedTier });
+      return {
+        servedTier: typeof requestedTier === 'object' ? requestedTier.tier :
+          requestedTier || streamerOptions.autoServedTierByChapter?.[chapterIndex],
+        voiceId: typeof requestedTier === 'object' ? requestedTier.voiceId :
+          streamerOptions.runwayStatus?.voiceId,
+        ...(streamerOptions.identity || {})
+      };
+    },
     prepareAudioStream: async options => {
       streamerOptions.transportRequests?.push(options);
       return source;
@@ -83,11 +97,13 @@ function routeHarness(source, streamerOptions = {}) {
     chapterAudioStatus: async ({ chapterIndex, requestedTier }) => {
       streamerOptions.runwayStatusChecks?.push(chapterIndex);
       streamerOptions.runwayTierChecks?.push({ chapterIndex, requestedTier });
+      await streamerOptions.runwayWait;
       return {
         ready: streamerOptions.runwayReadyByChapter
           ? streamerOptions.runwayReadyByChapter[chapterIndex] !== false
           : streamerOptions.runwayReady !== false,
-        servedTier: requestedTier || streamerOptions.autoServedTierByChapter?.[chapterIndex],
+        servedTier: (typeof requestedTier === 'object' ? requestedTier.tier : requestedTier)
+          || streamerOptions.autoServedTierByChapter?.[chapterIndex],
         ...(streamerOptions.runwayStatus || {})
       };
     }
@@ -111,13 +127,14 @@ function routeHarness(source, streamerOptions = {}) {
       else res.destroy();
     },
     fs: fsp,
-    getBookChapters: async () => ({
-      chapters: streamerOptions.runwayChapters || [
-        { text: 'Playable chapter zero with enough narration text.' },
-        { text: 'Playable chapter one with enough narration text.' },
-        { text: 'Playable chapter two with enough narration text.' }
-      ]
-    })
+    getBookChapters: async () => {
+      if (streamerOptions.bookMissing) throw Object.assign(new Error('Book not found'), { statusCode: 404 });
+      return { chapters: streamerOptions.runwayChapters || [
+          { text: 'Playable chapter zero with enough narration text.' },
+          { text: 'Playable chapter one with enough narration text.' },
+          { text: 'Playable chapter two with enough narration text.' }
+        ] };
+    }
   });
   app.locals.hlsAudioStreamer = hlsAudioStreamer;
   return app;
@@ -617,6 +634,163 @@ function zeroCrossingRate(pcm) {
         ], { timeout: 10000 });
       } finally {
         releaseSecond.resolve();
+        await app.locals.hlsAudioStreamer.dispose();
+        await new Promise(resolve => server.close(resolve));
+      }
+    });
+
+    await test('HLS refreshes reuse admission while retaining book, narrator, and owner identity checks', async () => {
+      const tonePath = path.join(dir, 'hls-admission.mp3');
+      await createTone(tonePath, 2, 440);
+      const source = { async *iterateInputs() { yield tonePath; } };
+      const options = {
+        hlsRootDir: path.join(dir, 'hls-admission'), hlsSegmentSeconds: 1,
+        runwayStatusChecks: [], identityChecks: [], transportRequests: [],
+        identity: { voiceId: 'voice-one', servedTier: 'instant', variantKey: 'variant-one' },
+        identifyUser: req => ({ id: req.headers['x-test-user'] || 'one' })
+      };
+      const app = routeHarness(source, options);
+      const server = await listen(app);
+      const url = `http://127.0.0.1:${server.address().port}/api/audio-hls/admission_book/0/index.m3u8?session=admission-session&owner=admission-owner`;
+      const load = async (suffix = '', user = 'one') => {
+        const res = await fetch(url + suffix, { headers: { 'x-test-user': user } });
+        await res.text();
+        return res.status;
+      };
+      const settle = async () => {
+        await Promise.all([...app.locals.hlsAudioStreamer.sessionsById.values()].map(session => session.runPromise));
+      };
+      try {
+        assert.strictEqual(await load(), 200);
+        await settle();
+        const first = [...app.locals.hlsAudioStreamer.sessionsById.values()][0];
+        options.runwayReady = false;
+        for (let index = 0; index < 5; index++) assert.strictEqual(await load(), 200);
+        assert.strictEqual(options.runwayStatusChecks.length, 1, 'refreshes must not repeat seek/runway scans');
+        assert.strictEqual(options.identityChecks.length, 6, 'narrator identity must be revalidated');
+        assert.strictEqual(options.transportRequests.length, 1, 'refresh must reuse its encoder');
+        options.bookMissing = true;
+        assert.strictEqual(await load(), 404, 'deleted book must not use retained session');
+        options.bookMissing = false;
+        options.runwayReady = true;
+        assert.strictEqual(await load('', 'two'), 200);
+        await settle();
+        assert.strictEqual(app.locals.hlsAudioStreamer.sessionsById.size, 2, 'accounts must not share retained sessions');
+        assert.strictEqual(first.evicted, false, 'other account must not replace this listener');
+        options.identity.voiceId = 'voice-two';
+        assert.strictEqual(await load(), 200);
+        await settle();
+        assert.strictEqual(first.evicted, true, 'changed narrator requires a new transport');
+        options.identity.variantKey = 'variant-two';
+        assert.strictEqual(await load(), 200);
+        await settle();
+        assert.strictEqual(await load('&offsetSeconds=1'), 200);
+        await settle();
+        assert.strictEqual(await load('&offsetSeconds=1&endChapter=0'), 200);
+        await settle();
+        assert.strictEqual(options.transportRequests.length, 6, 'voice, variant, offset and chapter limit change identity');
+      } finally {
+        await app.locals.hlsAudioStreamer.dispose();
+        await new Promise(resolve => server.close(resolve));
+      }
+    });
+
+    await test('HLS unready retries do not consume creation quota and failed sessions recheck admission', async () => {
+      const tonePath = path.join(dir, 'hls-admission-retry.mp3');
+      await createTone(tonePath, 2, 440);
+      const source = { async *iterateInputs() { yield tonePath; } };
+      const options = {
+        hlsRootDir: path.join(dir, 'hls-admission-retry'), hlsSegmentSeconds: 1,
+        hlsOptions: { maxCreationsPerAccount: 2, maintenanceIntervalMs: 0, maxRetainedSessions: 0 },
+        runwayReady: false, runwayStatusChecks: [], transportRequests: []
+      };
+      const app = routeHarness(source, options);
+      const server = await listen(app);
+      const url = `http://127.0.0.1:${server.address().port}/api/audio-hls/retry_book/0/index.m3u8?session=retry-session&owner=retry-owner`;
+      const load = async () => { const res = await fetch(url); await res.text(); return res.status; };
+      try {
+        for (let index = 0; index < 4; index++) assert.strictEqual(await load(), 425);
+        assert.strictEqual(app.locals.hlsAudioStreamer.sessionsById.size, 0);
+        assert.strictEqual(options.transportRequests.length, 0);
+        options.runwayReady = true;
+        assert.strictEqual(await load(), 200);
+        const first = [...app.locals.hlsAudioStreamer.sessionsById.values()][0];
+        await first.runPromise;
+        first.error = new Error('simulated late encoder failure');
+        options.runwayReady = false;
+        assert.strictEqual(await load(), 425);
+        assert.strictEqual(first.evicted, true);
+        options.runwayReady = true;
+        assert.strictEqual(await load(), 200);
+        const second = [...app.locals.hlsAudioStreamer.sessionsById.values()][0];
+        await second.runPromise;
+        await app.locals.hlsAudioStreamer.maintain();
+        assert.strictEqual(second.evicted, true);
+        options.runwayReady = false;
+        assert.strictEqual(await load(), 425, 'evicted sessions must also recheck admission');
+        assert.strictEqual(options.transportRequests.length, 2);
+      } finally {
+        await app.locals.hlsAudioStreamer.dispose();
+        await new Promise(resolve => server.close(resolve));
+      }
+    });
+
+    await test('simultaneous HLS admissions converge on one session', async () => {
+      const tonePath = path.join(dir, 'hls-admission-race.mp3');
+      await createTone(tonePath, 2, 440);
+      const gate = deferred();
+      const options = {
+        hlsRootDir: path.join(dir, 'hls-admission-race'), hlsSegmentSeconds: 1,
+        runwayWait: gate.promise, runwayStatusChecks: [], transportRequests: []
+      };
+      const app = routeHarness({ async *iterateInputs() { yield tonePath; } }, options);
+      const server = await listen(app);
+      const url = `http://127.0.0.1:${server.address().port}/api/audio-hls/race_book/0/index.m3u8?session=race-session&owner=race-owner`;
+      const loads = [fetch(url), fetch(url)];
+      try {
+        await waitUntil(() => options.runwayStatusChecks.length === 2, 'both admissions did not reach the gate');
+        gate.resolve();
+        for (const response of await Promise.all(loads)) {
+          assert.strictEqual(response.status, 200);
+          await response.text();
+        }
+        assert.strictEqual(options.transportRequests.length, 1);
+        assert.strictEqual(app.locals.hlsAudioStreamer.sessionsById.size, 1);
+      } finally {
+        gate.resolve();
+        await Promise.allSettled(loads);
+        await app.locals.hlsAudioStreamer.dispose();
+        await new Promise(resolve => server.close(resolve));
+      }
+    });
+
+    await test('disconnecting during HLS admission cannot create an abandoned encoder', async () => {
+      const gate = deferred();
+      const disconnected = deferred();
+      const options = {
+        hlsRootDir: path.join(dir, 'hls-admission-disconnect'),
+        runwayWait: gate.promise, runwayStatusChecks: [], transportRequests: [],
+        concurrencyMiddleware(req, _res, next) {
+          req.once('aborted', () => disconnected.resolve());
+          next();
+        }
+      };
+      const app = routeHarness({ async *iterateInputs() { assert.fail('disconnected source was started'); } }, options);
+      const server = await listen(app);
+      const request = http.get(`http://127.0.0.1:${server.address().port}/api/audio-hls/admission_cancel/0/index.m3u8?session=cancel-session&owner=cancel-owner`);
+      request.on('error', () => {});
+      try {
+        await waitUntil(() => options.runwayStatusChecks.length === 1, 'admission gate was not reached');
+        request.destroy();
+        const guard = rejectAfter(HANG_GUARD_MS, 'admission disconnect was not observed');
+        try { await Promise.race([disconnected.promise, guard.promise]); } finally { guard.cancel(); }
+        gate.resolve();
+        await new Promise(resolve => setImmediate(resolve));
+        assert.strictEqual(options.transportRequests.length, 0);
+        assert.strictEqual(app.locals.hlsAudioStreamer.sessionsById.size, 0);
+      } finally {
+        request.destroy();
+        gate.resolve();
         await app.locals.hlsAudioStreamer.dispose();
         await new Promise(resolve => server.close(resolve));
       }
@@ -1289,3 +1463,4 @@ function zeroCrossingRate(pcm) {
   console.error(error);
   process.exit(1);
 });
+

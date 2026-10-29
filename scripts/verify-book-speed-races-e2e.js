@@ -175,6 +175,47 @@ function tone() {
       await page.locator('#close-speed-sheet-btn').click();
       await page.keyboard.press('ArrowDown'); const down = await state(page); assert.equal(down.rate, 1.5, JSON.stringify(down)); return { up, down };
     });
+    for (const mode of ['default', 'global', 'book', 'new-choice']) {
+      await check(`late profile speed preserves ${mode}`, async page => {
+        settings = mode === 'book' ? { a: { playbackSpeed: 1.5 } } : {};
+        await page.addInitScript(mode => {
+          if (mode !== 'global') localStorage.removeItem('xandrio_playback_speed');
+        }, mode);
+        const arrived = deferred(), release = deferred();
+        await page.route('**/api/settings/client', async route => {
+          arrived.resolve(); await release.promise;
+          await route.fulfill({ json: { settings: { defaultSpeed: 2 } } });
+        });
+        try {
+          await open(page); await arrived.promise;
+          if (mode === 'new-choice') { await sheet(page); await page.locator('.speed-preset[data-speed="1.25"]').click(); }
+          const response = page.waitForResponse(r => r.url().endsWith('/api/settings/client'));
+          release.resolve(); await response;
+          const expected = { default: 2, global: 1, book: 1.5, 'new-choice': 1.25 }[mode];
+          await page.waitForFunction(rate => document.querySelector('#audio-player').playbackRate === rate, expected);
+          return await state(page);
+        } finally { release.resolve(); }
+      });
+    }
+    for (const key of ['old', 'new', null]) {
+      await check(`parallel position validates structure ${key}`, async page => {
+        await page.route('**/api/book/a?*', async route => {
+          const response = await route.fetch(); const data = await response.json();
+          data.book.chapterStructureKey = 'new';
+          await route.fulfill({ json: data });
+        });
+        await page.route('**/api/position/a', route => route.fulfill({ json: {
+          position: { chapterIndex: 0, timestamp: 20, updatedAt: Date.now(), chapterStructureKey: key }
+        } }));
+        await open(page);
+        const source = await page.locator('#audio-player').evaluate(audio => audio.currentSrc);
+        const time = Number(new URL(source).searchParams.get('offsetSeconds') || 0) +
+          await page.locator('#audio-player').evaluate(audio => audio.currentTime);
+        if (key === 'new') assert(time >= 19, `matching position lost: ${time} ${source}`);
+        else assert(time < 1, `obsolete position restored: ${time}`);
+        return { time, key };
+      });
+    }
     // The Readable player has no top-bar cycle button (#speed-btn); its Speed
     // tool opens the speed sheet. The cycle check runs only where one exists.
     if (require('node:fs').readFileSync(path.join(__dirname, '..', 'public', 'index.html'), 'utf8').includes('id="speed-btn"')) {

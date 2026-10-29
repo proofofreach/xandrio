@@ -363,13 +363,15 @@ function fakeAudio() {
     assert(
       openBookSource.indexOf('void prioritizeForegroundBook(bookId);') !== -1 &&
         openBookSource.indexOf('void prioritizeForegroundBook(bookId);') <
-          openBookSource.indexOf('await apiGet(`/api/book/${encodeURIComponent(bookId)}`)'),
+          openBookSource.indexOf('await apiGet(`/api/book/${encodeURIComponent(bookId)}?playback=1`'),
       'opening a book signals foreground priority before waiting for book data'
     );
     const appImports = {
       apiGet: (...args) => appImports.apiGetImpl(...args),
+      getBookPlaybackSettings: async () => ({}),
       syncPlayerHash: (...args) => appImports.syncedPlayerHashes.push(args),
       getOfflineBookData: () => null,
+      hasOfflineBookData: () => false,
       shouldUseOfflineBookFallback: () => false,
       createPlaybackSession: () => ({
         setBook() {},
@@ -814,7 +816,7 @@ function fakeAudio() {
       // be assembled from two different books.
       let resolveEarlierBook;
       appImports.apiGetImpl = async url => {
-        if (url === '/api/book/book-a') {
+        if (url === '/api/book/book-a?playback=1') {
           return new Promise(resolve => { resolveEarlierBook = resolve; });
         }
         throw Object.assign(new Error('newer book unavailable'), { status: 404 });

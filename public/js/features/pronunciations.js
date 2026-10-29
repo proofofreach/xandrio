@@ -5,12 +5,14 @@ import { registerSheet } from '../ui/sheets.js';
 let deps = {};
 let repairController = null;
 let editingRule = null;
+let contextRequest = null;
 
 export function initPronunciationRepair(options = {}) {
   deps = options;
   const dialog = document.getElementById('pronunciation-repair-dialog');
   repairController = registerSheet(dialog, {
-    closeBtn: document.getElementById('pronunciation-repair-cancel')
+    closeBtn: document.getElementById('pronunciation-repair-cancel'),
+    onClose: cancelContextRequest
   });
   document.getElementById('pronunciation-repair-btn')?.addEventListener('click', openRepairDialog);
   document.getElementById('pronunciation-repair-form')?.addEventListener('submit', submitRepair);
@@ -20,11 +22,12 @@ export function initPronunciationRepair(options = {}) {
   context?.addEventListener('keyup', useSelectedContext);
 }
 
-function currentContext() {
-  const chapters = deps.getChapters?.() || [];
-  const chapterIndex = deps.getCurrentChapter?.() || 0;
-  const text = String(chapters[chapterIndex]?.text || '').replace(/\s+/g, ' ').trim();
-  if (!text) return '';
+function cancelContextRequest() {
+  contextRequest?.abort();
+  contextRequest = null;
+}
+
+function currentContextRatio() {
   const position = deps.getNarrationPosition?.() || {};
   const lengths = Array.isArray(position.textLengths) ? position.textLengths.map(value => Number(value) || 0) : [];
   let ratio = Math.max(0, Math.min(1, (Number(deps.getProgressPercent?.()) || 0) / 100));
@@ -36,10 +39,42 @@ function currentContext() {
       : 0;
     if (total > 0) ratio = (before + (lengths[position.chunkIndex] || 0) * within) / total;
   }
+  return ratio;
+}
+
+function currentContext() {
+  const chapters = deps.getChapters?.() || [];
+  const chapterIndex = deps.getCurrentChapter?.() || 0;
+  if (chapters[chapterIndex]?.textTruncated) return '';
+  const text = String(chapters[chapterIndex]?.text || '').replace(/\s+/g, ' ').trim();
+  if (!text) return '';
+  const ratio = currentContextRatio();
   const center = Math.floor(text.length * ratio);
   const start = Math.max(0, center - 100);
   const end = Math.min(text.length, center + 140);
   return `${start > 0 ? '…' : ''}${text.slice(start, end)}${end < text.length ? '…' : ''}`;
+}
+
+async function refreshContext(book, chapterIndex, context, dialog) {
+  cancelContextRequest();
+  if (!context || !book.chapterStructureKey || !deps.getChapters?.()?.[chapterIndex]?.textTruncated || globalThis.navigator?.onLine === false) return;
+  const request = new AbortController();
+  contextRequest = request;
+  const query = new URLSearchParams({ ratio: String(currentContextRatio()) });
+  query.set('structureKey', book.chapterStructureKey);
+  try {
+    const result = await apiGet(
+      `/api/book/${encodeURIComponent(book.id)}/chapters/${chapterIndex}/context?${query}`,
+      { signal: request.signal, timeoutMs: 3000 }
+    );
+    if (contextRequest !== request || request.signal.aborted || dialog.getAttribute?.('aria-hidden') === 'true' ||
+        deps.getCurrentBook?.()?.id !== book.id || (deps.getCurrentChapter?.() || 0) !== chapterIndex) return;
+    if (result.context) context.textContent = result.context;
+  } catch {
+    // Manual pronunciation entry remains available offline or after a rebuild.
+  } finally {
+    if (contextRequest === request) contextRequest = null;
+  }
 }
 
 function openRepairDialog() {
@@ -56,6 +91,7 @@ function openRepairDialog() {
   setSubmitLabel();
   repairController?.open();
   source?.focus();
+  void refreshContext(book, deps.getCurrentChapter?.() || 0, context, dialog);
   renderExistingRules(book.id);
 }
 
@@ -80,6 +116,7 @@ function setSubmitLabel() {
 }
 
 function closeRepairDialog() {
+  cancelContextRequest();
   repairController?.dismiss();
 }
 

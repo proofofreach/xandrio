@@ -9,7 +9,7 @@ import { initCoverImages } from './js/ui/cover-images.js';
 import { initKeys, onActivate } from './js/ui/keys.js';
 import { registerSheet } from './js/ui/sheets.js';
 import { initBookmarks, renderBookmarksSection, addBookmarkAtCurrentPosition } from './js/features/bookmarks.js';
-import { initOffline, prepareOfflineStorage, renderOfflineState, queuePendingPosition, ensureRollingOfflineWindow, getOfflineBookData, shouldUseOfflineBookFallback, offlinePlaybackUrl, localChapterSource, markLocalChapterSuspect, classifyLocalChapter, OFFLINE_WORKER_SCRIPT_URL, certifyOfflineWorkerController, offlineWorkerControllerState } from './js/features/offline.js';
+import { initOffline, prepareOfflineStorage, renderOfflineState, queuePendingPosition, ensureRollingOfflineWindow, hasOfflineBookData, getOfflineBookData, shouldUseOfflineBookFallback, offlinePlaybackUrl, localChapterSource, markLocalChapterSuspect, classifyLocalChapter, OFFLINE_WORKER_SCRIPT_URL, certifyOfflineWorkerController, offlineWorkerControllerState } from './js/features/offline.js';
 import { initPronunciationRepair } from './js/features/pronunciations.js';
 import { initQueueStatus } from './js/features/queue-status.js';
 import { loadClientSettings, getSkipInterval, isSmartRewindEnabled, isRollingOfflineEnabled } from './js/client-settings.js';
@@ -64,6 +64,8 @@ let pendingServerPositionTimer = null;
 const restoredPlaybackEventLedger = loadPlaybackEventLedger();
 let playbackEventLedger = restoredPlaybackEventLedger.slice();
 let persistedPlaybackEventLedger = restoredPlaybackEventLedger.slice();
+let playbackAttemptSequence = 0;
+let activePlaybackAttempt = null;
 let automaticRecoveryAttempts = 0;
 let automaticRecoveryTimer = null;
 let waitingForOnline = false;
@@ -173,6 +175,7 @@ function handleChunkTimeUpdate(data) {
   // data: { currentTime, totalTime, progressPercent, chunk, totalChunks }
   checkpointPlayback({ throttle: true });
   updateMediaSessionPosition(data);
+  observePlaybackAttemptProgress();
 
   // While the user is scrubbing, don't let the engine overwrite the slider
   // thumb or the time label — the drag owns them until release.
@@ -211,6 +214,44 @@ function loadPlaybackEventLedger() {
   }
 }
 
+function playbackAttemptNow() {
+  return globalThis.performance?.now?.() ?? Date.now();
+}
+
+function beginPlaybackAttempt(bookId, reason) {
+  const attempt = {
+    id: `play-${Date.now().toString(36)}-${++playbackAttemptSequence}`,
+    bookId: String(bookId),
+    startedAt: playbackAttemptNow(),
+    openToken: openBookToken,
+    mediaReady: false,
+    playingAt: null
+  };
+  activePlaybackAttempt = attempt;
+  recordPlaybackEvent({ type: 'play-intent', reason, bookId: attempt.bookId });
+  return attempt;
+}
+
+function bindPlaybackAttemptToOpen(attempt, token) {
+  activePlaybackAttempt = activePlaybackAttempt === attempt ? attempt : null;
+  if (activePlaybackAttempt) {
+    activePlaybackAttempt.openToken = token;
+    activePlaybackAttempt.mediaReady = false;
+  }
+}
+
+function observePlaybackAttemptProgress() {
+  const attempt = activePlaybackAttempt;
+  if (!attempt || attempt.playingAt === null || attempt.openToken !== openBookToken) return;
+  if (String(chunkPlayer?.bookId || '') !== attempt.bookId || audioPlayer?.paused) return;
+  const streamTime = Number(audioPlayer?.currentTime);
+  if (!Number.isFinite(streamTime) || streamTime <= attempt.playingAt + 0.05) return;
+  // This confirms native playhead movement, not audible speaker output. Keep
+  // the hot-path milestone in memory just like periodic timeupdate samples.
+  recordPlaybackEvent({ type: 'playhead-advanced', bookId: attempt.bookId, streamTime });
+  if (activePlaybackAttempt === attempt) activePlaybackAttempt = null;
+}
+
 function recordPlaybackEvent(detail = {}) {
   const mediaDetail = { ...detail };
   if (audioPlayer) {
@@ -237,6 +278,21 @@ function recordPlaybackEvent(detail = {}) {
     chapterIndex: Number.isInteger(mediaDetail.chapterIndex) ? mediaDetail.chapterIndex : currentChapter,
     visibility: String(mediaDetail.visibility || document?.visibilityState || 'unknown').slice(0, 16)
   };
+  const attempt = activePlaybackAttempt;
+  if (
+    attempt && attempt.openToken === openBookToken
+    && String(mediaDetail.bookId ?? currentBook?.id ?? '') === attempt.bookId
+  ) {
+    // Engine diagnostics carry the engine's own book ID, so late events from
+    // the outgoing source cannot be attributed to this new user intent.
+    const isMediaEvent = ['source-load', 'playing', 'play', 'timeupdate', 'playhead-advanced'].includes(entry.type);
+    if (!isMediaEvent || attempt.mediaReady || entry.type === 'source-load') {
+      entry.attemptId = attempt.id;
+      entry.elapsedMs = Math.max(0, Math.round(playbackAttemptNow() - attempt.startedAt));
+      if (entry.type === 'source-load') attempt.mediaReady = true;
+      if (entry.type === 'playing' && attempt.mediaReady) attempt.playingAt = Number(mediaDetail.streamTime) || 0;
+    }
+  }
   for (const key of ['reason', 'sourceKind']) {
     if (mediaDetail[key]) entry[key] = String(mediaDetail[key]).slice(0, 40);
   }
@@ -254,7 +310,7 @@ function recordPlaybackEvent(detail = {}) {
   // Timeupdate fires every few hundred milliseconds. Keep those diagnostic
   // samples in memory so playback never synchronously writes storage in the
   // media event hot path; significant lifecycle events still survive reloads.
-  if (entry.type !== 'timeupdate') {
+  if (!['timeupdate', 'playhead-advanced'].includes(entry.type)) {
     persistedPlaybackEventLedger = [...persistedPlaybackEventLedger, entry].slice(-PLAYBACK_EVENT_LEDGER_LIMIT);
     try {
       globalThis.window?.localStorage?.setItem(
@@ -271,7 +327,9 @@ function estimateChapterPlaybackDuration(chapter, chapterIndex) {
   if (Number.isFinite(measuredDuration) && measuredDuration > 0) return measuredDuration;
   const duration = Number(chapter?.estimatedDuration);
   if (Number.isFinite(duration) && duration > 0) return duration;
-  const characterCount = String(chapter?.text || '').trim().length;
+  const characterCount = Number.isFinite(chapter?.textLength)
+    ? chapter.textLength
+    : String(chapter?.text || '').trim().length;
   // Approximate 180 spoken words/minute and five characters/word. Empty
   // structural chapters remain zero so the continuous mapper skips them.
   return characterCount > 0 ? Math.max(1, characterCount / 15) : 0;
@@ -950,7 +1008,7 @@ function applyPlaybackSelection(selection) {
 document.addEventListener('DOMContentLoaded', async () => {
   initCoverImages();
   console.log('Xandrio initialized');
-  const deployment = await initDeploymentGuard({
+  const deploymentPromise = initDeploymentGuard({
     onChange: updated => {
       if (updated.serviceWorkerAllowed) void registerServiceWorker();
     }
@@ -969,7 +1027,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
   let authStatus = null;
   try {
-    authStatus = await fetchAuthStatus();
+    authStatus = await fetchAuthStatus({ timeoutMs: 3000 });
   } catch (err) {
     // Offline or server unreachable: continue booting so downloaded books
     // stay playable; API calls will surface their own errors.
@@ -982,6 +1040,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     return;
   }
 
+  // Local preferences are already available synchronously. Refresh the
+  // profile alongside worker readiness without delaying the first route.
+  void loadClientSettings();
+  const deployment = await deploymentPromise;
+
   // Complete the bounded worker handoff before rendering library data or
   // installing any interactive handlers. This is the only interval in which a
   // controller-changing reload is permitted, so it must be genuinely idle.
@@ -992,7 +1055,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   if (workerReadiness.reason === 'reloading') return;
 
   initializeDOMElements();  // Initialize DOM elements first
-  await loadClientSettings();
   initPlayerUI({
     // Docked pane Up Next list (player-ui.js renderPaneUpNext).
     openBook: bookId => openBook(bookId),
@@ -1284,17 +1346,35 @@ async function prepareServiceWorkerForRouting() {
     : await certifyOfflineWorkerController({
       timeoutMs: Math.min(1500, Math.max(50, deadlineAt - Date.now()))
     }).catch(() => offlineWorkerControllerState());
+  let registration = null;
   if (current.compatible && isExpectedOfflineWorker(navigator.serviceWorker.controller)) {
-    window.sessionStorage?.removeItem?.(OFFLINE_WORKER_RELOAD_KEY);
-    return { ready: true, reason: '' };
+    // A complete cached shell may be older than a worker already waiting on
+    // this device. Inspect that local registration before accepting the warm
+    // route; otherwise cache-first navigation could pin this build forever.
+    registration = await settleBeforeDeadline(
+      navigator.serviceWorker.getRegistration?.(),
+      Math.min(deadlineAt, Date.now() + 500)
+    );
+    if (!registration?.waiting && !registration?.installing) {
+      window.sessionStorage?.removeItem?.(OFFLINE_WORKER_RELOAD_KEY);
+      // A network update never extends an already certified warm launch.
+      try { void Promise.resolve(registration?.update?.()).catch(() => {}); } catch {}
+      return { ready: true, reason: '' };
+    }
   }
 
-  const registration = await settleBeforeDeadline(
-    navigator.serviceWorker.register(OFFLINE_WORKER_SCRIPT_URL),
-    deadlineAt
-  );
+  if (!registration) {
+    registration = await settleBeforeDeadline(
+      navigator.serviceWorker.register(OFFLINE_WORKER_SCRIPT_URL),
+      deadlineAt
+    );
+  }
   if (!registration) return { ready: false, reason: 'registration-timeout' };
-  await settleBeforeDeadline(Promise.resolve(registration.update?.()), deadlineAt);
+  // A waiting build already has its complete shell; don't put a fresh network
+  // update in front of its safe activation handoff.
+  if (!registration.waiting && !registration.installing) {
+    await settleBeforeDeadline(Promise.resolve(registration.update?.()), deadlineAt);
+  }
   if (Date.now() >= deadlineAt) return { ready: false, reason: 'registration-timeout' };
   let candidate = registration.waiting || registration.installing;
   if (candidate?.state === 'installing') {
@@ -1321,6 +1401,18 @@ async function prepareServiceWorkerForRouting() {
         ['activated', 'redundant'],
         Math.max(50, deadlineAt - Date.now())
       );
+      // Even a contract-compatible controller needs a navigation after a new
+      // build activates so HTML and modules come from that complete shell.
+      // The worker's other-client refusal remains the activation authority.
+      if (candidate.state === 'activated') {
+        const reloadKey = candidate.scriptURL || OFFLINE_WORKER_SCRIPT_URL;
+        const alreadyReloaded = window.sessionStorage?.getItem?.(OFFLINE_WORKER_RELOAD_KEY) === reloadKey;
+        if (!alreadyReloaded && serviceWorkerBootWindowOpen) {
+          window.sessionStorage?.setItem?.(OFFLINE_WORKER_RELOAD_KEY, reloadKey);
+          window.location.reload();
+          return { ready: false, reason: 'reloading' };
+        }
+      }
     }
   }
 
@@ -1660,7 +1752,10 @@ function closeTransientSheets() {
 // the player shows real state; playback stays paused (the user explicitly
 // tried to switch books) but the session is intact and resumable.
 async function restorePreviousSession(previous) {
-  const data = await apiGet(`/api/book/${encodeURIComponent(previous.bookId)}`);
+  const data = await apiGet(`/api/book/${encodeURIComponent(previous.bookId)}?playback=1`, {
+    timeoutMs: 6000,
+    signal: openBookController?.signal
+  });
   // A newer open may have started while this fetch was in flight. The
   // snapshot's token is the open that FAILED; if it no longer owns the
   // player, restoration must discard itself entirely.
@@ -1740,6 +1835,18 @@ async function clearDeletedBookFromPlayer(bookId) {
 // Player Functions
 let openBookToken = 0;
 let openingBookId = null;
+let openBookController = null;
+function cancelPendingBookOpen() {
+  if (openBookController) openingBookId = null;
+  openBookController?.abort();
+  openBookController = null;
+}
+window.addEventListener('xandrio:authscopechange', () => {
+  cancelPendingBookOpen();
+  openBookToken++;
+  loadChapterToken++;
+  activePlaybackAttempt = null;
+});
 let chapterLoadIntent = null;
 function beginChapterLoadIntent(book, chapterIndex) {
   const intent = { book, chapterIndex };
@@ -1760,12 +1867,19 @@ let resumePauseRevision = 0;
 // the paused loading behavior; only this intent may start the loaded source.
 async function resumeBook(bookId, { navigationReady = null } = {}) {
   const targetId = String(bookId);
+  const attempt = beginPlaybackAttempt(targetId, 'resume');
   const pauseRevision = resumePauseRevision;
+  cancelPendingBookOpen();
   let token = ++openBookToken;
+  attempt.openToken = token;
   if (!openingBookId && String(currentBook?.id || '') === targetId && playbackEngineOwnsReadySource()) {
     // Play a ready source during the tap's activation window. Route changes
     // wait for the caller's sheet history dismissal so Back cannot undo them.
-    const playing = chunkPlayer.isPlaying ? Promise.resolve() : togglePlayPause(true);
+    const playing = chunkPlayer.isPlaying ? Promise.resolve() : togglePlayPause(true, { attempt });
+    if (chunkPlayer.isPlaying && !attempt.mediaReady) {
+      recordPlaybackEvent({ type: 'play-already-active', bookId: targetId });
+      if (activePlaybackAttempt === attempt) activePlaybackAttempt = null;
+    }
     if (navigationReady) await navigationReady;
     if (token !== openBookToken || pauseRevision !== resumePauseRevision) return false;
     syncPlayerHash(bookId);
@@ -1793,7 +1907,7 @@ async function resumeBook(bookId, { navigationReady = null } = {}) {
     }
     if (navigationReady) await navigationReady;
     if (token !== openBookToken || pauseRevision !== resumePauseRevision) return false;
-    const opening = openBook(bookId);
+    const opening = openBook(bookId, { attempt });
     token = openBookToken;
     const opened = await opening;
     if (token !== openBookToken || pauseRevision !== resumePauseRevision) return false;
@@ -1803,12 +1917,16 @@ async function resumeBook(bookId, { navigationReady = null } = {}) {
     }
   }
   if (token !== openBookToken || pauseRevision !== resumePauseRevision || String(currentBook?.id || '') !== targetId) return false;
-  if (!chunkPlayer.isPlaying) await togglePlayPause(true);
+  if (!chunkPlayer.isPlaying) await togglePlayPause(true, { attempt });
   return token === openBookToken && String(currentBook?.id || '') === targetId && Boolean(chunkPlayer?.isPlaying);
 }
 
-async function openBook(bookId) {
+async function openBook(bookId, { attempt = null } = {}) {
+  cancelPendingBookOpen();
   const token = ++openBookToken;
+  bindPlaybackAttemptToOpen(attempt, token);
+  const controller = new AbortController();
+  openBookController = controller;
   offlineUnavailableOnlineRetry.clear();
   openingBookId = String(bookId);
   try {
@@ -1816,11 +1934,29 @@ async function openBook(bookId) {
     // before the open is known to succeed. The server drops the preference
     // if this book never becomes active.
     void prioritizeForegroundBook(bookId);
+    // These independent reads share this open's cancellation owner. They
+    // finish within a small foreground budget and never seek a playing book
+    // when an old response arrives after a timeout or another selection.
+    const settingsPromise = getBookPlaybackSettings(bookId, { signal: controller.signal, timeoutMs: 1500 });
+    // Book metadata may fail before this independent read is awaited.
+    void settingsPromise.catch(() => {});
+    const positionPromise = apiGet(`/api/position/${encodeURIComponent(bookId)}`, {
+      signal: controller.signal,
+      timeoutMs: 1500
+    }).catch(error => {
+      if (!controller.signal.aborted) console.warn('Failed to load server position:', error);
+      return {};
+    });
+    const offlineDataAvailable = hasOfflineBookData(bookId);
     let data;
     let usedOfflineFallback = false;
     try {
-      data = await apiGet(`/api/book/${encodeURIComponent(bookId)}`);
+      data = await apiGet(`/api/book/${encodeURIComponent(bookId)}?playback=1`, {
+        signal: controller.signal,
+        timeoutMs: offlineDataAvailable ? 1500 : 6000
+      });
     } catch (error) {
+      if (controller.signal.aborted) throw error;
       // A full offline download includes the title/chapter snapshot needed to
       // rebuild the player after a cold launch. Do not mask authoritative
       // server errors (404/401) while online with an obsolete local copy.
@@ -1838,7 +1974,12 @@ async function openBook(bookId) {
     if (!nextBook || typeof nextBook !== 'object' || nextBook.id == null || !Array.isArray(nextChapters)) {
       throw new Error('Invalid book data');
     }
-    const nextPlaybackSettings = await getBookPlaybackSettings(bookId);
+    recordPlaybackEvent({
+      type: 'book-metadata-ready',
+      bookId: String(bookId),
+      reason: usedOfflineFallback ? 'offline-snapshot' : 'network'
+    });
+    const nextPlaybackSettings = await settingsPromise;
     if (token !== openBookToken) return false;
 
     // Snapshot the outgoing session so any failure AFTER this point (chapter
@@ -1982,15 +2123,12 @@ async function openBook(bookId) {
     const localCheckpoint = positionMatchesChapterStructure(storedLocalCheckpoint, currentBook)
       ? storedLocalCheckpoint
       : null;
-    let positionData = {};
-    try {
-      positionData = await apiGet(`/api/position/${encodeURIComponent(bookId)}`);
-    } catch (err) {
-      console.warn('Failed to load server position:', err);
-    }
+    const positionData = await positionPromise;
     if (token !== openBookToken || currentBook?.id !== nextBook.id) return false;
 
-    const serverCheckpoint = normalizeServerPosition(positionData.position);
+    const serverCheckpoint = positionMatchesChapterStructure(positionData.position, currentBook)
+      ? normalizeServerPosition(positionData.position)
+      : null;
     const restorePosition = chooseFreshestPosition(localCheckpoint, serverCheckpoint);
     const reconcileBackward = restorePosition === localCheckpoint &&
       shouldAllowBackwardReconciliation(localCheckpoint, serverCheckpoint);
@@ -2037,7 +2175,9 @@ async function openBook(bookId) {
     checkpointPlayback();
     updatePlaybackUI();
     if (reconcileBackward) {
-      await savePosition({ allowBackward: true, force: true });
+      // savePosition snapshots the owned book/position before its first await.
+      // The sync acknowledgement must not hold up a user-requested resume.
+      void savePosition({ allowBackward: true, force: true });
     }
 
     if (previousSession?.token === token) previousSession = null;
@@ -2062,6 +2202,8 @@ async function openBook(bookId) {
     }
     return false;
   } finally {
+    controller.abort();
+    if (openBookController === controller) openBookController = null;
     if (token === openBookToken) {
       openingBookId = null;
       updatePlaybackUI();
@@ -2072,6 +2214,8 @@ async function openBook(bookId) {
 let loadChapterToken = 0;
 
 async function loadRestoredChapter(index, position) {
+  const book = currentBook;
+  const openToken = openBookToken;
   const startOffsetSeconds = Math.max(
     0,
     Number(position?.timestamp ?? position?.currentTime ?? position?.chunkTime) || 0
@@ -2083,8 +2227,14 @@ async function loadRestoredChapter(index, position) {
         startOffsetSeconds
       }
     : null;
-  const loaded = await loadChapter(index, { sourceTuple });
+  const loading = loadChapter(index, { sourceTuple });
+  const chapterToken = loadChapterToken;
+  const loaded = await loading;
   if (loaded?.loaded !== true) return loaded;
+  const restoredLoadToken = loaded.loadToken ?? chapterToken;
+  if (currentBook !== book || openToken !== openBookToken || restoredLoadToken !== loadChapterToken) {
+    return { loaded: false, reason: 'stale' };
+  }
   // Finite/local sources still need an ordinary seek. Continuous transports
   // opened at startOffsetSeconds map this saved chapter time to stream time 0.
   await restorePlaybackPosition(chunkPlayer, position);
@@ -2367,7 +2517,7 @@ async function loadChapterWithIntent(index, options) {
       updatePlaybackUI(false);
     }
   }
-  return { loaded: true, reason: '' };
+  return { loaded: true, reason: '', loadToken: token };
 }
 
 async function selectChapter(nextChapter, options = {}) {
@@ -2568,7 +2718,7 @@ function recoverIdleUnreadyPlayback() {
   );
 }
 
-async function togglePlayPause(forcePlay = false) {
+async function togglePlayPause(forcePlay = false, { attempt = null } = {}) {
   forcePlay = forcePlay === true;
   if (!currentBook || !chunkPlayer) return;
   const token = recoveryToken;
@@ -2582,6 +2732,8 @@ async function togglePlayPause(forcePlay = false) {
       return;
     }
     if (forcePlay || !chunkPlayer.isPlaying) {
+      if (!attempt || activePlaybackAttempt !== attempt) attempt = beginPlaybackAttempt(currentBook.id, 'play');
+      attempt.openToken = openBookToken;
       if (chapterLoadIntent) {
         try { chunkPlayer.pause?.(); } catch {}
         updatePlaybackUI(false);
@@ -2611,6 +2763,7 @@ async function togglePlayPause(forcePlay = false) {
       }
       // Nothing may be awaited between here and play(): iOS revokes the user
       // activation from the tap at the first await.
+      attempt.mediaReady = true;
       applySmartRewindForResume();
       await chunkPlayer.play();
       if (!stillSelected() || token.cancelled || playbackPausedByUser) return;
@@ -2786,6 +2939,7 @@ async function resumeNativeSingleFileFromMediaSession() {
 }
 
 function pausePlaybackForUser() {
+  activePlaybackAttempt = null;
   resumePauseRevision++;
   playbackPausedByUser = true;
   loadChapterToken++;
@@ -3016,8 +3170,10 @@ function positionPayload(options = {}) {
 }
 
 function playbackCharacterOffset(checkpoint = buildPlaybackCheckpoint()) {
-  const chapterTextLength = String(chapters[currentChapter]?.text || '')
-    .normalize('NFKC').replace(/\s+/gu, ' ').trim().length;
+  const chapter = chapters[currentChapter];
+  const chapterTextLength = Number.isFinite(chapter?.normalizedTextLength)
+    ? chapter.normalizedTextLength
+    : String(chapter?.text || '').normalize('NFKC').replace(/\s+/gu, ' ').trim().length;
   if (!chapterTextLength || !checkpoint) return undefined;
   const textLengths = chunkPlayer?.manifest?.chunks?.map(chunk => Number(chunk.textLength) || 0) || [];
   if (textLengths.length && Number.isInteger(checkpoint.chunkIndex)) {

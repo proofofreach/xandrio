@@ -515,6 +515,54 @@ function fakeAudio() {
     assert.strictEqual(player.getCurrentTime(), 18);
   });
 
+  await test('timeline pauses polling when complete and backs off incomplete maps until play', async () => {
+    const audio = fakeAudio();
+    let tick;
+    let clears = 0;
+    let calls = 0;
+    let durations = [6, null];
+    const clock = { setInterval(fn) { tick = fn; return 1; }, clearInterval() { clears++; } };
+    const { player } = makePlayer(audio, {
+      clock, getChapterCount: () => 2,
+      fetch: async () => { calls++; return { ok: true, json: async () => ({
+        startChapterIndex: 0, durations, complete: true
+      }) }; }
+    });
+    player.bookId = 'book1'; player.chapterIndex = 0; player.startChapterIndex = 0;
+    player.playbackSessionId = 'session'; player.isContinuous = true;
+    player._attach(); player._startTimelinePolling();
+    await new Promise(resolve => setImmediate(resolve));
+    for (let i = 0; i < 14; i++) tick();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.strictEqual(calls, 1);
+    durations = [6, 8];
+    audio.paused = false; audio.emit('play');
+    await new Promise(resolve => setImmediate(resolve));
+    assert.strictEqual(calls, 2);
+    assert.strictEqual(clears, 1);
+    tick(); audio.emit('play');
+    await new Promise(resolve => setImmediate(resolve));
+    assert.strictEqual(calls, 2);
+    player.dispose();
+  });
+
+  await test('prewarm uses wall-clock time at the playback speed', async () => {
+    const audio = fakeAudio();
+    audio.duration = 300; audio.currentTime = 160; audio.playbackRate = 3;
+    const { player } = makePlayer(audio, {
+      getChapterCount: () => 2, resolveNextChapterUrl: async () => 'next', fetch: async () => ({})
+    });
+    player.chapterIndex = 0; player._isPlaying = true;
+    const warmed = [];
+    player._prewarmChapter = async index => { warmed.push(index); };
+    player._maybePrewarmNextChapter();
+    assert.deepStrictEqual(warmed, []);
+    audio.currentTime = 165;
+    player._maybePrewarmNextChapter();
+    assert.deepStrictEqual(warmed, [1]);
+    player.dispose();
+  });
+
   await test('timeline polling replaces estimates with decoded chapter durations', async () => {
     const audio = fakeAudio();
     const fetchCalls = [];

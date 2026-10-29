@@ -140,10 +140,14 @@ function fakeActivityList() {
       return true;
     }
   };
+  const realDateNow = Date.now;
+  let fakeNow = realDateNow();
+  let tickAdvance = 30000;
+  Date.now = () => fakeNow;
   global.window = {
     setInterval(fn) {
       const id = nextTimer++;
-      timers.set(id, fn);
+      timers.set(id, () => { fakeNow += tickAdvance; return fn(); });
       return id;
     },
     clearInterval(id) {
@@ -157,7 +161,8 @@ function fakeActivityList() {
   Function(lifecycleSource)();
 
   let apiStatus = { active: 0, queued: 0, books: [] };
-  global.__queueTestApiGet = async () => apiStatus;
+  let apiCalls = [];
+  global.__queueTestApiGet = async (...args) => { apiCalls.push(args); return apiStatus; };
   const sentRequests = [];
   let apiSendResult = async () => ({});
   global.__queueTestApiSend = (...args) => {
@@ -552,6 +557,57 @@ function fakeActivityList() {
     assert.strictEqual(global.__queueTestToasts.length, 0);
   });
 
+  await test('an unchanged duration updates its approximate label when measured', async () => {
+    const book = { id: 'estimated', title: 'Estimated', active: 1, queued: 0,
+      preparationStatus: 'generating', readyAudioSeconds: 120, durationEstimated: true };
+    apiStatus = { active: 1, queued: 0, books: [book] };
+    initQueueStatus(); await settle();
+    queueStatusElement.dispatch('click');
+    assert.match(elements['audio-activity-list'].innerHTML, /~2 min ready at 1×/);
+    const writes = activityList.markupWrites;
+    apiStatus = { active: 1, queued: 0, books: [{ ...book, durationEstimated: false }] };
+    [...timers.values()][0](); await settle();
+    assert.strictEqual(activityList.markupWrites, writes, 'the existing row is patched');
+    assert.match(activityList.rows[0].querySelector('[data-audio-activity-label]').textContent, / · 2 min ready at 1×/);
+    assert.doesNotMatch(activityList.rows[0].querySelector('[data-audio-activity-label]').textContent, /~2 min/);
+  });
+
+  await test('failed and paused activity backs off while generating activity stays responsive', async () => {
+    tickAdvance = 4000;
+    for (const status of [
+      { active: 0, queued: 0, books: [{ id: 'failed', failed: true }] },
+      { active: 0, queued: 0, books: [{ id: 'paused', preparationStatus: 'userPaused' }] }
+    ]) {
+      apiStatus = status; apiCalls = [];
+      initQueueStatus(); await settle();
+      [...timers.values()][0](); await settle();
+      assert.strictEqual(apiCalls.length, 1, 'inactive status does not poll after 4 seconds');
+      for (let i = 0; i < 7; i++) { [...timers.values()][0](); await settle(); }
+      assert.strictEqual(apiCalls.length, 2, 'inactive status polls after backoff');
+    }
+    apiStatus = { active: 0, queued: 0, books: [{ id: 'generating', preparationStatus: 'generating' }] };
+    apiCalls = []; initQueueStatus(); await settle();
+    [...timers.values()][0](); await settle();
+    assert.strictEqual(apiCalls.length, 2, 'generation still polls after 4 seconds');
+    tickAdvance = 30000;
+  });
+
+  await test('coalesces overlapping polls and aborts a pending request on stop', async () => {
+    let resolveStatus;
+    apiStatus = new Promise(resolve => { resolveStatus = resolve; });
+    apiCalls = [];
+    initQueueStatus();
+    document.dispatchEvent({ type: 'visibilitychange' });
+    [...timers.values()][0]();
+    assert.strictEqual(apiCalls.length, 1);
+    const signal = apiCalls[0][1].signal;
+    stopQueueStatus();
+    assert.strictEqual(signal.aborted, true);
+    resolveStatus({ active: 1, queued: 0, books: [{ id: 'stale', active: 1 }] });
+    await settle();
+    assert.doesNotMatch(elements['audio-activity-list'].innerHTML, /stale/);
+  });
+
   await test('re-init without a status element still stops the old poller', () => {
     queueStatusElement = null;
     initQueueStatus();
@@ -560,6 +616,7 @@ function fakeActivityList() {
   });
 
   stopQueueStatus();
+  Date.now = realDateNow;
   delete global.__queueTestApiGet;
   delete global.__queueTestRegisterSheet;
 
