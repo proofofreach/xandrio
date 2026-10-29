@@ -89,7 +89,7 @@ assert(index.includes('id="book-guides-settings-section"') && index.includes('id
 assert(index.includes('id="book-guides-device-connection"') && index.includes('id="book-guides-login-sheet"'), 'settings include a deployment-gated device authorization flow');
 assert(settings.includes("'/api/book-guides/provider/login'") && settings.includes("'/api/book-guides/provider/connection'"), 'settings connect and poll without receiving an OAuth token');
 assert(settings.includes("config.authMode === 'device'") && settings.includes('bookGuidesApiKeyGroup.hidden = deviceAuth'), 'device authorization replaces rather than duplicates the API-key field');
-assert(server.includes("process.env.XANDRIO_PRIVATE_CODEX_GUIDES === '1'") && server.includes('createCodexBookGuideProvider'), 'Codex subscription access is disabled unless the private deployment flag is explicit');
+assert(server.includes('createConfiguredBookGuideProvider') && !server.includes('createCodexBookGuideProvider'), 'Codex subscription access is disabled unless the private deployment flag is explicit');
 assert(!index.toLowerCase().includes('certif') && !settings.includes('Needs certification') && !guide.includes('Uncertified evaluation run'), 'operator UI does not expose internal certification terminology');
 assert(settings.includes("apiGet('/api/book-guides/config')") && settings.includes("apiSend('PUT', '/api/book-guides/config'") && settings.includes("apiSend('DELETE', '/api/book-guides/config')"), 'admin settings load, save, and clear guide configuration');
 assert(settings.includes("user.role !== 'admin'") && settings.includes("err.status === 403"), 'guide settings remain hidden from non-admin users');

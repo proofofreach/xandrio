@@ -35,6 +35,16 @@ const { startScenarioEnvironment } = require('./fixtures/scenarios/lib/environme
     }, null, { timeout: 5000 });
     assert.equal(requests, 2, 'A temporary failure retries once and preserves the offline cache URL');
 
+    await page.route('**/api/cover/unrecorded-test', route => route.fulfill({ status: 200, contentType: 'image/jpeg', path: 'test/fixtures/scenarios/covers/cover-meridian.jpg' }));
+    await page.evaluate(async () => {
+      const { coverImageHTML } = await import('/js/util/format.js');
+      document.body.insertAdjacentHTML('afterbegin', coverImageHTML({ id: 'unrecorded-test', title: 'Unrecorded', hasCover: false }, 'test-unrecorded-cover'));
+    });
+    await page.waitForFunction(() => {
+      const image = document.querySelector('.test-unrecorded-cover');
+      return image?.src.includes('/api/cover/unrecorded-test') && image.complete && image.naturalWidth > 0;
+    }, null, { timeout: 5000 });
+
     let missingRequests = 0;
     await page.route('**/api/cover/missing-test', route => {
       missingRequests++;
@@ -48,7 +58,7 @@ const { startScenarioEnvironment } = require('./fixtures/scenarios/lib/environme
     assert.equal(missingRequests, 2, 'Permanent failures do not create a retry loop');
     assert(await page.locator('.test-missing-cover').evaluate(image => image.src.startsWith('data:') && image.complete && image.naturalWidth > 0));
     assert.equal(await page.locator('img[onerror]').count(), 0, 'Shared covers do not need inline handlers');
-    console.log('3 passed, 0 failed');
+    console.log('4 passed, 0 failed');
   } finally {
     await browser.close();
     await environment.close();

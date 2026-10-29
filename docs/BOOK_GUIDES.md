@@ -18,11 +18,22 @@ The default generator route is `gemini-3.7-flash`. In a 12,000-character synthet
 
 PPQ.ai advertises a 1,048,576-token context window and structured output for Gemini 3.7 Flash. Xandrio still uses chapter-bounded extraction and reduction. This keeps evidence anchors precise, bounds retries and cost, and avoids relying on long-context recall. Use `glm-5.2` as the independent verifier. Every provider request requires PPQ.ai's ZDR routing; a model without an eligible ZDR endpoint fails closed.
 
-## Private Codex path
+## Optional tool-free OpenAI path
 
-A private, single-operator instance can set `XANDRIO_PRIVATE_CODEX_GUIDES=1` to replace PPQ.ai with a dedicated Codex CLI connection. The Codex CLI must be installed on the server and available to the service user. Set `XANDRIO_CODEX_BIN` when it is outside the service `PATH`; `XANDRIO_CODEX_HOME` defaults to `DATA_DIR/codex`.
+Set `XANDRIO_BOOK_GUIDE_PROVIDER=openai-api` and restart to use the OpenAI Responses API at `https://api.openai.com/v1/responses`. The default remains `ppq-ai`; unknown provider values fail startup. Configure a dedicated OpenAI API key in Study Guide settings, or set server-side `OPENAI_API_KEY`. A saved key takes precedence over the environment key for its own provider. Clear removes the saved key; remove an environment key separately. API billing is separate from a ChatGPT subscription. Configuration/readiness checks do not validate the key or make a model call. The connection test and generation make paid calls; use a provider-side spending limit.
 
-The admin connects through the Study Guide settings device-code flow. Xandrio returns only the temporary OpenAI sign-in URL and user code to the browser. Codex stores and refreshes authentication under the dedicated server-side home. Xandrio does not accept or return the OAuth token. This mode offers `gpt-5.6-luna` for generation and `gpt-5.6-terra` for independent verification. It is disabled unless the private flag is explicitly set.
+Generation uses `gpt-5.6-luna`; independent verification uses `gpt-5.6-terra`. These are routing identities, not evidence of immutable model weights or quality certification. The adapter sends only the supplied prompt as text, with `tools: []`, `tool_choice: "none"` and `store: false`. It has no agent subprocess, host-tool dispatcher, file attachment, conversation continuation, or model-directed follow-up. It accepts completed assistant text and rejects tool-call/refusal/incomplete output, response-model mismatch, invalid JSON, redirects and response overflow. Timeouts and cancellation cover headers and body. This boundary comes from the transport and absence of host tools, not instructions in a prompt. The application still reads its own credential/configuration files and selected book to construct requests.
+
+`store: false` disables API response storage; it is **not** a zero-data-retention or no-logging guarantee. OpenAI processes book text externally under the account's applicable data controls. Review those terms separately from PPQ.ai's ZDR routing. [Responses API reference](https://developers.openai.com/api/reference/resources/responses/methods/create), [Luna](https://developers.openai.com/api/docs/models/gpt-5.6-luna), [Terra](https://developers.openai.com/api/docs/models/gpt-5.6-terra).
+
+### Migrate from the removed Codex CLI provider
+
+1. Replace `XANDRIO_PRIVATE_CODEX_GUIDES=1` with `XANDRIO_BOOK_GUIDE_PROVIDER=openai-api` and restart. For compatibility, the old flag also selects this replacement if the new selector is unset. The selector takes precedence. No Codex command runs; `XANDRIO_CODEX_BIN` and `XANDRIO_CODEX_HOME` are ignored.
+2. Open Study Guide settings, enter a dedicated OpenAI API key, choose the generator/verifier pair and acknowledge external processing again. Save the configuration. Old Codex sign-in, OAuth credentials and consent are not imported. Device-login endpoints return unsupported for API-key providers.
+3. Re-evaluate/certify the new pair and transport, or deliberately retain the experimental uncertified opt-in. Old provider/model digests, certificates and checkpoints do not authorize or resume new OpenAI work. Existing guide artifacts remain readable and deletable.
+4. Revoke/remove the obsolete Codex login/home yourself if no other service needs it. Xandrio does not read or delete those files during migration.
+
+Stored keys are tagged by provider. Legacy untagged keys belong to PPQ.ai only. Switching providers requires a matching key and a fresh processing acknowledgement; no saved key is sent to a different provider.
 
 Independent extraction and verification requests run with bounded concurrency. The default is four model calls; set `XANDRIO_BOOK_GUIDE_MODEL_CONCURRENCY` to a positive integer to match provider limits. Successful grounded segments and supported verification batches are checkpointed locally. A restart or later-phase failure resumes that work instead of processing the book again. Checkpoints are source-, recipe-, and model-specific and are removed after publication, cancellation, or deletion.
 
@@ -79,7 +90,7 @@ The feature must be kept behind an instance-level experimental flag. Start with 
 An operator can enable `XANDRIO_JEV_GUIDE_VERIFIER_ENABLED=true` with
 `XANDRIO_JEV_EXTERNAL_TEXT_ACKNOWLEDGED=true` and `AI_GATEWAY_API_KEY`.
 Guide statements and cited source evidence then go to TypeSafe through Vercel
-AI Gateway. This adds an external processor even for a Codex-generated guide.
+AI Gateway. This adds an external processor even for an OpenAI-generated guide.
 Generation and repair stay with the selected provider; uncertain checks and
 Jev failures use the configured verifier. See SELF_HOSTING.md for the deadline,
 serial batching, cooldown, disablement and certification requirements.

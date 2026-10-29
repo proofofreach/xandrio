@@ -59,7 +59,7 @@ function requestRecord(req) {
   await fs.mkdir(output, { recursive: true });
   const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'xandrio-adversarial-playback-'));
   const audioFiles = new Map();
-  for (const [id, frequency] of [['a', 220], ['b', 330], ['c', 440], ['pause-seek', 550], ['dispose-seek', 660], ['retry-voice', 770], ['cold-seek', 880], ['cold-pause', 990], ['cold-supersede', 1100], ['late-pause', 1200], ['pending-play', 1300]]) {
+  for (const [id, frequency] of [['a', 220], ['b', 330], ['c', 440], ['pause-seek', 550], ['dispose-seek', 660], ['retry-voice', 770], ['cold-seek', 880], ['cold-pause', 990], ['cold-supersede', 1100], ['late-pause', 1200], ['pending-play', 1300], ['divider', 1400], ['divider-resume', 1500]]) {
     const file = path.join(temp, `${id}.wav`);
     await fs.writeFile(file, wavTone(8, frequency));
     audioFiles.set(id, file);
@@ -169,16 +169,56 @@ function requestRecord(req) {
       current: 'edge:andrew',
       voices: [{ id: 'edge:andrew', name: 'Andrew', provider: 'edge', gender: 'male' }]
     }));
+    // Production 2026-10-18: a section divider (chapter 12 of 1b2d4d) was
+    // sent to prepare-chapter-audio and failed with HTTP 500 three times.
+    // Chapter 1 here is that divider; the stub keeps the old 500 so any request
+    // for it is visible. Chapter 2 has text the server cannot speak and
+    // answers with the typed unplayable result.
+    const dividerChapters = [
+      { title: 'Chapter Eleven', type: 'chapter', text: 'A deterministic playback fixture.', estimatedDuration: 60 },
+      { title: 'Part 2', type: 'divider', empty: true, text: 'Part 2 \nSEX', estimatedDuration: 1 },
+      { title: 'Chapter Twelve', type: 'chapter', text: '* * *', estimatedDuration: 1 },
+      { title: 'Chapter Thirteen', type: 'chapter', text: 'A deterministic playback fixture.', estimatedDuration: 60 }
+    ];
+    const dividerBooks = ['divider', 'divider-resume'].map(id => ({
+      id,
+      title: `Book ${id}`,
+      author: 'Adversarial fixture',
+      chapterCount: dividerChapters.length,
+      totalDuration: 122
+    }));
     app.get('/api/library', (_req, res) => res.json({ books }));
     app.get('/api/book/:book', (req, res) => {
+      const dividerBook = dividerBooks.find(candidate => candidate.id === req.params.book);
+      if (dividerBook) return res.json({ book: dividerBook, chapters: dividerChapters });
       const book = books.find(candidate => candidate.id === req.params.book);
       if (!book) return res.status(404).json({ error: 'Book not found' });
       return res.json({ book, chapters });
     });
-    app.get('/api/position/:book', (_req, res) => res.json({ position: null }));
+    app.get('/api/position/:book', (req, res) => res.json({
+      position: req.params.book === 'divider-resume'
+        ? { chapterIndex: 1, timestamp: 30, updatedAt: '2026-10-18T00:00:00Z' }
+        : null
+    }));
 
     app.all('/api/chunks/:book/:chapter/:action', async (req, res) => {
       const { book, action } = req.params;
+      if (dividerBooks.some(candidate => candidate.id === book)) {
+        if (req.params.chapter === '1') {
+          return res.status(500).json({ error: 'Chapter has no speakable text for TTS' });
+        }
+        if (req.params.chapter === '2') {
+          return res.json({
+            ready: false,
+            status: 'unplayable',
+            code: 'CHAPTER_UNSPEAKABLE',
+            retryable: false,
+            totalChunks: 0,
+            readyChunks: 0,
+            nextPlayableChapterIndex: 3
+          });
+        }
+      }
       if (book === 'b' && action === 'prepare-chapter-audio') {
         await hold(req, res, 'book-b-prepare');
         if (res.destroyed) return;
@@ -786,6 +826,41 @@ function requestRecord(req) {
       assert.equal(state.readyEvents.at(-1)?.bookId, 'pause-seek', JSON.stringify(state.readyEvents));
       assert.deepEqual(state.errors, [], JSON.stringify(state.errors));
       return { replacementResult, seekResult, state, staleMedia, preparationAborted: prepareGate.aborted };
+    });
+
+    const sectionRequests = (book, chapterIndex) => requests.filter(item => (
+      new RegExp(`^/api/[^/]+/${book}/${chapterIndex}(?:/|$)`).test(item.path)
+    ));
+
+    await check('next chapter skips a section divider and a chapter with nothing to speak', async page => {
+      await page.goto(`${origin}/#/player/divider`);
+      await page.waitForFunction(() => document.querySelector('#audio-player')?.currentSrc.includes('/api/audio-continuous/divider/0'));
+      await page.locator('#next-chapter-btn').click();
+      await page.waitForFunction(() => document.querySelector('#audio-player')?.currentSrc.includes('/api/audio-continuous/divider/3'), null, { timeout: 15000 });
+      const divider = sectionRequests('divider', 1);
+      const unspeakable = sectionRequests('divider', 2);
+      const loading = await page.evaluate(() => ({
+        status: document.getElementById('audio-loading')?.dataset.status || '',
+        text: document.getElementById('audio-loading')?.textContent || ''
+      }));
+      assert.equal(divider.length, 0, `no request for the divider: ${JSON.stringify(divider)}`);
+      assert.equal(
+        unspeakable.filter(item => item.path.endsWith('/prepare-chapter-audio')).length,
+        1,
+        `the typed unplayable result is not retried: ${JSON.stringify(unspeakable.map(item => item.path))}`
+      );
+      assert.notEqual(loading.status, 'error', JSON.stringify(loading));
+      return { unspeakable, loading };
+    });
+
+    await check('a saved position on a section divider resumes at the next narrated chapter', async page => {
+      await page.goto(`${origin}/#/player/divider-resume`);
+      await page.waitForFunction(() => document.querySelector('#audio-player')?.currentSrc.includes('/api/audio-continuous/divider-resume/3'), null, { timeout: 15000 });
+      const divider = sectionRequests('divider-resume', 1);
+      const source = new URL(await page.evaluate(() => document.querySelector('#audio-player').currentSrc));
+      assert.equal(divider.length, 0, `no request for the divider: ${JSON.stringify(divider)}`);
+      assert.equal(source.searchParams.get('offsetSeconds'), null, 'the replacement chapter starts at its beginning');
+      return { source: source.pathname + source.search };
     });
   } finally {
     for (const item of gates.values()) item.release.resolve();

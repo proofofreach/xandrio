@@ -17,7 +17,7 @@ An operator who wants an iPhone-first PWA audiobook library from files they may 
 - Book-specific narrators preserve the library default. Prepared narrators wait by default; the listener can explicitly choose an available instant narrator for unprepared audio. Book preparation retains completed audio and a manual pause across restarts. The player shows the voice actually loaded and continuous ready listening time at the selected speed.
 - Chunked audio generation and caching, resumable playback, seeking, speed, sleep timer, bookmarks, offline use, and sync state.
 - Library management, source credential controls, provider health state, deletion, and cache management.
-- Experimental Book Guides: admin-started, evidence-linked study guides for explicitly tagged English nonfiction, with an on-demand TTS playlist in the active voice. Disabled by default; the admin acknowledges external processing once when configuring the write-only PPQ.ai key.
+- Experimental Book Guides: admin-started, evidence-linked study guides for explicitly tagged English nonfiction, with an on-demand TTS playlist in the active voice. Disabled by default; the admin acknowledges external processing once when configuring the provider and its write-only key. PPQ.ai is the default; an optional tool-free OpenAI API path replaces the former Codex CLI provider.
 
 ## Non-goals
 

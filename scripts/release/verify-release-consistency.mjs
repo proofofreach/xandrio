@@ -49,6 +49,10 @@ if (!localEngineCompose.includes(`XANDRIO_VERSION:-${expectedVersion}`)) {
 if (!new RegExp(`^## \\[${expectedVersion.replace(/\./g, '\\.') }\\]`, 'm').test(changelog) || !/^## \[Unreleased\]/m.test(changelog)) {
   fail('changelog must contain [Unreleased] and the package release version');
 }
+const shellHtml = readFileSync(resolve(root, 'public/index.html'), 'utf8');
+if (!shellHtml.includes(`<meta name="xandrio-version" content="${expectedVersion}">`)) {
+  fail('loaded app version does not match package.json');
+}
 if (webManifest.version !== expectedVersion) {
   fail('web manifest version does not match package.json');
 }

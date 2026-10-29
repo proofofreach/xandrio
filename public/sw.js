@@ -1,7 +1,7 @@
 importScripts('/js/offline-range.js');
 importScripts('/js/offline-store.js');
 
-const CACHE_VERSION = 'xandrio-v207';
+const CACHE_VERSION = 'xandrio-v212';
 const OFFLINE_ROUTE_CONTRACT_VERSION = 2;
 const OFFLINE_AUDIO_CACHE = 'xandrio-offline-audio';
 const OFFLINE_TITLE_CACHE = 'xandrio-offline-titles';
@@ -22,7 +22,7 @@ const ASSET_VERSIONS = {
   '/find.css': 2,
   '/js/ios-focus-zoom.js': 2,
   '/js/lifecycle.js': 2,
-  '/app.js': 157
+  '/app.js': 161
 };
 const versionedAsset = (path) => `${path}?v=${ASSET_VERSIONS[path]}`;
 const APP_SHELL = [
@@ -47,6 +47,7 @@ const APP_SHELL = [
   '/js/client-settings.js',
   '/js/playback-session.js',
   '/js/smart-rewind.mjs',
+  '/js/playback-health.mjs',
   '/js/auto-sleep-schedule.mjs',
   '/js/single-file-chapter-player.js',
   '/js/util/format.js',
@@ -62,6 +63,7 @@ const APP_SHELL = [
   '/js/ui/shell.js',
   '/js/util/storage.js',
   '/js/util/chapter-labels.mjs',
+  '/js/util/chapter-playability.mjs',
   '/js/chapter-navigation.mjs',
   '/js/util/book-timeline.mjs',
   '/js/views/library.js',

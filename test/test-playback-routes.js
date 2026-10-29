@@ -110,6 +110,105 @@ async function test(name, fn) {
       }
     });
 
+    await test('playback routes answer an unplayable section with a typed result, never a 500', async () => {
+      const { createPlaybackOrchestrator } = require('../lib/playback-orchestrator');
+      // Production 2026-10-18: chapter 12 of 1b2d4d was this divider and
+      // prepare-chapter-audio returned 500 on all three client attempts.
+      const chapters = [
+        { title: 'Chapter 11', type: 'chapter', text: 'Chapter eleven has enough narration to speak aloud.' },
+        { title: 'Part 2', type: 'divider', empty: true, text: 'Part 2 \nSEX' },
+        { title: 'Heading only', type: 'chapter', text: '* * *' },
+        { title: 'Chapter 12', type: 'chapter', text: 'Chapter twelve also has enough narration to speak.' }
+      ];
+      const unspeakable = () => Object.assign(new Error('Chapter has no speakable text for TTS'), { code: 'CHAPTER_UNSPEAKABLE' });
+      const tts = {
+        getChapterManifest: () => null,
+        generateChapter: async () => { throw unspeakable(); },
+        claimChapter: async () => 1,
+        prioritizeChunk: () => true,
+        reconstructChapterManifest: async () => { throw unspeakable(); },
+        hasSpeakableText: async (_bookId, _chapterIndex, text) => text !== '* * *',
+        chunkPath: () => '/missing.mp3',
+        chapterPath: () => '/missing.mp3',
+        currentOutputFormat: () => 'mp3'
+      };
+      const orchestrator = createPlaybackOrchestrator({
+        resolveNarrationContext: async () => ({ tier: 'instant', tts, voice: 'edge:andrew' }),
+        isPremiumVoiceActive: () => false,
+        ensureChapterAudio: async () => { throw unspeakable(); },
+        inspectChapterAudio: async () => ({ ready: false, status: 'pending', totalChunks: 0, readyChunks: 0 }),
+        getChapterContext: async (_bookId, chapterIndex) => ({
+          book: { language: 'en' },
+          chapter: chapters[chapterIndex],
+          chapters
+        }),
+        manifestNeedsResume: () => false,
+        generationPriority: () => () => 'immediate'
+      });
+      const isolatedApp = require('express')();
+      isolatedApp.use(require('express').json());
+      const serverErrors = [];
+      registerPlaybackRoutes(isolatedApp, {
+        playbackOrchestrator: orchestrator,
+        getBookChapters: async () => ({ book: {}, chapters }),
+        chapterAudioStreamer: { isClientDisconnect: () => false },
+        hlsAudioStreamer: {},
+        serveAudioFile() { throw new Error('unplayable audio must not be served'); },
+        sendServerError(res, error) {
+          serverErrors.push(error);
+          res.status(500).json({ error: error.message });
+        }
+      });
+      const instance = await new Promise(resolve => {
+        const listening = isolatedApp.listen(0, '127.0.0.1', () => resolve(listening));
+      });
+      const origin = `http://127.0.0.1:${instance.address().port}`;
+      try {
+        for (const chapterIndex of [1, 2]) {
+          for (const body of [
+            { purpose: 'playback-runway', offsetSeconds: 0, playbackRate: 1 },
+            {}
+          ]) {
+            const response = await fetch(`${origin}/api/chunks/book1/${chapterIndex}/prepare-chapter-audio`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(body)
+            });
+            assert.strictEqual(response.status, 200, `prepare ${chapterIndex} ${body.purpose || 'background'}`);
+            const detail = await response.json();
+            assert.strictEqual(detail.status, 'unplayable');
+            assert.strictEqual(detail.retryable, false);
+            assert.strictEqual(detail.code, 'CHAPTER_UNSPEAKABLE');
+            // The structural rule cannot see that chapter 2 is unspeakable;
+            // the client learns that from chapter 2's own typed result.
+            assert.strictEqual(detail.nextPlayableChapterIndex, chapterIndex + 1);
+          }
+        }
+        const runwayStatus = await fetch(`${origin}/api/chunks/book1/1/chapter-audio-status?purpose=playback-runway`);
+        assert.strictEqual(runwayStatus.status, 200);
+        assert.strictEqual((await runwayStatus.json()).status, 'unplayable');
+        for (const route of [
+          '/api/audio/book1/1',
+          '/api/audio/book1/2',
+          '/api/audio-ios/book1/1',
+          '/api/audio-ios/book1/2',
+          '/api/audio-stream/book1/1',
+          '/api/audio-continuous/book1/1',
+          '/api/audio-hls/book1/1/index.m3u8?session=session-0001&owner=owner-0001'
+        ]) {
+          const response = await fetch(`${origin}${route}`);
+          assert.strictEqual(response.status, 422, route);
+          const detail = await response.json();
+          assert.strictEqual(detail.code, 'CHAPTER_UNSPEAKABLE', route);
+          assert.strictEqual(detail.retryable, false, route);
+          assert.strictEqual(detail.nextPlayableChapterIndex, Number(route.split('/')[4]) + 1, route);
+        }
+        assert.deepStrictEqual(serverErrors, [], 'no unplayable section reaches the 500 handler');
+      } finally {
+        await new Promise(resolve => instance.close(resolve));
+      }
+    });
+
     await test('authenticated HLS ownership ignores caller-controlled owner ids', () => {
       const req = {
         user: { id: 'account-one', sessionToken: 'opaque-session-token' },
