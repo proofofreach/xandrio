@@ -28,9 +28,11 @@ import { navigateChapterSelection, positionMatchesChapterStructure, shouldAllowB
 import { SingleFileChapterPlayer } from './js/single-file-chapter-player.js';
 import { initPlayerUI, refreshPlaybackTimes, setPlaybackBuffering, paintChapterTimes, paintScrubPreview, toggleTimeDisplayMode, syncTimeDisplayModeFromClientSettings, getPlaybackProgressScope, getBookSeekTarget, syncPlaybackProgressScope, setPlaybackReliabilityState, setResumePromptVisible, handleChunkWaiting, handleChunkPreparing, setChunkOverlayState, displayChapterTitle, updateChapterTrigger, updateBookProgress, updatePlayerAmbient, renderChapterList, openChapterSheet, closeChapterSheet, dismissChapterSheet, showAudioLoading, hideAudioLoading, updateMiniPlayer, syncMiniPlayerInfo, syncPlaybackControls, confirmBookmarkSaved } from './js/views/player-ui.js';
 import { findPreferredStartChapterIndex, chapterResumeLabels, chapterTotal } from './js/util/chapter-labels.mjs';
+import { isPlayableChapter, findPlayableChapterIndex, resolvePlayableChapterIndex } from './js/util/chapter-playability.mjs';
 import { applyRewindForResume, createSmartRewindController } from './js/smart-rewind.mjs';
 import { initListeningQueue, loadListeningQueue, getListeningQueueBooks, addToListeningQueue, advanceListeningQueue, getBookPlaybackSettings, saveBookPlaybackSettings } from './js/features/listening-queue.js';
 import { initDeploymentGuard } from './js/deployment-origin.js';
+import { createPlaybackHealth, platformClass, sendPlaybackHealthReport } from './js/playback-health.mjs';
 
 // SVG Icon constants
 const ICON_PLAY = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="icon"><path fill-rule="evenodd" d="M4.5 5.653c0-1.426 1.529-2.33 2.779-1.643l11.54 6.348c1.295.712 1.295 2.572 0 3.285L7.28 19.991c-1.25.687-2.779-.217-2.779-1.643V5.653z" clip-rule="evenodd"/></svg>';
@@ -200,6 +202,34 @@ function handleChapterEnd(detail = {}) {
   handleAudioEnd(detail);
 }
 
+// Chapters the server reported as having nothing to speak, although their
+// structure looked playable. Keyed by the chapter list it judged, so opening
+// another book or rebuilding chapters starts clean.
+const serverUnplayableChapters = new WeakMap();
+
+function markChapterUnplayable(index) {
+  let indexes = serverUnplayableChapters.get(chapters);
+  if (!indexes) {
+    indexes = new Set();
+    serverUnplayableChapters.set(chapters, indexes);
+  }
+  indexes.add(index);
+}
+
+// The one playback rule for this client: the shared structural predicate plus
+// the server's verdicts. Reading and the chapter list do not use it.
+function chapterHasNarration(chapter, index) {
+  return isPlayableChapter(chapter) && !serverUnplayableChapters.get(chapters)?.has(index);
+}
+
+function adjacentPlayableChapter(fromIndex, direction = 1) {
+  return findPlayableChapterIndex(chapters, fromIndex, direction, chapterHasNarration);
+}
+
+function playableChapterAt(index, direction = 1) {
+  return resolvePlayableChapterIndex(chapters, index, direction, chapterHasNarration);
+}
+
 function finitePlaybackNumber(value) {
   const number = Number(value);
   return Number.isFinite(number) ? Math.round(number * 100) / 100 : null;
@@ -214,6 +244,15 @@ function loadPlaybackEventLedger() {
   }
 }
 
+// Listener-side timings and counts only; see js/playback-health.mjs.
+const playbackHealth = createPlaybackHealth({
+  platform: platformClass(globalThis.navigator?.userAgent, globalThis.navigator?.maxTouchPoints),
+  standalone: Boolean(
+    globalThis.navigator?.standalone
+    || globalThis.window?.matchMedia?.('(display-mode: standalone)')?.matches
+  ),
+  send: report => sendPlaybackHealthReport(report, { apiBase: API_BASE })
+});
 function playbackAttemptNow() {
   return globalThis.performance?.now?.() ?? Date.now();
 }
@@ -254,6 +293,7 @@ function observePlaybackAttemptProgress() {
 
 function recordPlaybackEvent(detail = {}) {
   const mediaDetail = { ...detail };
+  try { playbackHealth.observe(mediaDetail); } catch {}
   if (audioPlayer) {
     mediaDetail.streamTime ??= audioPlayer.currentTime;
     mediaDetail.chapterTime ??= chunkPlayer?.getCurrentTime?.();
@@ -323,6 +363,8 @@ function recordPlaybackEvent(detail = {}) {
 }
 
 function estimateChapterPlaybackDuration(chapter, chapterIndex) {
+  // Sections without narration add no audio to the book or the stream.
+  if (!chapterHasNarration(chapter, chapterIndex)) return 0;
   const measuredDuration = Number(currentBook?.chapterDurations?.[chapterIndex]);
   if (Number.isFinite(measuredDuration) && measuredDuration > 0) return measuredDuration;
   const duration = Number(chapter?.estimatedDuration);
@@ -338,6 +380,9 @@ function estimateChapterPlaybackDuration(chapter, chapterIndex) {
 function handleContinuousChapterTransition(detail = {}) {
   const chapterIndex = Number(detail.chapterIndex);
   if (!currentBook || !Number.isInteger(chapterIndex) || chapterIndex < 0 || chapterIndex >= chapters.length) return;
+  // The stream carries no audio for a section without narration. Never
+  // publish or save it as the listening position.
+  if (!chapterHasNarration(chapters[chapterIndex], chapterIndex)) return;
   const stopForSleepTimer = isSleepTimerChapterTarget(currentBook.id, detail.previousChapterIndex);
   if (stopForSleepTimer) {
     chunkPlayer?.pause?.('sleep-timer-chapter');
@@ -823,6 +868,9 @@ function handleChunkError(error) {
   // A newer seek, chapter, or play intent owns cancellation. Recovering the
   // abandoned operation would reload its old position over that newer intent.
   if (error?.cancelled) return;
+  // loadChapter() moves past a chapter without narration. It is not a
+  // playback failure and must not start recovery or show an error.
+  if (error?.unplayable) return;
   setPlaybackBuffering(false);
   if (playbackPausedByUser) return;
   console.error('Chunk playback error:', error);
@@ -936,6 +984,7 @@ function makePlaybackCallbacks() {
           rollingOfflineTimer = null;
         }
         if (detail.reason === 'external') {
+          recordPlaybackEvent({ type: 'pause-intent', reason: 'external', chapterIndex: currentChapter });
           resumePauseRevision++;
           playbackPausedByUser = true;
           loadChapterToken++;
@@ -958,6 +1007,9 @@ function createSingleFileChapterEngine(options = {}) {
       chapterIndex
     ),
     getChapterCount: () => chapters.length,
+    isChapterPlayable: (bookId, chapterIndex) => (
+      bookId !== currentBook?.id || chapterHasNarration(chapters[chapterIndex], chapterIndex)
+    ),
     getContinuousEndChapter: (bookId, chapterIndex) => (
       isSleepTimerChapterTarget(bookId, chapterIndex) ? chapterIndex : null
     ),
@@ -2213,7 +2265,11 @@ async function openBook(bookId, { attempt = null } = {}) {
 
 let loadChapterToken = 0;
 
-async function loadRestoredChapter(index, position) {
+async function loadRestoredChapter(savedIndex, savedPosition) {
+  // A saved position or the start heuristic can name a section without
+  // narration. Resume at the next chapter that has audio, from its start.
+  const index = playableChapterAt(savedIndex, 1) ?? savedIndex;
+  const position = index === savedIndex ? savedPosition : null;
   const book = currentBook;
   const openToken = openBookToken;
   const startOffsetSeconds = Math.max(
@@ -2237,7 +2293,7 @@ async function loadRestoredChapter(index, position) {
   }
   // Finite/local sources still need an ordinary seek. Continuous transports
   // opened at startOffsetSeconds map this saved chapter time to stream time 0.
-  await restorePlaybackPosition(chunkPlayer, position);
+  await restorePlaybackPosition(chunkPlayer, currentChapter === index ? position : null);
   return loaded;
 }
 
@@ -2271,9 +2327,26 @@ function createOnlineRetryOwner(eventTarget) {
   };
 }
 
-async function loadChapter(index, options = {}) {
-  if (!Number.isInteger(index) || index < 0 || index >= chapters.length) {
+async function loadChapter(requestedIndex, options = {}) {
+  if (!Number.isInteger(requestedIndex) || requestedIndex < 0 || requestedIndex >= chapters.length) {
     return { loaded: false, reason: 'invalid-chapter' };
+  }
+  // Backstop for every caller (recovery, book seek, reloads): audio is never
+  // requested for a section without narration. A redirected load starts at
+  // the beginning of the chapter that replaces it.
+  const index = playableChapterAt(
+    requestedIndex,
+    options.direction ?? (requestedIndex < currentChapter ? -1 : 1)
+  );
+  if (index === null) return { loaded: false, reason: 'no-playable-chapter' };
+  if (index !== requestedIndex) {
+    recordPlaybackEvent({
+      type: 'skip-unplayable-chapter',
+      reason: options.reason || 'navigation',
+      previousChapterIndex: requestedIndex,
+      chapterIndex: index
+    });
+    options = { ...options, sourceTuple: null, seekToSeconds: undefined, commitImmediately: true, provisionalForward: false };
   }
   const loadIntent = beginChapterLoadIntent(currentBook, index);
   try {
@@ -2287,7 +2360,9 @@ async function loadChapterWithIntent(index, options) {
   // Cancelling the previous source also pauses its adapter. Preserve the
   // listening intent before cancellation so chapter and narrator changes can
   // continue playback; a later user Pause still invalidates loadChapterToken.
-  const wasPlaying = chunkPlayer ? chunkPlayer.isPlaying : false;
+  const wasPlaying = typeof options.wasPlaying === 'boolean'
+    ? options.wasPlaying
+    : (chunkPlayer ? chunkPlayer.isPlaying : false);
   clearBlockedWorkerOnlineRetry();
   offlineUnavailableOnlineRetry.clear();
   if (!['automatic-recovery', 'manual-recovery'].includes(options.reason)) {
@@ -2463,6 +2538,10 @@ async function loadChapterWithIntent(index, options) {
       commitImmediately: options.commitImmediately
     });
   } catch (error) {
+    if (error?.unplayable) {
+      if (token !== loadChapterToken) return { loaded: false, reason: 'stale' };
+      return await skipUnplayableChapter(index, error, { ...options, wasPlaying });
+    }
     // Local playback failed. Hand off to the network exactly once, and say so:
     // silently streaming a book the user downloaded is how this stopped being
     // noticed in the first place. Nothing durable is written here — Safari
@@ -2520,7 +2599,42 @@ async function loadChapterWithIntent(index, options) {
   return { loaded: true, reason: '', loadToken: token };
 }
 
-async function selectChapter(nextChapter, options = {}) {
+// The server found nothing to speak in a chapter whose structure looked
+// playable. Remember that for this book and continue at the next chapter
+// with narration, keeping the listener's play/pause intent.
+async function skipUnplayableChapter(index, error, options = {}) {
+  markChapterUnplayable(index);
+  const next = adjacentPlayableChapter(index, 1);
+  recordPlaybackEvent({
+    type: 'skip-unplayable-chapter',
+    reason: 'server',
+    previousChapterIndex: index,
+    chapterIndex: next ?? index
+  });
+  if (next === null) {
+    hideAudioLoading();
+    updatePlaybackUI(false);
+    showToast('No narrated chapters remain in this book');
+    return { loaded: false, reason: 'no-playable-chapter' };
+  }
+  return await loadChapter(next, {
+    ...options,
+    direction: 1,
+    reason: 'skip-unplayable',
+    sourceTuple: null,
+    seekToSeconds: undefined,
+    commitImmediately: true,
+    provisionalForward: false
+  });
+}
+
+async function selectChapter(requestedChapter, options = {}) {
+  // A selection can name a section without narration (for example a book
+  // seek or an external caller). Play the nearest chapter with audio in the
+  // direction of travel instead.
+  const nextChapter = Number.isInteger(requestedChapter)
+    ? (playableChapterAt(requestedChapter, requestedChapter < currentChapter ? -1 : 1) ?? requestedChapter)
+    : requestedChapter;
   const selectedBook = currentBook;
   const selectedOpenToken = openBookToken;
   const selectionIntent = beginChapterLoadIntent(selectedBook, nextChapter);
@@ -2740,6 +2854,7 @@ async function togglePlayPause(forcePlay = false, { attempt = null } = {}) {
         return;
       }
       playbackPausedByUser = false;
+      recordPlaybackEvent({ type: 'play-intent', chapterIndex: currentChapter });
       // The player view can commit a newly selected title while metadata and
       // local-source checks are still pending. Until the media engine has been
       // retargeted, its persistent audio element still belongs to the outgoing
@@ -2939,6 +3054,7 @@ async function resumeNativeSingleFileFromMediaSession() {
 }
 
 function pausePlaybackForUser() {
+  recordPlaybackEvent({ type: 'pause-intent', chapterIndex: currentChapter });
   activePlaybackAttempt = null;
   resumePauseRevision++;
   playbackPausedByUser = true;
@@ -2998,12 +3114,14 @@ function setupLifecycleHandlers() {
       online: navigator.onLine
     });
     checkpointPlayback();
+    if (document.visibilityState === 'hidden') playbackHealth.flush();
     if (document.visibilityState === 'hidden' && !beaconSavePosition()) savePosition();
     if (document.visibilityState === 'visible') void prioritizeForegroundBook();
     updatePlaybackUI();
   });
   window.addEventListener('pagehide', () => {
     recordPlaybackEvent({ type: 'pagehide', online: navigator.onLine });
+    playbackHealth.flush();
     checkpointPlayback();
     if (!beaconSavePosition()) savePosition();
   });
@@ -3030,8 +3148,10 @@ async function skip(seconds) {
 }
 
 function changeChapter(direction) {
-  const newChapter = currentChapter + direction;
-  if (newChapter >= 0 && newChapter < chapters.length) {
+  // Next/previous (buttons, keys and lock-screen track controls) step over
+  // sections without narration.
+  const newChapter = adjacentPlayableChapter(currentChapter, direction < 0 ? -1 : 1);
+  if (newChapter !== null) {
     selectChapter(newChapter).catch(error => console.error('Chapter change failed:', error));
   }
 }
@@ -3059,8 +3179,8 @@ async function handleAudioEnd(detail = {}) {
       // Expiry deliberately invalidates pending playback work. Subsequent
       // completion work belongs to that paused session until the user acts.
       owner.loadToken = loadChapterToken;
-      const nextChapter = currentChapter + 1;
-      if (nextChapter < chapters.length) {
+      const nextChapter = adjacentPlayableChapter(currentChapter, 1);
+      if (nextChapter !== null) {
         currentChapter = nextChapter;
         playbackSession.setBook(currentBook, {
           chapterIndex: nextChapter,
@@ -3086,8 +3206,11 @@ async function handleAudioEnd(detail = {}) {
       updatePlaybackUI(false);
       return;
     }
+    // Auto-advance skips sections without narration; null means the book
+    // has no audio left after this chapter.
+    const nextPlayableChapter = adjacentPlayableChapter(owner.chapter, 1);
     if (isSleepTimerChapterTarget(currentBook?.id, currentChapter)) {
-      if (currentChapter >= chapters.length - 1) {
+      if (nextPlayableChapter === null) {
         setCurrentBookFinished(true);
         checkpointPlayback({ force: true, finished: true });
         await savePosition({ force: true, finished: true });
@@ -3099,12 +3222,12 @@ async function handleAudioEnd(detail = {}) {
     }
     // Continuous online playback advances chapters inside one native resource;
     // `ended` is the end of the remaining book, never a chapter handoff.
-    if (chunkPlayer?.isContinuous && currentChapter < chapters.length - 1) return;
+    if (chunkPlayer?.isContinuous && nextPlayableChapter !== null) return;
     // Auto-advance to next chapter
-    if (currentChapter < chapters.length - 1) {
+    if (nextPlayableChapter !== null) {
       if (chunkPlayer?.supportsNativeMediaSession && audioPlayer) {
         try {
-          const loaded = await loadChapter(owner.chapter + 1, { commitImmediately: true, autoplay: true });
+          const loaded = await loadChapter(nextPlayableChapter, { commitImmediately: true, autoplay: true });
           if (loaded?.loaded !== true) return;
         } catch (err) {
           if (currentBook !== owner.book || openBookToken !== owner.openToken) return;
@@ -3112,7 +3235,7 @@ async function handleAudioEnd(detail = {}) {
           updatePlaybackUI(false);
         }
       } else {
-        const loaded = await loadChapter(currentChapter + 1, { commitImmediately: true });
+        const loaded = await loadChapter(nextPlayableChapter, { commitImmediately: true });
         if (loaded?.loaded !== true) {
           updatePlaybackUI(false);
           return;
@@ -3263,7 +3386,8 @@ async function confirmStartOver() {
     updatePlaybackUI(false);
   }
   setCurrentBookFinished(false);
-  const startChapter = findPreferredStartChapterIndex(chapters);
+  const preferredStart = findPreferredStartChapterIndex(chapters);
+  const startChapter = playableChapterAt(preferredStart, 1) ?? preferredStart;
   const loaded = await loadChapter(startChapter, { commitImmediately: true });
   if (loaded?.loaded !== true) return;
   if (chunkPlayer) await chunkPlayer.seek(0);

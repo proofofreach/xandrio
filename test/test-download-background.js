@@ -52,7 +52,12 @@ async function testOrchestratorPriority() {
     ttsForTier: () => ({}),
     voiceForTier: () => 'voice',
     ensureChapterAudio: async (...args) => calls.push(args),
-    inspectChapterAudio: async () => ({ ready: false, variantKey: 'variant' })
+    inspectChapterAudio: async () => ({ ready: false, variantKey: 'variant' }),
+    getChapterContext: async () => ({
+      book: { language: 'en' },
+      chapter: { text: 'A chapter with narration to download.' },
+      chapters: []
+    })
   });
   await orchestrator.startChapterAudio({
     bookId: 'book',

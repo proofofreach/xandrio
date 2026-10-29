@@ -1,7 +1,7 @@
 import { apiGet, apiSend, getCurrentUser, logout, getCurrentUserId, setCurrentUserId, getCurrentDeviceId, getCurrentDeviceName, resetSyncUser, isDefaultSyncUser } from '../api.js';
 import { navigateTo } from '../router.js';
 import { loadClientSettings, getClientSettings, getSkipInterval, getProgressDisplayMode, getDefaultSearchSources, getDefaultSpeed, isRollingOfflineEnabled, setClientSetting } from '../client-settings.js';
-import { getOfflineManifest, renderOfflineState } from '../features/offline.js';
+import { getOfflineManifest, renderOfflineState, EXPECTED_OFFLINE_SW_VERSION } from '../features/offline.js';
 import { loadLibrary } from './library.js';
 import { initVoices, loadVoices, stopVoiceSample } from './voices.js';
 import { formatSpeed } from '../util/time-left.mjs';
@@ -251,6 +251,39 @@ export function initSettings(options = {}) {
     loadSettingsSection(section);
   }
 
+  const versionLabel = document.getElementById('app-version');
+  const versionStatus = document.getElementById('app-version-status');
+  const versionCheck = document.getElementById('app-version-check');
+  const versionReload = document.getElementById('app-version-reload');
+  const versionNumber = build => String(build).replace(/^xandrio-v/, '');
+  const appVersion = document.querySelector('meta[name="xandrio-version"]')?.content || 'Unknown';
+  const versionIdentifier = (version, build) => `${version} (build ${versionNumber(build)})`;
+  if (versionLabel) versionLabel.textContent = versionIdentifier(appVersion, EXPECTED_OFFLINE_SW_VERSION);
+  let versionCheckPending = false;
+  async function checkAppVersion() {
+    if (!versionStatus || versionCheckPending) return;
+    versionCheckPending = true;
+    versionCheck.disabled = true;
+    versionReload.hidden = true;
+    versionStatus.textContent = 'Checking for updates…';
+    try {
+      const data = await apiGet('/api/deployment', { timeoutMs: 3000, cache: 'no-store' });
+      if (!/^xandrio-v[0-9]+$/.test(data.appBuild || '') || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(data.appVersion || '')) throw new Error('Version unavailable');
+      const current = data.appBuild === EXPECTED_OFFLINE_SW_VERSION && data.appVersion === appVersion;
+      versionStatus.textContent = current ? 'Up to date' : `Update available: ${versionIdentifier(data.appVersion, data.appBuild)}`;
+      versionReload.hidden = current;
+    } catch {
+      versionStatus.textContent = navigator.onLine === false
+        ? 'Offline · latest version unknown'
+        : 'Could not check for updates. Try again.';
+    } finally {
+      versionCheckPending = false;
+      versionCheck.disabled = false;
+    }
+  }
+  versionCheck?.addEventListener('click', checkAppVersion);
+  versionReload?.addEventListener('click', () => location.reload());
+
   function loadSettingsSection(section) {
     renderClientSettings();
     loadLanguagePref();
@@ -258,6 +291,7 @@ export function initSettings(options = {}) {
     updatePlaybackSummary();
     updateOfflineSummary();
 
+    if (!section) void checkAppVersion();
     const needsHub = !section;
     if (needsHub || section === 'voice') loadVoices();
     if (needsHub || section === 'playback') loadPremiumPrepSetting();
@@ -1142,21 +1176,21 @@ export function initSettings(options = {}) {
     bookGuideConfig = config;
     const deviceAuth = config.authMode === 'device';
     if (bookGuidesSettingsSection) {
-      bookGuidesSettingsSection.dataset.externalProcessingAcknowledged = config.externalProcessingAcknowledgedAt ? '1' : '0';
+      bookGuidesSettingsSection.dataset.externalProcessingAcknowledged = config.providerMatches && config.externalProcessingAcknowledgedAt ? '1' : '0';
     }
     if (bookGuidesEnabled) bookGuidesEnabled.checked = config.enabled === true;
     if (bookGuidesApiKey) {
       bookGuidesApiKey.value = '';
       bookGuidesApiKey.placeholder = config.credentialsConfigured
-        ? 'PPQ.ai API key saved (leave blank to keep it)'
-        : 'PPQ.ai API key required';
+        ? `${config.providerLabel || 'Provider'} key saved (leave blank to keep it)`
+        : `${config.providerLabel || 'Provider'} key required`;
     }
     if (bookGuidesApiKeyGroup) bookGuidesApiKeyGroup.hidden = deviceAuth;
     if (bookGuidesDeviceConnection) bookGuidesDeviceConnection.hidden = !deviceAuth;
     if (bookGuidesProviderHint) {
       bookGuidesProviderHint.textContent = deviceAuth
         ? 'Uses your private Codex subscription. Book text and evidence are processed by OpenAI.'
-        : 'Uses PPQ.ai. Book text and evidence leave this server for generation and verification.';
+        : `Uses ${config.providerLabel || 'the configured provider'}. Book text and evidence leave this server for generation and verification.`;
     }
     if (bookGuidesConnectionLabel) bookGuidesConnectionLabel.textContent = config.providerLabel || 'Model provider';
     if (bookGuidesConnectionDetail) {
@@ -1173,7 +1207,7 @@ export function initSettings(options = {}) {
     if (bookGuidesKeyNote) {
       bookGuidesKeyNote.textContent = deviceAuth
         ? 'Xandrio never receives your password or OAuth token. Codex stores and refreshes the connection on this private server.'
-        : 'The API key is write-only. Use a dedicated PPQ.ai key with a strict spending limit. The connection test sends a small paid request.';
+        : `The API key is write-only. Use a dedicated ${config.providerLabel || 'provider'} key with a strict spending limit. The connection test sends a small paid request.`;
     }
     const models = Array.isArray(config.availableModels) ? config.availableModels : [];
     if (models.length) {
@@ -1188,10 +1222,10 @@ export function initSettings(options = {}) {
       }
     }
     if (bookGuidesGeneratorModel) {
-      bookGuidesGeneratorModel.value = (config.providerMatches ? config.generator?.name : '') || (deviceAuth ? 'gpt-5.6-luna' : 'gemini-3.7-flash');
+      bookGuidesGeneratorModel.value = (config.providerMatches ? config.generator?.name : '') || config.defaultGeneratorModel;
     }
     if (bookGuidesVerifierModel) {
-      bookGuidesVerifierModel.value = (config.providerMatches ? config.verifier?.name : '') || (deviceAuth ? 'gpt-5.6-terra' : 'glm-5.2');
+      bookGuidesVerifierModel.value = (config.providerMatches ? config.verifier?.name : '') || config.defaultVerifierModel;
     }
     if (bookGuidesSettingsStatus) {
       bookGuidesSettingsStatus.textContent = config.ready
@@ -1376,7 +1410,7 @@ export function initSettings(options = {}) {
         enabled: bookGuidesEnabled?.checked === true,
         allowUncertified: true,
         externalProcessingAcknowledged,
-        baseUrl: bookGuideConfig.authMode === 'device' ? 'codex://subscription' : 'https://api.ppq.ai',
+        baseUrl: bookGuideConfig.providerBaseUrl,
         ...(apiKey ? { apiKey } : {}),
         generatorModel: bookGuidesGeneratorModel?.value.trim() || '',
         verifierModel: bookGuidesVerifierModel?.value.trim() || ''
@@ -1394,7 +1428,7 @@ export function initSettings(options = {}) {
     if (bookGuideConfig.authMode !== 'device') {
       const confirmed = await confirmSheet({
         title: 'Run a paid connection test?',
-        message: 'This sends a short prompt to PPQ.ai and uses a small amount of API credit.',
+        message: `This sends a short prompt to ${bookGuideConfig.providerLabel || 'the configured provider'} and uses a small amount of API credit.`,
         confirmLabel: 'Run Test'
       });
       if (!confirmed) return;
@@ -1414,7 +1448,7 @@ export function initSettings(options = {}) {
   bookGuidesClear?.addEventListener('click', async () => {
     const confirmed = await confirmSheet({
       title: 'Clear study-guide configuration?',
-      message: 'This removes the saved PPQ.ai key and disables new guide generation. Existing guide artifacts remain available until deleted.',
+      message: `This removes the saved ${bookGuideConfig.providerLabel || 'provider'} key and disables new guide generation. Existing guide artifacts remain available until deleted.`,
       confirmLabel: 'Clear configuration'
     });
     if (!confirmed) return;

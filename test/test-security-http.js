@@ -134,8 +134,10 @@ async function main() {
     test('PWA deployment metadata stays public and identifies the canonical origin', () => {
       assert.strictEqual(deployment.status, 200);
       assert.deepStrictEqual(JSON.parse(deployment.body), {
+        appVersion: require('../package.json').version,
         canonicalOrigin: 'https://reader.example.test',
-        pwaRequiresSecureContext: true
+        pwaRequiresSecureContext: true,
+        appBuild: require('node:fs').readFileSync(require('node:path').join(__dirname, '../public/sw.js'), 'utf8').match(/const CACHE_VERSION = '([^']+)'/)[1]
       });
       assert.strictEqual(deployment.headers['cache-control'], 'no-store');
     });

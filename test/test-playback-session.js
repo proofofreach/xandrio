@@ -366,7 +366,15 @@ function fakeAudio() {
           openBookSource.indexOf('await apiGet(`/api/book/${encodeURIComponent(bookId)}?playback=1`'),
       'opening a book signals foreground priority before waiting for book data'
     );
+    const chapterPlayability = await import(require('url').pathToFileURL(
+      path.join(__dirname, '..', 'public', 'js', 'util', 'chapter-playability.mjs')
+    ).href);
+    const { navigateChapterSelection } = await import(require('url').pathToFileURL(
+      path.join(__dirname, '..', 'public', 'js', 'chapter-navigation.mjs')
+    ).href);
     const appImports = {
+      ...chapterPlayability,
+      navigateChapterSelection,
       apiGet: (...args) => appImports.apiGetImpl(...args),
       getBookPlaybackSettings: async () => ({}),
       syncPlayerHash: (...args) => appImports.syncedPlayerHashes.push(args),
@@ -384,12 +392,17 @@ function fakeAudio() {
         async transitionTo(request) {
           appImports.transitionRequests.push(request);
           if (appImports.transitionGate) await appImports.transitionGate;
+          const failure = appImports.transitionFailure?.(request);
+          if (failure) throw failure;
           return { stale: false };
         }
       }),
       restorePlaybackPosition: async (player, position) => {
         appImports.restoredPositions.push([player, position]);
       },
+      createPlaybackHealth: () => ({ observe() {}, flush() {}, takeReport() { return null; } }),
+      platformClass: () => 'other',
+      sendPlaybackHealthReport: () => {},
       createSmartRewindController: () => ({
         recordPause() {},
         planResume() { return null; },
@@ -485,8 +498,10 @@ function fakeAudio() {
         recordPlaybackEvent,
         playbackEvents() { return playbackEventLedger.slice(); },
         handleChapterEnd,
+        changeChapter,
         handleContinuousChapterTransition,
         currentChapter() { return currentChapter; },
+        chapters() { return chapters; },
         skip,
         estimateChapterPlaybackDuration,
         togglePlayPause,
@@ -1398,53 +1413,134 @@ function fakeAudio() {
         'the next chapter is the resume position after a chapter-limit stop'
       );
 
-      // A server restart outlasts both automatic attempts. Recovery waits for
-      // the server instead of parking on a manual prompt, then retries.
-      globalThis.__playbackAppHarness.cancelPlaybackRecovery();
-      appImports.pendingTimeouts.length = 0;
-      appImports.transitionRequests.length = 0;
-      appImports.resumePromptStates.length = 0;
-      appImports.healthProbes.length = 0;
-      const restartPlayer = engine('server-restart', { backend: 'audio-stream' });
-      restartPlayer.isContinuous = true;
-      restartPlayer.getCurrentTime = () => 42;
-      globalThis.__playbackAppHarness.configure({
-        book: { id: 'book-a' },
-        chapters: [{ title: 'One' }, { title: 'Two' }],
-        player: restartPlayer,
-        chapter: uiElement
-      });
-      const restartError = Object.assign(new Error('stream died'), { code: 'MEDIA_STALLED', recoverable: true, chapterTime: 42 });
-      const settle = async () => {
-        for (let index = 0; index < 6; index++) await new Promise(resolve => setImmediate(resolve));
-      };
-      const runTimer = async delay => {
-        const pending = appImports.pendingTimeouts.find(entry => !entry.cancelled && entry.delay === delay);
-        assert(pending, `expected a pending ${delay}ms timer`);
-        pending.cancelled = true;
-        await pending.callback();
+      {
+        // A server restart outlasts both automatic attempts. Recovery waits for
+        // the server instead of parking on a manual prompt, then retries.
+        globalThis.__playbackAppHarness.cancelPlaybackRecovery();
+        appImports.pendingTimeouts.length = 0;
+        appImports.transitionRequests.length = 0;
+        appImports.resumePromptStates.length = 0;
+        appImports.healthProbes.length = 0;
+        const restartPlayer = engine('server-restart', { backend: 'audio-stream' });
+        restartPlayer.isContinuous = true;
+        restartPlayer.getCurrentTime = () => 42;
+        globalThis.__playbackAppHarness.configure({
+          book: { id: 'book-a' },
+          chapters: [{ title: 'One' }, { title: 'Two' }],
+          player: restartPlayer,
+          chapter: uiElement
+        });
+        const restartError = Object.assign(new Error('stream died'), { code: 'MEDIA_STALLED', recoverable: true, chapterTime: 42 });
+        const settle = async () => {
+          for (let index = 0; index < 6; index++) await new Promise(resolve => setImmediate(resolve));
+        };
+        const runTimer = async delay => {
+          const pending = appImports.pendingTimeouts.find(entry => !entry.cancelled && entry.delay === delay);
+          assert(pending, `expected a pending ${delay}ms timer`);
+          pending.cancelled = true;
+          await pending.callback();
+          await settle();
+        };
+        appImports.serverDown = true;
+        globalThis.__playbackAppHarness.handleChunkError(restartError);
+        await runTimer(250);
+        globalThis.__playbackAppHarness.handleChunkError(restartError);
+        await runTimer(500);
+        globalThis.__playbackAppHarness.handleChunkError(restartError);
         await settle();
-      };
-      appImports.serverDown = true;
-      globalThis.__playbackAppHarness.handleChunkError(restartError);
-      await runTimer(250);
-      globalThis.__playbackAppHarness.handleChunkError(restartError);
-      await runTimer(500);
-      globalThis.__playbackAppHarness.handleChunkError(restartError);
+        const attemptsWhileDown = appImports.transitionRequests.length;
+        assert(appImports.healthProbes.includes('/health'), 'a spent budget probes server reachability');
+        assert(!appImports.resumePromptStates.includes(true), 'an unreachable server does not park on a manual prompt');
+        await runTimer(1000);
+        assert.strictEqual(appImports.transitionRequests.length, attemptsWhileDown, 'no load is attempted while the server is down');
+        appImports.serverDown = false;
+        await runTimer(2000);
+        await runTimer(250);
+        assert(appImports.transitionRequests.length > attemptsWhileDown, 'recovery retries once the server answers again');
+        assert(
+          appImports.transitionRequests.slice(attemptsWhileDown).every(request => request.sourceTuple?.startOffsetSeconds === 42),
+          'the retry resumes at the captured position'
+        );
+      }
+
+      // Production 2026-10-18: chapter 12 was a section divider and the
+      // client asked the server to narrate it. Every chapter-selection path
+      // must step over sections without narration.
+      const settle = async () => { for (let i = 0; i < 12; i++) await new Promise(resolve => setImmediate(resolve)); };
+      const dividerChapters = () => [
+        { title: 'Chapter 11', type: 'chapter', text: 'Chapter eleven has narration.' },
+        { title: 'Part 2', type: 'divider', empty: true, text: 'Part 2 \nSEX' },
+        { title: 'Chapter 12', type: 'chapter', text: 'Chapter twelve has narration.' },
+        { title: 'Chapter 13', type: 'chapter', text: 'Chapter thirteen has narration.' }
+      ];
+      const requestedChapters = () => appImports.transitionRequests.map(request => request.chapterIndex);
+      const dividerPlayer = engine('finite-divider', { backend: 'single-file' });
+      dividerPlayer.bookId = 'book-divider';
+      appImports.sleepTarget = false;
+
+      globalThis.__playbackAppHarness.configure({
+        book: { id: 'book-divider' }, chapters: dividerChapters(), player: dividerPlayer, chapter: uiElement, chapterIndex: 0
+      });
+      appImports.transitionRequests.length = 0;
+      await globalThis.__playbackAppHarness.handleChapterEnd({});
       await settle();
-      const attemptsWhileDown = appImports.transitionRequests.length;
-      assert(appImports.healthProbes.includes('/health'), 'a spent budget probes server reachability');
-      assert(!appImports.resumePromptStates.includes(true), 'an unreachable server does not park on a manual prompt');
-      await runTimer(1000);
-      assert.strictEqual(appImports.transitionRequests.length, attemptsWhileDown, 'no load is attempted while the server is down');
-      appImports.serverDown = false;
-      await runTimer(2000);
-      await runTimer(250);
-      assert(appImports.transitionRequests.length > attemptsWhileDown, 'recovery retries once the server answers again');
-      assert(
-        appImports.transitionRequests.slice(attemptsWhileDown).every(request => request.sourceTuple?.startOffsetSeconds === 42),
-        'the retry resumes at the captured position'
-      );
+      assert.deepStrictEqual(requestedChapters(), [2], 'chapter-end auto-advance skips the divider');
+
+      for (const [from, direction, expected] of [[0, 1, 2], [2, -1, 0]]) {
+        globalThis.__playbackAppHarness.configure({
+          book: { id: 'book-divider' }, chapters: dividerChapters(), player: dividerPlayer, chapter: uiElement, chapterIndex: from
+        });
+        appImports.transitionRequests.length = 0;
+        globalThis.__playbackAppHarness.changeChapter(direction);
+        await settle();
+        assert.deepStrictEqual(requestedChapters(), [expected],
+          `${direction > 0 ? 'next' : 'previous'} (buttons and lock-screen track controls) skips the divider`);
+      }
+
+      globalThis.__playbackAppHarness.configure({
+        book: { id: 'book-divider' }, chapters: dividerChapters(), player: dividerPlayer, chapter: uiElement, chapterIndex: 1
+      });
+      appImports.transitionRequests.length = 0;
+      await globalThis.__playbackAppHarness.loadRestoredChapter(1, { chapterIndex: 1, timestamp: 30 });
+      assert.deepStrictEqual(requestedChapters(), [2], 'a saved position on the divider resumes at the next chapter');
+      assert.strictEqual(appImports.transitionRequests[0].sourceTuple.startOffsetSeconds, undefined,
+        'the redirected chapter starts from its beginning');
+
+      globalThis.__playbackAppHarness.configure({
+        book: { id: 'book-divider' }, chapters: dividerChapters(), player: dividerPlayer, chapter: uiElement, chapterIndex: 0
+      });
+      appImports.transitionRequests.length = 0;
+      await globalThis.__playbackAppHarness.loadChapter(1, { reason: 'automatic-recovery', sourceTuple: { startOffsetSeconds: 5 } });
+      assert.deepStrictEqual(requestedChapters(), [2], 'any direct load of the divider is redirected');
+
+      // Text that looks playable but the server cannot speak: the typed
+      // result moves playback on instead of surfacing an error.
+      const overlaysBefore = appImports.overlays.length;
+      globalThis.__playbackAppHarness.configure({
+        book: { id: 'book-divider' }, chapters: dividerChapters(), player: dividerPlayer, chapter: uiElement, chapterIndex: 0
+      });
+      appImports.transitionRequests.length = 0;
+      appImports.transitionFailure = request => request.chapterIndex === 2
+        ? Object.assign(new Error('This section has no narration'), {
+          name: 'ChapterUnplayableError', code: 'CHAPTER_UNSPEAKABLE', unplayable: true, chapterIndex: 2, nextPlayableChapterIndex: 3
+        })
+        : null;
+      try {
+        const skipped = await globalThis.__playbackAppHarness.loadChapter(2, { commitImmediately: true });
+        assert.strictEqual(skipped.loaded, true);
+        assert.deepStrictEqual(requestedChapters(), [2, 3], 'a server-reported unplayable chapter advances once');
+        globalThis.__playbackAppHarness.handleChunkError(Object.assign(new Error('x'), { unplayable: true }));
+        assert.strictEqual(appImports.overlays.length, overlaysBefore, 'no error overlay for an unplayable section');
+        appImports.transitionRequests.length = 0;
+        globalThis.__playbackAppHarness.configure({
+          book: { id: 'book-divider' }, chapters: globalThis.__playbackAppHarness.chapters(), player: dividerPlayer, chapter: uiElement, chapterIndex: 0
+        });
+        globalThis.__playbackAppHarness.changeChapter(1);
+        await settle();
+        assert.deepStrictEqual(requestedChapters(), [3], 'the server verdict is remembered for later navigation');
+      } finally {
+        appImports.transitionFailure = null;
+      }
     } finally {
       process.removeListener('unhandledRejection', onUnhandled);
       console.warn = originalWarn;

@@ -202,30 +202,23 @@ function fakeResponse() {
   assertEqual(invalidationOrder.slice(0, 3).join(','), 'before,files,after', 'running jobs can be cancelled before files are deleted');
 
   console.log('\n━━━ Route registration and validation ━━━');
-  const routes = {};
-  const app = {
-    get(routePath, handler) { routes[`GET ${routePath}`] = handler; },
-    post(routePath, handler) { routes[`POST ${routePath}`] = handler; },
-    put(routePath, handler) { routes[`PUT ${routePath}`] = handler; },
-    delete(routePath, handler) { routes[`DELETE ${routePath}`] = handler; }
-  };
+  const app = require('express')();
+  app.use(require('express').json());
+  app.use((req, _res, next) => { req.user = { id: 'fixture-admin', role: 'admin' }; next(); });
   registerPronunciationRoutes(app, { pronunciationService: service });
-  assertEqual(Object.keys(routes).length, 4, 'CRUD pronunciation routes register');
-
-  const badResponse = fakeResponse();
-  await routes['POST /api/pronunciations'](
-    { body: { scope: 'book', bookId: '../escape', source: 'x', replacement: 'y' }, query: {} },
-    badResponse
-  );
-  assertEqual(badResponse.statusCode, 400, 'routes reject unsafe book identifiers');
-
-  const createResponse = fakeResponse();
-  await routes['POST /api/pronunciations'](
-    { body: { scope: 'book', bookId: 'beta', source: 'relevant', replacement: 'REL-uh-vunt' }, query: {} },
-    createResponse
-  );
-  assertEqual(createResponse.statusCode, 201, 'route creates a book pronunciation rule');
-  assert(createResponse.body.success && createResponse.body.rule.id, 'route returns created rule and impact');
+  assertEqual(app.router.stack.filter(layer => layer.route).length, 4, 'CRUD pronunciation routes register');
+  const server = await new Promise(resolve => { const instance = app.listen(0, '127.0.0.1', () => resolve(instance)); });
+  try {
+    const url = `http://127.0.0.1:${server.address().port}/api/pronunciations`;
+    const post = body => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const badResponse = await post({ scope: 'book', bookId: '../escape', source: 'x', replacement: 'y' });
+    assertEqual(badResponse.status, 400, 'routes reject unsafe book identifiers');
+    const createResponse = await post({ scope: 'book', bookId: 'beta', source: 'relevant', replacement: 'REL-uh-vunt' });
+    assertEqual(createResponse.status, 201, 'route creates a book pronunciation rule');
+    const body = await createResponse.json();
+    assert(body.success && body.rule.id, 'route returns created rule and impact');
+    assertEqual(createResponse.headers.get('ratelimit-policy'), '60;w=60', 'mutation routes advertise their rate limit');
+  } finally { await new Promise(resolve => server.close(resolve)); }
 
   const failingRoutes = {};
   registerPronunciationRoutes({
