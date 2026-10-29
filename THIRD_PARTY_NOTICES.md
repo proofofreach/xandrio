@@ -109,12 +109,11 @@ This file is generated from the locked installed Node dependency tree by `npm ru
 | bindings | 1.5.0 | MIT | git://github.com/TooTallNate/node-bindings.git |
 | bl | 4.1.0 | MIT | https://github.com/rvagg/bl.git |
 | bn.js | 4.12.5 | MIT | git@github.com:indutny/bn.js |
-| body-parser | 2.3.0 | MIT | expressjs/body-parser |
+| body-parser | 2.4.0 | MIT | expressjs/body-parser |
 | brace-expansion | 1.1.18 | MIT | git://github.com/juliangruber/brace-expansion.git |
 | braces | 3.0.3 | MIT | micromatch/braces |
 | buffer | 5.7.1 | MIT | git://github.com/feross/buffer.git |
 | buffer-equal-constant-time | 1.0.1 | BSD-3-Clause | git@github.com:goinstant/buffer-equal-constant-time.git |
-| buffer-from | 1.1.2 | MIT | LinusU/buffer-from |
 | busboy | 1.6.0 | MIT | http://github.com/mscdex/busboy.git |
 | bytes | 3.1.2 | MIT | visionmedia/bytes.js |
 | cacache | 19.0.1 | ISC | https://github.com/npm/cacache.git |
@@ -131,11 +130,10 @@ This file is generated from the locked installed Node dependency tree by `npm ru
 | commander | 14.0.3 | MIT | https://github.com/tj/commander.js.git |
 | commander | 2.20.3 | MIT | https://github.com/tj/commander.js.git |
 | concat-map | 0.0.1 | MIT | git://github.com/substack/node-concat-map.git |
-| concat-stream | 2.0.0 | MIT | http://github.com/maxogden/concat-stream.git |
 | content-disposition | 1.1.0 | MIT | jshttp/content-disposition |
 | content-type | 1.0.5 | MIT | jshttp/content-type |
 | content-type | 2.0.0 | MIT | jshttp/content-type |
-| content-type | 2.0.0 | MIT | jshttp/content-type |
+| content-type | 2.1.0 | MIT | jshttp/content-type |
 | cookie | 0.7.2 | MIT | jshttp/cookie |
 | cookie-signature | 1.2.2 | MIT | https://github.com/visionmedia/node-cookie-signature.git |
 | core-util-is | 1.0.3 | MIT | git://github.com/isaacs/core-util-is |
@@ -298,7 +296,7 @@ This file is generated from the locked installed Node dependency tree by `npm ru
 | mkdirp-classic | 0.5.3 | MIT | https://github.com/mafintosh/mkdirp-classic.git |
 | moo | 0.5.3 | BSD-3-Clause | https://github.com/tjvr/moo.git |
 | ms | 2.1.3 | MIT | vercel/ms |
-| multer | 2.3.0 | MIT | https://github.com/expressjs/multer.git |
+| multer | 2.5.0 | MIT | https://github.com/expressjs/multer.git |
 | nan | 2.22.2 | MIT | git://github.com/nodejs/nan.git |
 | napi-build-utils | 2.0.0 | MIT | https://github.com/inspiredware/napi-build-utils.git |
 | nearley | 2.20.1 | MIT | https://github.com/hardmath123/nearley.git |
@@ -346,14 +344,13 @@ This file is generated from the locked installed Node dependency tree by `npm ru
 | puppeteer-extra-plugin-stealth | 2.11.2 | MIT | berstend/puppeteer-extra |
 | puppeteer-extra-plugin-user-data-dir | 2.3.3 | MIT | berstend/puppeteer-extra |
 | puppeteer-extra-plugin-user-preferences | 2.3.3 | MIT | berstend/puppeteer-extra |
-| qs | 6.15.3 | BSD-3-Clause | https://github.com/ljharb/qs.git |
+| qs | 6.16.1 | BSD-3-Clause | https://github.com/ljharb/qs.git |
 | railroad-diagrams | 1.0.0 | CC0-1.0 | https://github.com/tabatkins/railroad-diagrams.git |
 | randexp | 0.4.6 | MIT | git://github.com/fent/randexp.js.git |
 | range-parser | 1.3.0 | MIT | jshttp/range-parser |
 | raw-body | 3.0.2 | MIT | stream-utils/raw-body |
 | rc | 1.2.8 | (BSD-2-Clause OR MIT OR Apache-2.0) | https://github.com/dominictarr/rc.git |
 | readable-stream | 2.3.8 | MIT | git://github.com/nodejs/readable-stream |
-| readable-stream | 3.6.2 | MIT | git://github.com/nodejs/readable-stream |
 | readable-stream | 3.6.2 | MIT | git://github.com/nodejs/readable-stream |
 | readable-stream | 3.6.2 | MIT | git://github.com/nodejs/readable-stream |
 | readdirp | 3.6.0 | MIT | git://github.com/paulmillr/readdirp.git |
@@ -418,11 +415,10 @@ This file is generated from the locked installed Node dependency tree by `npm ru
 | type-is | 1.6.18 | MIT | jshttp/type-is |
 | type-is | 2.1.0 | MIT | jshttp/type-is |
 | type-is | 2.1.0 | MIT | jshttp/type-is |
-| typedarray | 0.0.6 | MIT | git://github.com/substack/typedarray.git |
 | typescript | 5.9.3 | Apache-2.0 | https://github.com/microsoft/TypeScript.git |
 | undefsafe | 2.0.5 | MIT | https://github.com/remy/undefsafe.git |
-| undici | 7.29.1 | MIT | https://github.com/nodejs/undici.git |
-| undici | 8.11.2 | MIT | https://github.com/nodejs/undici.git |
+| undici | 7.30.1 | MIT | https://github.com/nodejs/undici.git |
+| undici | 8.12.3 | MIT | https://github.com/nodejs/undici.git |
 | unique-filename | 4.0.0 | ISC | https://github.com/npm/unique-filename.git |
 | unique-slug | 5.0.0 | ISC | https://github.com/npm/unique-slug.git |
 | universalify | 2.0.1 | MIT | https://github.com/RyanZim/universalify.git |
@@ -450,6 +446,7 @@ This file is generated from the locked installed Node dependency tree by `npm ru
 | yargs | 17.7.2 | MIT | https://github.com/yargs/yargs.git |
 | yargs-parser | 21.1.1 | ISC | https://github.com/yargs/yargs-parser.git |
 | zod | 3.25.76 | MIT | https://github.com/colinhacks/zod.git |
+| zod | 4.6.6 | MIT | https://github.com/colinhacks/zod.git |
 
 ## Bundled and optional assets
 

@@ -70,6 +70,104 @@ Kokoro-specific follow-up benchmark, warm server, 1 iteration per sample:
 - Configurable Kokoro server host/port, response format, preloaded voices, and torch thread count.
 - Queue-level output-path deduplication so repeated prepare/playback calls do not regenerate the same chunk.
 
+## Playback and app responsiveness (2026-10-29)
+
+The playback changes keep the continuous online transport, native iOS HLS,
+single audio element, scoped offline storage, and existing worker activation
+rules. They target waiting and repeated work in the current implementation.
+
+### Implemented behavior
+
+- The service worker serves an installed shell from its own complete versioned
+  cache immediately. Ordinary requests do not overwrite individual cached
+  modules. A warm boot checks for an already waiting worker locally, activates
+  only during the idle boot window when no other client blocks it, and reloads
+  after activation. Otherwise the update check runs in the background.
+- Deployment and authentication reads overlap and have three-second foreground
+  budgets. Local client settings are available before the background profile
+  refresh finishes. These are explicit read budgets; uploads and generation
+  requests keep their existing behavior.
+- Book metadata, saved position, and per-book settings reads begin together.
+  Superseding an open aborts its reads. Metadata can fall back to a valid,
+  account-scoped offline snapshot after 1.5 seconds; a network-only book gets
+  six seconds. Position and settings reads have 1.5-second budgets. An observed
+  401, 403, or 404 remains authoritative. A late response cannot seek a newer
+  playback session.
+- `GET /api/book/:id?playback=1` returns short chapter previews plus full text
+  lengths. The default response still includes full chapter text. Pronunciation
+  repair fetches a bounded excerpt on demand and requires both stored and
+  extracted chapter structure identities to match the request.
+- Finalized local chapter inputs seek before decoding, with one second of
+  decoder preroll. Logical skipped PCM remains included in chapter duration
+  accounting. Offsets at or beyond EOF use the conservative decode path when
+  needed so they cannot consume the following chapter's audio.
+- Continuous streams skip empty or unspeakable structural entries, preserving
+  canonical chapter indexes and zero durations for those entries. Trailing
+  structural entries no longer leave a timeline unfinished.
+- HLS playlist refreshes retain identity/access checks and reuse the admitted
+  session. The expensive readiness/seek gate runs for a new or replacement
+  session. Session retention during request-silent iOS playback is unchanged.
+- Completed, fully mapped timelines stop polling. Incomplete paused timelines
+  back off and refresh on play. Downloaded/finite next-chapter prewarming uses
+  remaining wall-clock time at the selected playback rate.
+- Each library render or row refresh reads one current offline manifest
+  snapshot. The next refresh reads a new snapshot so deletions and account
+  changes remain visible.
+- Queue status requests cannot overlap, abort on disposal, have a ten-second
+  deadline, and use a thirty-second cadence when idle, failed, or paused.
+  Queue-only preparation status returns marked estimates while duration probes
+  are unresolved; exact callers still await the shared measurements. Cache keys
+  retain audio path, file size, and modification time.
+- The existing browser playback ledger records a per-intent attempt ID and
+  elapsed time from explicit Play/Resume through metadata, source assignment,
+  native `playing`, and first advancing playhead. The last milestone stays in
+  memory; it does not add synchronous storage writes to `timeupdate`. These
+  events describe browser progress, not verified speaker audibility.
+
+### Measured seek result
+
+On the development Linux environment with Node 24 and ffmpeg, seeking to 1,700
+seconds in a synthetic 30-minute, 24 kHz mono, 160 kbps MP3 produced these
+first-useful-PCM times across three trials:
+
+| Decode path | Trials | Median |
+| --- | --- | ---: |
+| Decode and discard the full prefix | 3,375 / 3,492 / 3,640 ms | 3,492 ms |
+| Input seek with one-second preroll | 85 / 79 / 94 ms | 85 ms |
+
+Both paths emitted 4,800,000 PCM bytes and accounted for 81,600,000 skipped
+bytes. This is an isolated decoder result, not a measured 41x improvement in
+end-to-end app startup. The regression suite also compares decoded PCM content
+for MP3 and WAV at fractional, middle, near-end, EOF, and beyond-EOF positions.
+
+### Focused verification
+
+```bash
+node test/test-finalized-audio-seek.js
+node test/test-playback-orchestrator.js
+node test/test-progressive-audio-stream.js
+node test/test-foreground-read-bounds.js
+node test/test-book-open-commit.js
+node test/test-playback-book-metadata.js
+node test/test-library-offline-snapshot.js
+node test/test-preparation-status-cached-duration.js
+node test/test-single-file-player.js
+node test/test-queue-status.js
+node test/test-service-worker-media-routing.js
+node test/test-app-shell-versions.js
+```
+
+Device-level acceptance still needs installed iOS testing: cold/warm launch,
+slow or interrupted connectivity, downloaded playback, 1x/2x/3x transitions,
+locked-screen continuation, and a waiting worker update with another window
+open. Use the intent ledger to compare first-playing and first-playhead times
+separately from server encoding timings.
+
+Optional-view bundling, smaller logo assets, shared encoded transport
+derivatives, delivery bitrate changes, GPU/CPU scheduler separation, and
+speculative production limits remain separate measured follow-ups. They are
+not prerequisites for these waiting, correctness, and polling fixes.
+
 ## PDF extraction benchmark
 
 Run PDF quality checks before spending TTS time:

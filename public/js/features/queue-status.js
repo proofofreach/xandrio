@@ -142,7 +142,11 @@ function activityStateLabel(book) {
     const states = { userPaused: 'Paused', generating: 'Preparing', paused: 'Waiting for playback',
       engineOffline: 'Narration service offline', error: 'Preparation stopped', idle: 'Not preparing', ready: 'Prepared' };
     const seconds = Math.max(0, Number(book.readyAudioSeconds) || 0);
-    const buffer = seconds >= 60 ? `${Math.floor(seconds / 60)} min ready at 1×` : seconds > 0 ? 'Under 1 min ready at 1×' : 'No audio ready from the preparation start';
+    const buffer = seconds >= 60
+      ? `${book.durationEstimated ? '~' : ''}${Math.floor(seconds / 60)} min ready at 1×`
+      : seconds > 0
+        ? `${book.durationEstimated ? '~<1' : 'Under 1'} min ready at 1×`
+        : book.durationEstimated ? 'Ready audio duration unavailable' : 'No audio ready from the preparation start';
     return `${book.narratorName || 'Book narrator'} · ${states[book.preparationStatus] || 'Preparing'} · ${buffer}`;
   }
   if (book.failed) {
@@ -339,7 +343,7 @@ async function moveQueueBook(bookId, direction) {
     // Put the list back the way the server sees it rather than leaving a
     // rearrangement on screen that never happened.
     activityStructureKey = '';
-    await pollQueueStatus();
+    await refreshQueueAfterChange();
     if (error?.status !== 409) {
       showToast(error?.message || 'Could not reorder audio preparation', 'error');
     }
@@ -352,7 +356,7 @@ async function retryFailedAudio(bookId, chapterIndex) {
       `/api/chunks/${encodeURIComponent(bookId)}/${chapterIndex}/prepare-chapter-audio`,
       { purpose: 'import-warmup' }
     );
-    await pollQueueStatus();
+    await refreshQueueAfterChange();
   } catch (error) {
     showToast(error?.message || 'Could not retry audio preparation', 'error');
   }
@@ -415,37 +419,67 @@ function renderQueueStatus(status) {
   if (activitySheetEl?.classList.contains('active')) renderActivityDetails(currentStatus);
 }
 
+// A mutation may finish while an older status request is in flight. Wait for
+// that response before fetching the server's post-mutation state.
+async function refreshQueueAfterChange(scope = pollScope) {
+  if (scope?.queueRequest) await scope.queueRequest;
+  if (scope === pollScope && !scope?.closed) await pollQueueStatus(scope);
+}
+
 async function pollQueueStatus(scope = pollScope) {
   // A badge nobody can see is not worth a request. The visibilitychange
   // listener below polls immediately on return, so nothing is stale by the
   // time it matters.
-  if (document.hidden) return;
-  try {
-    const status = await apiGet('/api/queue/status');
-    if (scope !== pollScope || scope?.closed) return;
-    renderQueueStatus(status);
-    queueStatusEl?.removeAttribute?.('data-stale');
-    // The library states narration preparation per book from this same
-    // poll ("Preparing 46%", "Narration failed"), so it costs no request.
-    if (typeof CustomEvent === 'function') {
-      document.dispatchEvent?.(new CustomEvent('xandrio:audioactivity', {
-        detail: { books: Array.isArray(status?.books) ? status.books : [] }
-      }));
-    }
-  } catch {
-    if (scope !== pollScope || scope?.closed) return;
-    // A failed poll says nothing about the work that was already visible. In
-    // particular, replacing it with an empty queue falsely announces success
-    // and closes the detail sheet while preparation may still be running.
-    if (queueStatusEl && !queueStatusEl.hidden) {
-      queueStatusEl.setAttribute('data-stale', 'true');
-      queueStatusEl.setAttribute('aria-label', 'Audio preparation status unavailable. Reconnecting.');
-      queueStatusEl.title = 'Audio preparation status unavailable. Reconnecting.';
-      if (activitySheetEl?.classList.contains('active') && activitySummaryEl) {
-        activitySummaryEl.textContent = 'Connection interrupted. Showing the last known audio preparation status.';
+  if (document.hidden || !scope || scope.closed || scope !== pollScope) return;
+  if (scope.queueRequest) return scope.queueRequest;
+  const controller = new AbortController();
+  scope.queueController = controller;
+  const request = (async () => {
+    let deadline;
+    let onAbort;
+    try {
+      const timeout = new Promise((_, reject) => {
+        onAbort = () => reject(new Error('Queue status cancelled'));
+        controller.signal.addEventListener('abort', onAbort, { once: true });
+        deadline = setTimeout(() => controller.abort(), 10000);
+      });
+      const status = await Promise.race([apiGet('/api/queue/status', { signal: controller.signal }), timeout]);
+      if (scope !== pollScope || scope.closed || controller.signal.aborted) return;
+      renderQueueStatus(status);
+      queueStatusEl?.removeAttribute?.('data-stale');
+      // The library states narration preparation per book from this same
+      // poll ("Preparing 46%", "Narration failed"), so it costs no request.
+      if (typeof CustomEvent === 'function') {
+        document.dispatchEvent?.(new CustomEvent('xandrio:audioactivity', {
+          detail: { books: Array.isArray(status?.books) ? status.books : [] }
+        }));
       }
+    } catch {
+      if (scope !== pollScope || scope?.closed) return;
+      // A failed poll says nothing about the work that was already visible. In
+      // particular, replacing it with an empty queue falsely announces success
+      // and closes the detail sheet while preparation may still be running.
+      if (queueStatusEl && !queueStatusEl.hidden) {
+        queueStatusEl.setAttribute('data-stale', 'true');
+        queueStatusEl.setAttribute('aria-label', 'Audio preparation status unavailable. Reconnecting.');
+        queueStatusEl.title = 'Audio preparation status unavailable. Reconnecting.';
+        if (activitySheetEl?.classList.contains('active') && activitySummaryEl) {
+          activitySummaryEl.textContent = 'Connection interrupted. Showing the last known audio preparation status.';
+        }
+      }
+    } finally {
+      clearTimeout(deadline);
+      controller.signal.removeEventListener('abort', onAbort);
+      if (scope.queueController === controller) scope.queueController = null;
+      if (scope.queueRequest === request) scope.queueRequest = null;
+      const active = Number(currentServerStatus.active) > 0 || Number(currentServerStatus.queued) > 0
+        || currentServerStatus.books.some(book => book.preparationStatus === 'generating'
+          || Number(book.active) > 0 || Number(book.queued) > 0);
+      scope.nextQueuePoll = Date.now() + (active ? scope.queueInterval : Math.max(scope.queueInterval, 30000));
     }
-  }
+  })();
+  scope.queueRequest = request;
+  return request;
 }
 
 function ensureActivitySheetController() {
@@ -493,6 +527,9 @@ export function initQueueStatus(options = {}) {
   const intervalMs = Math.max(2000, Number(options.intervalMs || 4000));
   const scope = new DisposableScope();
   pollScope = scope;
+  scope.queueInterval = intervalMs;
+  scope.nextQueuePoll = 0;
+  scope.add(() => scope.queueController?.abort());
   scope.listen(queueStatusEl, 'click', () => activitySheetController?.open());
   scope.listen(document, 'xandrio:downloadactivity', event => {
     const hadActiveDownload = currentDownloads.length > 0;
@@ -512,7 +549,7 @@ export function initQueueStatus(options = {}) {
       preparationButton.disabled = true;
       const { narrationBook, narrationAction } = preparationButton.dataset;
       apiSend('POST', `/api/premium-prep/${encodeURIComponent(narrationBook)}/${narrationAction}`, {})
-        .then(() => pollQueueStatus(scope))
+        .then(() => refreshQueueAfterChange(scope))
         .catch(error => showToast(`Preparation could not change: ${error.message}`, 'error'))
         .finally(() => { preparationButton.disabled = false; });
       return;
@@ -539,7 +576,9 @@ export function initQueueStatus(options = {}) {
     }));
   });
   pollQueueStatus(scope);
-  scope.interval(() => pollQueueStatus(scope), intervalMs, window);
+  scope.interval(() => {
+    if (Date.now() >= scope.nextQueuePoll) void pollQueueStatus(scope);
+  }, intervalMs, window);
   scope.listen(document, 'visibilitychange', () => {
     if (!document.hidden) pollQueueStatus(scope);
   });

@@ -128,13 +128,13 @@
     "@lingo-reader/mobi-parser": "^0.4.6",
     "@nodable/entities": "3.0.0",
     "ai": "7.0.105",
-    "body-parser": "2.3.0",
+    "body-parser": "2.4.0",
     "cors": "^2.8.5",
     "epub": "2.1.1",
     "express": "5.2.1",
     "express-rate-limit": "8.6.2",
     "https-proxy-agent": "^9.1.0",
-    "multer": "2.3.0",
+    "multer": "2.5.0",
     "node-edge-tts": "1.2.10",
     "pdf-parse": "^2.4.5",
     "pdfjs-dist": "6.2.108",
@@ -143,8 +143,9 @@
     "puppeteer-extra-plugin-stealth": "^2.11.2",
     "puppeteer-extra-plugin-user-data-dir": "2.3.3",
     "puppeteer-extra-plugin-user-preferences": "2.3.3",
-    "undici": "8.11.2",
-    "web-push": "3.6.7"
+    "undici": "8.12.3",
+    "web-push": "3.6.7",
+    "zod": "4.6.6"
   },
   "devDependencies": {
     "@cyclonedx/cyclonedx-npm": "6.0.1",
@@ -154,7 +155,7 @@
   },
   "overrides": {
     "ws": "8.21.0",
-    "qs": "6.15.3",
+    "qs": "6.16.1",
     "brace-expansion": "1.1.18",
     "minimatch": "3.1.4",
     "puppeteer-extra-plugin-user-data-dir": "2.3.3",
