@@ -122,6 +122,23 @@ function wavTone(seconds, frequency = 440) {
     assert(!stored.includes('book_e2e'), 'the stored aggregate has no book identifier');
     passed++;
     console.log('PASS the server stores only the aggregate');
+    const abandonment = await page.evaluate(async () => {
+      const { createPlaybackHealth } = await import('/js/playback-health.mjs');
+      let time = 0;
+      const health = createPlaybackHealth({ now: () => time });
+      health.observe({ type: 'play-intent' });
+      time = 10000;
+      health.observe({ type: 'visibilitychange', visibility: 'hidden' });
+      const background = health.flush();
+      time = 15000;
+      health.observe({ type: 'pagehide' });
+      return { background, exit: health.flush(), repeated: health.flush() };
+    });
+    assert.equal(abandonment.background, null, 'backgrounding preserves a pending startup');
+    assert.deepEqual(abandonment.exit?.abandonedStartMs, [15000], 'page exit records the entire pending wait');
+    assert.equal(abandonment.repeated, null, 'page exit reports abandonment once');
+    passed++;
+    console.log('PASS page exit records abandoned startup while backgrounding preserves it');
     console.log(`\n${passed} passed, 0 failed`);
   } catch (error) {
     console.error(error);

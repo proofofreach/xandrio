@@ -2293,7 +2293,7 @@ async function loadRestoredChapter(savedIndex, savedPosition) {
   }
   // Finite/local sources still need an ordinary seek. Continuous transports
   // opened at startOffsetSeconds map this saved chapter time to stream time 0.
-  await restorePlaybackPosition(chunkPlayer, position);
+  await restorePlaybackPosition(chunkPlayer, currentChapter === index ? position : null);
   return loaded;
 }
 

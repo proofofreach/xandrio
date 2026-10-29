@@ -72,8 +72,8 @@ export function createPlaybackHealth({
     if (type === 'play-intent') {
       // The listener asked for audio. Startup runs until it is heard.
       if (playingSince === null && pendingStartAt === null && stallStartedAt === null) pendingStartAt = at;
-    } else if (type === 'pause-intent') {
-      // The listener stopped asking. A start they gave up on is its own
+    } else if (type === 'pause-intent' || type === 'pagehide') {
+      // The listener stopped asking or left the page. A start they gave up on is its own
       // sample, so slow starts are not hidden by listeners who stop waiting.
       stopListening(at);
       endStall(at);

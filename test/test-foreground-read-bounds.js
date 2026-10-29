@@ -204,7 +204,7 @@ function workerHarness({ waiting = false, activate = true, getRegistration = nul
     let seeks = 0;
     const context = {
       currentBook: { id: 'book' }, openBookToken: 1, loadChapterToken: 0,
-      playableChapterAt: index => index,
+      playableChapterAt: index => index, currentChapter: 0,
       chunkPlayer: {}, loadChapter() { context.loadChapterToken++; return load.promise; },
       restorePlaybackPosition: async () => { seeks++; }
     };
@@ -222,7 +222,7 @@ function workerHarness({ waiting = false, activate = true, getRegistration = nul
     let seeks = 0;
     const context = {
       currentBook: { id: 'book' }, openBookToken: 1, loadChapterToken: 0,
-      playableChapterAt: index => index,
+      playableChapterAt: index => index, currentChapter: 0,
       chunkPlayer: {}, loadChapter() { context.loadChapterToken++; return load.promise; },
       restorePlaybackPosition: async () => { seeks++; }
     };
