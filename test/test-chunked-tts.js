@@ -122,6 +122,28 @@ class MockQueue extends EventEmitter {
 section('1. Text splitting');
 
 (() => {
+  // Planning is synchronous and slow on long chapters; repeated requests for
+  // the same chapter must reuse one plan without sharing mutable results.
+  const text = Array.from({ length: 40 }, (_v, i) => `Plan cache paragraph ${i} has a few sentences. It keeps going here.`).join('\n\n');
+  const tts = new ChunkedTTS('/tmp/test-cache');
+  let plans = 0;
+  const plan = tts._planChunks.bind(tts);
+  tts._planChunks = (...args) => { plans++; return plan(...args); };
+  const first = tts.splitIntoChunksWithMeta(text, 300);
+  first[0].text = 'mutated';
+  first[0].segments.length = 0;
+  const second = tts.splitIntoChunksWithMeta(text, 300);
+  assertEqual(plans, 1, 'Repeated split of the same chapter plans once');
+  assert(second[0].text !== 'mutated' && second[0].segments.length > 0, 'Cached plans are isolated from caller mutation');
+  tts.splitIntoChunksWithMeta(text, 600);
+  assertEqual(plans, 2, 'A different chunk size plans separately');
+  const hybrid = new ChunkedTTS('/tmp/test-cache', null, { splitPolicyProvider: () => 'hybrid-v1' });
+  assert(hybrid.splitIntoChunks(text, 300).length !== tts.splitIntoChunks(text, 300).length ||
+    JSON.stringify(hybrid.splitIntoChunks(text, 300)) !== JSON.stringify(tts.splitIntoChunks(text, 300)),
+    'A different split policy never reuses another policy plan');
+})();
+
+(() => {
   const tts = new ChunkedTTS('/tmp/test-cache');
 
   // 1a. Empty / falsy input
