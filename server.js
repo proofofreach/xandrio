@@ -98,6 +98,7 @@ const { registerPreferencesRoutes } = require('./lib/routes/preferences-routes')
 const { registerDiagnosticsRoutes } = require('./lib/routes/diagnostics-routes');
 const { createOperatorDiagnostics } = require('./lib/operator-diagnostics');
 const { createPlaybackHealthStore, registerPlaybackHealthRoutes } = require('./lib/playback-health');
+const { startEventLoopMonitor } = require('./lib/event-loop-monitor');
 const { registerBookmarksRoutes, removeBookBookmarks } = require('./lib/routes/bookmarks-routes');
 const { registerListeningQueueRoutes } = require('./lib/routes/listening-queue-routes');
 const { registerOperatorPolicyRoutes } = require('./lib/routes/operator-policy-routes');
@@ -4583,6 +4584,7 @@ registerAudioPrepRoutes(app, {
   getAvailableVoices,
   transformNarrationText,
   getChunkSizeForVoice,
+  getSplitPolicyForVoice,
   getTTSVariantKeyForVoice,
   getTtsOutputFormatForVoice,
   sendServerError,
@@ -5168,6 +5170,7 @@ if (require.main === module) {
       console.log(`Xandrio running at ${protocol}://${HOST}:${PORT}`);
       console.log(`[startup] ${Math.round(process.uptime() * 1000)}ms since process start: ${startupPhases.join(', ')}`);
       audioCacheBudget.start();
+      startEventLoopMonitor();
       // Non-blocking backfill
       backfillDurations()
         .catch(err => console.error('Backfill failed:', err.message))

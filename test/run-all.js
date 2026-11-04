@@ -52,6 +52,7 @@ const tests = [
   'test-playback-prefetch.js',
   'test-playback-routes.js',
   'test-audio-prep-routes.js',
+  'test-event-loop-monitor.js',
   'test-preparation-status-cached-duration.js',
   'test-pronunciation-repair.js',
   'test-narration-artifact-cache.js',
