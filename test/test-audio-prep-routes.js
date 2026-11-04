@@ -75,7 +75,7 @@ function createRoutes(overrides = {}) {
     }]);
   });
 
-  await test('voice cache plans each chunk size once and reports cached chunks per voice', async () => {
+  await test('voice cache plans each voice policy and chunk size once and reports cached chunks', async () => {
     const plannedSizes = [];
     const handler = createRoutes({
       fs: { access: async file => { if (!file.includes('kokoro') || file.endsWith('chunk2.mp3')) throw new Error('missing'); } },
@@ -83,11 +83,14 @@ function createRoutes(overrides = {}) {
         { id: 'kokoro:a' }, { id: 'kokoro:b' }, { id: 'edge:a' }, { id: 'edge:b' }, { id: 'edge:c' }
       ],
       getChunkSizeForVoice: voiceId => (voiceId.startsWith('kokoro') ? 300 : 900),
+      // edge:c shares edge's chunk size but not its policy.
+      getSplitPolicyForVoice: voiceId => (voiceId.startsWith('kokoro') ? 'ramp-v1' : voiceId === 'edge:c' ? 'hybrid-v1' : 'legacy'),
       getTTSVariantKeyForVoice: voiceId => voiceId.replace(':', '-'),
       chunkedTTS: {
-        splitIntoChunks(_text, size) {
-          plannedSizes.push(size);
-          return Array.from({ length: size === 300 ? 3 : 2 }, (_value, index) => `chunk ${index}`);
+        splitIntoChunks(_text, size, policy) {
+          plannedSizes.push(`${policy}:${size}`);
+          const length = size === 300 ? 3 : policy === 'hybrid-v1' ? 4 : 2;
+          return Array.from({ length }, (_value, index) => `chunk ${index}`);
         },
         chunkPathForVariant: (bookId, chapterIndex, index, variantKey, format) => (
           `/cache/${bookId}_${variantKey}_ch${chapterIndex}_chunk${index}.${format}`
@@ -100,13 +103,13 @@ function createRoutes(overrides = {}) {
       { json(value) { body = value; }, status() { return this; } }
     );
 
-    assert.deepStrictEqual(plannedSizes, [300, 900]);
+    assert.deepStrictEqual(plannedSizes, ['ramp-v1:300', 'legacy:900', 'hybrid-v1:900']);
     assert.deepStrictEqual(body.voices, [
       { voiceId: 'kokoro:a', totalChunks: 3, readyChunks: 2, status: 'partial' },
       { voiceId: 'kokoro:b', totalChunks: 3, readyChunks: 2, status: 'partial' },
       { voiceId: 'edge:a', totalChunks: 2, readyChunks: 0, status: 'uncached' },
       { voiceId: 'edge:b', totalChunks: 2, readyChunks: 0, status: 'uncached' },
-      { voiceId: 'edge:c', totalChunks: 2, readyChunks: 0, status: 'uncached' }
+      { voiceId: 'edge:c', totalChunks: 4, readyChunks: 0, status: 'uncached' }
     ]);
   });
 

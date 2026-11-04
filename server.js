@@ -4584,6 +4584,7 @@ registerAudioPrepRoutes(app, {
   getAvailableVoices,
   transformNarrationText,
   getChunkSizeForVoice,
+  getSplitPolicyForVoice,
   getTTSVariantKeyForVoice,
   getTtsOutputFormatForVoice,
   sendServerError,

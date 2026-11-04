@@ -1138,6 +1138,14 @@ function zeroCrossingRate(pcm) {
         'source chunks start=pending ready=0/42 seek; voice af_heart; tier active; TTS generation already in flight)'
       );
       assert.strictEqual(
+        formatFirstSegmentLog({
+          waitedMs: 36000,
+          stages: { admitMs: 23585, prepareMs: 35, firstChunkMs: 11, encodeMs: 12369 },
+          source: { origin: 'final' }
+        }),
+        '[playback] first HLS segment in 36000ms (admit 23585ms, prepare 35ms, first chunk 11ms, encode 12369ms; source final file)'
+      );
+      assert.strictEqual(
         formatFirstSegmentLog({ waitedMs: 300, source: { origin: 'final' } }),
         '[playback] first HLS segment in 300ms (source final file)'
       );
@@ -1194,8 +1202,9 @@ function zeroCrossingRate(pcm) {
         );
         const { stages } = observed[0];
         assert(stages.firstChunkMs >= 100, `the wait for the first input is its own stage (${stages.firstChunkMs}ms)`);
+        assert(Number.isFinite(stages.admitMs) && stages.admitMs >= 0, 'admission is its own stage');
         assert(
-          stages.prepareMs + stages.firstChunkMs + stages.encodeMs <= observed[0].waitedMs + 1,
+          stages.admitMs + stages.prepareMs + stages.firstChunkMs + stages.encodeMs <= observed[0].waitedMs + 1,
           'stages do not exceed the measured total'
         );
         assert(observed[0].waitedMs >= stages.firstChunkMs, 'the total includes the first-input wait');

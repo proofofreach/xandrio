@@ -141,6 +141,8 @@ section('1. Text splitting');
   assert(hybrid.splitIntoChunks(text, 300).length !== tts.splitIntoChunks(text, 300).length ||
     JSON.stringify(hybrid.splitIntoChunks(text, 300)) !== JSON.stringify(tts.splitIntoChunks(text, 300)),
     'A different split policy never reuses another policy plan');
+  assertDeep(tts.splitIntoChunks(text, 300, 'hybrid-v1'), hybrid.splitIntoChunks(text, 300),
+    'A policy override plans exactly as a worker with that policy');
 })();
 
 (() => {
