@@ -87,6 +87,12 @@ function isDesktop() {
   return typeof window.matchMedia === 'function' && window.matchMedia(DESKTOP_QUERY).matches;
 }
 
+// The library row for a book (title, author, cover fields), or null when the
+// library has not loaded it. The player names a book it could not open.
+export function getLibraryBook(bookId) {
+  return booksById.get(String(bookId)) || null;
+}
+
 export function getCachedBookMeta(bookId) {
   return readJSON(BOOK_META_PREFIX + bookId, null);
 }

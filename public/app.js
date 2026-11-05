@@ -13,7 +13,7 @@ import { initOffline, prepareOfflineStorage, renderOfflineState, queuePendingPos
 import { initPronunciationRepair } from './js/features/pronunciations.js';
 import { initQueueStatus } from './js/features/queue-status.js';
 import { loadClientSettings, getSkipInterval, isSmartRewindEnabled, isRollingOfflineEnabled } from './js/client-settings.js';
-import { initLibrary, loadLibrary, cacheBookMeta, getRecentInProgress } from './js/views/library.js';
+import { initLibrary, loadLibrary, cacheBookMeta, getRecentInProgress, getLibraryBook } from './js/views/library.js';
 import { initShell, openUploadSection } from './js/ui/shell.js';
 import { initSearch } from './js/views/search.js';
 import { initSettings } from './js/views/settings.js';
@@ -1174,6 +1174,14 @@ document.addEventListener('DOMContentLoaded', async () => {
     }),
     getPlayerStatus: () => playerStatus.get(),
     retryPlayerFailure,
+    // Dismiss on the failure card: the failure is acknowledged, so the mini
+    // player and Audio Activity stop reporting it and later updates paint.
+    dismissPlayerFailure: () => {
+      const status = playerStatus.get();
+      if (!isPlayerFailureState(status.state)) return;
+      playerFailureRetry = null;
+      playerStatus.set({ state: 'idle', bookId: status.bookId, chapterIndex: status.chapterIndex });
+    },
     iconPlay: ICON_PLAY,
     iconPause: ICON_PAUSE,
     loadChapter,
@@ -1942,6 +1950,23 @@ function renderBookIdentity(book) {
   updatePlayerAmbient(coverUrl);
 }
 
+// A deep link whose book could not be loaded: name it from the library row
+// when the library has it (title, author, cover), otherwise say plainly that
+// the book is unavailable. A library that loads later fills it in.
+function renderUnavailableBookIdentity(bookId) {
+  const paint = () => {
+    const row = getLibraryBook(bookId);
+    renderBookIdentity(row
+      ? { id: bookId, title: row.title || 'Book unavailable', author: row.author || '' }
+      : { id: bookId, title: 'Book unavailable', author: '' });
+    return Boolean(row);
+  };
+  if (paint()) return;
+  document.addEventListener('xandrio:libraryloaded', () => {
+    if (!currentBook && playerView?.dataset.book === 'none' && bookCover?.dataset.bookId === String(bookId)) paint();
+  }, { once: true });
+}
+
 // The hidden chapter <select> mirrors the chapter list (keyboard and tests).
 function renderChapterOptions() {
   if (!chapterSelect) return;
@@ -2118,6 +2143,12 @@ async function openBook(bookId, { attempt = null } = {}) {
   openBookController = controller;
   offlineUnavailableOnlineRetry.clear();
   openingBookId = String(bookId);
+  // A new open intent replaces any earlier failure, so this open's own
+  // outcome (the card, or a playable player) is always painted. The status
+  // before it is kept for a failure that leaves the previous book in place.
+  const statusBeforeOpen = playerStatus.get();
+  playerFailureRetry = null;
+  playerStatus.set({ state: 'preparing', bookId: String(bookId), chapterIndex: null });
   try {
     // Fire-and-forget hint: mutates no player state, so it is safe to send
     // before the open is known to succeed. The server drops the preference
@@ -2346,7 +2377,7 @@ async function openBook(bookId, { attempt = null } = {}) {
       // owns the player, so the inline card states the reason and offers
       // Retry. A chapter failure has already reported a more specific one.
       if (!currentBook) {
-        renderBookIdentity({ id: bookId, title: '' });
+        renderUnavailableBookIdentity(bookId);
         // No chapters were loaded: the chapter row must not keep placeholder
         // text that looks like a position.
         for (const id of ['chapter-trigger-ordinal', 'chapter-trigger-title']) {
@@ -2360,7 +2391,14 @@ async function openBook(bookId, { attempt = null } = {}) {
         reportPlaybackFailure(err, {
           phase: committed ? 'chapter' : 'open',
           bookId,
-          retry: () => (committed ? loadChapter(currentChapter) : openBook(bookId))
+          retry: committed ? () => loadChapter(currentChapter) : () => {
+            // openBook resets the status synchronously (the card steps
+            // aside), then this card says the open is under way. Its outcome
+            // repaints: the failure card again, or the loaded player.
+            const opening = openBook(bookId);
+            showAudioLoading('Opening book…', { indeterminate: true });
+            return opening;
+          }
         });
       }
       // Suppressed while the card is on screen.
@@ -2371,6 +2409,8 @@ async function openBook(bookId, { attempt = null } = {}) {
       if (playerView?.classList.contains('active')) syncPlayerHash(currentBook.id, { replace: true });
       else if (/^#\/player\//.test(window.location?.hash || '')) navigateTo('library', null, { replace: true });
       renderBookIdentity(currentBook);
+      // The previous book's own status (a failure card, or ready) returns.
+      playerStatus.set(statusBeforeOpen);
       showToast("Couldn't open that book", 'error', { key: 'player-open-failed' });
     }
     return false;
