@@ -48,7 +48,7 @@ function harness(overrides = {}) {
         estimatedTotalDuration: Number(args[3]) || requested
       };
     },
-    splitIntoChunks: () => overrides.splitChunks || ['first', 'second'],
+    planChunks: async () => overrides.splitChunks || ['first', 'second'],
     invalidateCachedChunk: async (...args) => { calls.push(['invalidate', ...args]); },
     chunkPath: (...args) => `/cache/${args.join('-')}.mp3`,
     chapterPath: (...args) => `/cache/${args.join('-')}.mp3`,
