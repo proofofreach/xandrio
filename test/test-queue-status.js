@@ -203,6 +203,10 @@ function fakeActivityList() {
     .replace(
       "import { showToast } from '../ui/toast.js';",
       'const showToast = (...args) => globalThis.__queueTestToasts.push(args);'
+    )
+    .replace(
+      "from '../player-status.mjs';",
+      `from '${require('url').pathToFileURL(path.join(__dirname, '..', 'public', 'js', 'player-status.mjs')).href}';`
     );
   const moduleUrl = `data:text/javascript;base64,${Buffer.from(source).toString('base64')}`;
   const { initQueueStatus, stopQueueStatus } = await import(moduleUrl);

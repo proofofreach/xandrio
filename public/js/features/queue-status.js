@@ -2,6 +2,7 @@ import { apiGet, apiSend } from '../api.js';
 import { escapeHTML, coverImageHTML } from '../util/format.js';
 import { registerSheet } from '../ui/sheets.js';
 import { showToast } from '../ui/toast.js';
+import { isPlayerFailureState, playerStatusShortLabel } from '../player-status.mjs';
 
 // A title's place in the audio-preparation order is something the reader can
 // change; a transfer already in flight is not. Downloads are excluded for that
@@ -28,6 +29,9 @@ let currentStatus = { active: 0, queued: 0, books: [] };
 let currentServerStatus = { active: 0, queued: 0, books: [] };
 let currentDownloads = [];
 let currentPreparations = [];
+// The open book's playback status (js/player-status.mjs). A failed open or
+// chapter is listed here with the player's words and its Retry.
+let currentPlayback = null;
 let lastBookCount = 0;
 let lastFailedBookCount = 0;
 let activityStructureKey = '';
@@ -76,11 +80,27 @@ function combinedBooks(status) {
     ...downloads.map(download => download.id),
     ...preparations.map(preparation => preparation.id)
   ]);
+  const playback = currentPlayback && !localActivityIds.has(currentPlayback.id) ? [currentPlayback] : [];
+  const playbackIds = new Set(playback.map(book => book.id));
   return [
     ...downloads,
     ...preparations,
-    ...normalizedBooks(status).filter(book => !localActivityIds.has(book.id))
+    ...playback,
+    ...normalizedBooks(status).filter(book => !localActivityIds.has(book.id) && !playbackIds.has(book.id))
   ];
+}
+
+function playbackActivity(detail) {
+  if (!detail || !isPlayerFailureState(detail.state) || !detail.book?.id) return null;
+  return {
+    ...detail.book,
+    kind: 'playback',
+    active: 0,
+    queued: 0,
+    failed: true,
+    playbackLabel: [playerStatusShortLabel(detail), detail.detail].filter(Boolean).join(' · '),
+    playbackRetry: detail.retry !== false
+  };
 }
 
 function chapterSummary(book) {
@@ -135,6 +155,7 @@ function activityStateLabel(book) {
     }
     return [book.phase || 'Downloading', `${book.percent}%`, ...details].join(' · ');
   }
+  if (book.kind === 'playback') return book.playbackLabel || 'Playback failed';
   if (book.kind === 'preparation') {
     return `Preparing audio · ${book.readyChapters}/${book.totalChapters}`;
   }
@@ -266,7 +287,7 @@ function renderActivityDetails(status = currentStatus) {
     const active = Number(book.active || 0) > 0;
     const isDownload = book.kind === 'download';
     const isPreparation = book.kind === 'preparation';
-    const canRetry = book.failed && Number.isInteger(book.retryChapterIndex) && book.retryChapterIndex >= 0;
+    const canRetry = book.kind !== 'playback' && book.failed && Number.isInteger(book.retryChapterIndex) && book.retryChapterIndex >= 0;
     const reorderControl = isReorderable(book)
       ? reorderControlHTML(book, reorderable.indexOf(book), reorderable.length)
       : '';
@@ -298,6 +319,9 @@ function renderActivityDetails(status = currentStatus) {
             <button type="button" class="audio-activity-cancel audio-activity-preparation"
                     data-narration-book="${escapeHTML(book.id)}"
                     data-narration-action="${['userPaused', 'error', 'idle'].includes(book.preparationStatus) ? 'resume' : 'pause'}">${book.preparationStatus === 'userPaused' ? 'Resume preparation' : ['error', 'idle'].includes(book.preparationStatus) ? 'Retry preparation' : 'Pause preparation'}</button>
+          ` : ''}
+          ${book.kind === 'playback' && book.playbackRetry ? `
+            <button type="button" class="audio-activity-retry" data-player-retry="${escapeHTML(book.id)}">Retry</button>
           ` : ''}
           ${canRetry ? `
             <button type="button" class="audio-activity-retry"
@@ -543,7 +567,18 @@ export function initQueueStatus(options = {}) {
     currentPreparations = normalizedPreparations(event?.detail?.preparations);
     renderQueueStatus(currentServerStatus);
   });
+  scope.listen(document, 'xandrio:playerstatus', event => {
+    const next = playbackActivity(event?.detail);
+    if (JSON.stringify(next) === JSON.stringify(currentPlayback)) return;
+    currentPlayback = next;
+    renderQueueStatus(currentServerStatus);
+  });
   scope.listen(activityListEl, 'click', event => {
+    const playerRetry = event.target.closest?.('[data-player-retry]');
+    if (playerRetry?.dataset?.playerRetry && typeof globalThis.CustomEvent === 'function') {
+      document.dispatchEvent(new CustomEvent('xandrio:playerretry', { detail: { bookId: playerRetry.dataset.playerRetry } }));
+      return;
+    }
     const preparationButton = event.target.closest?.('[data-narration-book]');
     if (preparationButton?.dataset?.narrationBook && !preparationButton.disabled) {
       preparationButton.disabled = true;

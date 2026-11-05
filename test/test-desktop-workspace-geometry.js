@@ -101,9 +101,11 @@ async function run() {
                 'wide empty library centers in the full primary region without a stranded rail');
             }
             if (testCase.view === 'search') {
-              const support = await visibleBox(page, '.search-workspace');
-              assert.notStrictEqual(geometry.search, 'none', 'wide search exposes the support and primary columns');
-              assert(primary.x > support.x, 'wide search primary content starts beside its support column');
+              // One reading column (UI review 2026-11-05): the search row and
+              // the results share the left edge and the 760px measure.
+              const searchRow = await visibleBox(page, '#search-view .search-box');
+              assert(Math.abs(primary.x - searchRow.x) < 2, 'wide search results start under the search row');
+              assert(searchRow.width > 600 && searchRow.width <= 761, `wide search row has the results measure (${searchRow.width}px)`);
               if (testCase.state === 'full') {
                 const results = await visibleBox(page, '.search-results-list');
                 assert(Math.abs(primary.x - results.x) < 2 && Math.abs(primary.width - results.width) < 2,
