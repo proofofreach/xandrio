@@ -136,12 +136,14 @@ export function createPlayerStatus({ onChange = null } = {}) {
   return {
     get: () => current,
     set,
-    // Late engine callbacks ("still preparing…") must not overwrite a failure
-    // for the same chapter; only a new load intent (begin) clears it.
-    isFailedFor(bookId, chapterIndex) {
+    // True only for the failure recorded: same book and the same chapter
+    // (null, a failed open, matches only null). Every open and load intent
+    // resets the status first, so a retry is never mistaken for it.
+    isFailedFor(bookId, chapterIndex = null) {
+      const chapter = Number.isInteger(chapterIndex) ? chapterIndex : null;
       return isPlayerFailureState(current.state)
         && String(current.bookId) === String(bookId)
-        && (current.chapterIndex === null || current.chapterIndex === chapterIndex);
+        && current.chapterIndex === chapter;
     },
     subscribe(listener) {
       listeners.add(listener);
