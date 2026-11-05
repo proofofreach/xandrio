@@ -93,6 +93,8 @@ tts-benchmark-samples/*
 !public/favicon.ico
 !public/apple-touch-icon.png
 !public/icon-192.png
+!public/icon-maskable-192.png
+!public/icon-maskable-512.png
 !public/icon-512.png
 !public/icon-xandrio-ankh.png
 !alexandrio-xandrio/icon.png
