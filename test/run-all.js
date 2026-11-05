@@ -59,6 +59,7 @@ const tests = [
   'test-queue.js',
   'test-tts-text.js',
   'test-tts-split-policy.js',
+  'test-chunk-plan-pool.js',
   'test-kokoro-split-sweep.js',
   'test-chunk-materialization.js',
   'test-chunked-tts.js',
