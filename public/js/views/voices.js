@@ -606,7 +606,7 @@ function renderVoiceFilters(filterBarId = 'voice-filter-bar') {
     </div>
     ${groups.slice(0, 2).map(control).join('')}
     <details class="voice-settings-filters" ${moreOpen ? 'open' : ''}>
-      <summary>More filters${activeDetails.length ? ` · ${escapeHTML(activeDetails.join(' · '))}` : ''}</summary>
+      <summary><svg class="voice-filters-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg><span>More filters</span>${activeDetails.length ? `<span class="voice-filters-active">${escapeHTML(activeDetails.join(' · '))}</span>` : ''}</summary>
       <div class="voice-filter-bar">${groups.slice(2).map(control).join('')}</div>
     </details>
     <p id="voice-filter-count" class="settings-hint" role="status" aria-live="polite"></p>

@@ -12,7 +12,8 @@ import { readText, writeText } from '../util/storage.js';
 import { getNarrationSummary, getPremiumChapterReadiness, isPremiumVoiceSelected } from './voices.js';
 import { bookTimelinePosition, bookTimelineSeekTarget } from '../util/book-timeline.mjs';
 import { timeLeftLabel, formatSpeed } from '../util/time-left.mjs';
-import { friendlyChapterType, chapterListItemState, chapterListOrdinal, chapterNumbering, chapterPositionLabel, chapterProgressContext, sharedTitlePrefixes, expandNumericChapterTitle, findPreferredStartChapterIndex, firstDisplaySentence } from '../util/chapter-labels.mjs';
+import { isPlayerFailureState, playerStatusShortLabel } from '../player-status.mjs';
+import { friendlyChapterType, chapterListItemState, chapterListOrdinal, chapterNumbering, chapterPositionLabel, chapterProgressContext, sharedTitlePrefixes, titleRepeatsChapterNumber, titleLeadingNumber, isNarrativeChapter, expandNumericChapterTitle, findPreferredStartChapterIndex, firstDisplaySentence } from '../util/chapter-labels.mjs';
 
 const ICON_PREPARING = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" class="icon" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M7 3h10M7 21h10M8 3v4l4 5-4 5v4M16 3v4l-4 5 4 5v4"/></svg>';
 const TIME_DISPLAY_KEY = 'xandrio_time_display';
@@ -65,6 +66,7 @@ export function initPlayerUI(options = {}) {
   playPauseBtn = document.getElementById('play-pause-btn');
   document.getElementById('player-recent-btn')?.addEventListener('click', () => openRecentSheet());
   initNarration();
+  document.addEventListener('xandrio:playerstatus', event => renderPlayerStatus(event.detail));
   initMoreMenu();
   initBookSeekSheet();
   initPaneUpNext();
@@ -581,6 +583,17 @@ export function renderChapterList() {
   // as a group heading and keep only what differs.
   const derived = chapters.some(chapter => chapter?.groupHeading) ? [] : sharedTitlePrefixes(chapters);
   let derivedHeading = null;
+  const rowTitle = (chapter, index) => displayChapterTitle(derived[index] ? { ...chapter, title: derived[index].rest } : chapter, index);
+  const numbering = chapterNumbering(chapters);
+  // "06 | 6. That he has…": when every numbered title already carries its own
+  // number, the column only repeats it (or, in a book whose parts restart at
+  // 1, shows a second, different number). The list drops the column; the
+  // player's chapter row keeps "Chapter 30 of 278".
+  const numberedRows = chapters.map((chapter, index) => ({ chapter, index })).filter(({ chapter, index }) => !chapter.empty && numbering.numbers[index]);
+  const hideOrdinals = numberedRows.length > 0
+    && numberedRows.every(({ chapter, index }) => titleLeadingNumber(rowTitle(chapter, index)) !== null);
+  chapterList.classList.toggle('chapter-list--no-ordinal', hideOrdinals);
+  const FRONT_MATTER_TITLE = /^(front matter|back matter|dedication|epigraph|contents|table of contents|title page|copyright|acknowledg|also by|about the author|praise for|divider)\b/i;
   chapterList.innerHTML = chapters.map((chapter, index) => {
     if (chapter.empty) return '';
     let groupHeading = '';
@@ -595,7 +608,11 @@ export function renderChapterList() {
     if (!chapter.groupHeading) derivedHeading = shared?.heading || null;
     const itemState = chapterListItemState(index, deps.getCurrentChapter());
     const isActive = itemState === 'active';
-    const title = displayChapterTitle(shared ? { ...chapter, title: shared.rest } : chapter, index);
+    const title = rowTitle(chapter, index);
+    // Front and back matter stay listed and selectable, but read as
+    // secondary next to the numbered chapters.
+    const auxiliary = !isNarrativeChapter(chapter)
+      || (numberedRows.length > 0 && !numbering.numbers[index] && FRONT_MATTER_TITLE.test(title));
     const dur = formatDuration(durations?.[index] || chapter.estimatedDuration);
     const friendlyType = chapter.type && chapter.type !== 'content' && chapter.type !== 'chapter'
       ? friendlyChapterType(chapter.type)
@@ -605,15 +622,20 @@ export function renderChapterList() {
     const metaLabel = [isActive ? 'Now playing' : '', typeLabel].filter(Boolean).join(' \u00b7 ');
     const classes = ['chapter-list-item'];
     if (isActive) classes.push('active');
+    if (auxiliary) classes.push('is-auxiliary');
     const premiumDot = premiumMode && premiumReadiness[index]
       ? '<span class="chapter-premium-dot" role="img" aria-label="Premium audio ready"></span>'
       : '';
-    const ordinal = chapterListOrdinal(chapters, index);
+    // A row whose title already starts with its own number leaves the
+    // column blank (the column stays, so titles still align).
+    const repeats = !hideOrdinals && titleRepeatsChapterNumber(title, numbering.numbers[index]);
+    const ordinal = hideOrdinals ? '' : chapterListOrdinal(chapters, index);
+    if (repeats) classes.push('repeats-ordinal');
     return `${groupHeading}
       <button class="${classes.join(' ')}" type="button" role="option" aria-selected="${isActive}" data-chapter-index="${index}">
-        <span class="chapter-list-index">${premiumDot}${ordinal}</span>
+        <span class="chapter-list-index">${hideOrdinals ? '' : `${premiumDot}${repeats ? '<span aria-hidden="true"></span>' : ordinal}`}</span>
         <span class="chapter-list-copy">
-          <span class="chapter-list-title">${escapeHTML(title)}</span>
+          <span class="chapter-list-title">${hideOrdinals ? premiumDot : ''}${escapeHTML(title)}</span>
           <span class="chapter-list-meta">${escapeHTML(metaLabel)}</span>
         </span>
         <span class="chapter-list-duration">${dur ? escapeHTML(dur) : ''}</span>
@@ -714,7 +736,14 @@ function startAudioLoadingPoll() {
   audioLoadingPollTimer = setInterval(poll, 1500);
 }
 
+// A failure card is replaced only by a new load intent (app.js resets the
+// status first), never by a late "still preparing" engine callback.
+function failureOwnsCard() {
+  return isPlayerFailureState(deps.getPlayerStatus?.()?.state);
+}
+
 export function showAudioLoading(text, options = {}) {
+  if (failureOwnsCard() && (options.status || 'preparing') !== 'error') return;
   const key = `${deps.getCurrentBook?.()?.id}:${deps.getCurrentChapter?.()}`;
   if (unplayableLoadingKey === key) {
     text = 'This section has no playable text';
@@ -753,6 +782,7 @@ export function hideAudioLoading() {
   if (audioLoading) {
     audioLoading.style.display = 'none';
     audioLoading.dataset.status = '';
+    audioLoading.dataset.owner = '';
     markInlineStatus(audioLoading, null);
     audioLoading.classList.remove('is-indeterminate');
     narrationPreparingStartedAt = 0;
@@ -779,11 +809,13 @@ export function setChunkOverlayState(state, options = {}) {
   // 'offline' is a situation, not a failure: neutral surface, no retry button
   // (a retry is guaranteed to fail with no connection — the caller auto-resumes
   // on the 'online' event instead).
-  if (state === 'error' || state === 'offline') {
+  // 'engine' is the narrator engine starting: a waiting state with Retry.
+  if (state === 'error' || state === 'offline' || state === 'engine') {
     stopAudioLoadingPoll();
     audioLoading.dataset.status = state;
+    audioLoading.dataset.owner = options.toastKey === 'player-failure' ? 'status' : '';
     audioLoading.classList.remove('is-indeterminate');
-    markInlineStatus(audioLoading, options.toastKey || (state === 'error' ? 'audio-error' : null));
+    markInlineStatus(audioLoading, options.toastKey || (state !== 'offline' ? 'audio-error' : null));
     if (loadingText) loadingText.textContent = options.message || 'Narration needs attention';
     if (loadingDetail) loadingDetail.textContent = options.detail || '';
     if (audioLoadingFill) audioLoadingFill.style.width = '0%';
@@ -793,6 +825,7 @@ export function setChunkOverlayState(state, options = {}) {
     return;
   }
   // 'preparing' (default)
+  if (failureOwnsCard()) return;
   showAudioLoading(options.message || 'Preparing narration…', {
     detail: options.detail || '',
     indeterminate: options.indeterminate !== false,
@@ -818,34 +851,77 @@ function renderOverlayActions(options) {
     audioLoadingActions.hidden = false;
     return;
   }
-  const retryBtn = document.createElement('button');
-  retryBtn.type = 'button';
-  retryBtn.className = 'pl-btn pl-btn-primary';
-  retryBtn.textContent = options.retryLabel || 'Retry';
   const retry = () => {
     hideAudioLoading();
     if (typeof options.onRetry === 'function') options.onRetry();
     else deps.loadChapter?.(deps.getCurrentChapter?.());
   };
-  retryBtn.addEventListener('click', retry);
+  const buttons = [];
+  if (options.retry !== false) {
+    const retryBtn = document.createElement('button');
+    retryBtn.type = 'button';
+    retryBtn.className = 'pl-btn pl-btn-primary';
+    retryBtn.textContent = options.retryLabel || 'Retry';
+    retryBtn.addEventListener('click', retry);
+    buttons.push(retryBtn);
+  }
   // The second recovery path: switch this book to the instant narrator when
   // one is offered (then retry once the choice is saved), otherwise open the
-  // narrator picker.
-  const fallback = document.getElementById('narration-fallback');
-  const canUseInstant = fallback && !fallback.hidden && fallback.value !== 'instant';
-  const altBtn = document.createElement('button');
-  altBtn.type = 'button';
-  altBtn.className = 'pl-btn pl-btn-secondary';
-  altBtn.textContent = canUseInstant ? 'Use instant narrator' : 'Change narrator';
-  altBtn.addEventListener('click', () => {
-    if (canUseInstant) chooseNarrationFallback('instant').then(retry);
-    else document.getElementById('player-voice-status')?.click();
-  });
+  // narrator picker. A failure that a narrator cannot fix (offline, too many
+  // requests, missing book) offers neither.
+  if (options.instant !== false) {
+    const fallback = document.getElementById('narration-fallback');
+    const canUseInstant = fallback && !fallback.hidden && fallback.value !== 'instant';
+    const altBtn = document.createElement('button');
+    altBtn.type = 'button';
+    altBtn.className = 'pl-btn pl-btn-secondary';
+    altBtn.textContent = canUseInstant ? 'Use instant narrator' : 'Change narrator';
+    altBtn.addEventListener('click', () => {
+      if (canUseInstant) chooseNarrationFallback('instant').then(retry);
+      else document.getElementById('player-voice-status')?.click();
+    });
+    buttons.push(altBtn);
+  }
   dismissBtn.className = 'pl-textbtn pl-card-dismiss';
-  audioLoadingActions.append(retryBtn, altBtn, dismissBtn);
+  audioLoadingActions.append(...buttons, dismissBtn);
   audioLoadingActions.hidden = false;
 }
 
+
+// The failure card, painted from the player status model (js/player-status.mjs).
+// One tinted card: the reason in plain words, Retry, and Use instant narrator
+// where that applies. The preparing card and the iPhone notice step aside.
+let paintedFailureRevision = -1;
+export function renderPlayerStatus(status = deps.getPlayerStatus?.()) {
+  const book = deps.getCurrentBook?.();
+  // No book yet (a deep link whose open failed): the status names the route's book.
+  const ownBook = status && (book ? String(status.bookId) === String(book.id) : status.bookId != null);
+  if (status && isPlayerFailureState(status.state) && ownBook) {
+    if (paintedFailureRevision !== status.revision) {
+      paintedFailureRevision = status.revision;
+      if (playbackReliability) {
+        playbackReliability.hidden = true;
+        markInlineStatus(playbackReliability, null);
+      }
+      if (playbackResumePrompt) playbackResumePrompt.hidden = true;
+      setChunkOverlayState(status.state === 'engine-starting' ? 'engine' : 'error', {
+        message: status.title,
+        detail: status.detail,
+        toastKey: 'player-failure',
+        retry: status.retry,
+        instant: status.instant,
+        onRetry: () => deps.retryPlayerFailure?.()
+      });
+    }
+  } else if (paintedFailureRevision !== -1) {
+    paintedFailureRevision = -1;
+    if (audioLoading && ['error', 'engine'].includes(audioLoading.dataset.status) && audioLoading.dataset.owner === 'status') {
+      hideAudioLoading();
+    }
+  }
+  syncPlaybackControls();
+  syncMiniPlayerTimeLeft({ force: true });
+}
 
 // --- Narration line and cards ---
 // One line, "Ryan · 2h 10m ready ahead", that opens the narrator picker. It
@@ -968,10 +1044,12 @@ export function syncNarration() {
   const hqVisible = Boolean(hqPrep && !hqPrep.hidden);
   const hqState = hqPrep?.dataset.state || 'idle';
   const hqError = hqVisible && hqState === 'error';
-  const hqCard = hqVisible && !['ready', 'loading'].includes(hqState);
   const loadingShown = isShownEl(audioLoading);
   const loadingStatus = audioLoading?.dataset.status || '';
-  const audioError = loadingShown && loadingStatus === 'error';
+  const audioError = loadingShown && ['error', 'engine'].includes(loadingStatus);
+  // One card at a time: while a playback failure shows, the preparation card
+  // steps aside (its own failure still shows when nothing else does).
+  const hqCard = hqVisible && !['ready', 'loading'].includes(hqState) && !(audioError && !hqError);
   const ahead = hqVisible ? readyAhead(summary) : null;
   const fallback = document.getElementById('narration-fallback');
   const fallbackOffered = Boolean(fallback && !fallback.hidden);
@@ -1291,7 +1369,8 @@ export function syncMiniPlayerInfo() {
 // the visible text or width changes.
 let lastMiniLine = '';
 let lastMiniPercent = '';
-export function syncMiniPlayerTimeLeft() {
+export function syncMiniPlayerTimeLeft({ force = false } = {}) {
+  if (force) lastMiniLine = '';
   const chapterEl = document.getElementById('mini-player-chapter');
   const progressEl = document.getElementById('mini-player-progress');
   const book = deps.getCurrentBook?.();
@@ -1305,9 +1384,15 @@ export function syncMiniPlayerTimeLeft() {
   const timeLeft = progress?.timeLeft != null
     ? timeLeftLabel(progress.timeLeft, progress.speed, { referenceSpeed: playbackSpeed.getReferencePlaybackSpeed?.() ?? null })
     : '';
-  const line = [context, timeLeft].filter(Boolean).join(' · ');
+  // A failure is stated in words here too, with the chapter it is about.
+  const status = deps.getPlayerStatus?.();
+  const failure = status && isPlayerFailureState(status.state) && String(status.bookId) === String(book.id)
+    ? playerStatusShortLabel(status)
+    : '';
+  const line = failure ? [failure, context].filter(Boolean).join(' · ') : [context, timeLeft].filter(Boolean).join(' · ');
   if (chapterEl && line !== lastMiniLine) {
     chapterEl.textContent = line;
+    chapterEl.classList.toggle('is-failed', Boolean(failure));
     lastMiniLine = line;
   }
   const percent = progress?.percent != null ? `${progress.percent}%` : '0%';
@@ -1329,7 +1414,8 @@ export function syncPlaybackControls(forcePlaying = null) {
     button.setAttribute('aria-busy', String(preparing));
     button.setAttribute('aria-label', preparing ? 'Preparing audio' : isPlaying ? 'Pause' : 'Play');
     button.title = preparing ? 'Preparing audio' : isPlaying ? 'Pause' : 'Play';
-    button.style.opacity = preparing ? '0.55' : '1';
+    button.style.removeProperty('opacity');
+    button.classList.toggle('is-preparing', preparing);
     button.innerHTML = preparing ? ICON_PREPARING : isPlaying ? deps.iconPause : deps.iconPlay;
   }
 }

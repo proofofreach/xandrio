@@ -30,6 +30,19 @@ export function onActivate(el, handler) {
   return () => el?.removeEventListener('keydown', listener);
 }
 
+// Transport and player shortcuts (Space, arrows, C, V, B) act only in the
+// player context: the player view is the active route, or focus sits inside
+// the player or the mini player. Everywhere else Space and the arrows keep
+// their native job (scrolling a list, moving through a menu). The docked
+// desktop player shows the library beside it, so focus inside the library
+// or the sidebar stays native even while the player route is active.
+export function isPlayerContext(target, doc = document) {
+  const el = target && target.nodeType === 1 ? target : null;
+  if (el?.closest?.('#player-view, #mini-player')) return true;
+  if (doc.body?.dataset?.view !== 'player') return false;
+  return !el?.closest?.('#library-view, #app-sidebar, #app-tabbar');
+}
+
 export function initKeys(actions = {}) {
   document.addEventListener('keydown', (e) => {
     if (e.defaultPrevented) return;
@@ -42,6 +55,21 @@ export function initKeys(actions = {}) {
     // arrows and activation; titles must not drive playback behind the dialog.
     if (document.body.classList.contains('sheet-open') || e.target?.closest?.('[role="dialog"]')) return;
     if (isTypingTarget(e.target)) return;
+
+    switch (e.key) {
+      case '/':
+        e.preventDefault();
+        actions.search?.();
+        return;
+      case '?':
+        e.preventDefault();
+        actions.help?.();
+        return;
+      default:
+        break;
+    }
+
+    if (!isPlayerContext(e.target)) return;
 
     switch (e.key) {
       case ' ':
@@ -81,14 +109,6 @@ export function initKeys(actions = {}) {
       case 'b':
       case 'B':
         actions.bookmark?.();
-        break;
-      case '/':
-        e.preventDefault();
-        actions.search?.();
-        break;
-      case '?':
-        e.preventDefault();
-        actions.help?.();
         break;
       default:
         break;
