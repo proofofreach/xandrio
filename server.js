@@ -4874,7 +4874,6 @@ async function backfillNarrationArtifacts() {
   try {
     const books = await loadJSON(BOOKS_FILE, {});
     let indexed = 0;
-    let chaptersVisited = 0;
     for (const [bookId, book] of Object.entries(books)) {
       if (!book?.path || deletedBookIds.has(bookId)) continue;
       const variants = [getActiveVoice(bookId), getActiveInstantVoice(bookId)]
@@ -4897,9 +4896,7 @@ async function backfillNarrationArtifacts() {
             book.language || 'en',
             { voice: variant.voice }
           );
-        }
-        chaptersVisited++;
-        if (chaptersVisited % 10 === 0) {
+          // Each call plans a chapter (150-300 ms); yield between every plan.
           await new Promise(resolve => setImmediate(resolve));
         }
       }
