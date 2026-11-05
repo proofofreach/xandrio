@@ -306,7 +306,7 @@ export function stepPlaybackSpeed(direction) {
 function updateSpeedButton() {
   const label = formatSpeed(currentPlaybackSpeed);
   if (speedBtn) {
-    speedBtn.innerHTML = `<span style="font-size:13px;font-weight:700;">${label}</span>`;
+    speedBtn.innerHTML = `<span style="font-size:var(--text-footnote);font-weight:700;">${label}</span>`;
     speedBtn.setAttribute('aria-label', `Playback speed: ${currentPlaybackSpeed} times normal`);
     speedBtn.classList.toggle('active', currentPlaybackSpeed !== 1.0);
   }

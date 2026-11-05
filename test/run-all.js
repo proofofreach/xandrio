@@ -186,6 +186,7 @@ const tests = [
   'test-player-controls.js',
   'test-ui-composition.js',
   'test-shell-review-fixes.js',
+  'test-system-ui-fixes.js',
   'test-cover-image-recovery.js',
   'test-search-url-state.js',
   'test-search-context-regressions.js',

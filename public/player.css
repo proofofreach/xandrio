@@ -41,20 +41,25 @@ body #player-view.view.active {
 
 /* ==================== NAV ==================== */
 
+/* Three columns: close, the centred title, then Recent and •••. The side
+   columns share the width equally, so the title stays centred, and neither
+   shrinks below its controls, so larger text cannot overlap them. */
 .pl-nav {
   position: relative;
   z-index: 1;
   flex: none;
-  display: flex;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
   align-items: center;
   min-height: 44px;
   padding: max(4px, var(--safe-top)) 8px 0;
 }
+.pl-nav > #back-btn { grid-column: 1; justify-self: start; }
 .pl-nav-title {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 12px;
+  grid-column: 2;
+  grid-row: 1;
+  align-self: end;
+  margin-bottom: 12px;
   text-align: center;
   pointer-events: none;
   color: var(--text-secondary);
@@ -62,7 +67,7 @@ body #player-view.view.active {
   line-height: var(--leading-subhead);
   font-weight: var(--weight-semibold);
 }
-.pl-nav-r { position: relative; margin-left: auto; display: flex; align-items: center; gap: 2px; }
+.pl-nav-r { position: relative; grid-column: 3; grid-row: 1; justify-self: end; display: flex; align-items: center; gap: 2px; }
 .pl-icbtn {
   width: 44px;
   height: 44px;
@@ -77,7 +82,7 @@ body #player-view.view.active {
   cursor: pointer;
 }
 .pl-icbtn svg { width: 28px; height: 28px; }
-.pl-icbtn:hover { background: var(--surface-2); }
+@media (hover: hover) { .pl-icbtn:hover { background: var(--surface-2); } }
 .pl-ic-close { display: none; }
 .pl-textbtn {
   min-height: 44px;
@@ -92,7 +97,7 @@ body #player-view.view.active {
   white-space: nowrap;
   cursor: pointer;
 }
-.pl-textbtn:hover:not(:disabled) { background: var(--surface-2); }
+@media (hover: hover) { .pl-textbtn:hover:not(:disabled) { background: var(--surface-2); } }
 .pl-textbtn:disabled { color: var(--text-secondary); cursor: default; }
 
 /* ==================== COLUMN ==================== */
@@ -177,7 +182,7 @@ body #player-view.view.active {
   line-height: var(--leading-subhead);
   cursor: pointer;
 }
-.pl-narr-line:hover { background: var(--surface); }
+@media (hover: hover) { .pl-narr-line:hover { background: var(--surface); } }
 .pl-narr-glyph { width: 22px; height: 22px; color: var(--accent-text); }
 .pl-narr-text { display: flex; align-items: baseline; flex: 1 1 auto; min-width: 0; }
 .pl-narr-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font-weight: var(--weight-semibold); }
@@ -306,7 +311,7 @@ strong.pl-card-title,
   text-align: left;
   cursor: pointer;
 }
-.pl-chrow:hover .pl-chrow-ordinal { color: var(--accent-text); }
+@media (hover: hover) { .pl-chrow:hover .pl-chrow-ordinal { color: var(--accent-text); } }
 .pl-chrow-text { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; }
 .pl-chrow-ordinal {
   font-size: var(--text-body);
@@ -402,7 +407,7 @@ strong.pl-card-title,
 }
 .pl-tbtn { width: 56px; height: 56px; border-radius: 28px; background: transparent; color: var(--text); }
 .pl-tbtn svg { width: 44px; height: 44px; }
-.pl-tbtn:hover { background: var(--surface); }
+@media (hover: hover) { .pl-tbtn:hover { background: var(--surface); } }
 .pl-tbtn-ch { width: 44px; height: 44px; border-radius: 22px; color: var(--text-secondary); }
 .pl-tbtn-ch svg { width: 28px; height: 28px; }
 .pl-tbtn:disabled { opacity: .4; cursor: default; }
@@ -420,13 +425,16 @@ strong.pl-card-title,
 }
 .pl-play { width: 76px; height: 76px; border-radius: 38px; background: var(--accent); color: var(--on-accent); }
 .pl-play svg { width: 36px; height: 36px; }
-.pl-play:hover:not(:disabled) { background: var(--accent-strong); }
+@media (hover: hover) { .pl-play:hover:not(:disabled) { background: var(--accent-strong); } }
 
 /* ==================== TOOLS ==================== */
 
-.pl-tools { display: flex; gap: 8px; margin-top: auto; padding-top: 6px; }
+/* Tools share the row equally. The basis follows the text size, so at the
+   default size all three fit on a 320px phone and with larger text the row
+   wraps onto more lines instead of overflowing. */
+.pl-tools { display: flex; flex-wrap: wrap; gap: 8px; margin-top: auto; padding-top: 6px; }
 .pl-tool {
-  flex: 1 1 0;
+  flex: 1 1 calc(4.5 * var(--text-body));
   min-width: 0;
   min-height: 48px;
   display: inline-flex;
@@ -439,12 +447,12 @@ strong.pl-card-title,
   background: var(--surface);
   color: var(--text);
   font-size: var(--text-subhead);
-  line-height: 18px;
+  line-height: calc(18 * var(--type-unit));
   font-weight: 500;
   text-align: center;
   cursor: pointer;
 }
-.pl-tool:hover { background: var(--surface-2); }
+@media (hover: hover) { .pl-tool:hover { background: var(--surface-2); } }
 .pl-tool svg { width: 24px; height: 24px; color: var(--text-secondary); }
 .pl-tool-speed { font-size: var(--text-body); font-weight: var(--weight-bold); font-variant-numeric: tabular-nums; }
 .pl-tool-count { font-variant-numeric: tabular-nums; }
@@ -509,6 +517,8 @@ strong.pl-card-title,
   gap: 14px;
   width: 100%;
   min-height: 52px;
+  /* Rows in the scrolling list keep their content height at large text. */
+  flex-shrink: 0;
   padding: 6px 4px;
   border: 0;
   border-bottom: 1px solid var(--border);
@@ -523,7 +533,7 @@ strong.pl-card-title,
 }
 .pl-more-row[hidden] { display: none; }
 .pl-more-row::-webkit-details-marker { display: none; }
-.pl-more-row:hover:not(:disabled) { background: var(--surface-2); }
+@media (hover: hover) { .pl-more-row:hover:not(:disabled) { background: var(--surface-2); } }
 .pl-more-row:disabled { color: var(--text-secondary); cursor: default; }
 .pl-more-row svg { width: 24px; height: 24px; color: var(--text-secondary); }
 .pl-more-rebuild::before {
@@ -615,9 +625,11 @@ strong.pl-card-title,
   #player-view .pl-transport { gap: 8px; justify-content: space-between; }
   #player-view .pl-tools { margin-top: 12px; }
   #player-view .pl-tool,
-  #player-view .pl-card,
-  #player-view .pl-narr-line:hover,
-  #player-view .pl-tbtn:hover { background: var(--surface-2); }
+  #player-view .pl-card { background: var(--surface-2); }
+  @media (hover: hover) {
+    #player-view .pl-narr-line:hover,
+    #player-view .pl-tbtn:hover { background: var(--surface-2); }
+  }
   #player-view .pl-chip:not([aria-pressed="true"]),
   #player-view .pl-btn-secondary { background: var(--surface-raised); }
   /* Toasts centre on the library column, clear of the pane. */
@@ -670,7 +682,7 @@ strong.pl-card-title,
     text-align: left;
     cursor: pointer;
   }
-  .pl-up-next-row:hover { background: var(--surface-2); }
+  @media (hover: hover) { .pl-up-next-row:hover { background: var(--surface-2); } }
   .pl-up-next-row:focus-visible { outline: 3px solid var(--focus-ring); outline-offset: -3px; }
   .pl-up-next-cover { width: 34px; height: 50px; flex: none; border-radius: 3px; object-fit: cover; background: var(--surface-2); }
   .pl-up-next-text { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; }

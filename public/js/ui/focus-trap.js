@@ -37,6 +37,23 @@ export function trapFocus(container, { initialFocus = null } = {}) {
 
   const initial = initialFocus || getFocusable(container)[0] || container;
   initial?.focus({ preventScroll: true });
+  // A sheet that has just become visible may still be visibility: hidden
+  // for one frame (reduced motion turns every change into a 0.01ms
+  // transition, visibility included), and focus() on a hidden element does
+  // nothing. Try again once it is shown, unless focus has moved on.
+  let released = false;
+  if (initial && document.activeElement !== initial) {
+    let frames = 0;
+    const retry = () => {
+      if (released || !initial.isConnected) return;
+      const active = document.activeElement;
+      if (active === initial || (active && active !== previouslyFocused && container.contains(active))) return;
+      initial.focus({ preventScroll: true });
+      // Give up after about half a second rather than chase the user.
+      if (document.activeElement !== initial && ++frames < 30) requestAnimationFrame(retry);
+    };
+    requestAnimationFrame(retry);
+  }
 
   function onKeydown(e) {
     if (e.key !== 'Tab') return;
@@ -58,6 +75,7 @@ export function trapFocus(container, { initialFocus = null } = {}) {
   container.addEventListener('keydown', onKeydown);
 
   return function release() {
+    released = true;
     container.removeEventListener('keydown', onKeydown);
     if (originalTabIndex === null) container.removeAttribute('tabindex');
     if (previouslyFocused?.isConnected && typeof previouslyFocused.focus === 'function') {
