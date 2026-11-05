@@ -1789,7 +1789,7 @@ const transformNarrationText = async ({ text, bookId }) => pronunciationService
   : text;
 async function splitTransformedNarration({ text, bookId, chunkSize, textTransform = transformNarrationText, splitter } = {}) {
   const transformed = await textTransform({ text, bookId });
-  return (splitter || chunkedTTS.splitIntoChunks.bind(chunkedTTS))(transformed, chunkSize);
+  return (splitter || chunkedTTS.planChunks.bind(chunkedTTS))(transformed, chunkSize);
 }
 async function validateRecordedNarrationVariant({ variantKey, voice }) {
   if (typeof voice !== 'string' || !voice) {
@@ -1906,7 +1906,9 @@ async function importWithStorageAdmission(command, progress) {
 function pronunciationChunkVariants() {
   const variants = [chunkedTTS, instantChunkedTTS].map(tts => ({
     variantSegment: tts.currentVariantSegment(),
-    splitIntoChunks: text => tts.splitIntoChunks(text, tts.getActiveChunkSize())
+    // chunkedTTS is the service's primary splitter; the repair reuses its plans.
+    primary: tts === chunkedTTS,
+    splitIntoChunks: text => tts.planChunks(text, tts.getActiveChunkSize(), null, { retain: false })
   }));
   return variants.filter((variant, index) => variants.findIndex(candidate => candidate.variantSegment === variant.variantSegment) === index);
 }
@@ -1928,7 +1930,9 @@ pronunciationService = createPronunciationService({
   jsonStore,
   loadBooks: () => loadJSON(BOOKS_FILE, {}),
   getChapters: (_bookId, book) => getChaptersCached(book.path),
-  splitIntoChunks: text => chunkedTTS.splitIntoChunks(text, chunkedTTS.getActiveChunkSize()),
+  // Repair sweeps plan every affected chapter twice; keep those plans out of
+  // the shared cache so listeners' resident plans survive the sweep.
+  splitIntoChunks: text => chunkedTTS.planChunks(text, chunkedTTS.getActiveChunkSize(), null, { retain: false }),
   chunkVariants: pronunciationChunkVariants,
   beforeInvalidate: affected => Promise.all(affected.map(item => quiescePronunciationWorkers(item, [
     chunkedTTS,
@@ -4874,7 +4878,6 @@ async function backfillNarrationArtifacts() {
   try {
     const books = await loadJSON(BOOKS_FILE, {});
     let indexed = 0;
-    let chaptersVisited = 0;
     for (const [bookId, book] of Object.entries(books)) {
       if (!book?.path || deletedBookIds.has(bookId)) continue;
       const variants = [getActiveVoice(bookId), getActiveInstantVoice(bookId)]
@@ -4897,9 +4900,8 @@ async function backfillNarrationArtifacts() {
             book.language || 'en',
             { voice: variant.voice }
           );
-        }
-        chaptersVisited++;
-        if (chaptersVisited % 10 === 0) {
+          // Plans run off the main thread; still yield between chapters so
+          // request handlers interleave with the sweep's hashing and stats.
           await new Promise(resolve => setImmediate(resolve));
         }
       }

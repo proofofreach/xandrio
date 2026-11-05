@@ -424,6 +424,47 @@ trackAsyncTest('Manifest tracking', (async () => {
 
 // ─── Durable ordinary generation recovery ──────────────────────────────────
 
+section('Voice change during planning');
+
+trackAsyncTest('Voice change during planning', (async () => {
+  // The global workers read their voice from providers. A voice switch while
+  // the plan is awaited must not pair one voice's chunks with another voice's
+  // variant key or journal fields.
+  const text = ['First paragraph here.', 'Second paragraph here.', 'Third paragraph here.'].join('\n\n');
+  const makeWorker = () => {
+    let voice = 'a';
+    const journal = { puts: [], async putChapter(entry) { this.puts.push(entry); } };
+    const tts = new ChunkedTTS('/tmp/test-cache', new MockQueue(), {
+      variantKeyProvider: () => `variant-${voice}`,
+      splitPolicyProvider: () => (voice === 'a' ? 'legacy-v1' : 'paragraph-v1'),
+      chunkSizeProvider: () => (voice === 'a' ? 4000 : 160),
+      generationJournal: journal
+    });
+    tts._fileExists = async () => false;
+    return { tts, journal, setVoice: next => { voice = next; } };
+  };
+
+  const once = makeWorker();
+  let plans = 0;
+  const plan = once.tts.planChunksWithMeta.bind(once.tts);
+  once.tts.planChunksWithMeta = (...args) => { if (++plans === 1) once.setVoice('b'); return plan(...args); };
+  const manifest = await once.tts.generateChapter('switch', 0, text);
+  assertEqual(plans, 2, 'a voice switch during planning replans once');
+  assertEqual(manifest.totalChunks, 3, 'the manifest uses the new voice policy (one paragraph per chunk)');
+  assertEqual(once.journal.puts[0].variantKey, 'variant-b', 'the journal records the planned variant');
+  assertEqual(once.journal.puts[0].splitPolicy, 'paragraph-v1', 'the journal records the planned split policy');
+  assertEqual(once.journal.puts[0].chunkSize, 160, 'the journal records the planned chunk size');
+
+  const flapping = makeWorker();
+  let flips = 0;
+  const flapPlan = flapping.tts.planChunksWithMeta.bind(flapping.tts);
+  flapping.tts.planChunksWithMeta = (...args) => { flapping.setVoice(++flips % 2 ? 'b' : 'a'); return flapPlan(...args); };
+  let error;
+  try { await flapping.tts.generateChapter('flap', 0, text); } catch (caught) { error = caught; }
+  assertEqual(error?.name, 'AbortError', 'a voice that keeps changing aborts generation instead of recording a mismatch');
+  assertEqual(flapping.journal.puts.length, 0, 'an aborted plan writes nothing to the journal');
+})());
+
 section('Durable ordinary generation recovery');
 
 trackAsyncTest('Durable ordinary generation recovery', (async () => {

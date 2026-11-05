@@ -87,7 +87,7 @@ function createRoutes(overrides = {}) {
       getSplitPolicyForVoice: voiceId => (voiceId.startsWith('kokoro') ? 'ramp-v1' : voiceId === 'edge:c' ? 'hybrid-v1' : 'legacy'),
       getTTSVariantKeyForVoice: voiceId => voiceId.replace(':', '-'),
       chunkedTTS: {
-        splitIntoChunks(_text, size, policy) {
+        async planChunks(_text, size, policy) {
           plannedSizes.push(`${policy}:${size}`);
           const length = size === 300 ? 3 : policy === 'hybrid-v1' ? 4 : 2;
           return Array.from({ length }, (_value, index) => `chunk ${index}`);
