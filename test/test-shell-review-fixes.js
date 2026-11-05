@@ -171,7 +171,7 @@ async function main() {
     await browser.close();
     await environment.close();
   }
-  console.log(`Shell review fixes: ${passed} checks passed`);
+  console.log(`Shell review fixes: ${passed} passed, 0 failed`);
 }
 
 main().catch(error => {
