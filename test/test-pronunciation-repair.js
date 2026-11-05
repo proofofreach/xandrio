@@ -7,6 +7,7 @@ const jsonStore = require('../lib/json-store');
 const {
   PronunciationError,
   applyPronunciationRules,
+  collectAffectedChapters,
   createCacheInvalidator,
   createPronunciationService,
   effectiveRules
@@ -232,6 +233,51 @@ function fakeResponse() {
   console.error = originalConsoleError;
   assertEqual(internalResponse.statusCode, 500, 'unexpected route failures return 500');
   assertEqual(internalResponse.body.error, 'Failed to manage pronunciation rules', 'unexpected route failures hide internal details');
+
+  // collectAffectedChapters: unchanged results, and yields between chapters
+  {
+    const rule = { id: 'r1', source: 'Zed', replacement: 'Zee', caseSensitive: false, wholeWord: true };
+    const beforeStore = { global: [], books: {} };
+    const afterStore = { global: [rule], books: {} };
+    const makeChapters = count => Array.from({ length: count }, (_, i) => ({ text: i % 5 === 0 ? `Hi Zed ${i}. Bye.` : `Plain ${i}.` }));
+    const books = { a: {}, b: {} };
+    let plans = 0;
+    let yields = 0;
+    const events = [];
+    const result = await collectAffectedChapters({
+      beforeStore,
+      afterStore,
+      scope: 'global',
+      loadBooks: async () => books,
+      getChapters: async () => makeChapters(45),
+      splitIntoChunks: text => { plans++; events.push('plan'); return text.split(' '); },
+      chunkVariants: () => [{ variantSegment: '_ttsabcdef0123', splitIntoChunks: text => { events.push('plan'); return text.split('.'); } }],
+      yieldFn: async () => { yields++; events.push('yield'); }
+    });
+    const expectedIndices = [0, 5, 10, 15, 20, 25, 30, 35, 40];
+    assertEqual(result.length, expectedIndices.length * 2, 'collectAffectedChapters reports the same affected chapters');
+    assertEqual(JSON.stringify(result.slice(0, expectedIndices.length).map(item => item.chapterIndex)), JSON.stringify(expectedIndices), 'collectAffectedChapters keeps chapter indices');
+    assertEqual(result[0].bookId, 'a', 'collectAffectedChapters keeps book ids');
+    assertEqual(result[0].fromChunkIndex, 1, 'collectAffectedChapters keeps fromChunkIndex');
+    assertEqual(result[0].fromChunkIndexByVariant._ttsabcdef0123, 0, 'collectAffectedChapters keeps variant boundaries');
+    assertEqual(plans, result.length * 2, 'collectAffectedChapters plans before and after once per affected chapter');
+    // 18 planned chapters yield once each; 72 skipped chapters add floor(72/20) = 3.
+    assertEqual(yields, result.length + 3, 'collectAffectedChapters yields after each planned chapter and every 20 skipped');
+    const firstYield = events.indexOf('yield');
+    assertEqual(events.slice(0, firstYield).filter(e => e === 'plan').length, 4, 'collectAffectedChapters yields before planning the next chapter');
+    const sameStore = await collectAffectedChapters({
+      beforeStore, afterStore: beforeStore, scope: 'global',
+      loadBooks: async () => books, getChapters: async () => makeChapters(45), splitIntoChunks: () => [],
+      yieldFn: async () => { yields++; }
+    });
+    assertEqual(sameStore.length, 0, 'collectAffectedChapters reports nothing when rules are unchanged');
+    // default yield function works without injection
+    const defaulted = await collectAffectedChapters({
+      beforeStore, afterStore, scope: 'book', bookId: 'a',
+      loadBooks: async () => books, getChapters: async () => makeChapters(6), splitIntoChunks: text => text.split(' ')
+    });
+    assertEqual(defaulted.length, 2, 'collectAffectedChapters works with the default setImmediate yield');
+  }
 
   await fsp.rm(tempDir, { recursive: true, force: true });
   console.log(`\n${passed} passed, ${failed} failed`);
