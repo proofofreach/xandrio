@@ -61,10 +61,26 @@ async function test(name, fn) {
     assert.strictEqual(status.isFailedFor('7', 4), false);
     assert.strictEqual(status.isFailedFor('8', 3), false);
     status.set({ state: 'failed', bookId: 'open', chapterIndex: null, title: "Couldn't open this book" });
-    assert.strictEqual(status.isFailedFor('open', 0), true, 'an open failure covers any chapter');
-    status.set({ state: 'preparing', bookId: 'open', chapterIndex: 0 });
-    assert.strictEqual(status.isFailedFor('open', 0), false);
+    assert.strictEqual(status.isFailedFor('open', null), true, 'a failed open matches itself');
+    assert.strictEqual(status.isFailedFor('open', 0), false, 'a failed open is not a chapter failure');
+    assert.strictEqual(status.isFailedFor('open', 5), false, 'nor a failure on a later chapter');
+    status.set({ state: 'preparing', bookId: 'open', chapterIndex: null });
+    assert.strictEqual(status.isFailedFor('open', null), false, 'a new open intent clears it');
     assert.strictEqual(status.get().retry, false, 'only failure states carry Retry');
+  });
+
+  await test('Dismiss acknowledges a failure: the status goes idle and stops reporting', () => {
+    const seen = [];
+    const status = createPlayerStatus({ onChange: value => seen.push(value) });
+    status.set({ state: 'failed', bookId: 'b', chapterIndex: 2, title: "Couldn't play this chapter", retry: true });
+    assert.strictEqual(playerStatusShortLabel(status.get()), "Couldn't play this chapter");
+    // app.js dismissPlayerFailure: same book and chapter, state idle.
+    const before = status.get();
+    status.set({ state: 'idle', bookId: before.bookId, chapterIndex: before.chapterIndex });
+    assert.strictEqual(seen.at(-1).state, 'idle', 'subscribers (mini player, Audio Activity) are told');
+    assert.strictEqual(status.isFailedFor('b', 2), false);
+    assert.strictEqual(playerStatusShortLabel(status.get()), '', 'no failure words remain');
+    assert.strictEqual(status.get().retry, false);
   });
 
   await test('compact surfaces get a short state word', () => {

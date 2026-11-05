@@ -738,8 +738,14 @@ function startAudioLoadingPoll() {
 
 // A failure card is replaced only by a new load intent (app.js resets the
 // status first), never by a late "still preparing" engine callback.
+// Ownership needs both: a failure status and its card on screen. Once the
+// card is dismissed (status idle) or replaced, ordinary updates paint again.
+function statusOwnsCard() {
+  return Boolean(audioLoading && audioLoading.dataset.owner === 'status' && isShownEl(audioLoading));
+}
+
 function failureOwnsCard() {
-  return isPlayerFailureState(deps.getPlayerStatus?.()?.state);
+  return isPlayerFailureState(deps.getPlayerStatus?.()?.state) && statusOwnsCard();
 }
 
 export function showAudioLoading(text, options = {}) {
@@ -845,14 +851,22 @@ function renderOverlayActions(options) {
   dismissBtn.type = 'button';
   dismissBtn.className = 'pl-btn pl-btn-secondary';
   dismissBtn.textContent = options.dismissOnly ? 'OK' : 'Dismiss';
-  dismissBtn.addEventListener('click', () => hideAudioLoading());
+  const ownedByStatus = options.toastKey === 'player-failure';
+  dismissBtn.addEventListener('click', () => {
+    hideAudioLoading();
+    if (ownedByStatus) deps.dismissPlayerFailure?.();
+  });
   if (options.dismissOnly) {
     audioLoadingActions.append(dismissBtn);
     audioLoadingActions.hidden = false;
     return;
   }
   const retry = () => {
-    hideAudioLoading();
+    // A status-owned card stays until the status model repaints it (the
+    // retry's new intent replaces it with progress, then the card or a
+    // playable player). Hiding it first left a blank player on a failed
+    // deep-link retry.
+    if (!ownedByStatus) hideAudioLoading();
     if (typeof options.onRetry === 'function') options.onRetry();
     else deps.loadChapter?.(deps.getCurrentChapter?.());
   };
@@ -883,7 +897,8 @@ function renderOverlayActions(options) {
     buttons.push(altBtn);
   }
   dismissBtn.className = 'pl-textbtn pl-card-dismiss';
-  audioLoadingActions.append(...buttons, dismissBtn);
+  if (options.dismiss !== false) buttons.push(dismissBtn);
+  audioLoadingActions.append(...buttons);
   audioLoadingActions.hidden = false;
 }
 
@@ -910,6 +925,9 @@ export function renderPlayerStatus(status = deps.getPlayerStatus?.()) {
         toastKey: 'player-failure',
         retry: status.retry,
         instant: status.instant,
+        // A book that never opened has nothing behind the card, so the card
+        // stays (close the player to leave); a chapter failure can be dismissed.
+        dismiss: status.chapterIndex !== null,
         onRetry: () => deps.retryPlayerFailure?.()
       });
     }
