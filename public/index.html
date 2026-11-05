@@ -13,14 +13,14 @@
   <link rel="manifest" href="/manifest.webmanifest">
   <title>Xandrio - Audiobook Library</title>
   <!-- ?v= values must match ASSET_VERSIONS in sw.js (single source of truth) -->
-  <link rel="stylesheet" href="style-v3.css?v=124">
-  <link rel="stylesheet" href="composition.css?v=9">
-  <link rel="stylesheet" href="library-composition.css?v=8">
-  <link rel="stylesheet" href="shell.css?v=4">
-  <link rel="stylesheet" href="sheets.css?v=2">
-  <link rel="stylesheet" href="settings.css?v=2">
-  <link rel="stylesheet" href="player.css?v=2">
-  <link rel="stylesheet" href="find.css?v=2">
+  <link rel="stylesheet" href="style-v3.css?v=125">
+  <link rel="stylesheet" href="composition.css?v=10">
+  <link rel="stylesheet" href="library-composition.css?v=9">
+  <link rel="stylesheet" href="shell.css?v=5">
+  <link rel="stylesheet" href="sheets.css?v=3">
+  <link rel="stylesheet" href="settings.css?v=3">
+  <link rel="stylesheet" href="player.css?v=3">
+  <link rel="stylesheet" href="find.css?v=3">
   <script src="/js/ios-focus-zoom.js?v=2" defer></script>
   <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=2">
 </head>
@@ -1689,7 +1689,7 @@
     </ul>
   </nav>
 
-  <div id="operator-notice-dialog" class="modal operator-notice-dialog" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="operator-notice-title">
+  <div id="operator-notice-dialog" class="modal operator-notice-dialog" role="dialog" aria-modal="true" aria-hidden="true" inert aria-labelledby="operator-notice-title">
     <section class="modal-content operator-notice-content">
       <p class="operator-notice-eyebrow">Operator acknowledgement</p>
       <h3 id="operator-notice-title">This is your self-hosted instance</h3>
@@ -1706,6 +1706,6 @@
   </div>
 
   <script src="/js/lifecycle.js?v=2"></script>
-  <script type="module" src="app.js?v=165"></script>
+  <script type="module" src="app.js?v=166"></script>
 </body>
 </html>
