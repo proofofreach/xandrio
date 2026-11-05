@@ -1,8 +1,8 @@
 import { apiGet, apiSend, getCurrentUser } from '../api.js';
 import { escapeHTML, safeAttr, relativeTime, coverImageHTML, cssEscape, formatTime } from '../util/format.js';
-import { bookTimeLeft, chapterDurationsFor, effectiveSpeed, formatDuration, formatSpeed } from '../util/time-left.mjs';
+import { bookTimeLeft, chapterDurationsFor, effectiveSpeed, formatDuration, formatSpeed, sameSpeed } from '../util/time-left.mjs';
 import { deviceState, narrationState, primaryState, statusLineVariants, gridTimeVariants } from '../util/library-status.mjs';
-import { chapterPositionLabel } from '../util/chapter-labels.mjs';
+import { chapterNumbering, chapterPositionLabel } from '../util/chapter-labels.mjs';
 import { effectiveSpeedForBook, getReferencePlaybackSpeed } from './playback-speed.js';
 import { readJSON, writeJSON, readText, writeText } from '../util/storage.js';
 import { getClientSettings } from '../client-settings.js';
@@ -97,6 +97,10 @@ export function cacheBookMeta(bookId, meta) {
 
 // Use the player's semantic structure. A raw section index is not a chapter
 // number: front matter and part dividers do not count as chapters.
+// This is the chapter-number slot of library rows, grid cells, the Continue
+// strip and the Recent sheet: it holds "Ch 4 of 40" (or "Ch 4") or nothing.
+// A section without a number (Prologue, Copyright) leaves the slot empty
+// rather than putting a name where a number belongs.
 export function resumeChapterLabel(bookId, chapterIndex, { withTotal = false } = {}) {
   const meta = getCachedBookMeta(bookId);
   const book = booksById.get(String(bookId));
@@ -105,6 +109,7 @@ export function resumeChapterLabel(bookId, chapterIndex, { withTotal = false } =
   const chapters = meta?.chapterStructure;
   const index = Number(chapterIndex);
   if (!Array.isArray(chapters) || !Number.isInteger(index) || index < 0 || index >= chapters.length) return '';
+  if (!chapterNumbering(chapters).numbers[index]) return '';
   return chapterPositionLabel(chapters, index, { short: true, withTotal });
 }
 
@@ -327,13 +332,17 @@ function gridLinesHTML(model) {
     <span class="book-grid-line" data-fit="${fitAttr(states)}">${states[0]}</span>`;
 }
 
-// Desktop table columns: "9h 12m at 1.25×" (the table has room to state
-// every row's speed) and the narration state in words.
+// Desktop table columns: "9h 12m" under the "Time left at 1.25×" header
+// ("9h 12m at 1.0×" only for a book with its own speed) and the narration
+// state in words.
 function tableColumnsHTML(model) {
   let time = model.fallbackTime || '—';
   if (model.timeLeft === 0) time = 'Finished';
   else if (model.timeLeft !== null) time = formatDuration(model.timeLeft);
-  const speed = model.timeLeft ? `<span class="book-col-muted"> at ${escapeHTML(formatSpeed(model.speed))}</span>` : '';
+  // The column header states the reference speed; a row repeats a speed
+  // only when the book has its own.
+  const ownSpeed = model.timeLeft && !sameSpeed(model.speed, model.referenceSpeed);
+  const speed = ownSpeed ? `<span class="book-col-muted"> at ${escapeHTML(formatSpeed(model.speed))}</span>` : '';
   const word = model.narration || (model.device.kind === 'prepared' ? model.device : null) || model.context;
   const status = word ? stateHTML(word.long, word.warn) : '—';
   return `
@@ -375,7 +384,9 @@ function offlineControlContents(model) {
         ${glyph}<span class="offline-btn-label">${escapeHTML(label)}</span>
       </button>`;
   }
-  const label = device.column && device.column !== '—' ? device.column : device.long;
+  // Inert states (offline, unavailable) name themselves with the short word
+  // ("Offline"), which fits the column; the long form stays in the label.
+  const label = device.column && device.column !== '—' ? device.column : (device.short || device.long);
   return `
     <span class="book-local-state offline-btn offline-btn--${safeAttr(device.glyph)} is-inert" role="img"
           title="${safeAttr(model.status.label || device.long)}" aria-label="${safeAttr(`${device.long}: ${title}`)}">
@@ -1064,8 +1075,11 @@ function sizeSortSelect() {
 // "Time left at 1.25×": the speed is stated once for the whole list; a row
 // whose book has its own speed says so inline.
 function syncSpeedNote() {
+  const text = `Time left at ${formatSpeed(getReferencePlaybackSpeed())}`;
   const note = document.getElementById('library-speed-note');
-  if (note) note.textContent = `Time left at ${formatSpeed(getReferencePlaybackSpeed())}`;
+  if (note) note.textContent = text;
+  const head = document.getElementById('library-table-time-head');
+  if (head) head.textContent = text;
 }
 
 function setViewMode(mode) {

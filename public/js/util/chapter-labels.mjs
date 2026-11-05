@@ -33,7 +33,7 @@ const NON_NARRATIVE_TYPES = new Set([
   'divider'
 ]);
 
-function isNarrativeChapter(chapter) {
+export function isNarrativeChapter(chapter) {
   return Boolean(chapter && !chapter.empty && !NON_NARRATIVE_TYPES.has(chapter.type));
 }
 
@@ -189,6 +189,18 @@ export function chapterPositionLabel(chapters, currentIndex, { short = false, wi
     return withTotal ? `${word} ${number} of ${total}` : `${word} ${number}`;
   }
   return expandNumericChapterTitle(list[index]?.title) || `Section ${index + 1}`;
+}
+
+// True when a displayed title already starts with the chapter's number
+// ("6. That he has received…" for chapter 6), so a number column would
+// repeat it.
+export function titleLeadingNumber(title) {
+  return chapterNumberFromTitle(title);
+}
+
+export function titleRepeatsChapterNumber(title, number) {
+  const value = Number(number);
+  return Number.isFinite(value) && value > 0 && chapterNumberFromTitle(title) === value;
 }
 
 // The chapter sheet's number column ("01"), same rule.

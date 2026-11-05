@@ -64,12 +64,14 @@ const RIGHTS_STATUS_GROUPS = {
   'operator-configured': 'catalogs'
 };
 
+// One name per source on every Find surface: chips, the filter summary,
+// result rows and source messages.
 const SEARCH_SOURCES = [
-  { id: 'standardebooks', label: 'Standard', group: 'open' },
-  { id: 'gutenberg', label: 'Gutenberg', group: 'open' },
-  { id: 'annas', label: "Anna's", group: 'libraries' },
-  { id: 'zlibrary', label: 'Z-Lib', group: 'libraries' },
-  { id: 'internetarchive', label: 'Archive', group: 'libraries' },
+  { id: 'standardebooks', label: 'Standard Ebooks', group: 'open' },
+  { id: 'gutenberg', label: 'Project Gutenberg', group: 'open' },
+  { id: 'annas', label: "Anna's Archive", group: 'libraries' },
+  { id: 'zlibrary', label: 'Z-Library', group: 'libraries' },
+  { id: 'internetarchive', label: 'Internet Archive', group: 'libraries' },
   { id: 'opds', label: 'My catalog', group: 'catalogs' }
 ];
 
@@ -86,17 +88,8 @@ function sourcePillLabel(source) {
   return serverLabel && serverLabel !== 'OPDS' ? serverLabel : source.label;
 }
 
-// Spelled-out names for the filter summary line ("Anna's Archive", not "Anna's").
-const SOURCE_FULL_NAMES = {
-  standardebooks: 'Standard Ebooks',
-  gutenberg: 'Project Gutenberg',
-  annas: "Anna's Archive",
-  zlibrary: 'Z-Library',
-  internetarchive: 'Internet Archive'
-};
-
 function sourceFullName(source) {
-  return SOURCE_FULL_NAMES[source.id] || sourcePillLabel(source);
+  return sourcePillLabel(source);
 }
 
 // Search Functions
@@ -631,7 +624,7 @@ function effectiveDefaultSources() {
   return firstAvailable ? [firstAvailable.id] : [];
 }
 
-// Chip status is always words: "Z-Lib · offline", "Anna's · 12", "· searching".
+// Chip status is always words: "Z-Library · offline", "Anna's Archive · 12 found".
 function sourceValue(source, selected, configured) {
   if (!configured) return 'not set up';
   if (searchInProgress && selected) return '<span class="source-spinner" aria-hidden="true"></span>searching';
@@ -1232,16 +1225,8 @@ async function downloadBook(result) {
 
 
 function getSourceLabel(source) {
-  if (source === 'zlibrary') return 'Z-Library';
-  if (source === 'annas') return 'Anna\'s Archive';
-  if (source === 'gutenberg') return 'Project Gutenberg';
-  if (source === 'internetarchive') return 'Internet Archive';
-  if (source === 'standardebooks') return 'Standard Ebooks';
-  if (source === 'opds') {
-    const serverLabel = sourceAvailability.get('opds')?.label;
-    return serverLabel && serverLabel !== 'OPDS' ? serverLabel : 'My catalog';
-  }
-  return 'Book source';
+  const known = SEARCH_SOURCES.find(item => item.id === source);
+  return known ? sourcePillLabel(known) : 'Book source';
 }
 
 

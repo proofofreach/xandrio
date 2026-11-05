@@ -48,6 +48,7 @@ const APP_SHELL = [
   '/js/playback-session.js',
   '/js/smart-rewind.mjs',
   '/js/playback-health.mjs',
+  '/js/player-status.mjs',
   '/js/auto-sleep-schedule.mjs',
   '/js/single-file-chapter-player.js',
   '/js/util/format.js',

@@ -550,3 +550,54 @@
 #search-view .search-sort-wrap > span { display: none; }
 #search-view .search-results .empty-icon { width: auto; height: auto; padding: 0; background: none; display: block; line-height: 0; }
 #search-view .result-card-edition-meta span + span::before { content: none; display: none; }
+
+/* ==================== WIDE LAYOUT (review fix) ==================== */
+/* One reading column: the header, the search row, the filters and the
+   results share the 760px measure the result rows already use, so the input
+   is never a narrow side column and its full placeholder fits. */
+@media (min-width: 760px) {
+  #search-view .search-header,
+  #search-view .search-content-workspace { max-width: 760px; }
+  #search-view .search-content-workspace { display: block; }
+  #search-view .search-workspace { margin-bottom: var(--space-4); }
+
+  /* Filters: language beside the sources; source groups and their chips
+     wrap into a grid instead of scrolling sideways. */
+  #search-view .search-filter-panel:not([hidden]) {
+    display: grid;
+    grid-template-columns: 180px minmax(0, 1fr);
+    gap: var(--space-4) var(--space-6);
+    padding-top: var(--space-3);
+  }
+  #search-view .search-language-filter { width: auto; }
+  #search-view .search-source-controls {
+    display: grid;
+    gap: var(--space-4);
+    overflow: visible;
+    align-items: start;
+  }
+  #search-view .search-source-group { flex: none; }
+  #search-view .search-source-group-pills {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(176px, 1fr));
+  }
+  #search-view .search-source-pill { justify-content: flex-start; border-radius: var(--radius); }
+  #search-view .search-filter-sheet-header { grid-column: 1 / -1; }
+}
+@media (min-width: 1200px) {
+  #search-view .search-source-group-pills { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+/* Upload a file is a secondary text action, so Search stays the one
+   primary button on the screen. */
+#search-view .book-drop-zone {
+  min-height: 44px;
+  padding: 0 var(--space-2);
+  border: 0;
+  background: transparent;
+  color: var(--accent-text);
+}
+#search-view .book-drop-zone:hover { background: var(--surface-2); border-color: transparent; }
+#search-view .book-drop-label { flex: none; }
+#search-view .search-header .book-drop-zone { width: auto; justify-content: flex-start; }
+#search-view #upload-btn { min-width: 0; }

@@ -372,8 +372,12 @@ function fakeAudio() {
     const { navigateChapterSelection } = await import(require('url').pathToFileURL(
       path.join(__dirname, '..', 'public', 'js', 'chapter-navigation.mjs')
     ).href);
+    const playerStatusModule = await import(require('url').pathToFileURL(
+      path.join(__dirname, '..', 'public', 'js', 'player-status.mjs')
+    ).href);
     const appImports = {
       ...chapterPlayability,
+      ...playerStatusModule,
       navigateChapterSelection,
       apiGet: (...args) => appImports.apiGetImpl(...args),
       getBookPlaybackSettings: async () => ({}),
@@ -1128,7 +1132,7 @@ function fakeAudio() {
         'a handled 429 does not also fall through to the manual prompt'
       );
       assert(
-        appImports.toasts.some(([message]) => /12s/.test(message)),
+        appImports.toasts.some(([message]) => /12 seconds/.test(message)),
         'the user is told how long to wait, from Retry-After'
       );
 

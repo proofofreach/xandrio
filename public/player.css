@@ -123,6 +123,11 @@ body #player-view.view.active {
   box-shadow: 0 12px 28px oklch(4% 0.01 255 / .3);
   object-fit: contain;
 }
+/* Light ground: a dark drop shadow reads as a smear under the cover. A short
+   soft shadow and a hairline edge separate pale covers from the page. */
+@media (prefers-color-scheme: light) {
+  .pl-cover { box-shadow: 0 0 0 1px oklch(20% 0.01 255 / .08), 0 4px 12px oklch(20% 0.01 255 / .12); }
+}
 /* A card needs room; the cover shrinks so the transport stays put. */
 #player-view:has(.pl-narration[data-mode="card"], .pl-narration[data-mode="failed"]) .pl-cover {
   max-height: min(var(--pl-cover-max), var(--pl-cover-card));
@@ -451,16 +456,15 @@ strong.pl-card-title,
 .pl-sleep.active svg { color: var(--accent-text); }
 .pl-tool.is-confirming .inline-confirmation { background-color: var(--surface); }
 
-/* Toasts dock under the player nav (phone and tablet), never over transport. */
+/* Toasts dock just above the tools row (phone and tablet): never over the
+   artwork or the transport. toast.js reads the anchor and avoid selectors;
+   on a short screen it covers the tools row briefly instead. Player failures
+   go to the inline card, which suppresses their toasts. */
 @media (max-width: 1199px) {
   body[data-view="player"] .toast {
-    /* toast.js reads this and never adds a bottom inset (P1-1). */
-    --toast-dock: top;
-    top: calc(max(4px, var(--safe-top)) + 50px);
-    bottom: auto;
-    transform: translate(-50%, -8px);
+    --toast-anchor: "#player-view.active .pl-tools";
+    --toast-avoid: "#player-view.active .pl-transport";
   }
-  body[data-view="player"] .toast.show { transform: translate(-50%, 0); }
 }
 
 /* Short phones: the cover gives way first. */
@@ -674,4 +678,49 @@ strong.pl-card-title,
   .pl-up-next-sub { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .pl-up-next-name { font-size: var(--text-body); line-height: var(--leading-body); font-weight: var(--weight-semibold); }
   .pl-up-next-sub { color: var(--text-secondary); font-size: var(--text-subhead); line-height: var(--leading-subhead); font-variant-numeric: tabular-nums; }
+}
+
+/* ==================== PLAYBACK STATUS CARD ==================== */
+/* One card for a failed open or chapter (js/player-status.mjs): tinted, a
+   warning glyph and words, Retry, and the instant narrator where it applies.
+   Selectors carry #player-view so the docked pane's surface rule above
+   cannot flatten the tint. */
+#player-view #audio-loading[data-status="error"] {
+  background: var(--danger-bg);
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--danger) 28%, transparent);
+}
+#player-view #audio-loading[data-status="engine"] {
+  background: color-mix(in oklab, var(--warning-text) 14%, var(--surface));
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--warning-text) 30%, transparent);
+}
+#audio-loading[data-status="engine"] .pl-glyph-warn { display: block; color: var(--warning-text); }
+#audio-loading[data-status="engine"] .pl-bar { display: none; }
+#audio-loading[data-status="engine"] .pl-card-sub { color: var(--text); }
+#player-view:has(#audio-loading[data-status="engine"]) .pl-cover {
+  max-height: min(var(--pl-cover-max), var(--pl-cover-card));
+}
+
+/* Preparing: the play button keeps its full amber fill and a dark glyph
+   (well above 3:1 in both schemes); the hourglass and aria-busy say "not yet". */
+.pl-play.is-preparing,
+.pl-play:disabled { background: var(--accent); color: var(--on-accent); opacity: 1; cursor: progress; }
+.mini-player-btn.is-preparing { color: var(--text); cursor: progress; }
+
+/* ••• menu: an unavailable row explains itself in a quiet footnote. */
+.pl-more-row:disabled .pl-more-sub {
+  color: var(--text-muted);
+  font-size: var(--text-footnote);
+  line-height: var(--leading-footnote);
+}
+
+/* A deep link whose book could not be opened: no chapter, position or
+   transport to show, only the identity and the failure card. */
+#player-view[data-book="none"] :is(.pl-narr-line, .pl-chrow, .pl-scrub, .pl-bookline, .pl-transport, .pl-tools) { display: none; }
+
+/* The one-time "Press and hold the player bar" hint steps aside while an
+   error toast shows: one message at a time, and the toast drops back to its
+   usual place above the mini player. */
+body:has(.toast.toast--error.show) .shell-coach-hint { display: none; }
+body.has-coach-hint:has(.toast.toast--error.show) .toast {
+  bottom: calc(var(--shell-bottom, var(--safe-bottom)) + 8px);
 }

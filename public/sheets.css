@@ -272,6 +272,23 @@
   font-size: var(--text-body);
   line-height: var(--leading-body);
   font-weight: var(--weight-semibold);
+  /* Two lines before the ellipsis: long authored titles stay readable,
+     including in the 400px docked pane. */
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+/* Titles that already start with their number drop the number column. */
+.chapter-sheet-panel .chapter-list--no-ordinal .chapter-list-item {
+  grid-template-columns: minmax(0, 1fr) auto 28px;
+}
+/* Front and back matter: listed and selectable, but secondary. */
+.chapter-sheet-panel .chapter-list-item.is-auxiliary:not(.active) .chapter-list-title {
+  color: var(--text-secondary);
+  font-weight: var(--weight-regular);
 }
 .chapter-sheet-panel .chapter-list-meta {
   min-height: 0;
@@ -352,3 +369,25 @@
     transform: translate(0, 0);
   }
 }
+
+/* ---------- Recent ---------- */
+/* "Ch 4 · 08:51 · 6h 02m left": the chapter part shrinks with an ellipsis,
+   the position and time left never clip. */
+.recent-row-sub:has(.recent-row-rest) { display: flex; min-width: 0; }
+.recent-row-lead { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.recent-row-rest { flex: none; white-space: nowrap; }
+
+/* ---------- Drag to dismiss (sheets.js, data-sheet-drag) ---------- */
+/* The handle promises a gesture, so it has a real grab area: the handle row
+   and the header take vertical drags instead of scrolling the page. */
+.has-sheet-drag .voice-sheet-handle {
+  position: relative;
+  cursor: grab;
+  touch-action: none;
+}
+.has-sheet-drag .voice-sheet-handle::before {
+  content: "";
+  position: absolute;
+  inset: -14px -60px;
+}
+.has-sheet-drag .voice-sheet-header { touch-action: none; }
