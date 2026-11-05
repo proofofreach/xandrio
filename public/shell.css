@@ -83,9 +83,13 @@ body[data-view="guide"] .app-tabbar { display: none; }
 
 /* ==================== SIDEBAR (desktop) ==================== */
 
+/* The sidebar replaces the tab bar at 760px and wider, but only on screens
+   at least 500px tall: a phone in landscape (844x390, 915x412) keeps the
+   tab bar and the phone mini player. Rules elsewhere that depend on the
+   sidebar being present use the same query. */
 .app-sidebar { display: none; }
 
-@media (min-width: 760px) {
+@media (min-width: 760px) and (min-height: 500px) {
   body.has-shell {
     --tabbar-h: var(--safe-bottom);
     --shell-left: 232px;
@@ -95,7 +99,8 @@ body[data-view="guide"] .app-tabbar { display: none; }
 
   .app-sidebar:not([hidden]) {
     position: fixed;
-    top: 0;
+    /* Clears the fixed offline banner, as #app does (style-v3.css). */
+    top: var(--offline-banner-offset, 0px);
     bottom: 0;
     left: 0;
     z-index: 60;
@@ -176,7 +181,7 @@ body.has-shell .mini-player {
   user-select: none;
   -webkit-touch-callout: none;
 }
-@media (min-width: 760px) {
+@media (min-width: 760px) and (min-height: 500px) {
   body.has-shell .mini-player {
     left: var(--shell-left);
     height: calc(72px + var(--safe-bottom));
@@ -265,6 +270,25 @@ body.has-shell .mini-player-btn .mini-skip-label {
 body.has-shell .mini-player-btn--secondary { display: none; }
 @media (min-width: 760px) {
   body.has-shell .mini-player-btn--secondary { display: flex; }
+}
+
+/* Wide bar: the book block keeps a readable measure (480px at most) on the
+   left and the transport sits centred in the bar, as in desktop players,
+   instead of a title stretched across the whole content column. */
+@media (min-width: 960px) {
+  body.has-shell .mini-player-content {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) repeat(3, 44px) minmax(0, 1fr);
+    column-gap: 12px;
+    padding: 0 max(16px, var(--safe-right)) 0 max(12px, var(--safe-left));
+  }
+  body.has-shell .mini-player-open { grid-column: 1; max-width: 480px; }
+  body.has-shell #mini-player-back { grid-column: 2; }
+  body.has-shell #mini-player-play { grid-column: 3; }
+  body.has-shell #mini-player-forward { grid-column: 4; }
+  body.has-shell .mini-player-cover { width: 40px; height: 60px; }
+  body.has-shell .mini-player-title { font-size: var(--text-body); line-height: var(--leading-body); }
+  body.has-shell .mini-player-chapter { font-size: var(--text-subhead); line-height: var(--leading-subhead); }
 }
 
 /* ==================== COACH HINT ==================== */
@@ -358,3 +382,28 @@ body.has-shell .mini-player-btn--secondary { display: none; }
   white-space: nowrap;
   pointer-events: none;
 }
+
+/* ==================== SKIP LINK ==================== */
+/* "Skip to player" leads the tab order whenever a player or mini player is
+   on screen; it stays off screen until it has keyboard focus. */
+.skip-link {
+  position: fixed;
+  top: calc(var(--offline-banner-offset, 0px) + max(8px, var(--safe-top)));
+  left: max(8px, var(--safe-left));
+  z-index: 2200;
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 0 16px;
+  border-radius: var(--radius);
+  background: var(--surface-raised);
+  color: var(--text);
+  box-shadow: var(--shadow);
+  font-size: var(--text-subhead);
+  font-weight: var(--weight-semibold);
+  text-decoration: none;
+  transform: translateY(calc(-100% - 64px));
+}
+.skip-link:focus,
+.skip-link:focus-visible { transform: none; }
+.skip-link[hidden] { display: none; }

@@ -195,12 +195,23 @@ export function initSettings(options = {}) {
   // deep link, or back/forward navigation) via the viewchange event.
   settingsBtn.addEventListener('click', () => navigateTo('settings'));
 
+  let currentRequestedSection = null;
   document.addEventListener('xandrio:viewchange', (e) => {
     if (e.detail.view !== 'settings') return;
-    applySettingsSection(e.detail.section || null);
+    currentRequestedSection = e.detail.section || null;
+    applySettingsSection(currentRequestedSection);
   });
 
-  function applySettingsSection(requested) {
+  // Hub and page sit side by side at 760px and wider. There the bare hub
+  // route opens the first page (Playback), so the detail pane always shows a
+  // page; phones keep the hub on its own.
+  const sideBySideQuery = typeof window.matchMedia === 'function' ? window.matchMedia('(min-width: 760px)') : null;
+  sideBySideQuery?.addEventListener?.('change', () => {
+    if (!settingsView.classList.contains('active') || currentRequestedSection) return;
+    applySettingsSection(null, { moveFocus: false });
+  });
+
+  function applySettingsSection(requested, { moveFocus = true } = {}) {
     const user = getCurrentUser();
     const signedIn = Boolean(user?.id);
     const admin = isAdminUser(user);
@@ -212,7 +223,8 @@ export function initSettings(options = {}) {
     setHidden(document.getElementById('settings-menu-server'), !admin);
     setHidden(document.getElementById('settings-menu-accounts-row'), !signedIn || !admin);
 
-    let section = requested || '';
+    const autoOpened = !requested && Boolean(sideBySideQuery?.matches);
+    let section = requested || (autoOpened ? 'playback' : '');
     const page = SETTINGS_PAGES[section];
     if (section && !page) section = 'missing';
     else if (page?.signedIn && !signedIn) section = 'missing';
@@ -238,7 +250,11 @@ export function initSettings(options = {}) {
       else link.removeAttribute('aria-current');
     });
 
-    const heading = document.querySelector(`[data-settings-pane="${CSS.escape(section)}"] h2`);
+    // An auto-opened page leaves the reader at the hub title, the start of
+    // the hub's own list; a chosen page moves to that page's title.
+    const heading = !moveFocus ? null : autoOpened
+      ? document.querySelector('.settings-hub-header h2')
+      : document.querySelector(`[data-settings-pane="${CSS.escape(section)}"] h2`);
     if (heading) {
       heading.tabIndex = -1;
       // Programmatic focus moves screen-reader and keyboard position to the
@@ -248,7 +264,7 @@ export function initSettings(options = {}) {
       heading.focus({ preventScroll: true });
     }
 
-    loadSettingsSection(section);
+    loadSettingsSection(section, { hub: !requested });
   }
 
   const versionLabel = document.getElementById('app-version');
@@ -284,15 +300,15 @@ export function initSettings(options = {}) {
   versionCheck?.addEventListener('click', checkAppVersion);
   versionReload?.addEventListener('click', () => location.reload());
 
-  function loadSettingsSection(section) {
+  function loadSettingsSection(section, { hub = false } = {}) {
     renderClientSettings();
     loadLanguagePref();
     updateHubIdentity();
     updatePlaybackSummary();
     updateOfflineSummary();
 
-    if (!section) void checkAppVersion();
-    const needsHub = !section;
+    const needsHub = !section || hub;
+    if (needsHub) void checkAppVersion();
     if (needsHub || section === 'voice') loadVoices();
     if (needsHub || section === 'playback') loadPremiumPrepSetting();
     if (needsHub || section === 'sources') {

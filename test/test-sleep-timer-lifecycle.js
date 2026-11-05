@@ -49,7 +49,7 @@ function element() {
       'utf8'
     );
     assert.match(indexSource, /End of chapter remains reliable when your screen is locked/i);
-    assert.match(indexSource, /Minute timers are best effort if iOS suspends Xandrio/i);
+    assert.match(indexSource, /Minute timers are best effort if your device suspends Xandrio/i);
   });
 
   const values = new Map();

@@ -322,3 +322,46 @@
   .settings-card { max-width: 640px; }
 }
 .provider-group .settings-card { margin-bottom: 0; }
+
+/* ---------- Hub order (review fix) ----------
+   The sections lead. The account block follows them; version and update
+   controls sit in the footer beside Legal notice and Data flow. */
+.settings-hub > .settings-identity { margin: var(--space-8) 0 0; }
+.settings-hub-footer { display: grid; gap: var(--space-2); }
+.settings-version { display: flex; flex-wrap: wrap; align-items: center; column-gap: var(--space-3); }
+.settings-version-text {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--text-footnote);
+  line-height: var(--leading-footnote);
+  font-variant-numeric: tabular-nums;
+}
+.settings-text-btn {
+  min-height: 44px;
+  padding: 0 4px;
+  border: 0;
+  background: transparent;
+  color: var(--accent-text);
+  font: var(--weight-semibold) var(--text-footnote) / var(--leading-footnote) var(--font);
+  cursor: pointer;
+}
+.settings-text-btn[hidden] { display: none; }
+.settings-text-btn:disabled { color: var(--text-secondary); cursor: progress; }
+.settings-hub-links { display: flex; gap: var(--space-4); margin: 0; }
+
+/* ---------- Voice page: More filters is a disclosure ---------- */
+#settings-view .voice-settings-filters summary {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  list-style: none;
+  color: var(--accent-text);
+  font-size: var(--text-subhead);
+  font-weight: var(--weight-semibold);
+}
+#settings-view .voice-settings-filters summary::-webkit-details-marker { display: none; }
+#settings-view .voice-settings-filters summary::marker { content: ''; }
+.voice-filters-chevron { width: 18px; height: 18px; flex: none; transition: transform 150ms ease; }
+.voice-settings-filters[open] .voice-filters-chevron { transform: rotate(90deg); }
+.voice-filters-active { color: var(--text-secondary); font-weight: var(--weight-regular); }
+@media (prefers-reduced-motion: reduce) { .voice-filters-chevron { transition: none; } }

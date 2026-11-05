@@ -33,8 +33,64 @@ let activeView = 'library';
 // Which tab is "on" for a view. Stats is reached from Library on the phone.
 const TAB_FOR_VIEW = { library: 'library', stats: 'library', search: 'search', settings: 'settings' };
 
+// ---- Player focus and the skip link -----------------------------------------
+// The docked desktop player sits after every library row in the DOM, so the
+// keyboard reaches it last. A "Skip to player" link leads the tab order, and a
+// player opened by the user (click, tap or key) takes focus at its title.
+// Deep links and restored sessions do not move focus.
+
+const USER_OPEN_WINDOW_MS = 4000;
+let lastUserInputAt = 0;
+
+function noteUserInput(event) {
+  if (event.isTrusted !== false) lastUserInputAt = Date.now();
+}
+
+function miniPlayerShown() {
+  const mini = document.getElementById('mini-player');
+  return Boolean(mini && mini.style.display !== 'none');
+}
+
+function focusProgrammatically(element) {
+  if (!element) return false;
+  if (!element.matches('a[href], button, input, select, textarea, [tabindex]')) element.tabIndex = -1;
+  element.setAttribute('data-programmatic-focus', '');
+  element.addEventListener('blur', () => element.removeAttribute('data-programmatic-focus'), { once: true });
+  element.focus({ preventScroll: true });
+  return document.activeElement === element;
+}
+
+export function focusPlayerPane() {
+  const pane = document.getElementById('player-view');
+  if (!pane || !pane.classList.contains('active')) return false;
+  if (pane.contains(document.activeElement)) return true;
+  return focusProgrammatically(document.getElementById('book-title') || pane);
+}
+
+function syncSkipLink() {
+  const link = document.getElementById('skip-to-player');
+  if (!link) return;
+  link.hidden = !(activeView === 'player' || miniPlayerShown());
+}
+
+function onSkipToPlayer(event) {
+  event.preventDefault();
+  if (activeView === 'player' && focusPlayerPane()) return;
+  document.getElementById('mini-player-open')?.focus();
+}
+
+function initPlayerFocus() {
+  document.addEventListener('pointerdown', noteUserInput, true);
+  document.addEventListener('keydown', noteUserInput, true);
+  document.getElementById('skip-to-player')?.addEventListener('click', onSkipToPlayer);
+}
+
 function syncNavigation(view) {
+  const previousView = activeView;
   activeView = view || 'library';
+  if (activeView === 'player' && previousView !== 'player' && Date.now() - lastUserInputAt < USER_OPEN_WINDOW_MS) {
+    requestAnimationFrame(() => { if (activeView === 'player') focusPlayerPane(); });
+  }
   document.body.dataset.view = activeView;
   const tab = TAB_FOR_VIEW[activeView] || null;
   document.querySelectorAll('[data-shell-tab]').forEach(link => {
@@ -55,6 +111,7 @@ function syncNavigation(view) {
     else link.removeAttribute('aria-current');
   });
   syncCoachHint();
+  syncSkipLink();
 }
 
 function syncActivityCount() {
@@ -127,9 +184,13 @@ function recentRowHTML(entry, currentId, isPlaying) {
   const left = progress.timeLeft != null
     ? timeLeftLabel(progress.timeLeft, progress.speed, { referenceSpeed: getReferencePlaybackSpeed() })
     : '';
-  const sub = current
-    ? [playing ? 'Playing' : 'Current', chapter, point].filter(Boolean).join(' \u00b7 ')
-    : [chapter, point, left].filter(Boolean).join(' \u00b7 ');
+  // DESIGN.md: every row reads "Ch 4 · 08:51 · 6h 02m left"; the open book
+  // adds its state word in front. A long unnumbered chapter name shrinks
+  // first so the time and time left stay visible.
+  const state = current ? (playing ? 'Playing' : 'Current') : '';
+  const lead = [state, chapter].filter(Boolean).join(' \u00b7 ');
+  const rest = [point, left].filter(Boolean).join(' \u00b7 ');
+  const sub = [lead, rest].filter(Boolean).join(' \u00b7 ');
   const label = playing
     ? `Now playing ${title}. ${sub}`
     : current
@@ -141,7 +202,7 @@ function recentRowHTML(entry, currentId, isPlaying) {
         ${coverImageHTML(book, 'recent-row-cover')}
         <span class="recent-row-text">
           <span class="recent-row-title">${escapeHTML(title)}</span>
-          <span class="recent-row-sub num">${escapeHTML(sub)}</span>
+          <span class="recent-row-sub num">${lead ? `<span class="recent-row-lead">${escapeHTML(lead)}</span>` : ''}${rest ? `<span class="recent-row-rest">${escapeHTML(lead ? `\u00a0\u00b7 ${rest}` : rest)}</span>` : ''}</span>
         </span>
         <span class="recent-row-icon" aria-hidden="true">${playing
           ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 10v4M8 7v10M12 4v16M16 8v8M20 10.5v3"/></svg>'
@@ -335,7 +396,7 @@ function initCoachHint() {
   });
   const mini = document.getElementById('mini-player');
   if (mini && typeof MutationObserver === 'function') {
-    new MutationObserver(syncCoachHint).observe(mini, { attributes: true, attributeFilter: ['style'] });
+    new MutationObserver(() => { syncCoachHint(); syncSkipLink(); }).observe(mini, { attributes: true, attributeFilter: ['style'] });
   }
 }
 
@@ -368,5 +429,6 @@ export function initShell(options = {}) {
   initChapterSheet();
   initMiniPlayerHold();
   initCoachHint();
+  initPlayerFocus();
   syncNavigation(activeView);
 }

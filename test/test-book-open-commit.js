@@ -131,6 +131,15 @@ function createHarness({
       events.restoreStarted += 1;
       events.restored = previous;
     }),
+    // Identity and status seams (app.js renderBookIdentity, player status).
+    playerView: null,
+    renderBookIdentity(book) { events.identities = [...(events.identities || []), book?.id ?? null]; },
+    renderChapterOptions() {},
+    renderChapterIdentity() {},
+    playerStatus: { isFailedFor: () => false, set() {}, get: () => ({ state: 'idle' }) },
+    reportPlaybackFailure(error, options) { events.failures = [...(events.failures || []), { error, options }]; },
+    hideAudioLoading() {},
+    navigateTo() {},
     setTimeout,
     clearTimeout,
     ...overrides
@@ -447,7 +456,8 @@ async function run() {
       currentChapter: 0, chunkPlayer: { isPlaying: false },
       bookTitle: element2, bookAuthorHeader: element2, bookDescription: element2,
       rebuildChaptersBtn: element2, bookDetailsText: element2,
-      bookCover: { src: '', alt: '', onerror: null }, chapterSelect: element2,
+      bookCover: { src: '', alt: '', onerror: null, dataset: {} }, chapterSelect: element2,
+      playerView: null,
       setTimeout, clearTimeout
     };
     vm.createContext(ctx);
@@ -489,6 +499,10 @@ async function run() {
     assert.strictEqual(ctx.chapters.length, 1, 'restored chapters are live in state');
     assert.strictEqual(ctx.currentBookPlaybackSettings.playbackSpeed, 2,
       'restoration restores the prior session settings');
+    // One identity renderer: the cover follows the restored book, not just
+    // the title (the failed book's cover used to stay behind).
+    assert.strictEqual(ctx.bookCover.src, '/api/cover/prior', 'restoration repaints the restored cover');
+    assert.strictEqual(ctx.bookCover.alt, 'Cover of T', 'the cover is described as the restored book');
   });
 
   console.log(`\n${passed} passed, ${failed} failed`);
