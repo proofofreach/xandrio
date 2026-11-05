@@ -399,6 +399,7 @@ export function initSettings(options = {}) {
     }
     if (acknowledged) return;
     setOperatorNoticeError(loadError);
+    operatorNoticeDialog.inert = false;
     operatorNoticeDialog.classList.add('active');
     operatorNoticeDialog.setAttribute('aria-hidden', 'false');
     setTimeout(() => operatorNoticeAcknowledgement?.focus(), 0);
@@ -421,6 +422,7 @@ export function initSettings(options = {}) {
       writeText(OPERATOR_NOTICE_KEY, policy.acknowledgedAt || new Date().toISOString());
       operatorNoticeDialog?.classList.remove('active');
       operatorNoticeDialog?.setAttribute('aria-hidden', 'true');
+      if (operatorNoticeDialog) operatorNoticeDialog.inert = true;
       await loadProviderStatus();
       document.dispatchEvent(new CustomEvent('xandrio:search-sources-changed'));
     } catch (err) {

@@ -39,8 +39,8 @@
   font-size: var(--text-body);
   text-decoration: none;
 }
-.settings-pane-back span { font-size: 28px; line-height: 1; margin-top: -3px; }
-.settings-pane-back:hover { text-decoration: underline; }
+.settings-pane-back span { font-size: var(--text-title1); line-height: 1; margin-top: -3px; }
+@media (hover: hover) { .settings-pane-back:hover { text-decoration: underline; } }
 
 /* ---------- Identity row ---------- */
 .settings-identity {
@@ -52,7 +52,7 @@
   border-radius: 0;
   background: transparent;
 }
-.settings-identity:hover { background: transparent; }
+@media (hover: hover) { .settings-identity:hover { background: transparent; } }
 .settings-identity-avatar {
   flex: none;
   width: 56px;
@@ -161,10 +161,8 @@
   padding: 0 16px;
   font-size: var(--text-subhead);
 }
-#settings-view .settings-select,
 #settings-view .settings-form input,
-#settings-view .settings-field input,
-#settings-view .settings-field select { min-height: 44px; font-size: var(--text-body); }
+#settings-view .settings-field input { min-height: 44px; font-size: var(--text-body); }
 #settings-view summary { min-height: 44px; display: flex; align-items: center; }
 
 .segmented-control {
@@ -273,6 +271,15 @@
 
 /* ---------- Stats ---------- */
 .stats-tiles { gap: 8px; margin-bottom: 24px; }
+/* Tiles share one row and wrap onto more rows when larger text makes a
+   value wider than its share. Flex keeps the default widths of the former
+   1fr grid: each tile grows from zero but never below its content. */
+.stats-tiles { display: flex; flex-wrap: wrap; }
+.stats-tiles > .stat-tile { flex: 1 1 0; }
+@media (min-width: 1200px) {
+  .stats-context-rail .stats-tiles { flex-direction: column; flex-wrap: nowrap; }
+  .stats-context-rail .stats-tiles > .stat-tile { flex: none; }
+}
 .stat-tile {
   align-items: flex-start;
   gap: 6px;
