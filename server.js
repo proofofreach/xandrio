@@ -1906,6 +1906,8 @@ async function importWithStorageAdmission(command, progress) {
 function pronunciationChunkVariants() {
   const variants = [chunkedTTS, instantChunkedTTS].map(tts => ({
     variantSegment: tts.currentVariantSegment(),
+    // chunkedTTS is the service's primary splitter; the repair reuses its plans.
+    primary: tts === chunkedTTS,
     splitIntoChunks: text => tts.planChunks(text, tts.getActiveChunkSize(), null, { retain: false })
   }));
   return variants.filter((variant, index) => variants.findIndex(candidate => candidate.variantSegment === variant.variantSegment) === index);

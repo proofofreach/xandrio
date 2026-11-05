@@ -72,6 +72,22 @@ class CrashingWorker extends EventEmitter {
   terminate() { return Promise.resolve(); }
 }
 
+// A Worker double that never answers.
+class SilentWorker extends EventEmitter {
+  postMessage() {}
+  ref() {}
+  unref() {}
+  terminate() { this.terminated = (this.terminated || 0) + 1; return Promise.resolve(); }
+}
+
+// A Worker double whose reply cannot be decoded.
+class GarbledWorker extends EventEmitter {
+  postMessage() { setImmediate(() => this.emit('messageerror', new Error('bad clone'))); }
+  ref() {}
+  unref() {}
+  terminate() { return Promise.resolve(); }
+}
+
 (async () => {
   const registry = createNarrationEngineRegistry({ defaultChunkSize: 4000, defaultConcurrency: 2 });
   const voices = ['kokoro:am_onyx', 'chatterbox:brick-scott', 'moss-nano:Nathan', 'edge:en-US-AriaNeural'];
@@ -221,6 +237,42 @@ class CrashingWorker extends EventEmitter {
     assert.strictEqual(stats.inProcessPlans, 4);
     assert.strictEqual(stats.workersDisabled, true);
     assert.strictEqual(logs.length, 1, 'later plans do not log again');
+    await pool.close();
+  });
+
+  await test('a silent worker times out, is terminated, and its plan finishes in-process', async () => {
+    const logs = [];
+    const created = [];
+    class TrackedSilentWorker extends SilentWorker {
+      constructor() { super(); created.push(this); }
+    }
+    const pool = createChunkPlanPool({ size: 1, Worker: TrackedSilentWorker, jobTimeoutMs: 20, log: message => logs.push(message) });
+    const text = 'Patience is a plan. It still completes.';
+    const expected = planSplitChunks(text, 4000, 'legacy-v1');
+    const started = performance.now();
+    // Two identical requests through the pool must both settle.
+    const [first, second] = await Promise.all([pool.plan(text, 4000, 'legacy-v1'), pool.plan(text, 4000, 'legacy-v1')]);
+    assert.deepStrictEqual(first, expected);
+    assert.deepStrictEqual(second, expected);
+    assert.ok(performance.now() - started < 5000, 'the timeout settles the plan promptly');
+    assert.strictEqual(created[0].terminated, 1, 'the stuck worker is terminated');
+    const stats = pool.stats();
+    assert.ok(stats.workerFailures >= 1, 'a timeout counts as a worker failure');
+    assert.strictEqual(stats.inProcessPlans, 2);
+    assert.strictEqual(stats.queued, 0);
+    await pool.close();
+  });
+
+  await test('a messageerror is treated as a worker failure', async () => {
+    const logs = [];
+    const pool = createChunkPlanPool({ size: 1, Worker: GarbledWorker, log: message => logs.push(message) });
+    const text = 'Garbled replies. Still answered.';
+    const expected = planSplitChunks(text, 4000, 'legacy-v1');
+    for (let i = 0; i < 3; i++) assert.deepStrictEqual(await pool.plan(text, 4000, 'legacy-v1'), expected);
+    assert.strictEqual(pool.stats().workerFailures, 3);
+    assert.strictEqual(pool.stats().workersDisabled, true);
+    assert.strictEqual(logs.length, 1);
+    assert.match(logs[0], /could not be decoded/);
     await pool.close();
   });
 
