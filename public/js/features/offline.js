@@ -1890,7 +1890,7 @@ export async function downloadBookForOffline(book, chapters, options = {}) {
     const dataSaverNote = navigator.connection?.saveData ? ' Data Saver is on.' : '';
     const confirmed = await confirmSheet({
       title: 'Keep Xandrio visible',
-      message: `This download is about ${packageSize} and may use Wi-Fi or mobile data.${dataSaverNote} Do not close Xandrio, switch apps, or lock the screen until it finishes. iOS may stop the transfer.`,
+      message: `This download is about ${packageSize} and may use Wi-Fi or mobile data.${dataSaverNote} Do not close Xandrio, switch apps, or lock the screen until it finishes. The system may stop the transfer.`,
       confirmLabel: 'Start download',
       danger: false
     });

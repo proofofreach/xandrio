@@ -272,9 +272,21 @@ export function loadPlaybackSpeed(bookSpeed = null) {
   updateSpeedButton();
 }
 
+// Speed changes outside the sheet (the speed button, keyboard shortcuts)
+// follow the same "Applies to" rule the sheet shows: a book with its own
+// speed keeps it updated; otherwise the change is the default for all books.
+// They used to write only the device default, so a book with its own speed
+// silently reverted on reopen while every other book changed.
+function chooseSpeedInCurrentScope(value) {
+  if (!speedSheet?.classList.contains('active')) {
+    speedScope = savedBookSpeed() === null ? 'all' : 'book';
+  }
+  chooseSheetSpeed(value);
+}
+
 function cyclePlaybackSpeed() {
   const next = PLAYBACK_SPEEDS.find(speed => speed > currentPlaybackSpeed) ?? PLAYBACK_SPEEDS[0];
-  setPlaybackSpeed(next);
+  chooseSpeedInCurrentScope(next);
 }
 
 export function applyPlaybackSpeed() {
@@ -288,7 +300,7 @@ export function stepPlaybackSpeed(direction) {
     : direction < 0
       ? PLAYBACK_SPEEDS.findLast(speed => speed < currentPlaybackSpeed)
       : undefined;
-  if (next !== undefined) setPlaybackSpeed(next);
+  if (next !== undefined) chooseSpeedInCurrentScope(next);
 }
 
 function updateSpeedButton() {

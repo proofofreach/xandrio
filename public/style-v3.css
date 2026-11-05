@@ -172,10 +172,19 @@ time, .num, [class*="time"], [class*="duration"], [class*="count"], [class*="per
   font-variant-numeric: tabular-nums;
 }
 
+/* One focus ring: 3px amber (--focus-ring) on every focusable element,
+   links included. Components may change the offset; none change the colour. */
+:focus-visible {
+  outline: 3px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+a:focus-visible,
 button:focus-visible,
 input:focus-visible,
 select:focus-visible,
+textarea:focus-visible,
 summary:focus-visible,
+[role="button"]:focus-visible,
 [tabindex]:focus-visible {
   outline: 3px solid var(--focus-ring);
   outline-offset: 2px;
@@ -2022,7 +2031,7 @@ button.book-local-state:hover { color: var(--accent-text); }
   color: var(--text-secondary);
   font-size: var(--text-footnote);
   cursor: pointer;
-  transition: all 0.2s;
+  transition: color 0.2s, border-color 0.2s, background-color 0.2s;
 }
 .btn-ghost:hover { color: var(--text); border-color: var(--border-strong); }
 .btn-ghost-edit { color: var(--accent-text); border-color: var(--accent-border-soft); }
@@ -3183,7 +3192,7 @@ button.book-local-state:hover { color: var(--accent-text); }
   font-weight: var(--weight-regular);
   font-family: var(--font);
   cursor: pointer;
-  transition: all 150ms;
+  transition: color 150ms, background-color 150ms, border-color 150ms;
   touch-action: manipulation;
 }
 .timer-option:hover { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
@@ -4729,6 +4738,14 @@ body.has-mini-player #settings-view {
 .shortcut-table tr:last-child td {
   border-bottom: none;
 }
+.shortcut-table th {
+  padding: 16px 0 4px;
+  color: var(--text);
+  font-size: var(--text-footnote);
+  font-weight: var(--weight-semibold);
+  text-align: left;
+}
+.shortcut-table tbody:first-child th { padding-top: 0; }
 .shortcut-table td:first-child {
   white-space: nowrap;
   padding-right: 16px;
