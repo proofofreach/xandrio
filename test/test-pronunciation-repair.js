@@ -278,22 +278,32 @@ function fakeResponse() {
     });
     assertEqual(defaulted.length, 2, 'collectAffectedChapters works with the default setImmediate yield');
 
-    // The primary variant splits exactly as the service splitter; the sweep
-    // must not plan the same chapter a second time for it.
+    // The primary variant's own splitter plans the service boundary, so the
+    // sweep plans each chapter once for it, and never through the fallback.
+    let servicePlans = 0;
     let primaryPlans = 0;
     let secondaryPlans = 0;
+    let variantReads = 0;
+    let plansBeforeVariantRead = 0;
     const withPrimary = await collectAffectedChapters({
       beforeStore, afterStore, scope: 'book', bookId: 'a',
       loadBooks: async () => books, getChapters: async () => makeChapters(6),
-      splitIntoChunks: text => text.split(' '),
-      chunkVariants: () => [
-        { variantSegment: '', primary: true, splitIntoChunks: text => { primaryPlans++; return text.split(' '); } },
-        { variantSegment: '_tts0123456789', splitIntoChunks: text => { secondaryPlans++; return text.split('.'); } }
-      ],
+      splitIntoChunks: text => { servicePlans++; return text.split(' '); },
+      chunkVariants: () => {
+        variantReads++;
+        plansBeforeVariantRead += primaryPlans;
+        primaryPlans = 0;
+        return [
+          { variantSegment: '', primary: true, splitIntoChunks: text => { primaryPlans++; return text.split(' '); } },
+          { variantSegment: '_tts0123456789', splitIntoChunks: text => { secondaryPlans++; return text.split('.'); } }
+        ];
+      },
       yieldFn: async () => {}
     });
     assertEqual(withPrimary.length, 2, 'primary-variant sweep reports the affected chapters');
-    assertEqual(primaryPlans, 0, 'the primary variant reuses the service plans instead of replanning');
+    assertEqual(servicePlans, 0, 'a primary variant replaces the fallback splitter');
+    assertEqual(variantReads, 2, 'variants are read once per affected chapter');
+    assertEqual(plansBeforeVariantRead, 2, 'each chapter reads its variants before planning, then plans before and after once');
     assertEqual(secondaryPlans, 4, 'other variants still plan before and after once per chapter');
     assertEqual(withPrimary[0].fromChunkIndexByVariant[''], withPrimary[0].fromChunkIndex, 'the primary variant boundary equals the service boundary');
     assertEqual(withPrimary[0].fromChunkIndexByVariant._tts0123456789, 0, 'other variant boundaries come from their own plans');

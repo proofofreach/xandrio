@@ -1904,12 +1904,18 @@ async function importWithStorageAdmission(command, progress) {
 }
 
 function pronunciationChunkVariants() {
-  const variants = [chunkedTTS, instantChunkedTTS].map(tts => ({
-    variantSegment: tts.currentVariantSegment(),
-    // chunkedTTS is the service's primary splitter; the repair reuses its plans.
-    primary: tts === chunkedTTS,
-    splitIntoChunks: text => tts.planChunks(text, tts.getActiveChunkSize(), null, { retain: false })
-  }));
+  const variants = [chunkedTTS, instantChunkedTTS].map(tts => {
+    // Capture size and policy with the segment so every plan for this
+    // variant uses the voice that was active when the sweep read it.
+    const chunkSize = tts.getActiveChunkSize();
+    const splitPolicy = tts.getActiveSplitPolicy();
+    return {
+      variantSegment: tts.currentVariantSegment(),
+      // chunkedTTS is the service's primary splitter; the repair reuses its plans.
+      primary: tts === chunkedTTS,
+      splitIntoChunks: text => tts.planChunks(text, chunkSize, splitPolicy, { retain: false })
+    };
+  });
   return variants.filter((variant, index) => variants.findIndex(candidate => candidate.variantSegment === variant.variantSegment) === index);
 }
 
