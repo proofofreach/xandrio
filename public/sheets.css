@@ -48,7 +48,7 @@
   cursor: pointer;
   touch-action: manipulation;
 }
-.sheet-done:hover { background: color-mix(in oklab, var(--text) 8%, transparent); }
+@media (hover: hover) { .sheet-done:hover { background: color-mix(in oklab, var(--text) 8%, transparent); } }
 .sheet-done:focus-visible { outline: 3px solid var(--focus-ring); outline-offset: 1px; }
 
 .sheet-status {
@@ -63,7 +63,7 @@
 .sheet-tabs {
   display: grid;
   grid-auto-flow: column;
-  grid-auto-columns: 1fr;
+  grid-auto-columns: minmax(0, 1fr);
   gap: 2px;
   padding: 3px;
   border-radius: 12px;
@@ -78,6 +78,7 @@
   background: transparent;
   color: var(--text-secondary);
   font: var(--weight-semibold) var(--text-body)/var(--leading-body) var(--font);
+  overflow-wrap: anywhere;
   cursor: pointer;
   touch-action: manipulation;
 }
@@ -140,7 +141,9 @@
 }
 .speed-sheet-panel .speed-presets {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  /* Five equal columns at the default size; larger text wraps the presets
+     onto more rows instead of overprinting them. */
+  grid-template-columns: repeat(auto-fit, minmax(calc(3.3 * var(--text-subhead)), 1fr));
   gap: 8px;
   margin: 0 0 var(--space-4);
 }
@@ -159,7 +162,7 @@
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
-.speed-sheet-panel .speed-preset:hover { background: var(--surface-hover); }
+@media (hover: hover) { .speed-sheet-panel .speed-preset:hover { background: var(--surface-hover); } }
 .speed-sheet-panel .speed-preset.active {
   background: var(--text);
   color: var(--bg);
@@ -208,7 +211,7 @@
   text-align: left;
 }
 .timer-sheet-panel .timer-option + .timer-option { border-top: 1px solid var(--border); }
-.timer-sheet-panel .timer-option:hover { background: color-mix(in oklab, var(--text) 5%, transparent); color: var(--text); }
+@media (hover: hover) { .timer-sheet-panel .timer-option:hover { background: color-mix(in oklab, var(--text) 5%, transparent); color: var(--text); } }
 .timer-sheet-panel .timer-option:focus-visible { outline: 3px solid var(--focus-ring); outline-offset: -3px; border-radius: 10px; }
 .timer-sheet-panel .timer-option.timer-option-wide { grid-column: auto; }
 .timer-sheet-panel .timer-option.active {
@@ -256,7 +259,7 @@
 }
 .chapter-sheet-panel .chapter-list-item + .chapter-list-item,
 .chapter-sheet-panel .chapter-list-group .chapter-list-item + .chapter-list-item { border-top: 1px solid var(--border); }
-.chapter-sheet-panel .chapter-list-item:hover { background: color-mix(in oklab, var(--text) 5%, transparent); }
+@media (hover: hover) { .chapter-sheet-panel .chapter-list-item:hover { background: color-mix(in oklab, var(--text) 5%, transparent); } }
 .chapter-sheet-panel .chapter-list-item:focus-visible { outline: 3px solid var(--focus-ring); outline-offset: -3px; border-radius: 10px; }
 /* Front matter and other unnumbered rows drop the number column entirely. */
 .chapter-sheet-panel .chapter-list-item:has(> .chapter-list-index:empty) {

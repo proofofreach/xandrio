@@ -21,18 +21,24 @@ export function registerSheet(el, options = {}) {
     return el?.querySelector?.('.modal-content, .chapter-sheet-panel, .voice-sheet-panel') || el;
   }
 
+  // A closed sheet is inert as well as aria-hidden: its controls leave the
+  // tab order and cannot be clicked or found by assistive technology while
+  // it is off screen. Focus is handed back before the sheet goes inert, so
+  // the browser does not drop it to <body>. The close transition still runs.
   function close() {
     if (!el) return;
     el.classList.remove(activeClass);
-    el.setAttribute('aria-hidden', 'true');
     if (bodyClass) document.body.classList.remove(bodyClass);
     releaseFocus?.();
     releaseFocus = null;
+    el.setAttribute('aria-hidden', 'true');
+    el.inert = true;
     onClose?.();
   }
 
   function open() {
     if (!el) return;
+    el.inert = false;
     onOpen?.();
     el.classList.add(activeClass);
     el.setAttribute('aria-hidden', 'false');
@@ -44,6 +50,8 @@ export function registerSheet(el, options = {}) {
   function dismiss() {
     if (!history || !requestSheetClose(close)) close();
   }
+
+  if (el && !el.classList.contains(activeClass)) el.inert = true;
 
   backdrop?.addEventListener('click', dismiss);
   closeBtn?.addEventListener('click', dismiss);

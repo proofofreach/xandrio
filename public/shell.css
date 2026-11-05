@@ -10,13 +10,16 @@
                      toasts sit above it
      --shell-left    sidebar width on desktop (0 on phones)               */
 
+/* Docked heights follow the text size. At the default size they resolve to
+   the design values (tab bar 54px, mini player 64px phone / 72px desktop);
+   larger text makes the bars taller instead of overprinting them. */
 body.has-shell {
-  --tabbar-h: calc(54px + var(--safe-bottom));
+  --tabbar-h: calc(max(54px, 36px + var(--leading-footnote)) + var(--safe-bottom));
   --mini-h: 0px;
   --shell-left: 0px;
   --shell-bottom: calc(var(--tabbar-h) + var(--mini-h));
 }
-body.has-shell.has-mini-player { --mini-h: 64px; }
+body.has-shell.has-mini-player { --mini-h: max(64px, 26px + var(--leading-subhead) + var(--leading-footnote)); }
 body.has-shell[data-view="player"],
 body.has-shell[data-view="guide"] { --tabbar-h: var(--safe-bottom); }
 
@@ -50,7 +53,8 @@ body.has-shell #guide-view {
   z-index: 60;
   display: flex;
   justify-content: space-around;
-  height: var(--tabbar-h);
+  height: auto;
+  min-height: var(--tabbar-h);
   padding: 4px max(10px, var(--safe-right)) var(--safe-bottom) max(10px, var(--safe-left));
   background: var(--surface);
   border-top: 1px solid var(--border);
@@ -94,7 +98,7 @@ body[data-view="guide"] .app-tabbar { display: none; }
     --tabbar-h: var(--safe-bottom);
     --shell-left: 232px;
   }
-  body.has-shell.has-mini-player { --mini-h: 72px; }
+  body.has-shell.has-mini-player { --mini-h: max(72px, 30px + var(--leading-body) + var(--leading-subhead)); }
   .app-tabbar { display: none; }
 
   .app-sidebar:not([hidden]) {
@@ -162,7 +166,7 @@ body[data-view="guide"] .app-tabbar { display: none; }
   cursor: pointer;
 }
 .app-sidebar-link svg { width: 22px; height: 22px; flex: none; color: var(--text-secondary); }
-.app-sidebar-link:hover { background: var(--surface-2); }
+@media (hover: hover) { .app-sidebar-link:hover { background: var(--surface-2); } }
 .app-sidebar-link.is-on { background: var(--surface-2); font-weight: var(--weight-bold); }
 .app-sidebar-link.is-on svg { color: var(--accent-text); }
 .app-sidebar-count { margin-left: auto; color: var(--text-secondary); font-weight: 500; }
@@ -172,7 +176,8 @@ body[data-view="guide"] .app-tabbar { display: none; }
 
 body.has-shell .mini-player {
   bottom: var(--tabbar-h);
-  height: 64px;
+  height: auto;
+  min-height: var(--mini-h);
   padding: 0;
   background: var(--surface);
   border-top: 1px solid var(--border);
@@ -184,7 +189,7 @@ body.has-shell .mini-player {
 @media (min-width: 760px) and (min-height: 500px) {
   body.has-shell .mini-player {
     left: var(--shell-left);
-    height: calc(72px + var(--safe-bottom));
+    min-height: calc(var(--mini-h) + var(--safe-bottom));
     padding-bottom: var(--safe-bottom);
   }
 }
@@ -206,6 +211,9 @@ body.has-shell .mini-player-progress {
 }
 
 body.has-shell .mini-player-content {
+  /* Fills the bar (its height less the 1px top border) and grows with it. */
+  height: auto;
+  min-height: calc(var(--mini-h) - 1px);
   gap: 4px;
   padding: 0 max(4px, var(--safe-right)) 0 max(8px, var(--safe-left));
   cursor: default;
@@ -256,7 +264,7 @@ body.has-shell .mini-player-btn {
 }
 body.has-shell .mini-player-btn svg { width: 30px; height: 30px; }
 body.has-shell .mini-player-btn--play svg { width: 26px; height: 26px; }
-body.has-shell .mini-player-btn:hover { background: var(--surface-2); }
+@media (hover: hover) { body.has-shell .mini-player-btn:hover { background: var(--surface-2); } }
 body.has-shell .mini-player-btn .mini-skip-label {
   font-size: var(--text-footnote);
   line-height: 1;

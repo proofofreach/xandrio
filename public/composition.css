@@ -12,7 +12,7 @@
   background: transparent; text-align: left;
 }
 .player-chapter-trigger-title { font-size: var(--text-subhead); font-weight: var(--weight-regular); white-space: normal; overflow-wrap: anywhere; }
-.player-chapter-trigger:hover { color: var(--accent-text); }
+@media (hover: hover) { .player-chapter-trigger:hover { color: var(--accent-text); } }
 .player-status-area { display: grid; gap: var(--space-2); }
 .player-status-area > :is(.hq-voice-prep,.playback-reliability,.playback-resume-prompt,.audio-loading) {
   width: 100%; max-width: none; margin: var(--space-2) 0; padding: var(--space-3);
@@ -27,7 +27,7 @@
   flex: 0 0 auto; min-width: 64px; min-height: 44px; padding: var(--space-2) var(--space-3);
   border-radius: var(--radius); color: var(--text-secondary); font-size: var(--text-footnote); font-weight: var(--weight-semibold);
 }
-.player-progress-scope-btn:hover { color: var(--text); background: var(--surface-hover); }
+@media (hover: hover) { .player-progress-scope-btn:hover { color: var(--text); background: var(--surface-hover); } }
 .player-progress-context { display: none; }
 .player-progress-slider { display: block; margin: 0; }
 .player-progress-slider::-webkit-slider-runnable-track {
@@ -62,7 +62,7 @@
 .player-voice-status-label { display: none; }
 .player-voice-status-name { font-size: var(--text-footnote); font-weight: var(--weight-regular); }
 .player-voice-status-cache { font-size: var(--text-footnote); font-weight: var(--weight-regular); white-space: normal; overflow-wrap: anywhere; }
-.player-session-meta .player-voice-status:hover { background: var(--surface-hover); }
+@media (hover: hover) { .player-session-meta .player-voice-status:hover { background: var(--surface-hover); } }
 .player-details { background: transparent; border: 0; border-top: 1px solid var(--border); border-radius: 0; padding: 0; }
 .player-details summary { display: flex; align-items: center; justify-content: space-between; min-height: 52px; list-style: none; color: var(--text-secondary); }
 .player-details summary::before { display: none; }
@@ -98,7 +98,7 @@
   .player-utility-icon, .player-utility-speed { height: 26px; margin-bottom: var(--space-1); }
   .player-utility-icon svg { width: 22px; height: 22px; }
   .player-utility-speed { font-size: var(--text-body); font-weight: var(--weight-semibold); }
-  .player-details { order: 10; margin: var(--space-3) 0 max(16px, env(safe-area-inset-bottom)); }
+  .player-details { order: 10; margin: var(--space-3) 0 max(16px, var(--safe-bottom)); }
 }
 /* CSS zoom reduces the content width without changing svh. Size artwork from
    that width on narrow/enlarged layouts so transport remains in view. */
@@ -120,7 +120,7 @@
 
 .library-header #stats-btn,
 .library-header #settings-btn { background: transparent; border-color: transparent; color: var(--text-secondary); }
-.library-header :is(#stats-btn,#settings-btn):hover { background: var(--surface-hover); color: var(--text); }
+@media (hover: hover) { .library-header :is(#stats-btn,#settings-btn):hover { background: var(--surface-hover); color: var(--text); } }
 .settings-menu-row { padding-inline: 0; }
 .settings-card { background: transparent; }
 #voice-list .voice-create { display: block; grid-column: 1 / -1; margin: var(--space-3) 0 20px; border-bottom: 1px solid var(--border); }
@@ -146,7 +146,10 @@
 .auto-sleep-fields { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: var(--space-3); margin: var(--space-3) 0; }
 .auto-sleep-fields label { display: grid; gap: 6px; font-size: var(--text-footnote); min-width: 0; }
 .auto-sleep-fields label:last-child { grid-column: 1 / -1; }
-.auto-sleep-fields input, .auto-sleep-fields select { min-width: 0; width: 100%; min-height: 44px; box-sizing: border-box; background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius); padding: var(--space-2); font: inherit; }
+.auto-sleep-fields input, .auto-sleep-fields select { min-width: 0; width: 100%; min-height: 44px; box-sizing: border-box; background-color: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius); padding: var(--space-2); font: inherit; }
+/* Form text at body size, like every other select and field. */
+.auto-sleep-fields input, .auto-sleep-fields select { font-size: var(--text-body); }
+.auto-sleep-fields select { padding-right: 32px; }
 .auto-sleep-fields :disabled { opacity: .55; }
 
 /* Current values stay visible while the settings details are closed. */

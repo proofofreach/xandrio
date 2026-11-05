@@ -178,7 +178,11 @@ function renderVoiceFacetChips(filterBarId) {
   const engineChips = [['all', 'All'], ...[['edge', 'Edge'], ['kokoro', 'Kokoro'], ['chatterbox', 'Chatterbox'], ['moss-nano', 'MOSS Nano']]
     .filter(([id]) => voices.some(voice => providerId(voice) === id))];
   const genderChips = [['all', 'All'], ['male', 'Male'], ['female', 'Female']];
-  const moreActive = voiceSheetFacets.engine !== 'all' || voiceSheetFacets.gender !== 'all';
+  // Active hidden filters are named on the summary, as on the Settings voice page.
+  const moreActiveLabels = [
+    engineChips.find(([value]) => value === voiceSheetFacets.engine && value !== 'all')?.[1],
+    genderChips.find(([value]) => value === voiceSheetFacets.gender && value !== 'all')?.[1]
+  ].filter(Boolean);
 
   bar.innerHTML = `
     ${renderCurrentVoiceCard()}
@@ -190,21 +194,20 @@ function renderVoiceFacetChips(filterBarId) {
       <div class="voice-facets voice-tier-seg" role="group" aria-label="Voice tier">
         ${tierChips.map(([value, label]) => chip('tier', value, label, voiceSheetFacets.tier === value)).join('')}
       </div>
-      <button type="button" class="voice-more-toggle ${moreActive ? 'has-active' : ''}" aria-expanded="${voiceSheetMoreOpen ? 'true' : 'false'}" data-voice-more-toggle>
-        More filters${moreActive ? ' ·' : ''}
-      </button>
     </div>
-    ${voiceSheetMoreOpen ? `
-    <div class="voice-more-filters">
-      <div class="voice-facets" role="group" aria-label="Engine">
-        <span class="voice-facet-label">Engine</span>
-        ${engineChips.map(([value, label]) => chip('engine', value, label, voiceSheetFacets.engine === value)).join('')}
+    <details class="voice-more-disclosure" data-voice-more${voiceSheetMoreOpen ? ' open' : ''}>
+      <summary class="voice-more-toggle"><svg class="voice-filters-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg><span>More filters</span>${moreActiveLabels.length ? `<span class="voice-filters-active">${escapeHTML(moreActiveLabels.join(' · '))}</span>` : ''}</summary>
+      <div class="voice-more-filters">
+        <div class="voice-facets" role="group" aria-label="Engine">
+          <span class="voice-facet-label">Engine</span>
+          ${engineChips.map(([value, label]) => chip('engine', value, label, voiceSheetFacets.engine === value)).join('')}
+        </div>
+        <div class="voice-facets" role="group" aria-label="Voice type">
+          <span class="voice-facet-label">Voice</span>
+          ${genderChips.map(([value, label]) => chip('gender', value, label, voiceSheetFacets.gender === value)).join('')}
+        </div>
       </div>
-      <div class="voice-facets" role="group" aria-label="Voice type">
-        <span class="voice-facet-label">Voice</span>
-        ${genderChips.map(([value, label]) => chip('gender', value, label, voiceSheetFacets.gender === value)).join('')}
-      </div>
-    </div>` : ''}
+    </details>
   `;
 
   bar.querySelectorAll('[data-facet-group]').forEach(el => {
@@ -215,9 +218,10 @@ function renderVoiceFacetChips(filterBarId) {
       renderVoiceSheetSections(listId);
     });
   });
-  bar.querySelector('[data-voice-more-toggle]')?.addEventListener('click', () => {
-    voiceSheetMoreOpen = !voiceSheetMoreOpen;
-    renderVoiceFacetChips(filterBarId);
+  // Native disclosure: the summary exposes its expanded state; only the
+  // remembered open state needs updating, not a re-render.
+  bar.querySelector('[data-voice-more]')?.addEventListener('toggle', (event) => {
+    voiceSheetMoreOpen = event.currentTarget.open;
   });
   const searchInput = bar.querySelector('#voice-sheet-search-input');
   // Only the list re-renders on keystrokes, so the input keeps focus.
