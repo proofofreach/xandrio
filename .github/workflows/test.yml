@@ -25,7 +25,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y ffmpeg poppler-utils
       - run: npm ci
       - name: Install browser
-        run: npx playwright install --with-deps chromium
+        run: npx playwright install --with-deps chromium webkit
       - name: Release declaration consistency
         run: npm run release:verify -- --tag "v$(node -p "require('./package.json').version")"
       - name: Static checks
