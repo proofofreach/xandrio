@@ -965,6 +965,13 @@ function handleChunkError(error) {
   const failedChapter = currentChapter;
   const retry = async () => {
     if (String(currentBook?.id) !== String(failedBookId)) return;
+    // The POST below can outlive a chapter change or another open. Only the
+    // load that is still current when it answers may reload this chapter.
+    const ownerOpenToken = openBookToken;
+    const ownerLoadToken = loadChapterToken;
+    const stillOwned = () => String(currentBook?.id) === String(failedBookId)
+      && openBookToken === ownerOpenToken
+      && loadChapterToken === ownerLoadToken;
     const tier = chunkPlayer?.servedTier;
     const query = tier ? `?tier=${encodeURIComponent(tier)}` : '';
     markPlayerPreparing();
@@ -979,6 +986,7 @@ function handleChunkError(error) {
       // reports the reason through the same card.
       console.warn('Chapter retry request failed:', retryError);
     }
+    if (!stillOwned()) return;
     await loadChapter(failedChapter);
   };
   setPlaybackReliabilityState('hidden', '');
@@ -2147,6 +2155,7 @@ async function openBook(bookId, { attempt = null } = {}) {
   // outcome (the card, or a playable player) is always painted. The status
   // before it is kept for a failure that leaves the previous book in place.
   const statusBeforeOpen = playerStatus.get();
+  const retryBeforeOpen = playerFailureRetry;
   playerFailureRetry = null;
   playerStatus.set({ state: 'preparing', bookId: String(bookId), chapterIndex: null });
   try {
@@ -2411,6 +2420,9 @@ async function openBook(bookId, { attempt = null } = {}) {
       renderBookIdentity(currentBook);
       // The previous book's own status (a failure card, or ready) returns.
       playerStatus.set(statusBeforeOpen);
+      // With its own Retry: a quarantined chapter needs the retry POST, not a
+      // plain reload, to clear the server's circuit breaker.
+      playerFailureRetry = retryBeforeOpen;
       showToast("Couldn't open that book", 'error', { key: 'player-open-failed' });
     }
     return false;
