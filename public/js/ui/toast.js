@@ -166,7 +166,7 @@ function dockToast() {
   if (topDocked && (parseFloat(getComputedStyle(toastEl).top) || 0) + TOAST_ROOM <= sheetTop) return true;
   if (sheetTop < TOAST_ROOM) return false;
   // Otherwise it sits just above the sheet's top edge, by its bottom edge only.
-  if (topDocked) toastEl.style.top = 'auto';
+  toastEl.style.top = 'auto';
   toastEl.style.bottom = `${panel.offsetHeight + DOCK_GAP}px`;
   return true;
 }

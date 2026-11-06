@@ -1477,7 +1477,7 @@ async function verifySearchWorkspace(page, fixtureState) {
 
   await page.fill('#search-input', 'source issue smoke');
   await page.click('#search-btn');
-  await page.waitForFunction(() => document.getElementById('search-source-message')?.textContent.includes('Standard:'));
+  await page.waitForFunction(() => document.getElementById('search-source-message')?.textContent.includes('Standard Ebooks:'));
   const standardSource = page.locator('[data-search-source="standardebooks"]');
   if (await standardSource.locator('.source-status-dot.is-issue').count() !== 1) {
     throw new Error('Unavailable source is not represented by a subtle source-status dot');
