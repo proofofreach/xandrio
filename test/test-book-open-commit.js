@@ -138,6 +138,7 @@ function createHarness({
     renderChapterIdentity() {},
     renderUnavailableBookIdentity(id) { events.unavailable = [...(events.unavailable || []), id]; },
     playerStatus: { isFailedFor: () => false, set() {}, get: () => ({ state: 'idle' }) },
+    playerFailureRetry: null,
     reportPlaybackFailure(error, options) { events.failures = [...(events.failures || []), { error, options }]; },
     hideAudioLoading() {},
     navigateTo() {},
