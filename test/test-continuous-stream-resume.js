@@ -14,7 +14,9 @@ const { execFile, spawn } = require('child_process');
 const { promisify } = require('util');
 const {
   createChapterAudioStreamer,
+  measureMp3HeaderBytes,
   mp3FrameBytes,
+  parseMp3HeaderBytes,
   planResumeFromRange
 } = require('../lib/chapter-audio-stream');
 const { registerPlaybackRoutes } = require('../lib/routes/playback-routes');
@@ -123,8 +125,8 @@ function streamerApp(sourceForRequest, streamerOptions = {}) {
   const streamer = createChapterAudioStreamer({ serveAudioFile, ...streamerOptions });
   const app = express();
   app.get('/stream', async (req, res) => {
-    const source = sourceForRequest(req);
     try {
+      const source = await sourceForRequest(req, streamer);
       await streamer.streamContinuous(req, res, source);
     } catch (error) {
       if (streamer.isClientDisconnect(error)) {
@@ -136,6 +138,15 @@ function streamerApp(sourceForRequest, streamerOptions = {}) {
     }
   });
   return app;
+}
+
+// A source the way the continuous route builds it: resumable, with the plan
+// the streamer derived from this request's Range header.
+function resumableSource(fixturePath) {
+  return async (req, streamer) => makeSource(fixturePath, {
+    resumable: true,
+    resume: await streamer.planResume(req)
+  });
 }
 
 function request(port, headers = {}) {
@@ -176,49 +187,78 @@ function readThenDrop(port, minBytes) {
   const fixture = path.join(dir, 'two-tone.wav');
   await createTwoToneFixture(fixture, 12);
 
-  await test('planResumeFromRange maps a byte offset to the CBR frame grid', () => {
+  const headerBytes = await measureMp3HeaderBytes();
+  console.log(`    measured first-response header: ${headerBytes} bytes`);
+
+  await test('the first-response header is measured from the encoder, not assumed', () => {
+    assert(Number.isInteger(headerBytes) && headerBytes >= 10, `header ${headerBytes}`);
     assert.strictEqual(mp3FrameBytes(), 480);
-    assert.strictEqual(planResumeFromRange(undefined), null);
-    assert.strictEqual(planResumeFromRange('bytes=0-'), null, 'the initial request stays a 200');
-    assert.strictEqual(planResumeFromRange('bytes=-500'), null, 'suffix ranges have no meaning on a live encode');
-    assert.strictEqual(planResumeFromRange('items=1-2'), null);
-    assert.strictEqual(planResumeFromRange('bytes=10-5'), null);
-    assert.strictEqual(planResumeFromRange('bytes=100-', 'wav'), null, 'only the MP3 transport resumes');
-    // The exact byte Chromium asked for in the reproduction run.
-    const plan = planResumeFromRange('bytes=8197746-');
-    assert.deepStrictEqual(plan, { firstByte: 8197440, lastByte: null, seconds: 409.872 });
-    assert.strictEqual(plan.firstByte % 480, 0);
-    assert.deepStrictEqual(planResumeFromRange('bytes=0-1'), { firstByte: 0, lastByte: 1, seconds: 0 });
-    assert.strictEqual(planResumeFromRange(`bytes=${25 * 3600 * BYTES_PER_SECOND}-`), null, 'beyond the offset horizon');
+    assert.strictEqual(parseMp3HeaderBytes(Buffer.alloc(4)), null);
+    assert.strictEqual(parseMp3HeaderBytes(Buffer.from('not an mp3 stream at all, just text')), null);
+    // ID3 tag of 34 bytes followed by a sync word.
+    const tag = Buffer.concat([
+      Buffer.from('ID3\x04\x00\x00\x00\x00\x00\x22', 'latin1'),
+      Buffer.alloc(34),
+      Buffer.from([0xff, 0xf3]),
+      Buffer.alloc(478),
+      Buffer.from([0xff, 0xf3])
+    ]);
+    assert.strictEqual(parseMp3HeaderBytes(tag), 44);
+    // A Xing/Info frame after the tag is header too.
+    const info = Buffer.concat([
+      tag.subarray(0, 44),
+      Buffer.from([0xff, 0xf3, 0x00, 0x00]), Buffer.from('Info'), Buffer.alloc(472),
+      Buffer.from([0xff, 0xf3])
+    ]);
+    assert.strictEqual(parseMp3HeaderBytes(info), 44 + 480);
   });
 
-  await test('the transport emits pure CBR frames: no ID3 tag, no Xing frame, 480-byte grid', async () => {
-    const server = await listen(streamerApp(() => makeSource(fixture, { resumable: true, resume: null })));
+  await test('planResumeFromRange resumes only an open-ended bytes=N- past the header', () => {
+    assert.strictEqual(planResumeFromRange(undefined, 'mp3', headerBytes), null);
+    assert.strictEqual(planResumeFromRange('bytes=0-', 'mp3', headerBytes), null, 'the initial request stays a 200');
+    assert.strictEqual(planResumeFromRange('bytes=0-1', 'mp3', headerBytes), null, "Safari's probe stays a 200");
+    assert.strictEqual(planResumeFromRange('bytes=1000-2000', 'mp3', headerBytes), null, 'bounded ranges stay a 200');
+    assert.strictEqual(planResumeFromRange('bytes=-500', 'mp3', headerBytes), null, 'suffix ranges have no meaning on a live encode');
+    assert.strictEqual(planResumeFromRange('items=1-2', 'mp3', headerBytes), null);
+    assert.strictEqual(planResumeFromRange('bytes=100000-', 'wav', headerBytes), null, 'only the MP3 transport resumes');
+    assert.strictEqual(planResumeFromRange(`bytes=${headerBytes + 10}-`, 'mp3', headerBytes), null, 'inside the first frame: full stream');
+    // The exact byte Chromium asked for in the reproduction run.
+    const plan = planResumeFromRange('bytes=8197746-', 'mp3', headerBytes);
+    assert.strictEqual((plan.firstByte - headerBytes) % 480, 0, 'snapped to the frame grid after the header');
+    assert(plan.firstByte <= 8197746 && 8197746 - plan.firstByte < 480);
+    assert.strictEqual(plan.seconds, (plan.firstByte - headerBytes) / BYTES_PER_SECOND);
+    assert.strictEqual(planResumeFromRange(`bytes=${25 * 3600 * BYTES_PER_SECOND}-`, 'mp3', headerBytes), null, 'beyond the offset horizon');
+  });
+
+  await test('no Range, bytes=0- and a bounded probe all get the unchanged 200 response', async () => {
+    const server = await listen(streamerApp(resumableSource(fixture)));
     try {
-      const response = await request(server.address().port, { Range: 'bytes=0-' });
-      assert.strictEqual(response.status, 200);
-      assert.strictEqual(response.headers['accept-ranges'], 'bytes');
-      assert.strictEqual(response.headers['content-type'], 'audio/mpeg');
-      assert.notStrictEqual(response.body.toString('latin1', 0, 3), 'ID3', 'no ID3v2 header');
-      assert.strictEqual(response.body[0], 0xff, 'starts on a frame sync word');
-      assert.strictEqual(response.body[1] & 0xe0, 0xe0, 'starts on a frame sync word');
-      assert.strictEqual(response.body.length % 480, 0, `length ${response.body.length} must sit on the frame grid`);
-      // Every frame boundary carries a sync word, so byte N / 480 is a frame.
-      for (let offset = 0; offset < response.body.length; offset += 480) {
-        assert.strictEqual(response.body[offset], 0xff, `frame at ${offset}`);
-        assert.strictEqual(response.body[offset + 1] & 0xe0, 0xe0, `frame at ${offset}`);
+      const port = server.address().port;
+      const plain = await request(port);
+      const zero = await request(port, { Range: 'bytes=0-' });
+      const probe = await request(port, { Range: 'bytes=0-1' });
+      const bounded = await request(port, { Range: 'bytes=96000-120000' });
+      for (const [name, response] of Object.entries({ plain, zero, probe, bounded })) {
+        assert.strictEqual(response.status, 200, name);
+        assert.strictEqual(response.headers['accept-ranges'], 'none', name);
+        assert.strictEqual(response.headers['content-range'], undefined, name);
+        assert.strictEqual(response.headers['content-type'], 'audio/mpeg', name);
+        assert.strictEqual(response.headers['cache-control'], 'no-store', name);
+        assert.strictEqual(response.headers['x-accel-buffering'], 'no', name);
+        assert.strictEqual(response.body.toString('latin1', 0, 3), 'ID3', `${name}: ffmpeg's ID3 header is still there`);
+        assert.strictEqual(parseMp3HeaderBytes(response.body), headerBytes, name);
+        assert.strictEqual((response.body.length - headerBytes) % 480, 0, `${name}: frame grid after the header`);
+        assert.strictEqual(response.body.length, plain.body.length, `${name}: the whole stream, same as no Range`);
       }
-      // No Xing/Info frame: the first frame must decode to audio, so the
-      // decoded length is the whole fixture, not the fixture minus one frame.
-      const pcm = await decodePcm(response.body);
+      const pcm = await decodePcm(plain.body);
       assert(Math.abs(pcmSeconds(pcm) - 12) < 0.1, `decoded ${pcmSeconds(pcm)}s`);
-      console.log(`    full stream: ${response.body.length} bytes = ${response.body.length / 480} frames, ${pcmSeconds(pcm).toFixed(3)}s decoded`);
+      console.log(`    full stream: ${plain.body.length} bytes = ${headerBytes} header + ${(plain.body.length - headerBytes) / 480} frames`);
     } finally {
       await close(server);
     }
   });
 
-  await test('a source that is not resumable keeps advertising Accept-Ranges: none', async () => {
+  await test('a source that is not resumable ignores Range entirely', async () => {
     const server = await listen(streamerApp(() => makeSource(fixture)));
     try {
       const response = await request(server.address().port, { Range: 'bytes=96000-' });
@@ -230,27 +270,25 @@ function readThenDrop(port, minBytes) {
     }
   });
 
-  await test('Range: bytes=N- answers 206 from the time byte N maps to', async () => {
-    const server = await listen(streamerApp(req => makeSource(fixture, {
-      resumable: true,
-      resume: planResumeFromRange(req.headers.range)
-    })));
+  await test('Range: bytes=N- answers 206 from the time byte N maps to, without a header', async () => {
+    const server = await listen(streamerApp(resumableSource(fixture)));
     try {
-      // 7 s in = 140 000 bytes; ask for a byte just past a frame boundary.
-      const response = await request(server.address().port, { Range: 'bytes=140100-' });
+      // 7.2 s of audio past the header (300 frames), plus a bit, so the snap
+      // is visible.
+      const requested = headerBytes + 7.2 * BYTES_PER_SECOND + 100;
+      const response = await request(server.address().port, { Range: `bytes=${requested}-` });
       assert.strictEqual(response.status, 206);
       assert.strictEqual(response.headers['accept-ranges'], 'bytes');
       const match = /^bytes (\d+)-(\d+)\/\*$/.exec(response.headers['content-range']);
       assert(match, `content-range ${response.headers['content-range']}`);
-      // 140100 / 480 = 291.875 frames: resume from frame 291.
-      assert.strictEqual(Number(match[1]), 139680, 'snapped down to the frame grid');
-      assert(Number(match[2]) > 139680);
-      assert.strictEqual(response.body[0], 0xff);
+      const firstByte = Number(match[1]);
+      assert.strictEqual(firstByte, headerBytes + 7.2 * BYTES_PER_SECOND, 'snapped down to the frame grid');
+      assert(Number(match[2]) > firstByte);
+      assert.notStrictEqual(response.body.toString('latin1', 0, 3), 'ID3', 'no header mid-stream');
+      assert.strictEqual(response.body[0], 0xff, 'starts on a frame sync word');
       const pcm = await decodePcm(response.body);
-      const expectedSeconds = 12 - 139680 / BYTES_PER_SECOND;
-      assert(Math.abs(pcmSeconds(pcm) - expectedSeconds) < 0.1,
-        `resumed body decodes to ${pcmSeconds(pcm)}s, expected about ${expectedSeconds}s`);
-      // 7 s is inside the 880 Hz half: the resumed audio is the right audio.
+      assert(Math.abs(pcmSeconds(pcm) - 4.8) < 0.1, `resumed body decodes to ${pcmSeconds(pcm)}s, expected about 4.8s`);
+      // 7.2 s is inside the 880 Hz half: the resumed audio is the right audio.
       const frequency = dominantFrequency(pcm, 0.2, 0.5);
       assert(Math.abs(frequency - 880) < 40, `resumed audio starts at ${frequency.toFixed(0)} Hz, expected 880 Hz`);
       console.log(`    206 body: ${response.body.length} bytes, ${pcmSeconds(pcm).toFixed(3)}s, starts at ${frequency.toFixed(0)} Hz`);
@@ -259,46 +297,14 @@ function readThenDrop(port, minBytes) {
     }
   });
 
-  await test('a bounded range (WebKit bytes=0-1 probe) returns exactly that many bytes and reaps ffmpeg', async () => {
-    const children = new Set();
-    const spawnProcess = (...args) => {
-      const child = spawn(...args);
-      children.add(child);
-      return child;
-    };
-    const server = await listen(streamerApp(req => makeSource(fixture, {
-      resumable: true,
-      resume: planResumeFromRange(req.headers.range)
-    }), { spawnProcess }));
-    try {
-      const response = await request(server.address().port, { Range: 'bytes=0-1' });
-      assert.strictEqual(response.status, 206);
-      assert.strictEqual(response.headers['content-range'], 'bytes 0-1/*');
-      assert.strictEqual(response.body.length, 2);
-      assert.strictEqual(response.body[0], 0xff);
-      const deadline = Date.now() + 3000;
-      while (Date.now() < deadline && [...children].some(child => child.exitCode === null && child.signalCode === null)) {
-        await new Promise(resolve => setTimeout(resolve, 20));
-      }
-      assert(children.size >= 2, 'decoder and encoder were spawned');
-      for (const child of children) {
-        assert(child.exitCode !== null || child.signalCode !== null, 'ffmpeg child reaped after the bounded range completed');
-      }
-    } finally {
-      await close(server);
-    }
-  });
-
   await test('a dropped connection followed by Range: bytes=N- yields one continuous chapter', async () => {
-    const server = await listen(streamerApp(req => makeSource(fixture, {
-      resumable: true,
-      resume: planResumeFromRange(req.headers.range)
-    })));
+    const server = await listen(streamerApp(resumableSource(fixture)));
     try {
       const port = server.address().port;
       // The proxy drops the connection after the browser has part of the
-      // stream; the browser keeps those bytes and asks for the rest.
-      const first = await readThenDrop(port, 5 * BYTES_PER_SECOND);
+      // stream; the browser keeps those bytes and asks for the rest from its
+      // byte count, which includes the first response's header.
+      const first = await readThenDrop(port, headerBytes + 5 * BYTES_PER_SECOND + 7);
       assert.strictEqual(first.status, 200);
       const kept = first.body;
       const second = await request(port, { Range: `bytes=${kept.length}-` });
@@ -366,15 +372,20 @@ function readThenDrop(port, minBytes) {
       });
       const initial = await get({ Range: 'bytes=0-' });
       assert.strictEqual(initial.status, 200);
-      assert.strictEqual(initial.headers['accept-ranges'], 'bytes');
+      assert.strictEqual(initial.headers['accept-ranges'], 'none');
       assert.strictEqual(prepared[0].resumeSeconds, 0);
       assert.strictEqual(prepared[0].startOffsetSeconds, 2);
+      const probe = await get({ Range: 'bytes=0-1' });
+      assert.strictEqual(probe.status, 200);
+      assert.strictEqual(probe.headers['accept-ranges'], 'none');
+      assert.strictEqual(probe.body.length, initial.body.length, 'the probe gets the whole stream, as before');
+      assert.strictEqual(prepared[1].resumeSeconds, 0);
 
-      const resumed = await get({ Range: 'bytes=60000-' });
+      const resumed = await get({ Range: `bytes=${headerBytes + 60000}-` });
       assert.strictEqual(resumed.status, 206);
-      assert.strictEqual(resumed.headers['content-range'].startsWith('bytes 60000-'), true);
-      assert.strictEqual(prepared[1].resumeSeconds, 3);
-      assert.strictEqual(prepared[1].startOffsetSeconds, 2, 'the logical start offset is unchanged by a resume');
+      assert.strictEqual(resumed.headers['content-range'].startsWith(`bytes ${headerBytes + 60000}-`), true);
+      assert.strictEqual(prepared[2].resumeSeconds, 3);
+      assert.strictEqual(prepared[2].startOffsetSeconds, 2, 'the logical start offset is unchanged by a resume');
       const pcm = await decodePcm(resumed.body);
       // Fixture 12 s, stream starts at 2 s, resumed 3 s in: 7 s remain.
       assert(Math.abs(pcmSeconds(pcm) - 7) < 0.1, `resumed route body decodes to ${pcmSeconds(pcm)}s`);
