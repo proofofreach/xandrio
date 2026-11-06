@@ -929,6 +929,9 @@ function handleChunkError(error) {
     // A stream that went dead mid-playback. Listed explicitly so a downloaded
     // chapter that stalls recovers the same way a continuous one does.
     || error?.code === 'MEDIA_STALLED'
+    // The media element lost its place (currentTime reset without a seek).
+    // The engine reports the real position; reload there.
+    || error?.code === 'MEDIA_STREAM_RESET'
     || error?.code === 'MEDIA_RELOCATE_FAILED'
     // A rate limit is about the account, not the transport: it must be reported
     // even when the engine that failed had not reached continuous playback.
