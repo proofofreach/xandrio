@@ -30,6 +30,19 @@ Provider configuration:
   `MOSS_NANO_TTS_URL=http://127.0.0.1:8768` connect the app to the separately
   supervised worker. Models and its Python environment live in shared state.
 
+nginx in front of `/api/audio-continuous/` (and the other `/api/audio-*`
+streams):
+- `proxy_buffering off;` and `proxy_http_version 1.1;` — the response is a live,
+  paced encode; buffering would hold the first audio back.
+- `send_timeout 600s;` and `proxy_read_timeout 600s;` on the audio location.
+  A browser stops reading once its media buffer is full (Chromium holds about
+  8–20 MB, 7–17 minutes at 160 kbps), so the default `send_timeout 60s` closes
+  a healthy stream roughly once every few minutes of listening. The server
+  resumes such reconnects with `206` from the requested byte
+  (`lib/chapter-audio-stream.js` `planResumeFromRange`), so the drops are
+  recoverable, but each one costs a fresh encoder and a 30 s burst. Node has no
+  idle-write timeout of its own on these responses.
+
 ## Local (Apple-Silicon M4 — launchd `com.xandrio.server`, port 8181, trusted LAN)
 
 - Everything production has, plus the heavy TTS engine stack: Kokoro and

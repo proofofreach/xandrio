@@ -49,6 +49,7 @@ const tests = [
   'test-playback-orchestrator.js',
   'test-finalized-audio-seek.js',
   'test-playback-runway.js',
+  'test-continuous-stream-resume.js',
   'test-playback-prefetch.js',
   'test-playback-routes.js',
   'test-audio-prep-routes.js',

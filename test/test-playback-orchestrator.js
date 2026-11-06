@@ -741,6 +741,39 @@ function harness(overrides = {}) {
     }
   });
 
+  await test('a resumed continuous stream decodes from start + resume but keeps the logical start', async () => {
+    // A `Range: bytes=N-` reconnect prepares the encode N seconds into the
+    // stream. The timeline the client maps positions through must keep the
+    // offset the first connection used, or every chapter position shifts.
+    const { orchestrator, calls } = harness({ ready: false });
+    const source = await orchestrator.prepareContinuousAudioStream({
+      bookId: 'book',
+      chapterIndex: 0,
+      requestedTier: 'instant',
+      sessionId: 'resume-session',
+      startOffsetSeconds: 21.6,
+      resumeSeconds: 409.872
+    });
+    const seek = calls.find(call => call[0] === 'planSeek');
+    assert(seek, 'the seek plan is consulted for the resumed position');
+    assert(Math.abs(seek[3] - (21.6 + 409.872)) < 1e-9, 'chunk selection uses start + resume');
+    assert(Math.abs(source.decodeStartOffsetSeconds - (21.6 + 409.872)) < 1e-9);
+    assert.strictEqual(source.resumeAppliedToDecodeStart, true);
+    assert.strictEqual(source.startOffsetSeconds, 21.6, 'logical start is the first connection\'s');
+    const timeline = orchestrator.continuousTimeline('resume-session');
+    assert.strictEqual(timeline.startOffsetSeconds, 21.6);
+
+    const plain = await orchestrator.prepareContinuousAudioStream({
+      bookId: 'book',
+      chapterIndex: 0,
+      requestedTier: 'instant',
+      sessionId: 'plain-session',
+      startOffsetSeconds: 21.6
+    });
+    assert.strictEqual(plain.decodeStartOffsetSeconds, 21.6);
+    assert.strictEqual(plain.startOffsetSeconds, 21.6);
+  });
+
   console.log(`playback-orchestrator tests: ${passed} passed, ${failed} failed`);
   if (failed) process.exitCode = 1;
 })();
