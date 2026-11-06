@@ -2,6 +2,19 @@ const assert = require('node:assert/strict');
 const { chromium } = require('playwright');
 const { startScenarioEnvironment } = require('./fixtures/scenarios/lib/environment');
 
+// Re-rendered lists can detach a node between waitFor and the measurement,
+// which makes boundingBox() return null. Measure a visible node, retrying
+// briefly until the layout has settled.
+async function box(locator) {
+  for (let attempt = 0; attempt < 20; attempt++) {
+    await locator.waitFor({ state: 'visible' });
+    const rect = await locator.boundingBox();
+    if (rect) return rect;
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
+  throw new Error('Element never produced a bounding box');
+}
+
 (async () => {
   const environment = await startScenarioEnvironment({ proxyPort: 0, datasets: ['full'], defaultDataset: 'full' });
   const browser = await chromium.launch({ headless: true });
@@ -15,9 +28,9 @@ const { startScenarioEnvironment } = require('./fixtures/scenarios/lib/environme
         if (width < 760) {
           const resumeCard = page.locator('.rail-card').first();
           await resumeCard.waitFor();
-          const card = await resumeCard.boundingBox();
-          const cover = await resumeCard.locator('.rail-cover-wrap').boundingBox();
-          const meta = await resumeCard.locator('.rail-meta').boundingBox();
+          const card = await box(resumeCard);
+          const cover = await box(resumeCard.locator('.rail-cover-wrap'));
+          const meta = await box(resumeCard.locator('.rail-meta'));
           assert(card.height >= 44 && card.height <= 80, 'Continue cards stay compact one-tap targets');
           assert(cover.y >= card.y && cover.y + cover.height <= card.y + card.height + 1, 'cover stays inside the compact card');
           assert(meta.y >= card.y && meta.y + meta.height <= card.y + card.height, 'resume point stays beside the cover');
@@ -30,7 +43,7 @@ const { startScenarioEnvironment } = require('./fixtures/scenarios/lib/environme
           const row = page.locator('.book-item[data-book-id="scn-meridian"] .book-card-open');
           await row.waitFor();
           assert.equal(await page.locator('#continue-rail').isVisible(), false);
-          const height = (await page.locator('.book-item[data-book-id="scn-meridian"] .book-item-inner').boundingBox()).height;
+          const height = (await box(page.locator('.book-item[data-book-id="scn-meridian"] .book-item-inner'))).height;
           assert(Math.abs(height - 60) <= 1, `desktop table rows are 60px (got ${height})`);
           assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
           await row.focus();
@@ -78,7 +91,7 @@ const { startScenarioEnvironment } = require('./fixtures/scenarios/lib/environme
         await firstVoice.waitFor();
         assert.equal(await firstVoice.locator('[data-voice-action="select"]').getAttribute('aria-pressed'), 'true', 'the selected voice is first');
         for (const button of [firstVoice.locator('.voice-save-btn'), firstVoice.locator('.voice-play-btn')]) {
-          const target = await button.boundingBox();
+          const target = await box(button);
           assert(target.width >= 44 && target.height >= 44, 'voice actions have full touch targets');
         }
         const create = page.locator('#voice-list .voice-create');
@@ -91,12 +104,12 @@ const { startScenarioEnvironment } = require('./fixtures/scenarios/lib/environme
         await page.goto(`${environment.origin}/#/player/scn-meridian`);
         await page.waitForFunction(() => document.getElementById('audio-loading')?.style.display === 'none' && document.getElementById('book-title')?.textContent === 'The Meridian Line');
         for (const id of ['prev-chapter-btn', 'next-chapter-btn']) {
-          const target = await page.locator(`#${id}`).boundingBox();
+          const target = await box(page.locator(`#${id}`));
           assert(target.width >= 44 && target.height >= 44, 'chapter actions have full touch targets');
         }
         if (width === 390) {
           await page.evaluate(() => { document.documentElement.style.zoom = '1.4'; });
-          const play = await page.locator('#play-pause-btn').boundingBox();
+          const play = await box(page.locator('#play-pause-btn'));
           assert(play.y >= 0 && play.y + play.height <= 844, 'Play stays visible at enlarged text scale');
           const transport = await page.locator('.pl-transport > button').evaluateAll(buttons => buttons.map(button => {
             const rect = button.getBoundingClientRect();
@@ -163,7 +176,7 @@ const { startScenarioEnvironment } = require('./fixtures/scenarios/lib/environme
       await page.waitForFunction(() => document.getElementById('guide-view')?.classList.contains('active') && document.getElementById('guide-title')?.textContent === 'Field Notes on Silence');
       await page.locator('[data-guide-listen]').waitFor();
       assert.equal(await page.locator('[data-guide-listen]').count(), 1);
-      const narration = await page.locator('.guide-narration').boundingBox();
+      const narration = await box(page.locator('.guide-narration'));
       assert(narration.height < 100, 'the initial guide audio action leaves room for reading');
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
       passed++;
