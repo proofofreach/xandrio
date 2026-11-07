@@ -59,7 +59,7 @@
   transform: none;
   touch-action: manipulation;
 }
-#search-view .book-drop-zone:hover { background: var(--surface-hover); border-color: var(--text-secondary); }
+@media (hover: hover) { #search-view .book-drop-zone:hover { background: var(--surface-hover); border-color: var(--text-secondary); } }
 #search-view .book-drop-zone:focus-visible { outline: 3px solid var(--focus-ring); outline-offset: 2px; }
 #search-view .book-drop-zone.is-dragging {
   border-color: var(--accent);
@@ -130,7 +130,8 @@
 #search-view .search-filter-toggle:focus-visible { outline: 3px solid var(--focus-ring); outline-offset: -2px; border-radius: var(--radius); }
 #search-view .search-filter-count {
   min-width: 24px;
-  height: 24px;
+  min-height: 24px;
+  height: auto;
   background: var(--accent-dim);
   color: var(--accent-text);
   font-size: var(--text-footnote);
@@ -153,7 +154,6 @@
 #search-view .search-sort-wrap select {
   width: auto;
   max-width: 190px;
-  min-height: 44px;
   color: var(--text);
   font: var(--weight-semibold) var(--text-subhead) / var(--leading-subhead) var(--font);
 }
@@ -178,8 +178,7 @@
   font-weight: var(--weight-bold);
 }
 #search-view .search-language-filter #language-filter {
-  min-height: 44px;
-  background: var(--surface);
+  background-color: var(--surface);
   border-color: var(--border-strong);
 }
 #search-view .search-source-reset {
@@ -204,7 +203,7 @@
   font: var(--weight-regular) var(--text-subhead) / var(--leading-subhead) var(--font);
   text-align: left;
 }
-#search-view .search-source-pill:hover { background: var(--surface-hover); color: var(--text); }
+@media (hover: hover) { #search-view .search-source-pill:hover { background: var(--surface-hover); color: var(--text); } }
 #search-view .search-source-pill:focus-visible { outline: 3px solid var(--focus-ring); outline-offset: 2px; }
 #search-view .search-source-pill.is-selected {
   border-color: var(--text);
@@ -212,7 +211,7 @@
   color: var(--bg);
   font-weight: var(--weight-bold);
 }
-#search-view .search-source-pill.is-selected:hover { background: var(--text); color: var(--bg); }
+@media (hover: hover) { #search-view .search-source-pill.is-selected:hover { background: var(--text); color: var(--bg); } }
 #search-view .search-source-pill.is-selected:focus-visible { outline-color: var(--focus-ring); }
 #search-view .search-source-pill:disabled {
   opacity: 1;
@@ -285,7 +284,7 @@
   border-radius: 0;
   background: transparent;
 }
-#search-view .result-card:hover { background: transparent; border-color: var(--border); }
+@media (hover: hover) { #search-view .result-card:hover { background: transparent; border-color: var(--border); } }
 #search-view .result-card-best { border-color: var(--border); }
 #search-view .result-card .result-cover-shell,
 #search-view .skeleton-result .sk-result-cover {
@@ -391,11 +390,11 @@
   cursor: pointer;
   touch-action: manipulation;
 }
-#search-view .result-add-btn:hover { background: var(--border-strong); }
+@media (hover: hover) { #search-view .result-add-btn:hover { background: var(--border-strong); } }
 #search-view .result-add-btn:focus-visible { outline: 3px solid var(--focus-ring); outline-offset: 2px; }
 #search-view .result-add-btn[data-state="adding"] { background: transparent; box-shadow: inset 0 0 0 1.5px var(--border-strong); color: var(--text-secondary); cursor: progress; }
 #search-view .result-add-btn[data-state="added"] { background: var(--accent); color: var(--on-accent); }
-#search-view .result-add-btn[data-state="added"]:hover { background: var(--accent-strong); }
+@media (hover: hover) { #search-view .result-add-btn[data-state="added"]:hover { background: var(--accent-strong); } }
 #search-view .result-add-btn[data-state="failed"] { box-shadow: inset 0 0 0 1.5px var(--danger); }
 
 /* Versions: the disclosure spans the row under the copy. */
@@ -414,7 +413,7 @@
 #search-view .edition-count:focus-visible { outline: 3px solid var(--focus-ring); outline-offset: -2px; border-radius: var(--radius); }
 #search-view .edition-list { padding: var(--space-2); background: var(--surface); border-color: var(--border); border-radius: var(--radius); }
 #search-view .edition-option { min-height: 52px; padding: var(--space-2) var(--space-3); border-radius: var(--radius); }
-#search-view .edition-option:hover { background: var(--surface-2); border-color: var(--border-strong); }
+@media (hover: hover) { #search-view .edition-option:hover { background: var(--surface-2); border-color: var(--border-strong); } }
 #search-view .edition-option:focus-visible { outline: 3px solid var(--focus-ring); outline-offset: -3px; }
 #search-view .edition-option-copy { color: var(--text-secondary); font-size: var(--text-footnote); line-height: var(--leading-footnote); }
 #search-view .edition-option-copy strong { color: var(--text); font-size: var(--text-subhead); line-height: var(--leading-subhead); }
@@ -533,7 +532,7 @@
   #search-view .result-card.skeleton-result { grid-template-columns: 64px minmax(0, 1fr) auto; column-gap: var(--space-4); padding: var(--space-3) 0; }
   #search-view .result-card-copy,
   #search-view .skeleton-result .skeleton-result-lines { min-height: 96px; }
-  #search-view .result-card:hover { background: var(--surface); box-shadow: -12px 0 0 var(--surface), 12px 0 0 var(--surface); }
+  @media (hover: hover) { #search-view .result-card:hover { background: var(--surface); box-shadow: -12px 0 0 var(--surface), 12px 0 0 var(--surface); } }
 }
 @media (min-width: 1200px) {
   #search-view .search-content-workspace > .search-workspace { grid-column: 1; }
@@ -550,3 +549,54 @@
 #search-view .search-sort-wrap > span { display: none; }
 #search-view .search-results .empty-icon { width: auto; height: auto; padding: 0; background: none; display: block; line-height: 0; }
 #search-view .result-card-edition-meta span + span::before { content: none; display: none; }
+
+/* ==================== WIDE LAYOUT (review fix) ==================== */
+/* One reading column: the header, the search row, the filters and the
+   results share the 760px measure the result rows already use, so the input
+   is never a narrow side column and its full placeholder fits. */
+@media (min-width: 760px) {
+  #search-view .search-header,
+  #search-view .search-content-workspace { max-width: 760px; }
+  #search-view .search-content-workspace { display: block; }
+  #search-view .search-workspace { margin-bottom: var(--space-4); }
+
+  /* Filters: language beside the sources; source groups and their chips
+     wrap into a grid instead of scrolling sideways. */
+  #search-view .search-filter-panel:not([hidden]) {
+    display: grid;
+    grid-template-columns: 180px minmax(0, 1fr);
+    gap: var(--space-4) var(--space-6);
+    padding-top: var(--space-3);
+  }
+  #search-view .search-language-filter { width: auto; }
+  #search-view .search-source-controls {
+    display: grid;
+    gap: var(--space-4);
+    overflow: visible;
+    align-items: start;
+  }
+  #search-view .search-source-group { flex: none; }
+  #search-view .search-source-group-pills {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(176px, 1fr));
+  }
+  #search-view .search-source-pill { justify-content: flex-start; border-radius: var(--radius); }
+  #search-view .search-filter-sheet-header { grid-column: 1 / -1; }
+}
+@media (min-width: 1200px) {
+  #search-view .search-source-group-pills { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+/* Upload a file is a secondary text action, so Search stays the one
+   primary button on the screen. */
+#search-view .book-drop-zone {
+  min-height: 44px;
+  padding: 0 var(--space-2);
+  border: 0;
+  background: transparent;
+  color: var(--accent-text);
+}
+@media (hover: hover) { #search-view .book-drop-zone:hover { background: var(--surface-2); border-color: transparent; } }
+#search-view .book-drop-label { flex: none; }
+#search-view .search-header .book-drop-zone { width: auto; justify-content: flex-start; }
+#search-view #upload-btn { min-width: 0; }

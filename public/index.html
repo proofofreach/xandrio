@@ -13,14 +13,14 @@
   <link rel="manifest" href="/manifest.webmanifest">
   <title>Xandrio - Audiobook Library</title>
   <!-- ?v= values must match ASSET_VERSIONS in sw.js (single source of truth) -->
-  <link rel="stylesheet" href="style-v3.css?v=124">
-  <link rel="stylesheet" href="composition.css?v=9">
-  <link rel="stylesheet" href="library-composition.css?v=8">
-  <link rel="stylesheet" href="shell.css?v=4">
-  <link rel="stylesheet" href="sheets.css?v=2">
-  <link rel="stylesheet" href="settings.css?v=2">
-  <link rel="stylesheet" href="player.css?v=2">
-  <link rel="stylesheet" href="find.css?v=2">
+  <link rel="stylesheet" href="style-v3.css?v=125">
+  <link rel="stylesheet" href="composition.css?v=10">
+  <link rel="stylesheet" href="library-composition.css?v=9">
+  <link rel="stylesheet" href="shell.css?v=5">
+  <link rel="stylesheet" href="sheets.css?v=3">
+  <link rel="stylesheet" href="settings.css?v=3">
+  <link rel="stylesheet" href="player.css?v=3">
+  <link rel="stylesheet" href="find.css?v=3">
   <script src="/js/ios-focus-zoom.js?v=2" defer></script>
   <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=2">
 </head>
@@ -36,6 +36,7 @@
   library.
   CONSTRAINTS: Real covers, intrinsic proportions, full touch targets, visible
   recovery states and safe-area clearance. Long content remains scrollable. -->
+  <a id="skip-to-player" class="skip-link" href="#player-view" hidden>Skip to player</a>
   <div id="deployment-banner" class="deployment-banner" role="alert" hidden></div>
   <!-- Global offline indicator -->
   <div id="offline-banner" class="offline-banner" role="status" aria-live="polite" hidden>
@@ -175,7 +176,7 @@
         </div>
 
           <div class="library-table-head" aria-hidden="true">
-            <span>Book</span><span>Time left at speed</span><span>Status</span><span>Offline</span>
+            <span>Book</span><span id="library-table-time-head" class="num">Time left at 1.0×</span><span>Status</span><span>Offline</span>
           </div>
 
           <section id="shelf-empty-hint" class="shelf-empty-hint" aria-labelledby="shelf-empty-title" hidden>
@@ -385,22 +386,7 @@
         <aside id="settings-hub" class="settings-hub" aria-label="Settings">
           <header class="settings-hub-header">
             <h2>Settings</h2>
-            <div class="settings-row settings-row-stacked">
-              <span id="app-version" class="settings-label-text"></span>
-              <span id="app-version-status" class="settings-label-hint" role="status">Not checked yet</span>
-              <button id="app-version-check" type="button" class="btn btn-secondary">Check for updates</button>
-              <button id="app-version-reload" type="button" class="btn btn-secondary" hidden>Reload to update</button>
-            </div>
           </header>
-
-          <a id="settings-identity" class="settings-identity" href="#/settings/account" hidden>
-            <span id="settings-identity-avatar" class="settings-identity-avatar" aria-hidden="true"></span>
-            <span class="settings-identity-copy">
-              <strong id="settings-identity-name">Signed in</strong>
-              <span id="settings-identity-detail"></span>
-            </span>
-            <span id="settings-identity-role" class="settings-status"></span>
-          </a>
 
           <nav class="settings-menu" aria-label="Settings sections">
             <section class="settings-menu-group" aria-labelledby="settings-menu-listening">
@@ -498,8 +484,22 @@
             </section>
           </nav>
 
+          <a id="settings-identity" class="settings-identity" href="#/settings/account" hidden>
+            <span id="settings-identity-avatar" class="settings-identity-avatar" aria-hidden="true"></span>
+            <span class="settings-identity-copy">
+              <strong id="settings-identity-name">Signed in</strong>
+              <span id="settings-identity-detail"></span>
+            </span>
+            <span id="settings-identity-role" class="settings-status"></span>
+          </a>
+
           <footer class="settings-hub-footer">
             <button id="account-logout-btn" class="btn-ghost btn-ghost-danger settings-signout" type="button" hidden>Sign out</button>
+            <div class="settings-version">
+              <p class="settings-version-text"><span id="app-version"></span> · <span id="app-version-status" role="status">Not checked yet</span></p>
+              <button id="app-version-check" type="button" class="settings-text-btn">Check for updates</button>
+              <button id="app-version-reload" type="button" class="settings-text-btn" hidden>Reload to update</button>
+            </div>
             <p class="settings-hub-links"><a href="/legal.html" target="_blank" rel="noopener">Legal notice</a><a href="/legal.html#data-flow" target="_blank" rel="noopener">Data flow</a></p>
           </footer>
         </aside>
@@ -560,8 +560,8 @@
               </div>
               <label class="settings-row settings-row-switch">
                 <span class="settings-label">
-                  <span class="settings-label-text">Prepare premium audio in background</span>
-                  <span class="settings-label-hint">Prepare premium chapters in the background. A compatible instant voice can play while you wait.</span>
+                  <span class="settings-label-text">Prepare the chosen narrator in the background</span>
+                  <span class="settings-label-hint">Xandrio prepares upcoming chapters with your narrator before you reach them. An instant narrator can play while you wait.</span>
                 </span>
                 <input id="premium-prep-control" class="switch" type="checkbox" role="switch">
               </label>
@@ -600,7 +600,7 @@
                 </select></label>
               </div>
               <p id="auto-sleep-status" class="settings-hint" role="status" aria-live="polite"></p>
-              <p class="settings-hint">An active timer keeps its deadline after the window ends. Cancelling skips automatic timers until the next window. Minute timers are best effort when iOS suspends the app; end of chapter is more reliable with the screen locked.</p>
+              <p class="settings-hint">An active timer keeps its deadline after the window ends. Cancelling skips automatic timers until the next window. Minute timers are best effort if the device suspends the app; end of chapter is more reliable with the screen locked.</p>
             </fieldset>
           </section>
 
@@ -840,7 +840,7 @@
           <section class="settings-pane" data-settings-pane="account" id="account-section" aria-labelledby="settings-pane-title-account" hidden>
             <header class="settings-pane-header">
               <a class="settings-pane-back" href="#/settings"><span aria-hidden="true">‹</span> Settings</a>
-              <h2 id="settings-pane-title-account">Account &amp; devices</h2>
+              <h2 id="settings-pane-title-account">Account and devices</h2>
             </header>
             <div class="settings-card">
               <div class="settings-row">
@@ -1120,7 +1120,7 @@
     <!-- Stats / Listening History View -->
     <div id="stats-view" class="view">
       <header class="stats-header">
-        <h2>Listening</h2>
+        <h2>Listening stats</h2>
       </header>
       <div id="stats-body" class="stats-body"></div>
     </div>
@@ -1222,7 +1222,7 @@
           <div id="playback-resume-prompt" class="pl-card pl-card-compact" hidden role="status">
             <div class="pl-card-copy">
               <strong class="pl-card-title">Tap to resume</strong>
-              <span class="pl-card-sub">iPhone paused audio after leaving the app.</span>
+              <span class="pl-card-sub">Audio paused when you left the app.</span>
             </div>
             <button id="playback-resume-btn" class="pl-btn pl-btn-primary" type="button">Resume playback</button>
           </div>
@@ -1310,13 +1310,13 @@
 
     <!-- Player ••• menu: book-level actions that are not needed while
          listening. Rows open their own sheet after this one closes. -->
-    <div id="player-more-sheet" class="voice-sheet player-more-sheet" aria-hidden="true">
+    <div id="player-more-sheet" class="voice-sheet player-more-sheet" aria-hidden="true" data-sheet-drag>
       <div class="voice-sheet-backdrop" id="player-more-backdrop"></div>
       <section class="voice-sheet-panel player-more-panel" role="dialog" aria-modal="true" aria-labelledby="player-more-title">
         <div class="voice-sheet-handle" aria-hidden="true"></div>
         <div class="voice-sheet-header">
           <h3 id="player-more-title" class="pl-more-title" tabindex="-1">This book</h3>
-          <button id="player-more-close" class="btn-icon" type="button" aria-label="Close"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 18 18 6M6 6l12 12"/></svg></button>
+          <button id="player-more-close" class="sheet-done" type="button">Done</button>
         </div>
         <div class="pl-more-list">
           <button id="voice-btn" class="pl-more-row" type="button" data-more-row>
@@ -1329,7 +1329,7 @@
           </button>
           <button id="player-book-seek-btn" class="pl-more-row" type="button" data-more-row>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12h18M7 8l-4 4 4 4M17 8l4 4-4 4"/></svg>
-            <span class="pl-more-text"><span>Go to position in book…</span><span id="player-book-seek-note" class="pl-more-sub" hidden>Needs a duration for every chapter</span></span>
+            <span class="pl-more-text"><span>Go to position in book…</span><span id="player-book-seek-note" class="pl-more-sub" hidden>Available once every chapter has a duration</span></span>
           </button>
           <button id="player-queue-btn" class="pl-more-row" type="button" data-more-row>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6h12M4 12h12M4 18h7M16 15v6M13 18h6"/></svg>
@@ -1374,13 +1374,13 @@
 
     <!-- Go to position in book: the book-wide scrubber, moved out of the
          main view. Seeks only on Go. -->
-    <div id="book-seek-sheet" class="voice-sheet book-seek-sheet" aria-hidden="true">
+    <div id="book-seek-sheet" class="voice-sheet book-seek-sheet" aria-hidden="true" data-sheet-drag>
       <div class="voice-sheet-backdrop" id="book-seek-backdrop"></div>
       <section class="voice-sheet-panel book-seek-panel" role="dialog" aria-modal="true" aria-labelledby="book-seek-title">
         <div class="voice-sheet-handle" aria-hidden="true"></div>
         <div class="voice-sheet-header">
           <h3 id="book-seek-title" class="pl-more-title" tabindex="-1">Go to position in book</h3>
-          <button id="book-seek-close" class="btn-icon" type="button" aria-label="Close"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 18 18 6M6 6l12 12"/></svg></button>
+          <button id="book-seek-close" class="sheet-done" type="button">Done</button>
         </div>
         <p id="book-seek-preview" class="pl-seek-preview" aria-live="polite"></p>
         <input type="range" id="book-seek-slider" class="pl-slider" min="0" max="100" step="any" value="0" aria-label="Position in book" aria-describedby="book-seek-preview" />
@@ -1393,7 +1393,7 @@
     </div>
 
     <!-- Sleep timer sheet -->
-    <div id="timer-modal" class="voice-sheet timer-sheet" aria-hidden="true">
+    <div id="timer-modal" class="voice-sheet timer-sheet" aria-hidden="true" data-sheet-drag>
       <div class="voice-sheet-backdrop" id="timer-sheet-backdrop"></div>
       <section class="voice-sheet-panel timer-sheet-panel" role="dialog" aria-modal="true" aria-labelledby="timer-modal-title">
         <div class="voice-sheet-handle" aria-hidden="true"></div>
@@ -1415,7 +1415,7 @@
           <button id="cancel-timer-btn" class="btn-secondary" type="button" hidden>Turn off timer</button>
         </div>
         <p class="timer-reliability-hint">
-          End of chapter remains reliable when your screen is locked. Minute timers are best effort if iOS suspends Xandrio.
+          End of chapter remains reliable when your screen is locked. Minute timers are best effort if your device suspends Xandrio.
         </p>
       </section>
     </div>
@@ -1440,7 +1440,7 @@
       </section>
     </div>
 
-    <div id="speed-sheet" class="voice-sheet speed-sheet" aria-hidden="true">
+    <div id="speed-sheet" class="voice-sheet speed-sheet" aria-hidden="true" data-sheet-drag>
       <div class="voice-sheet-backdrop" id="speed-sheet-backdrop"></div>
       <section class="voice-sheet-panel speed-sheet-panel" role="dialog" aria-modal="true" aria-labelledby="speed-sheet-title">
         <div class="voice-sheet-handle" aria-hidden="true"></div>
@@ -1497,6 +1497,7 @@
         </div>
         <table class="shortcut-table">
           <tbody>
+            <tr><th colspan="2" scope="rowgroup">In the player or mini player</th></tr>
             <tr><td><kbd>Space</kbd></td><td>Play / pause</td></tr>
             <tr><td><kbd>&larr;</kbd> <kbd>&rarr;</kbd></td><td>Skip 15s back / forward</td></tr>
             <tr><td><kbd>Shift</kbd>+<kbd>&larr;</kbd>/<kbd>&rarr;</kbd></td><td>Previous / next chapter</td></tr>
@@ -1504,7 +1505,10 @@
             <tr><td><kbd>C</kbd></td><td>Chapters</td></tr>
             <tr><td><kbd>V</kbd></td><td>Voices</td></tr>
             <tr><td><kbd>B</kbd></td><td>Bookmark</td></tr>
-            <tr><td><kbd>/</kbd></td><td>Search library</td></tr>
+          </tbody>
+          <tbody>
+            <tr><th colspan="2" scope="rowgroup">Everywhere</th></tr>
+            <tr><td><kbd>/</kbd></td><td>Filter library</td></tr>
             <tr><td><kbd>Esc</kbd></td><td>Close sheet / modal</td></tr>
             <tr><td><kbd>?</kbd></td><td>This help</td></tr>
           </tbody>
@@ -1513,7 +1517,7 @@
     </div>
 
     <!-- Player Voice Sheet -->
-    <div id="voice-sheet" class="voice-sheet" aria-hidden="true">
+    <div id="voice-sheet" class="voice-sheet" aria-hidden="true" data-sheet-drag>
       <div class="voice-sheet-backdrop" id="voice-sheet-backdrop"></div>
       <section class="voice-sheet-panel" role="dialog" aria-modal="true" aria-labelledby="voice-sheet-title">
         <div class="voice-sheet-handle" aria-hidden="true"></div>
@@ -1532,7 +1536,7 @@
     </div>
 
     <!-- Player Chapter Sheet -->
-    <div id="chapter-sheet" class="voice-sheet chapter-sheet" aria-hidden="true">
+    <div id="chapter-sheet" class="voice-sheet chapter-sheet" aria-hidden="true" data-sheet-drag>
       <div class="voice-sheet-backdrop" id="chapter-sheet-backdrop"></div>
       <section class="voice-sheet-panel chapter-sheet-panel" role="dialog" aria-modal="true" aria-labelledby="chapter-sheet-title">
         <div class="voice-sheet-handle" aria-hidden="true"></div>
@@ -1552,7 +1556,7 @@
     <!-- User-scoped background narration activity -->
     <!-- Recent books: last five in progress, one tap resumes. Opened by
          press-and-hold on the mini player (phase 3 adds the player button). -->
-    <div id="recent-sheet" class="voice-sheet recent-sheet" aria-hidden="true">
+    <div id="recent-sheet" class="voice-sheet recent-sheet" aria-hidden="true" data-sheet-drag>
       <div class="voice-sheet-backdrop" id="recent-sheet-backdrop"></div>
       <section class="voice-sheet-panel recent-sheet-panel" role="dialog" aria-modal="true" aria-labelledby="recent-sheet-title">
         <div class="voice-sheet-handle" aria-hidden="true"></div>
@@ -1685,7 +1689,7 @@
     </ul>
   </nav>
 
-  <div id="operator-notice-dialog" class="modal operator-notice-dialog" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="operator-notice-title">
+  <div id="operator-notice-dialog" class="modal operator-notice-dialog" role="dialog" aria-modal="true" aria-hidden="true" inert aria-labelledby="operator-notice-title">
     <section class="modal-content operator-notice-content">
       <p class="operator-notice-eyebrow">Operator acknowledgement</p>
       <h3 id="operator-notice-title">This is your self-hosted instance</h3>
@@ -1702,6 +1706,6 @@
   </div>
 
   <script src="/js/lifecycle.js?v=2"></script>
-  <script type="module" src="app.js?v=165"></script>
+  <script type="module" src="app.js?v=170"></script>
 </body>
 </html>

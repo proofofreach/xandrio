@@ -2310,6 +2310,139 @@ function fakeAudio() {
     assert.strictEqual(states.at(-1), false, 'disposing clears the previous session status');
   });
 
+  await test('a currentTime reset without a seek is reported once with the high-water position', async () => {
+    // A continuous stream's chapter position is start offset + currentTime.
+    // When the media pipeline resets after a transport failure, currentTime
+    // drops back near zero and every save, stall report and recovery would
+    // otherwise relocate the listener to the start of the stream.
+    const harness = await playingPlayer(stallHarness());
+    const { audio, player, errors } = harness;
+    assert.strictEqual(player.isContinuous, true);
+    for (let seconds = 1; seconds <= 300; seconds += 1) {
+      audio.currentTime = seconds;
+      audio.emit('timeupdate');
+    }
+    assert.strictEqual(player.getCurrentTime(), 300);
+    audio.currentTime = 3.03;
+    audio.emit('timeupdate');
+    assert.strictEqual(errors.length, 1, 'the reset is reported');
+    assert.strictEqual(errors[0].code, 'MEDIA_STREAM_RESET');
+    assert.strictEqual(errors[0].recoverable, true);
+    assert.strictEqual(errors[0].chapterTime, 300, 'recovery resumes where the listener was');
+    assert.strictEqual(errors[0].chapterIndex, 0);
+    assert.strictEqual(player.getCurrentTime(), 300, 'the lost element time is not the saved position');
+    assert.strictEqual(player.getPosition().currentTime, 300);
+    audio.currentTime = 4;
+    audio.emit('timeupdate');
+    audio.currentTime = 5;
+    audio.emit('timeupdate');
+    assert.strictEqual(errors.length, 1, 'reported once, not on every tick');
+    assert.strictEqual(player.getCurrentTime(), 300, 'held until a new source or a seek');
+    // The stall probe does not add a second recovery for the same event.
+    for (let elapsed = 0; elapsed < 40000; elapsed += 2000) {
+      harness.advance(2000);
+      harness.probe();
+    }
+    assert.strictEqual(errors.length, 1);
+  });
+
+  await test('a backward seek is not a position reset', async () => {
+    const harness = await playingPlayer(stallHarness());
+    const { audio, player, errors } = harness;
+    for (let seconds = 1; seconds <= 120; seconds += 1) {
+      audio.currentTime = seconds;
+      audio.emit('timeupdate');
+    }
+    // Any seek — the app's, or the platform's from the lock screen — fires
+    // `seeking` before currentTime moves.
+    audio.emit('seeking');
+    audio.currentTime = 10;
+    audio.emit('timeupdate');
+    assert.deepStrictEqual(errors, []);
+    assert.strictEqual(player.getCurrentTime(), 10);
+    // Noise below the threshold is not a reset either.
+    audio.currentTime = 9.5;
+    audio.emit('timeupdate');
+    assert.deepStrictEqual(errors, []);
+  });
+
+  await test('app seeks are not resets even though seeking fires later', async () => {
+    for (const run of [
+      player => player.seek(60),
+      player => player.trySeekSync(60),
+      player => player.skip(-30)
+    ]) {
+      const harness = await playingPlayer(stallHarness());
+      const { audio, player, errors } = harness;
+      audio.bufferedEnd = 200;
+      audio.duration = 600;
+      for (let seconds = 1; seconds <= 120; seconds += 1) {
+        audio.currentTime = seconds;
+        audio.emit('timeupdate');
+      }
+      // Real browsers queue 'seeking' after the currentTime assignment.
+      await run(player);
+      audio.emit('timeupdate');
+      audio.emit('seeking');
+      assert.deepStrictEqual(errors, []);
+    }
+  });
+
+  await test('a time update during a native seek is not a reset', async () => {
+    const harness = await playingPlayer(stallHarness());
+    const { audio, errors } = harness;
+    for (let seconds = 1; seconds <= 120; seconds += 1) {
+      audio.currentTime = seconds;
+      audio.emit('timeupdate');
+    }
+    audio.seeking = true;
+    audio.currentTime = 20;
+    audio.emit('timeupdate');
+    audio.seeking = false;
+    audio.emit('seeking');
+    audio.emit('timeupdate');
+    assert.deepStrictEqual(errors, []);
+  });
+
+  await test('a stall after a position reset reports the high-water position', async () => {
+    const harness = await playingPlayer(stallHarness());
+    const { audio, errors } = harness;
+    for (let seconds = 1; seconds <= 200; seconds += 1) {
+      audio.currentTime = seconds;
+      audio.emit('timeupdate');
+    }
+    audio.currentTime = 0;
+    audio.emit('timeupdate');
+    assert.strictEqual(errors.length, 1);
+    assert.strictEqual(errors[0].code, 'MEDIA_STREAM_RESET');
+    // Recovery is in flight; a native error during that window must agree.
+    audio.error = { code: 2, message: 'network' };
+    audio.emit('error');
+    assert.strictEqual(errors.length, 2);
+    assert.strictEqual(errors[1].chapterTime, 200);
+    assert.strictEqual(errors[1].chapterIndex, 0);
+  });
+
+  await test('a new source starts a fresh progress history', async () => {
+    const harness = await playingPlayer(stallHarness());
+    const { audio, player, errors } = harness;
+    for (let seconds = 1; seconds <= 90; seconds += 1) {
+      audio.currentTime = seconds;
+      audio.emit('timeupdate');
+    }
+    audio.currentTime = 0;
+    const load = player.loadChapter('book1', 1, { startOffsetSeconds: 400 });
+    audio.emit('loadedmetadata');
+    await load;
+    audio.paused = false;
+    audio.emit('playing');
+    audio.emit('timeupdate');
+    audio.currentTime = 1;
+    audio.emit('timeupdate');
+    assert.deepStrictEqual(errors, [], 'zero on a new source is where it starts');
+    assert.strictEqual(player.getCurrentTime(), 401);
+  });
+
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);
 })().catch(error => {

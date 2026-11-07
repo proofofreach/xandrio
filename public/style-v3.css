@@ -52,23 +52,29 @@
   --focus-ring: oklch(84% 0.16 82);
   --shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
 
-  /* Type: system stack, Dynamic Type "Large" scale */
+  /* Type: system stack, Dynamic Type "Large" scale. Sizes are written in
+     type units so they follow the reader's text size: one unit is 1px at the
+     default 16px root, so the default rendering is 17px body, 13px floor.
+     Browser and Android font scaling change the root size; iOS Dynamic Type
+     changes it through -apple-system-body (see the @supports block below
+     :root). Spacing stays in px. */
   --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", system-ui, "Segoe UI", Roboto, sans-serif;
-  --text-large-title: 34px;
-  --text-title1: 28px;
-  --text-title2: 22px;
-  --text-title3: 20px;
-  --text-headline: 17px;
-  --text-body: 17px;
-  --text-callout: 16px;
-  --text-subhead: 15px;
-  --text-footnote: 13px;
-  --text-caption: 13px; /* floor: nothing meaningful is smaller */
-  --leading-large-title: 41px;
-  --leading-title2: 28px;
-  --leading-body: 22px;
-  --leading-subhead: 20px;
-  --leading-footnote: 18px;
+  --type-unit: calc(1rem / 16);
+  --text-large-title: calc(34 * var(--type-unit));
+  --text-title1: calc(28 * var(--type-unit));
+  --text-title2: calc(22 * var(--type-unit));
+  --text-title3: calc(20 * var(--type-unit));
+  --text-headline: calc(17 * var(--type-unit));
+  --text-body: calc(17 * var(--type-unit));
+  --text-callout: calc(16 * var(--type-unit));
+  --text-subhead: calc(15 * var(--type-unit));
+  --text-footnote: calc(13 * var(--type-unit));
+  --text-caption: calc(13 * var(--type-unit)); /* floor: nothing meaningful is smaller */
+  --leading-large-title: calc(41 * var(--type-unit));
+  --leading-title2: calc(28 * var(--type-unit));
+  --leading-body: calc(22 * var(--type-unit));
+  --leading-subhead: calc(20 * var(--type-unit));
+  --leading-footnote: calc(18 * var(--type-unit));
   --weight-regular: 400;
   --weight-semibold: 600;
   --weight-bold: 700;
@@ -140,11 +146,23 @@
 }
 
 html {
+  /* The root carries the reader's text size: 16px by default, larger when
+     the browser or Android font scale is raised. Type tokens are in rem. */
+  font-size: 100%;
   /* iOS Safari inflates text after a rotation to landscape unless told not
      to. The app sets its own type scale, and inflated labels overflow
      fixed-width controls such as the Search button. */
   -webkit-text-size-adjust: 100%;
   text-size-adjust: 100%;
+}
+
+/* iOS Dynamic Type: -apple-system-body is 17px at the default "Large" size
+   and follows the Settings text size, so one type unit is 1/17 of it. The
+   touch-callout test keeps this to iOS and iPadOS: desktop Safari also knows
+   -apple-system-body but resolves it to 13px, which would shrink the app. */
+@supports (font: -apple-system-body) and (-webkit-touch-callout: none) {
+  html { font: -apple-system-body; }
+  :root { --type-unit: calc(1rem / 17); }
 }
 
 body {
@@ -167,15 +185,44 @@ textarea {
   font-family: inherit;
 }
 
+/* Every select is the same control: a 44px target with body text and a
+   drawn chevron. appearance: none is what makes WebKit apply the height;
+   its native menu button ignores it and draws about 25px tall. Pages may
+   restyle colour, border and padding, but must set background-color (not
+   the background shorthand, which drops the chevron) and keep 32px of
+   right padding for it. The two inline sort menus draw their own. */
+select:not(:where(.sr-only)) {
+  -webkit-appearance: none;
+  appearance: none;
+  min-height: 44px;
+  padding-right: 32px;
+  font-size: var(--text-body);
+  background-image:
+    linear-gradient(45deg, transparent 50%, currentColor 50%),
+    linear-gradient(135deg, currentColor 50%, transparent 50%);
+  background-position: right 18px center, right 13px center;
+  background-size: 5px 5px;
+  background-repeat: no-repeat;
+}
+
 /* Every clock and duration lines up. */
 time, .num, [class*="time"], [class*="duration"], [class*="count"], [class*="percent"] {
   font-variant-numeric: tabular-nums;
 }
 
+/* One focus ring: 3px amber (--focus-ring) on every focusable element,
+   links included. Components may change the offset; none change the colour. */
+:focus-visible {
+  outline: 3px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+a:focus-visible,
 button:focus-visible,
 input:focus-visible,
 select:focus-visible,
+textarea:focus-visible,
 summary:focus-visible,
+[role="button"]:focus-visible,
 [tabindex]:focus-visible {
   outline: 3px solid var(--focus-ring);
   outline-offset: 2px;
@@ -206,8 +253,8 @@ summary:focus-visible,
 #library-view {
   padding: 16px;
   padding-inline: var(--view-pad-left) var(--view-pad-right);
-  padding-top: max(16px, env(safe-area-inset-top));
-  padding-bottom: max(16px, env(safe-area-inset-bottom));
+  padding-top: max(16px, var(--safe-top));
+  padding-bottom: max(16px, var(--safe-bottom));
 }
 
 .library-header {
@@ -265,7 +312,7 @@ summary:focus-visible,
   touch-action: manipulation;
   -webkit-tap-highlight-color: transparent;
 }
-.btn-primary:hover { background: var(--accent-strong); }
+@media (hover: hover) { .btn-primary:hover { background: var(--accent-strong); } }
 .btn-primary:active { transform: scale(0.97); }
 .btn-primary:focus-visible { outline-color: var(--focus-ring); }
 
@@ -297,7 +344,7 @@ summary:focus-visible,
   touch-action: manipulation;
   -webkit-tap-highlight-color: transparent;
 }
-.btn-secondary:hover { background: var(--surface-hover); }
+@media (hover: hover) { .btn-secondary:hover { background: var(--surface-hover); } }
 
 .btn-icon {
   width: var(--touch-min);
@@ -313,7 +360,7 @@ summary:focus-visible,
   transition: background var(--transition), border-color var(--transition), transform var(--transition);
   flex-shrink: 0;
 }
-.btn-icon:hover { background: var(--surface-hover); border-color: var(--accent); }
+@media (hover: hover) { .btn-icon:hover { background: var(--surface-hover); border-color: var(--accent); } }
 .btn-icon:active { transform: scale(0.96); }
 .btn-icon:focus-visible { outline-color: var(--focus-ring); }
 
@@ -377,7 +424,6 @@ summary:focus-visible,
   font-size: var(--text-subhead);
   font-family: var(--font);
   cursor: pointer;
-  min-height: var(--touch-min);
 }
 #sort-select:focus { border-color: var(--accent); }
 
@@ -568,7 +614,7 @@ summary:focus-visible,
   border: 0;
   background: transparent;
   color: inherit;
-  font: var(--weight-semibold) 11px var(--font);
+  font: var(--weight-semibold) calc(11 * var(--type-unit)) var(--font);
   white-space: normal;
 }
 
@@ -576,7 +622,7 @@ summary:focus-visible,
 .book-local-state svg { flex-shrink: 0; }
 span.book-local-state { min-height: 20px; }
 button.book-local-state { cursor: pointer; padding: 0 6px; }
-button.book-local-state:hover { color: var(--accent-text); }
+@media (hover: hover) { button.book-local-state:hover { color: var(--accent-text); } }
 
 .book-local-control--downloading {
   color: var(--accent-text);
@@ -634,7 +680,7 @@ button.book-local-state:hover { color: var(--accent-text); }
   border-radius: 5px;
   background: transparent;
   color: var(--text);
-  font: var(--weight-semibold) 13px var(--font);
+  font: var(--weight-semibold) var(--text-footnote) var(--font);
   text-align: left;
 }
 .book-overflow-menu button:hover,
@@ -740,7 +786,7 @@ button.book-local-state:hover { color: var(--accent-text); }
   text-align: center;
   padding: 48px 20px;
 }
-.empty-icon { font-size: 64px; margin-bottom: 16px; opacity: 0.4; }
+.empty-icon { font-size: calc(64 * var(--type-unit)); margin-bottom: 16px; opacity: 0.4; }
 .empty-state-modern h3 { font-size: var(--text-title3); font-weight: var(--weight-semibold); margin-bottom: 6px; }
 .empty-state-modern p { font-size: var(--text-subhead); color: var(--text-secondary); margin-bottom: 20px; }
 
@@ -749,8 +795,8 @@ button.book-local-state:hover { color: var(--accent-text); }
 #search-view {
   padding: 16px;
   padding-inline: var(--view-pad-left) var(--view-pad-right);
-  padding-top: max(16px, env(safe-area-inset-top));
-  padding-bottom: max(16px, env(safe-area-inset-bottom));
+  padding-top: max(16px, var(--safe-top));
+  padding-bottom: max(16px, var(--safe-bottom));
 }
 
 .btn-back {
@@ -834,7 +880,7 @@ button.book-local-state:hover { color: var(--accent-text); }
 }
 .search-clear-btn[hidden] { display: none; }
 .search-clear-btn svg { width: 18px; height: 18px; }
-.search-clear-btn:hover { color: var(--text); }
+@media (hover: hover) { .search-clear-btn:hover { color: var(--text); } }
 
 .search-toolbar {
   display: flex;
@@ -852,14 +898,14 @@ button.book-local-state:hover { color: var(--accent-text); }
   border: 0;
   background: transparent;
   color: var(--accent-text);
-  font: var(--weight-bold) 13px var(--font);
+  font: var(--weight-bold) var(--text-footnote) var(--font);
 }
 .search-filter-toggle svg { width: 20px; height: 20px; }
 .search-filter-count {
   display: inline-grid;
   place-items: center;
   min-width: 21px;
-  height: 21px;
+  min-height: 21px;
   padding: 0 6px;
   border-radius: 999px;
   background: var(--accent-dim);
@@ -885,13 +931,12 @@ button.book-local-state:hover { color: var(--accent-text); }
    Safari from zooming when this select is tapped. Do not drop that script
    without raising this size (the 112px mobile width cannot fit 16px labels). */
 .search-sort-wrap select {
-  min-height: var(--touch-min);
   max-width: 150px;
   padding: 6px 26px 6px 8px;
   border: 0;
   background-color: transparent;
   color: var(--text-secondary);
-  font: var(--weight-semibold) 12px var(--font);
+  font: var(--weight-semibold) calc(12 * var(--type-unit)) var(--font);
 }
 .search-filter-panel {
   display: grid;
@@ -916,13 +961,11 @@ button.book-local-state:hover { color: var(--accent-text); }
 }
 .search-language-filter #language-filter {
   width: 100%;
-  min-height: var(--touch-min);
   padding: 10px 32px 10px 12px;
-  background: var(--surface-inset);
+  background-color: var(--surface-inset);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   color: var(--text);
-  font-size: var(--text-body);
   font-family: var(--font);
   cursor: pointer;
 }
@@ -954,7 +997,7 @@ button.book-local-state:hover { color: var(--accent-text); }
   border: 0;
   background: transparent;
   color: var(--text-secondary);
-  font: var(--weight-semibold) 12px var(--font);
+  font: var(--weight-semibold) calc(12 * var(--type-unit)) var(--font);
   cursor: pointer;
 }
 .search-source-reset:hover,
@@ -999,12 +1042,12 @@ button.book-local-state:hover { color: var(--accent-text); }
   border-radius: 7px;
   background: var(--surface-inset);
   color: var(--text-secondary);
-  font: var(--weight-semibold) 12px var(--font);
+  font: var(--weight-semibold) calc(12 * var(--type-unit)) var(--font);
   cursor: pointer;
   touch-action: manipulation;
   transition: background var(--transition), border-color var(--transition), color var(--transition);
 }
-.search-source-pill:hover { background: var(--surface); color: var(--text); }
+@media (hover: hover) { .search-source-pill:hover { background: var(--surface); color: var(--text); } }
 .search-source-pill.is-selected {
   border-color: var(--border-strong);
   background: var(--surface-raised);
@@ -1182,9 +1225,11 @@ button.book-local-state:hover { color: var(--accent-text); }
   cursor: default;
   transition: background var(--transition), border-color var(--transition);
 }
-.result-card:hover {
-  background: var(--surface-hover);
-  border-color: var(--border-strong);
+@media (hover: hover) {
+  .result-card:hover {
+    background: var(--surface-hover);
+    border-color: var(--border-strong);
+  }
 }
 .result-card:focus-visible { outline-color: var(--focus-ring); }
 .result-card-best {
@@ -1385,9 +1430,11 @@ button.book-local-state:hover { color: var(--accent-text); }
   touch-action: manipulation;
   transition: background-color var(--transition), border-color var(--transition);
 }
-.edition-option:hover {
-  border-color: var(--border);
-  background: var(--surface-hover);
+@media (hover: hover) {
+  .edition-option:hover {
+    border-color: var(--border);
+    background: var(--surface-hover);
+  }
 }
 .edition-option:active { background: var(--surface-raised); }
 .edition-option:focus-visible {
@@ -1506,8 +1553,8 @@ button.book-local-state:hover { color: var(--accent-text); }
 #settings-view {
   padding: 16px;
   padding-inline: var(--view-pad-left) var(--view-pad-right);
-  padding-top: max(16px, env(safe-area-inset-top));
-  padding-bottom: max(16px, env(safe-area-inset-bottom));
+  padding-top: max(16px, var(--safe-top));
+  padding-bottom: max(16px, var(--safe-bottom));
 }
 .settings-hub-header,
 .settings-pane-header { margin-bottom: 16px; }
@@ -1540,7 +1587,7 @@ button.book-local-state:hover { color: var(--accent-text); }
   text-decoration: none;
 }
 .settings-identity[hidden] { display: none; }
-.settings-identity:hover { background: var(--surface-hover); }
+@media (hover: hover) { .settings-identity:hover { background: var(--surface-hover); } }
 .settings-identity-avatar {
   display: grid;
   place-items: center;
@@ -1577,7 +1624,7 @@ button.book-local-state:hover { color: var(--accent-text); }
   color: inherit;
   text-decoration: none;
 }
-.settings-menu-row:hover { color: var(--text); }
+@media (hover: hover) { .settings-menu-row:hover { color: var(--text); } }
 .settings-menu-row.is-active {
   background: var(--surface);
   color: var(--text);
@@ -1683,11 +1730,13 @@ button.book-local-state:hover { color: var(--accent-text); }
   padding: 8px 12px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  background: var(--surface-inset);
+  background-color: var(--surface-inset);
   color: var(--text);
   font: inherit;
   font-size: var(--text-body);
 }
+.settings-field select,
+.settings-select { padding-right: 32px; }
 
 .provider-list { margin: 0; padding: 0; border: 0; display: grid; gap: var(--space-6); }
 .provider-group h3 {
@@ -1722,7 +1771,7 @@ button.book-local-state:hover { color: var(--accent-text); }
 }
 
 .settings-sheet-panel { max-width: 480px; }
-.settings-sheet-body { padding: 0 20px max(24px, env(safe-area-inset-bottom)); }
+.settings-sheet-body { padding: 0 20px max(24px, var(--safe-bottom)); }
 
 @media (min-width: 760px) {
   .settings-shell {
@@ -1764,7 +1813,7 @@ button.book-local-state:hover { color: var(--accent-text); }
   list-style: none;
   transition: color 0.2s;
 }
-.settings-section-header:hover { color: var(--text); }
+@media (hover: hover) { .settings-section-header:hover { color: var(--text); } }
 .settings-section-header::-webkit-details-marker { display: none; }
 .settings-section-header::after {
   content: '';
@@ -1855,17 +1904,15 @@ button.book-local-state:hover { color: var(--accent-text); }
 .guide-model-field label { color: var(--text-secondary); font-size: var(--text-footnote); font-weight: var(--weight-semibold); }
 .guide-model-field select {
   width: 100%;
-  min-height: var(--touch-min);
-  padding: 8px 10px;
+  padding: 8px 32px 8px 10px;
   border: 1px solid var(--border);
   border-radius: 8px;
-  background: var(--surface-inset);
+  background-color: var(--surface-inset);
   color: var(--text);
-  font-size: var(--text-footnote);
 }
 
 .guide-login-panel { max-width: 480px; }
-.guide-login-body { padding: 6px 20px max(24px, env(safe-area-inset-bottom)); }
+.guide-login-body { padding: 6px 20px max(24px, var(--safe-bottom)); }
 .guide-login-body > p { color: var(--text-secondary); line-height: 1.5; }
 .guide-device-code {
   margin: 18px 0 14px;
@@ -2022,13 +2069,13 @@ button.book-local-state:hover { color: var(--accent-text); }
   color: var(--text-secondary);
   font-size: var(--text-footnote);
   cursor: pointer;
-  transition: all 0.2s;
+  transition: color 0.2s, border-color 0.2s, background-color 0.2s;
 }
-.btn-ghost:hover { color: var(--text); border-color: var(--border-strong); }
+@media (hover: hover) { .btn-ghost:hover { color: var(--text); border-color: var(--border-strong); } }
 .btn-ghost-edit { color: var(--accent-text); border-color: var(--accent-border-soft); }
-.btn-ghost-edit:hover { border-color: var(--accent); color: var(--accent-text); }
+@media (hover: hover) { .btn-ghost-edit:hover { border-color: var(--accent); color: var(--accent-text); } }
 .btn-ghost-danger { color: var(--danger); border-color: oklch(58% 0.22 29 / 0.3); }
-.btn-ghost-danger:hover { border-color: var(--danger); }
+@media (hover: hover) { .btn-ghost-danger:hover { border-color: var(--danger); } }
 
 
 .settings-error { color: var(--danger); font-size: var(--text-footnote); margin-top: 6px; }
@@ -2141,15 +2188,13 @@ button.book-local-state:hover { color: var(--accent-text); }
 }
 
 .settings-select {
-  padding: 8px 12px;
-  background: var(--surface);
+  padding: 8px 32px 8px 12px;
+  background-color: var(--surface);
   border: 1px solid var(--border);
   border-radius: 8px;
   color: var(--text);
-  font-size: var(--text-body);
   cursor: pointer;
   min-width: 120px;
-  min-height: var(--touch-min);
 }
 
 .segmented-control {
@@ -2168,7 +2213,7 @@ button.book-local-state:hover { color: var(--accent-text); }
   border-radius: 6px;
   background: transparent;
   color: var(--text-secondary);
-  font: var(--weight-semibold) 13px var(--font);
+  font: var(--weight-semibold) var(--text-footnote) var(--font);
 }
 .segmented-control button.active {
   background: var(--accent);
@@ -2195,13 +2240,11 @@ button.book-local-state:hover { color: var(--accent-text); }
 }
 .voice-filter select {
   width: 100%;
-  min-height: 36px;
-  padding: 7px 8px;
+  padding: 7px 32px 7px 8px;
   color: var(--text);
-  background: var(--surface);
+  background-color: var(--surface);
   border: 1px solid var(--border);
   border-radius: 8px;
-  font-size: var(--text-footnote);
 }
 .voice-list {
   display: flex;
@@ -2230,7 +2273,7 @@ button.book-local-state:hover { color: var(--accent-text); }
   transition: border-color 0.2s, background 0.2s;
   min-height: var(--touch-min);
 }
-.voice-card:hover { border-color: var(--border-strong); background: color-mix(in oklab, var(--text) 3%, transparent); }
+@media (hover: hover) { .voice-card:hover { border-color: var(--border-strong); background: color-mix(in oklab, var(--text) 3%, transparent); } }
 .voice-card.active { border-color: var(--accent); background: oklch(76% 0.14 82 / 0.07); }
 .voice-card-info { flex: 1; min-width: 0; }
 .voice-card-name-row {
@@ -2271,9 +2314,11 @@ button.book-local-state:hover { color: var(--accent-text); }
   flex: 0 0 auto;
   transition: color 0.2s, background 0.2s, transform 0.2s;
 }
-.voice-save-btn:hover {
-  color: var(--accent-text);
-  background: color-mix(in oklab, var(--text) 5%, transparent);
+@media (hover: hover) {
+  .voice-save-btn:hover {
+    color: var(--accent-text);
+    background: color-mix(in oklab, var(--text) 5%, transparent);
+  }
 }
 .voice-save-btn.saved {
   color: var(--accent-text);
@@ -2287,7 +2332,7 @@ button.book-local-state:hover { color: var(--accent-text); }
   cursor: pointer; display: flex; align-items: center; justify-content: center;
   flex-shrink: 0; transition: border-color 0.2s, background 0.2s;
 }
-.voice-play-btn:hover { border-color: var(--border-strong); background: color-mix(in oklab, var(--text) 5%, transparent); }
+@media (hover: hover) { .voice-play-btn:hover { border-color: var(--border-strong); background: color-mix(in oklab, var(--text) 5%, transparent); } }
 .voice-play-btn.playing { border-color: var(--accent); color: var(--accent-text); }
 .voice-card.active .voice-card-name { color: var(--accent-text); }
 .voice-empty {
@@ -2410,7 +2455,7 @@ button.book-local-state:hover { color: var(--accent-text); }
   align-items: center;
   justify-content: space-between;
   padding: 12px 16px;
-  padding-top: max(12px, env(safe-area-inset-top));
+  padding-top: max(12px, var(--safe-top));
 }
 
 .player-topbar-left {
@@ -2438,7 +2483,7 @@ button.book-local-state:hover { color: var(--accent-text); }
   transition: color var(--transition), background var(--transition);
   -webkit-tap-highlight-color: transparent;
 }
-.topbar-btn:hover { color: var(--text); background: color-mix(in oklab, var(--text) 8%, transparent); }
+@media (hover: hover) { .topbar-btn:hover { color: var(--text); background: color-mix(in oklab, var(--text) 8%, transparent); } }
 .topbar-btn:active { transform: scale(0.92); }
 .topbar-btn.active { color: var(--accent-text); }
 .topbar-btn svg { width: 22px; height: 22px; }
@@ -2531,7 +2576,7 @@ button.book-local-state:hover { color: var(--accent-text); }
   font-family: var(--font);
   text-align: left;
 }
-.player-voice-status:hover { border-color: var(--accent-border-strong); }
+@media (hover: hover) { .player-voice-status:hover { border-color: var(--accent-border-strong); } }
 .player-voice-status-label {
   color: var(--text-muted);
   font-size: var(--text-footnote);
@@ -2620,9 +2665,11 @@ button.book-local-state:hover { color: var(--accent-text); }
   font-weight: var(--weight-bold);
   cursor: pointer;
 }
-.hq-voice-prep-btn:hover:not(:disabled) {
-  border-color: var(--accent-border-strong);
-  background: color-mix(in oklab, var(--text) 6%, transparent);
+@media (hover: hover) {
+  .hq-voice-prep-btn:hover:not(:disabled) {
+    border-color: var(--accent-border-strong);
+    background: color-mix(in oklab, var(--text) 6%, transparent);
+  }
 }
 .hq-voice-prep-btn:disabled {
   cursor: default;
@@ -2868,7 +2915,7 @@ button.book-local-state:hover { color: var(--accent-text); }
   border-radius: 7px;
   background: transparent;
   color: var(--text-muted);
-  font: var(--weight-bold) 12px var(--font);
+  font: var(--weight-bold) calc(12 * var(--type-unit)) var(--font);
 }
 .player-progress-scope-btn.active {
   background: color-mix(in oklab, var(--text) 13%, transparent);
@@ -2971,7 +3018,7 @@ button.book-local-state:hover { color: var(--accent-text); }
   -webkit-tap-highlight-color: transparent;
   position: relative;
 }
-.ctrl-btn:hover { opacity: 0.75; }
+@media (hover: hover) { .ctrl-btn:hover { opacity: 0.75; } }
 .ctrl-btn:active { transform: scale(0.9); }
 .ctrl-btn svg { width: 28px; height: 28px; }
 .ctrl-btn .skip-label {
@@ -2997,7 +3044,7 @@ button.book-local-state:hover { color: var(--accent-text); }
   transition: transform var(--transition), opacity var(--transition);
   -webkit-tap-highlight-color: transparent;
 }
-.ctrl-btn-play:hover { opacity: 0.9; }
+@media (hover: hover) { .ctrl-btn-play:hover { opacity: 0.9; } }
 .ctrl-btn-play:active { transform: scale(0.93); }
 .ctrl-btn-play svg { width: 32px; height: 32px; }
 .ctrl-btn-play:disabled { opacity: 0.42; cursor: wait; }
@@ -3051,7 +3098,7 @@ button.book-local-state:hover { color: var(--accent-text); }
   font-family: var(--font);
   text-align: left;
 }
-.player-chapter-trigger:hover { border-color: var(--accent-border-strong); }
+@media (hover: hover) { .player-chapter-trigger:hover { border-color: var(--accent-border-strong); } }
 .player-chapter-trigger:focus-visible { outline-color: var(--focus-ring); }
 .player-chapter-trigger-copy {
   min-width: 0;
@@ -3183,10 +3230,10 @@ button.book-local-state:hover { color: var(--accent-text); }
   font-weight: var(--weight-regular);
   font-family: var(--font);
   cursor: pointer;
-  transition: all 150ms;
+  transition: color 150ms, background-color 150ms, border-color 150ms;
   touch-action: manipulation;
 }
-.timer-option:hover { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+@media (hover: hover) { .timer-option:hover { background: var(--accent); color: var(--on-accent); border-color: var(--accent); } }
 .timer-option.active { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
 .timer-option-wide { grid-column: 1 / -1; }
 .timer-reliability-hint {
@@ -3214,7 +3261,7 @@ button.book-local-state:hover { color: var(--accent-text); }
   cursor: pointer;
   touch-action: manipulation;
 }
-.btn-destructive:hover { filter: brightness(0.92); }
+@media (hover: hover) { .btn-destructive:hover { filter: brightness(0.92); } }
 .btn-destructive:focus-visible { outline-color: var(--focus-ring); }
 
 /* Offline banner */
@@ -3229,7 +3276,7 @@ button.book-local-state:hover { color: var(--accent-text); }
   justify-content: center;
   gap: 8px;
   padding: 8px 16px;
-  padding-top: calc(8px + env(safe-area-inset-top));
+  padding-top: calc(8px + var(--safe-top));
   background: var(--surface-raised);
   border-bottom: 1px solid var(--danger);
   color: var(--text);
@@ -3249,7 +3296,7 @@ button.book-local-state:hover { color: var(--accent-text); }
   justify-content: center;
   gap: 12px;
   padding: 10px 16px;
-  padding-top: calc(10px + env(safe-area-inset-top));
+  padding-top: calc(10px + var(--safe-top));
   background: var(--surface-raised);
   border-bottom: 1px solid var(--accent);
   color: var(--text);
@@ -3365,7 +3412,7 @@ button.book-local-state:hover { color: var(--accent-text); }
   cursor: pointer;
   touch-action: manipulation;
 }
-.toast-action:hover { background: color-mix(in oklab, var(--text) 8%, transparent); }
+@media (hover: hover) { .toast-action:hover { background: color-mix(in oklab, var(--text) 8%, transparent); } }
 .toast-action:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
 
 /* ==================== UTILITIES ==================== */
@@ -3422,7 +3469,7 @@ button, a, .book-item, .timer-option, select, input[type="range"] {
   .player-details {
     order: 20;
     margin-top: 6px;
-    margin-bottom: max(16px, env(safe-area-inset-bottom));
+    margin-bottom: max(16px, var(--safe-bottom));
   }
 
   .player-topbar-right .speed-btn-group,
@@ -3436,7 +3483,7 @@ button, a, .book-item, .timer-option, select, input[type="range"] {
      so the notch inset is the only real header cost. */
   .player-topbar {
     padding: 8px 12px 4px;
-    padding-top: max(8px, env(safe-area-inset-top));
+    padding-top: max(8px, var(--safe-top));
   }
 
   .player-controls { padding: 10px 0 12px; }
@@ -3459,7 +3506,7 @@ button, a, .book-item, .timer-option, select, input[type="range"] {
     border-radius: 10px;
     background: transparent;
     color: var(--text-secondary);
-    font: var(--weight-semibold) 11px var(--font);
+    font: var(--weight-semibold) calc(11 * var(--type-unit)) var(--font);
     line-height: 1.15;
     text-align: center;
   }
@@ -3676,7 +3723,11 @@ button, a, .book-item, .timer-option, select, input[type="range"] {
   transform: translate(-50%, 100%);
   display: flex;
   flex-direction: column;
-  padding: var(--space-2) var(--space-4) max(var(--space-4), env(safe-area-inset-bottom));
+  /* Lists inside a sheet scroll on their own. When larger text makes the
+     fixed parts (header, filters) taller than the sheet, the whole sheet
+     scrolls instead of pushing them off the screen. */
+  overflow-y: auto;
+  padding: var(--space-2) var(--space-4) max(var(--space-4), var(--safe-bottom));
   background: var(--bg);
   border: 1px solid var(--border);
   border-bottom: none;
@@ -3705,6 +3756,11 @@ button, a, .book-item, .timer-option, select, input[type="range"] {
   line-height: 1.2;
   margin: 0 0 3px;
 }
+/* With large text a long sheet title wraps beside Done instead of pushing
+   it off the screen. */
+.voice-sheet-header > div,
+.voice-sheet-header h3 { min-width: 0; }
+.voice-sheet-header h3 { overflow-wrap: anywhere; }
 .voice-sheet-header p {
   margin: 0;
   color: var(--text-secondary);
@@ -3719,7 +3775,7 @@ button, a, .book-item, .timer-option, select, input[type="range"] {
   display: flex;
   gap: 10px;
   margin-top: 4px;
-  padding-bottom: env(safe-area-inset-bottom);
+  padding-bottom: var(--safe-bottom);
 }
 .confirm-sheet-actions button { flex: 1; }
 .voice-filter-bar.compact {
@@ -3727,6 +3783,8 @@ button, a, .book-item, .timer-option, select, input[type="range"] {
 }
 .player-voice-list {
   overflow-y: auto;
+  /* Keeps a few rows visible when large text fills the sheet. */
+  min-height: calc(6 * var(--leading-body));
   padding-right: 2px;
   padding-bottom: 8px;
 }
@@ -3832,8 +3890,10 @@ body.sheet-open { overflow: hidden; }
   font-weight: var(--weight-semibold);
   cursor: pointer;
 }
-.audio-activity-cancel:hover {
-  color: var(--text);
+@media (hover: hover) {
+  .audio-activity-cancel:hover {
+    color: var(--text);
+  }
 }
 
 /* Reordering the preparation queue.
@@ -3870,9 +3930,11 @@ body.sheet-open { overflow: hidden; }
   width: 16px;
   height: 16px;
 }
-.audio-activity-move:hover:not(:disabled) {
-  background: var(--surface-hover);
-  color: var(--text);
+@media (hover: hover) {
+  .audio-activity-move:hover:not(:disabled) {
+    background: var(--surface-hover);
+    color: var(--text);
+  }
 }
 .audio-activity-move:active:not(:disabled) {
   color: var(--accent-text);
@@ -3895,7 +3957,7 @@ body.sheet-open { overflow: hidden; }
     background: transparent;
   }
   .audio-activity-panel {
-    top: max(76px, env(safe-area-inset-top));
+    top: max(76px, var(--safe-top));
     bottom: auto;
     left: 50%;
     width: min(400px, calc(100vw - 32px));
@@ -3940,8 +4002,10 @@ body.sheet-open { overflow: hidden; }
   font-family: var(--font);
   text-align: left;
 }
-.chapter-list-item:hover {
-  background: color-mix(in oklab, var(--text) 5%, transparent);
+@media (hover: hover) {
+  .chapter-list-item:hover {
+    background: color-mix(in oklab, var(--text) 5%, transparent);
+  }
 }
 .chapter-list-item:focus-visible {
   outline: 3px solid var(--accent);
@@ -4099,7 +4163,7 @@ body.sheet-open { overflow: hidden; }
   border-radius: 50%;
   transition: background 0.15s ease;
 }
-.mini-player-btn:hover { background: color-mix(in oklab, var(--text) 8%, transparent); }
+@media (hover: hover) { .mini-player-btn:hover { background: color-mix(in oklab, var(--text) 8%, transparent); } }
 .mini-player-btn:active { background: color-mix(in oklab, var(--text) 15%, transparent); }
 .mini-player-btn svg { width: 22px; height: 22px; }
 
@@ -4107,7 +4171,7 @@ body.sheet-open { overflow: hidden; }
 body.has-mini-player #library-view,
 body.has-mini-player #search-view,
 body.has-mini-player #settings-view {
-  padding-bottom: calc(80px + env(safe-area-inset-bottom));
+  padding-bottom: calc(80px + var(--safe-bottom));
 }
 
 @media (min-width: 760px) {
@@ -4294,10 +4358,12 @@ body.has-mini-player #settings-view {
   border-radius: 8px;
   background: var(--surface);
   color: var(--accent-text);
-  font: var(--weight-bold) 13px var(--font);
+  font: var(--weight-bold) var(--text-footnote) var(--font);
 }
-.start-over-btn:hover {
-  border-color: var(--accent);
+@media (hover: hover) {
+  .start-over-btn:hover {
+    border-color: var(--accent);
+  }
 }
 
 /* Chapter time label — tappable to toggle total/remaining */
@@ -4624,8 +4690,8 @@ body.has-mini-player #settings-view {
    crowd the controls, and touch-action:none hands the whole surface to the
    swipe-up gesture instead of native scroll/bounce. */
 .mini-player {
-  height: calc(64px + env(safe-area-inset-bottom));
-  padding-bottom: env(safe-area-inset-bottom);
+  height: calc(64px + var(--safe-bottom));
+  padding-bottom: var(--safe-bottom);
   touch-action: none;
   overscroll-behavior: contain;
 }
@@ -4633,7 +4699,7 @@ body.has-mini-player #settings-view {
 body.has-mini-player #library-view,
 body.has-mini-player #search-view,
 body.has-mini-player #settings-view {
-  padding-bottom: calc(80px + env(safe-area-inset-bottom));
+  padding-bottom: calc(80px + var(--safe-bottom));
 }
 
 /* Skip-back-15 label centered over the mini-player's back button icon */
@@ -4729,6 +4795,14 @@ body.has-mini-player #settings-view {
 .shortcut-table tr:last-child td {
   border-bottom: none;
 }
+.shortcut-table th {
+  padding: 16px 0 4px;
+  color: var(--text);
+  font-size: var(--text-footnote);
+  font-weight: var(--weight-semibold);
+  text-align: left;
+}
+.shortcut-table tbody:first-child th { padding-top: 0; }
 .shortcut-table td:first-child {
   white-space: nowrap;
   padding-right: 16px;
@@ -4769,7 +4843,7 @@ body.has-mini-player #settings-view {
   cursor: pointer;
   transition: border-color 0.2s, background 0.2s, color 0.2s;
 }
-.voice-facet-chip:hover { border-color: var(--border-strong); color: var(--text); }
+@media (hover: hover) { .voice-facet-chip:hover { border-color: var(--border-strong); color: var(--text); } }
 .voice-facet-chip.active {
   border-color: var(--accent-border-strong);
   background: var(--accent-dim);
@@ -4820,7 +4894,7 @@ body.has-mini-player #settings-view {
   cursor: pointer;
   transition: border-color 0.2s, background 0.2s, color 0.2s;
 }
-.speed-preset:hover { border-color: var(--border-strong); }
+@media (hover: hover) { .speed-preset:hover { border-color: var(--border-strong); } }
 .speed-preset.active {
   border-color: var(--accent-border-strong);
   background: var(--accent-dim);
@@ -4903,7 +4977,7 @@ body.has-mini-player #settings-view {
   cursor: pointer;
   text-align: left;
 }
-.bookmark-row:hover { background: color-mix(in oklab, var(--text) 5%, transparent); }
+@media (hover: hover) { .bookmark-row:hover { background: color-mix(in oklab, var(--text) 5%, transparent); } }
 .bookmark-row:focus-visible { outline: 3px solid var(--accent); outline-offset: -1px; }
 .bookmark-row-main { flex: 1; min-width: 0; }
 .bookmark-row-title {
@@ -4932,7 +5006,7 @@ body.has-mini-player #settings-view {
   justify-content: center;
   transition: color 0.2s, background 0.2s;
 }
-.bookmark-delete-btn:hover { color: var(--accent-text); background: color-mix(in oklab, var(--text) 5%, transparent); }
+@media (hover: hover) { .bookmark-delete-btn:hover { color: var(--accent-text); background: color-mix(in oklab, var(--text) 5%, transparent); } }
 .bookmark-delete-btn svg { width: 16px; height: 16px; }
 
 .voice-card--offline {
@@ -4957,9 +5031,12 @@ body.has-mini-player #settings-view {
   align-items: center;
   justify-content: center;
 }
-.voice-delete-btn:hover { color: var(--accent-text); background: color-mix(in oklab, var(--text) 5%, transparent); }
+@media (hover: hover) { .voice-delete-btn:hover { color: var(--accent-text); background: color-mix(in oklab, var(--text) 5%, transparent); } }
 .clone-voice-form {
   display: grid;
+  /* One column that never grows past the form: an auto track would take
+     the inputs' intrinsic width, which grows with the text size. */
+  grid-template-columns: minmax(0, 1fr);
   gap: 8px;
   padding: 10px;
   border: 1px solid var(--border);
@@ -5044,10 +5121,10 @@ body.has-mini-player #settings-view {
   min-height: 100dvh;
   margin: 0 auto;
   padding: 16px;
-  padding-top: max(16px, env(safe-area-inset-top));
-  padding-bottom: max(24px, env(safe-area-inset-bottom));
+  padding-top: max(16px, var(--safe-top));
+  padding-bottom: max(24px, var(--safe-bottom));
 }
-body.has-mini-player #guide-view { padding-bottom: calc(80px + env(safe-area-inset-bottom)); }
+body.has-mini-player #guide-view { padding-bottom: calc(80px + var(--safe-bottom)); }
 .guide-header { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 22px; }
 .guide-header-copy { min-width: 0; }
 .guide-eyebrow {
@@ -5104,7 +5181,7 @@ body.has-mini-player #guide-view { padding-bottom: calc(80px + env(safe-area-ins
 .guide-narration-audio { display: block; width: 100%; height: 42px; }
 .guide-narration-controls { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 10px; }
 .guide-narration-controls label { display: inline-flex; align-items: center; gap: 6px; color: var(--text-secondary); font-size: var(--text-footnote); font-weight: var(--weight-semibold); }
-.guide-narration-controls select { min-height: 36px; padding: 5px 28px 5px 9px; }
+.guide-narration-controls select { padding: 5px 32px 5px 9px; }
 .guide-narration-sections { display: grid; gap: 5px; margin: 12px 0 0; padding: 0; list-style: none; }
 .guide-narration-sections button {
   display: flex;
@@ -5118,7 +5195,7 @@ body.has-mini-player #guide-view { padding-bottom: calc(80px + env(safe-area-ins
   border-radius: 9px;
   background: transparent;
   color: var(--text-secondary);
-  font: var(--weight-semibold) 13px var(--font);
+  font: var(--weight-semibold) var(--text-footnote) var(--font);
   text-align: left;
   touch-action: manipulation;
 }
@@ -5183,7 +5260,7 @@ body.has-mini-player #guide-view { padding-bottom: calc(80px + env(safe-area-ins
   padding: 0 3px;
   color: var(--text-muted);
   cursor: pointer;
-  font: var(--weight-bold) 12px var(--font);
+  font: var(--weight-bold) calc(12 * var(--type-unit)) var(--font);
   list-style: none;
   touch-action: manipulation;
 }
@@ -5218,9 +5295,9 @@ body.has-mini-player #guide-view { padding-bottom: calc(80px + env(safe-area-ins
   border-radius: var(--radius);
   background: var(--surface-inset);
   color: var(--text-secondary);
-  font: var(--weight-semibold) 12px var(--font);
+  font: var(--weight-semibold) calc(12 * var(--type-unit)) var(--font);
 }
-.guide-source-link:hover { border-color: var(--accent-border-soft); background: var(--surface-hover); color: var(--text); }
+@media (hover: hover) { .guide-source-link:hover { border-color: var(--accent-border-soft); background: var(--surface-hover); color: var(--text); } }
 .guide-source-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .guide-source-link:disabled { opacity: 0.52; cursor: not-allowed; }
 .guide-source-link span { color: inherit; }
@@ -5270,10 +5347,10 @@ body.has-mini-player #guide-view { padding-bottom: calc(80px + env(safe-area-ins
 #stats-view {
   padding: 16px;
   padding-inline: var(--view-pad-left) var(--view-pad-right);
-  padding-top: max(16px, env(safe-area-inset-top));
-  padding-bottom: max(16px, env(safe-area-inset-bottom));
+  padding-top: max(16px, var(--safe-top));
+  padding-bottom: max(16px, var(--safe-bottom));
 }
-body.has-mini-player #stats-view { padding-bottom: calc(80px + env(safe-area-inset-bottom)); }
+body.has-mini-player #stats-view { padding-bottom: calc(80px + var(--safe-bottom)); }
 
 .stats-body { padding-bottom: 24px; }
 
@@ -5464,7 +5541,7 @@ body.has-mini-player #stats-view { padding-bottom: calc(80px + env(safe-area-ins
   margin-bottom: 12px;
   cursor: default;
 }
-.voice-card--current:hover { background: var(--accent-dim); }
+@media (hover: hover) { .voice-card--current:hover { background: var(--accent-dim); } }
 
 .voice-sheet-search {
   position: relative;
@@ -5505,17 +5582,23 @@ body.has-mini-player #stats-view { padding-bottom: calc(80px + env(safe-area-ins
 }
 .voice-tier-seg { display: flex; gap: 6px; }
 
+/* More filters is a disclosure, the same pattern as the Settings voice
+   page: an amber summary with a chevron that turns when open. The summary
+   reports its expanded state natively. */
 .voice-more-toggle {
-  background: none;
-  border: none;
-  color: var(--text-muted);
-  font-size: var(--text-footnote);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--touch-min);
+  list-style: none;
+  color: var(--accent-text);
+  font-size: var(--text-subhead);
   font-weight: var(--weight-semibold);
   cursor: pointer;
-  padding: 5px 4px;
 }
-.voice-more-toggle:hover { color: var(--text-secondary); }
-.voice-more-toggle.has-active { color: var(--accent-text); }
+.voice-more-toggle::-webkit-details-marker { display: none; }
+.voice-more-toggle::marker { content: ''; }
+.voice-more-disclosure[open] .voice-filters-chevron { transform: rotate(90deg); }
 
 .voice-more-filters {
   display: flex;
@@ -5588,7 +5671,7 @@ body.has-mini-player #stats-view { padding-bottom: calc(80px + env(safe-area-ins
   cursor: pointer;
   margin-left: 6px;
 }
-.voice-clear-filters:hover { border-color: var(--border-strong); color: var(--text); }
+@media (hover: hover) { .voice-clear-filters:hover { border-color: var(--border-strong); color: var(--text); } }
 
 /* The redesigned sheet controls stack vertically; neutralize the legacy
    4-column grid on the compact filter bar (kept for the settings page). */
@@ -5652,7 +5735,7 @@ body.has-mini-player #stats-view { padding-bottom: calc(80px + env(safe-area-ins
 
   .search-workspace {
     position: sticky;
-    top: env(safe-area-inset-top);
+    top: var(--safe-top);
     z-index: 20;
     margin-inline: calc(-1 * var(--view-pad-left)) calc(-1 * var(--view-pad-right));
     margin-bottom: 10px;
@@ -5722,10 +5805,10 @@ body.has-mini-player #stats-view { padding-bottom: calc(80px + env(safe-area-ins
     display: grid;
     grid-template-columns: minmax(0, 1fr);
     gap: 16px;
-    max-height: calc(100dvh - 16px - env(safe-area-inset-top));
+    max-height: calc(100dvh - 16px - var(--safe-top));
     overflow-y: auto;
     overscroll-behavior: contain;
-    padding: var(--space-4) var(--space-4) max(var(--space-3), env(safe-area-inset-bottom));
+    padding: var(--space-4) var(--space-4) max(var(--space-3), var(--safe-bottom));
     border: 1px solid var(--border-strong);
     border-radius: var(--radius-sheet);
     background: var(--surface-raised);
@@ -5803,10 +5886,10 @@ body.has-mini-player #stats-view { padding-bottom: calc(80px + env(safe-area-ins
 
   .search-filter-sheet-actions {
     position: sticky;
-    bottom: calc(-1 * max(12px, env(safe-area-inset-bottom)));
+    bottom: calc(-1 * max(12px, var(--safe-bottom)));
     display: block;
-    margin: 0 -16px calc(-1 * max(12px, env(safe-area-inset-bottom)));
-    padding: 12px 16px max(12px, env(safe-area-inset-bottom));
+    margin: 0 -16px calc(-1 * max(12px, var(--safe-bottom)));
+    padding: 12px 16px max(12px, var(--safe-bottom));
     border-top: 1px solid var(--border);
     background: var(--surface-raised);
   }
@@ -6237,10 +6320,8 @@ body.login-gate-open { overflow: hidden; }
   font-size: var(--text-footnote);
   cursor: pointer;
 }
-.voice-filter select,
 .voice-sheet-search input,
-.voice-facet-chip,
-.voice-more-toggle { min-height: var(--touch-min); }
+.voice-facet-chip { min-height: var(--touch-min); }
 .voice-settings-browse { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-3); }
 .voice-settings-browse > .voice-settings-filters,
 .voice-settings-browse > .settings-hint,
@@ -6253,7 +6334,6 @@ body.login-gate-open { overflow: hidden; }
   text-transform: none;
   letter-spacing: normal;
 }
-.voice-settings-browse .voice-filter select { font-size: var(--text-body); }
 .voice-settings-browse .voice-settings-filters .voice-filter-bar { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .voice-settings-browse .settings-hint { margin: 0; }
 .voice-save-btn,

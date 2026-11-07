@@ -27,7 +27,7 @@ const OFFLINE_CONTRACT_MARKER = 'x-xandrio-offline-contract';
  * with OFFLINE_ROUTE_CONTRACT_VERSION instead of tying downloads to a build id.
  * This value MUST equal CACHE_VERSION in public/sw.js.
  */
-export const EXPECTED_OFFLINE_SW_VERSION = 'xandrio-v216';
+export const EXPECTED_OFFLINE_SW_VERSION = 'xandrio-v221';
 export const MINIMUM_OFFLINE_ROUTE_CONTRACT = 1;
 const BLOCK_OFFLINE_ROUTE_CONTRACT = 2;
 // A chapter is only ever invalidated after this many playback failures whose
@@ -200,6 +200,15 @@ export function offlineDownloadsSupported() {
     globalThis.document?.documentElement?.dataset?.pwaStorageAllowed !== 'false' &&
     'caches' in window &&
     typeof window.caches?.open === 'function';
+}
+
+// True while this page downloads, verifies or migrates offline audio: the work
+// that holds whole chapters in memory. Read by the page-exit monitor.
+export function offlineWorkInProgress() {
+  return Boolean(
+    activeDownloadCompletion || manifestAudit ||
+    rollingCompletions.size > 0 || legacyCacheMigrations.size > 0
+  );
 }
 
 export function initOffline(options = {}) {
@@ -1890,7 +1899,7 @@ export async function downloadBookForOffline(book, chapters, options = {}) {
     const dataSaverNote = navigator.connection?.saveData ? ' Data Saver is on.' : '';
     const confirmed = await confirmSheet({
       title: 'Keep Xandrio visible',
-      message: `This download is about ${packageSize} and may use Wi-Fi or mobile data.${dataSaverNote} Do not close Xandrio, switch apps, or lock the screen until it finishes. iOS may stop the transfer.`,
+      message: `This download is about ${packageSize} and may use Wi-Fi or mobile data.${dataSaverNote} Do not close Xandrio, switch apps, or lock the screen until it finishes. The system may stop the transfer.`,
       confirmLabel: 'Start download',
       danger: false
     });

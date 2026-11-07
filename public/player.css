@@ -41,20 +41,25 @@ body #player-view.view.active {
 
 /* ==================== NAV ==================== */
 
+/* Three columns: close, the centred title, then Recent and •••. The side
+   columns share the width equally, so the title stays centred, and neither
+   shrinks below its controls, so larger text cannot overlap them. */
 .pl-nav {
   position: relative;
   z-index: 1;
   flex: none;
-  display: flex;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
   align-items: center;
   min-height: 44px;
   padding: max(4px, var(--safe-top)) 8px 0;
 }
+.pl-nav > #back-btn { grid-column: 1; justify-self: start; }
 .pl-nav-title {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 12px;
+  grid-column: 2;
+  grid-row: 1;
+  align-self: end;
+  margin-bottom: 12px;
   text-align: center;
   pointer-events: none;
   color: var(--text-secondary);
@@ -62,7 +67,7 @@ body #player-view.view.active {
   line-height: var(--leading-subhead);
   font-weight: var(--weight-semibold);
 }
-.pl-nav-r { position: relative; margin-left: auto; display: flex; align-items: center; gap: 2px; }
+.pl-nav-r { position: relative; grid-column: 3; grid-row: 1; justify-self: end; display: flex; align-items: center; gap: 2px; }
 .pl-icbtn {
   width: 44px;
   height: 44px;
@@ -77,7 +82,7 @@ body #player-view.view.active {
   cursor: pointer;
 }
 .pl-icbtn svg { width: 28px; height: 28px; }
-.pl-icbtn:hover { background: var(--surface-2); }
+@media (hover: hover) { .pl-icbtn:hover { background: var(--surface-2); } }
 .pl-ic-close { display: none; }
 .pl-textbtn {
   min-height: 44px;
@@ -92,7 +97,7 @@ body #player-view.view.active {
   white-space: nowrap;
   cursor: pointer;
 }
-.pl-textbtn:hover:not(:disabled) { background: var(--surface-2); }
+@media (hover: hover) { .pl-textbtn:hover:not(:disabled) { background: var(--surface-2); } }
 .pl-textbtn:disabled { color: var(--text-secondary); cursor: default; }
 
 /* ==================== COLUMN ==================== */
@@ -122,6 +127,11 @@ body #player-view.view.active {
   border-radius: var(--radius-cover);
   box-shadow: 0 12px 28px oklch(4% 0.01 255 / .3);
   object-fit: contain;
+}
+/* Light ground: a dark drop shadow reads as a smear under the cover. A short
+   soft shadow and a hairline edge separate pale covers from the page. */
+@media (prefers-color-scheme: light) {
+  .pl-cover { box-shadow: 0 0 0 1px oklch(20% 0.01 255 / .08), 0 4px 12px oklch(20% 0.01 255 / .12); }
 }
 /* A card needs room; the cover shrinks so the transport stays put. */
 #player-view:has(.pl-narration[data-mode="card"], .pl-narration[data-mode="failed"]) .pl-cover {
@@ -172,7 +182,7 @@ body #player-view.view.active {
   line-height: var(--leading-subhead);
   cursor: pointer;
 }
-.pl-narr-line:hover { background: var(--surface); }
+@media (hover: hover) { .pl-narr-line:hover { background: var(--surface); } }
 .pl-narr-glyph { width: 22px; height: 22px; color: var(--accent-text); }
 .pl-narr-text { display: flex; align-items: baseline; flex: 1 1 auto; min-width: 0; }
 .pl-narr-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font-weight: var(--weight-semibold); }
@@ -301,7 +311,7 @@ strong.pl-card-title,
   text-align: left;
   cursor: pointer;
 }
-.pl-chrow:hover .pl-chrow-ordinal { color: var(--accent-text); }
+@media (hover: hover) { .pl-chrow:hover .pl-chrow-ordinal { color: var(--accent-text); } }
 .pl-chrow-text { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; }
 .pl-chrow-ordinal {
   font-size: var(--text-body);
@@ -397,7 +407,7 @@ strong.pl-card-title,
 }
 .pl-tbtn { width: 56px; height: 56px; border-radius: 28px; background: transparent; color: var(--text); }
 .pl-tbtn svg { width: 44px; height: 44px; }
-.pl-tbtn:hover { background: var(--surface); }
+@media (hover: hover) { .pl-tbtn:hover { background: var(--surface); } }
 .pl-tbtn-ch { width: 44px; height: 44px; border-radius: 22px; color: var(--text-secondary); }
 .pl-tbtn-ch svg { width: 28px; height: 28px; }
 .pl-tbtn:disabled { opacity: .4; cursor: default; }
@@ -415,13 +425,16 @@ strong.pl-card-title,
 }
 .pl-play { width: 76px; height: 76px; border-radius: 38px; background: var(--accent); color: var(--on-accent); }
 .pl-play svg { width: 36px; height: 36px; }
-.pl-play:hover:not(:disabled) { background: var(--accent-strong); }
+@media (hover: hover) { .pl-play:hover:not(:disabled) { background: var(--accent-strong); } }
 
 /* ==================== TOOLS ==================== */
 
-.pl-tools { display: flex; gap: 8px; margin-top: auto; padding-top: 6px; }
+/* Tools share the row equally. The basis follows the text size, so at the
+   default size all three fit on a 320px phone and with larger text the row
+   wraps onto more lines instead of overflowing. */
+.pl-tools { display: flex; flex-wrap: wrap; gap: 8px; margin-top: auto; padding-top: 6px; }
 .pl-tool {
-  flex: 1 1 0;
+  flex: 1 1 calc(4.5 * var(--text-body));
   min-width: 0;
   min-height: 48px;
   display: inline-flex;
@@ -434,12 +447,12 @@ strong.pl-card-title,
   background: var(--surface);
   color: var(--text);
   font-size: var(--text-subhead);
-  line-height: 18px;
+  line-height: calc(18 * var(--type-unit));
   font-weight: 500;
   text-align: center;
   cursor: pointer;
 }
-.pl-tool:hover { background: var(--surface-2); }
+@media (hover: hover) { .pl-tool:hover { background: var(--surface-2); } }
 .pl-tool svg { width: 24px; height: 24px; color: var(--text-secondary); }
 .pl-tool-speed { font-size: var(--text-body); font-weight: var(--weight-bold); font-variant-numeric: tabular-nums; }
 .pl-tool-count { font-variant-numeric: tabular-nums; }
@@ -451,16 +464,15 @@ strong.pl-card-title,
 .pl-sleep.active svg { color: var(--accent-text); }
 .pl-tool.is-confirming .inline-confirmation { background-color: var(--surface); }
 
-/* Toasts dock under the player nav (phone and tablet), never over transport. */
+/* Toasts dock just above the tools row (phone and tablet): never over the
+   artwork or the transport. toast.js reads the anchor and avoid selectors;
+   on a short screen it covers the tools row briefly instead. Player failures
+   go to the inline card, which suppresses their toasts. */
 @media (max-width: 1199px) {
   body[data-view="player"] .toast {
-    /* toast.js reads this and never adds a bottom inset (P1-1). */
-    --toast-dock: top;
-    top: calc(max(4px, var(--safe-top)) + 50px);
-    bottom: auto;
-    transform: translate(-50%, -8px);
+    --toast-anchor: "#player-view.active .pl-tools";
+    --toast-avoid: "#player-view.active .pl-transport";
   }
-  body[data-view="player"] .toast.show { transform: translate(-50%, 0); }
 }
 
 /* Short phones: the cover gives way first. */
@@ -505,6 +517,8 @@ strong.pl-card-title,
   gap: 14px;
   width: 100%;
   min-height: 52px;
+  /* Rows in the scrolling list keep their content height at large text. */
+  flex-shrink: 0;
   padding: 6px 4px;
   border: 0;
   border-bottom: 1px solid var(--border);
@@ -519,7 +533,7 @@ strong.pl-card-title,
 }
 .pl-more-row[hidden] { display: none; }
 .pl-more-row::-webkit-details-marker { display: none; }
-.pl-more-row:hover:not(:disabled) { background: var(--surface-2); }
+@media (hover: hover) { .pl-more-row:hover:not(:disabled) { background: var(--surface-2); } }
 .pl-more-row:disabled { color: var(--text-secondary); cursor: default; }
 .pl-more-row svg { width: 24px; height: 24px; color: var(--text-secondary); }
 .pl-more-rebuild::before {
@@ -611,9 +625,11 @@ strong.pl-card-title,
   #player-view .pl-transport { gap: 8px; justify-content: space-between; }
   #player-view .pl-tools { margin-top: 12px; }
   #player-view .pl-tool,
-  #player-view .pl-card,
-  #player-view .pl-narr-line:hover,
-  #player-view .pl-tbtn:hover { background: var(--surface-2); }
+  #player-view .pl-card { background: var(--surface-2); }
+  @media (hover: hover) {
+    #player-view .pl-narr-line:hover,
+    #player-view .pl-tbtn:hover { background: var(--surface-2); }
+  }
   #player-view .pl-chip:not([aria-pressed="true"]),
   #player-view .pl-btn-secondary { background: var(--surface-raised); }
   /* Toasts centre on the library column, clear of the pane. */
@@ -666,7 +682,7 @@ strong.pl-card-title,
     text-align: left;
     cursor: pointer;
   }
-  .pl-up-next-row:hover { background: var(--surface-2); }
+  @media (hover: hover) { .pl-up-next-row:hover { background: var(--surface-2); } }
   .pl-up-next-row:focus-visible { outline: 3px solid var(--focus-ring); outline-offset: -3px; }
   .pl-up-next-cover { width: 34px; height: 50px; flex: none; border-radius: 3px; object-fit: cover; background: var(--surface-2); }
   .pl-up-next-text { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; }
@@ -674,4 +690,49 @@ strong.pl-card-title,
   .pl-up-next-sub { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .pl-up-next-name { font-size: var(--text-body); line-height: var(--leading-body); font-weight: var(--weight-semibold); }
   .pl-up-next-sub { color: var(--text-secondary); font-size: var(--text-subhead); line-height: var(--leading-subhead); font-variant-numeric: tabular-nums; }
+}
+
+/* ==================== PLAYBACK STATUS CARD ==================== */
+/* One card for a failed open or chapter (js/player-status.mjs): tinted, a
+   warning glyph and words, Retry, and the instant narrator where it applies.
+   Selectors carry #player-view so the docked pane's surface rule above
+   cannot flatten the tint. */
+#player-view #audio-loading[data-status="error"] {
+  background: var(--danger-bg);
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--danger) 28%, transparent);
+}
+#player-view #audio-loading[data-status="engine"] {
+  background: color-mix(in oklab, var(--warning-text) 14%, var(--surface));
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--warning-text) 30%, transparent);
+}
+#audio-loading[data-status="engine"] .pl-glyph-warn { display: block; color: var(--warning-text); }
+#audio-loading[data-status="engine"] .pl-bar { display: none; }
+#audio-loading[data-status="engine"] .pl-card-sub { color: var(--text); }
+#player-view:has(#audio-loading[data-status="engine"]) .pl-cover {
+  max-height: min(var(--pl-cover-max), var(--pl-cover-card));
+}
+
+/* Preparing: the play button keeps its full amber fill and a dark glyph
+   (well above 3:1 in both schemes); the hourglass and aria-busy say "not yet". */
+.pl-play.is-preparing,
+.pl-play:disabled { background: var(--accent); color: var(--on-accent); opacity: 1; cursor: progress; }
+.mini-player-btn.is-preparing { color: var(--text); cursor: progress; }
+
+/* ••• menu: an unavailable row explains itself in a quiet footnote. */
+.pl-more-row:disabled .pl-more-sub {
+  color: var(--text-muted);
+  font-size: var(--text-footnote);
+  line-height: var(--leading-footnote);
+}
+
+/* A deep link whose book could not be opened: no chapter, position or
+   transport to show, only the identity and the failure card. */
+#player-view[data-book="none"] :is(.pl-narr-line, .pl-chrow, .pl-scrub, .pl-bookline, .pl-transport, .pl-tools) { display: none; }
+
+/* The one-time "Press and hold the player bar" hint steps aside while an
+   error toast shows: one message at a time, and the toast drops back to its
+   usual place above the mini player. */
+body:has(.toast.toast--error.show) .shell-coach-hint { display: none; }
+body.has-coach-hint:has(.toast.toast--error.show) .toast {
+  bottom: calc(var(--shell-bottom, var(--safe-bottom)) + 8px);
 }

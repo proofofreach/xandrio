@@ -36,6 +36,12 @@ const STALL_PROBE_INTERVAL_MS = 2000;
 const STALL_TIMEOUT_MS = 20000;
 // Below this, a difference is measurement noise rather than progress.
 const PROGRESS_EPSILON_SECONDS = 0.05;
+// A continuous stream's position is derived from the media element's
+// currentTime. If that time jumps backwards by more than this without a seek
+// or a new source — a media pipeline reset after a transport failure — the
+// element has lost the listener's place. Measured against the high-water mark
+// so the saved position and the recovery snapshot keep the real one.
+const STREAM_TIME_REGRESSION_SECONDS = 2;
 
 // Chapter-mapping timeline refresh, and how many ticks it skips while the
 // document is hidden (2s visible, 10s backgrounded).
@@ -166,6 +172,8 @@ export class SingleFileChapterPlayer {
     this.chapterIndex = null;
     this.startChapterIndex = null;
     this.isContinuous = false;
+    // 'progressive' (one MP3 byte stream) or 'hls' (native iOS playlist).
+    this.continuousTransport = null;
     this.streamStartOffset = 0;
     this.requestedStartOffset = 0;
     this.playbackSessionId = null;
@@ -211,6 +219,11 @@ export class SingleFileChapterPlayer {
     // sample it compares against.
     this._stallWatchdog = null;
     this._stallMark = null;
+    // Furthest stream position reached on the current continuous source, and
+    // whether the element has since fallen behind it without a seek. While a
+    // regression is active the mark, not the element, is the listener's place.
+    this._progressMark = null;
+    this._streamTimeRegressed = false;
     this._lastDiagnosticTimeUpdateAt = 0;
     // The next chapter, already downloaded into an object URL, and the chapter
     // index whose fetch is in flight. Both are cleared by any chapter change.
@@ -435,6 +448,7 @@ export class SingleFileChapterPlayer {
           this._applyPlaybackRate();
           this.activeSource = candidate.url;
           this.isContinuous = candidate.continuous;
+          this.continuousTransport = candidate.continuous ? candidate.transport || 'progressive' : null;
           this.streamStartOffset = candidate.startOffset || 0;
           this.playbackSessionId = candidate.sessionId || null;
           this.backend = candidate.continuous ? 'audio-stream' : 'single-file';
@@ -477,6 +491,11 @@ export class SingleFileChapterPlayer {
     for (const eventName of ['waiting', 'stalled', 'suspend', 'abort', 'emptied']) {
       this._eventScope.listen(this.audio, eventName, this._boundMediaState);
     }
+    // A fresh source starts its own progress history, and any seek — ours or
+    // the platform's (lock screen, native controls) — legitimately moves
+    // backwards, so it starts a new one too.
+    this._resetProgressMark();
+    this._eventScope.listen(this.audio, 'seeking', () => this._resetProgressMark());
     // Re-attaching mid-playback (a relocation, for instance) tore down the
     // previous scope and with it the stall probe. A fresh `playing` event is
     // not guaranteed to follow, so restore the probe here rather than leaving
@@ -1023,7 +1042,7 @@ export class SingleFileChapterPlayer {
     };
   }
 
-  _syncContinuousChapter(streamTime = Number(this.audio.currentTime) || 0) {
+  _syncContinuousChapter(streamTime = this._effectiveStreamTime()) {
     if (!this.isContinuous) return this._chapterAtStreamTime(streamTime);
     const located = this._chapterAtStreamTime(streamTime);
     if (located.chapterIndex !== this.chapterIndex) {
@@ -1120,7 +1139,9 @@ export class SingleFileChapterPlayer {
    * paused listener, a seek, or a slow-but-alive transport never trips it.
    */
   _checkForStall() {
-    if (this._isLoading || !this._isPlaying || this.audio.paused || this.audio.ended) {
+    // A position reset is already being recovered; a second report from the
+    // same dead element would race that reload.
+    if (this._isLoading || !this._isPlaying || this.audio.paused || this.audio.ended || this._streamTimeRegressed) {
       this._stallMark = null;
       return;
     }
@@ -1147,15 +1168,89 @@ export class SingleFileChapterPlayer {
     const error = new Error('Audio stopped advancing mid-playback');
     error.code = 'MEDIA_STALLED';
     error.recoverable = true;
-    error.chapterIndex = this.chapterIndex;
-    error.chapterTime = this.getCurrentTime();
+    Object.assign(error, this._recoveryPosition());
     this.onError?.(error);
+  }
+
+  _resetProgressMark() {
+    this._progressMark = null;
+    this._streamTimeRegressed = false;
+  }
+
+  /**
+   * Stream time the position mapping should trust. The element's own time,
+   * unless it has regressed without a seek, in which case the furthest point
+   * it had reached on this source.
+   */
+  _effectiveStreamTime() {
+    const streamTime = Number(this.audio.currentTime) || 0;
+    if (this._streamTimeRegressed && this._progressMark) return this._progressMark.streamTime;
+    return streamTime;
+  }
+
+  /**
+   * Track the high-water mark of a continuous stream and detect a media
+   * pipeline reset: currentTime well below where it has been, with no seek
+   * and no new source in between. Reported once as a recoverable error that
+   * carries the real position; the app reloads the chapter there.
+   * @returns {boolean} true when the element's time is not to be trusted.
+   */
+  _trackStreamProgress() {
+    // Only the single MP3 byte stream derives its position from a splice of
+    // byte ranges; native HLS keeps segment timing and has its own recovery.
+    if (!this.isContinuous || this.continuousTransport === 'hls' || this._isLoading) return false;
+    // A seek from the lock screen or native controls sets 'seeking'
+    // synchronously, before its event; a time update queued ahead of that
+    // event must not be read as a reset.
+    if (this.audio.seeking) {
+      this._resetProgressMark();
+      return false;
+    }
+    const streamTime = Number(this.audio.currentTime) || 0;
+    const mark = this._progressMark;
+    if (mark && streamTime + STREAM_TIME_REGRESSION_SECONDS < mark.streamTime) {
+      if (this._streamTimeRegressed) return true;
+      this._streamTimeRegressed = true;
+      this._stopStallWatchdog();
+      this._emitDiagnostic('stream-time-regression', {
+        streamTime,
+        markStreamTime: mark.streamTime,
+        markChapterIndex: mark.chapterIndex,
+        markChapterTime: mark.chapterTime
+      });
+      const error = new Error('Audio position was lost mid-playback');
+      error.code = 'MEDIA_STREAM_RESET';
+      error.recoverable = true;
+      error.chapterIndex = mark.chapterIndex;
+      error.chapterTime = mark.chapterTime;
+      this.onError?.(error);
+      return true;
+    }
+    if (this._streamTimeRegressed) return true;
+    if (!mark || streamTime > mark.streamTime) {
+      const located = this._chapterAtStreamTime(streamTime);
+      this._progressMark = {
+        streamTime,
+        chapterIndex: located.chapterIndex,
+        chapterTime: located.chapterTime
+      };
+    }
+    return false;
+  }
+
+  /** Chapter position recovery should resume from. */
+  _recoveryPosition() {
+    if (this._streamTimeRegressed && this._progressMark) {
+      return { chapterIndex: this._progressMark.chapterIndex, chapterTime: this._progressMark.chapterTime };
+    }
+    return { chapterIndex: this.chapterIndex, chapterTime: this.getCurrentTime() };
   }
 
   _handleTimeUpdate() {
     if (this._buffering && Math.abs((Number(this.audio.currentTime) || 0) - this._bufferingTime) > PROGRESS_EPSILON_SECONDS) {
       this._setBuffering(false);
     }
+    if (this._trackStreamProgress()) return;
     this._syncContinuousChapter();
     this._maybePrewarmNextChapter();
     const now = Date.now();
@@ -1446,8 +1541,10 @@ export class SingleFileChapterPlayer {
     this.activeSource = prewarmed.objectUrl;
     this._activeObjectUrl = prewarmed.objectUrl;
     // The new resource starts at zero with an empty buffer; a liveness sample
-    // taken against the finished chapter would read that as a frozen stream.
+    // taken against the finished chapter would read that as a frozen stream,
+    // and a progress mark from it would read the new zero as a regression.
     this._stallMark = null;
+    this._resetProgressMark();
     this._playReason = 'chapter-advance';
     // Belt and braces for mobile browsers that reject a programmatic play() on
     // a backgrounded page: the element is already authorized to play, so let it
@@ -1580,7 +1677,9 @@ export class SingleFileChapterPlayer {
       errorCode: Number(this.audio.error?.code) || 0
     });
     if (this._isLoading) return;
-    this.onError?.(this._audioError());
+    // A mid-playback media error is recovered by reloading at the listener's
+    // position; carry it so recovery does not read a reset element.
+    this.onError?.(Object.assign(this._audioError(), this._recoveryPosition()));
   }
 
   _handleNativePlay(event) {
@@ -1732,6 +1831,9 @@ export class SingleFileChapterPlayer {
   trySeekSync(seconds) {
     const { streamTime } = this._streamTimeForChapterTime(seconds);
     if (this.isContinuous && !this._canSeekTo(streamTime)) return false;
+    // Browsers fire 'seeking' as a later task; clear the high-water mark now so
+    // the synchronous time update below cannot read the jump as a reset.
+    this._resetProgressMark();
     this.audio.currentTime = Math.max(0, streamTime);
     this._handleTimeUpdate();
     return true;
@@ -1772,6 +1874,7 @@ export class SingleFileChapterPlayer {
       await this._reloadContinuousAtOffset(chapterTime);
       return true;
     }
+    this._resetProgressMark();
     this.audio.currentTime = Math.max(0, streamTime);
     this._handleTimeUpdate();
     return true;
@@ -1858,6 +1961,7 @@ export class SingleFileChapterPlayer {
       this.streamStartOffset = chapterTime;
       this.requestedStartOffset = chapterTime;
       this.playbackSessionId = candidate.sessionId;
+      this.continuousTransport = candidate.transport || 'progressive';
       this._timelineDurations.clear();
       this._attach();
       wait = waitForMediaEvents(this.audio, {
@@ -1999,8 +2103,7 @@ export class SingleFileChapterPlayer {
   getVolume() { return this._volume; }
   getBufferRunway() { return this._bufferRunway(); }
   getCurrentTime() {
-    const streamTime = Number(this.audio.currentTime) || 0;
-    return this._chapterAtStreamTime(streamTime).chapterTime;
+    return this._chapterAtStreamTime(this._effectiveStreamTime()).chapterTime;
   }
   getTotalTime() {
     if (this.isContinuous) return this._estimatedDuration(this.chapterIndex);

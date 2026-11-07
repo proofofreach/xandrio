@@ -10,7 +10,11 @@ const ERROR_TYPES = new Set([
   'unexpected-ended',
   'chapter-advance-failed',
   'chapter-prewarm-failed',
-  'source-reload-failed'
+  'source-reload-failed',
+  'page-crash',
+  'page-crash-offline-work',
+  'page-killed-playing',
+  'page-killed-playing-offline-work'
 ]);
 
 export function platformClass(userAgent = '', maxTouchPoints = 0) {

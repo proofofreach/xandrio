@@ -113,19 +113,60 @@ function isTopDocked() {
   return getComputedStyle(toastEl).getPropertyValue('--toast-dock').trim() === 'top';
 }
 
+// A view can dock toasts against one of its own rows instead. The player
+// names its tools row as `--toast-anchor` and its transport as
+// `--toast-avoid` (player.css): the toast sits just above the tools, and on a
+// short screen where that would touch the transport it covers the tools row
+// for its few seconds instead. Artwork and transport stay clear.
+function cssSelector(name) {
+  const raw = getComputedStyle(toastEl).getPropertyValue(name).trim();
+  return raw.replace(/^["']|["']$/g, '');
+}
+
+function anchorDock() {
+  const anchorSelector = cssSelector('--toast-anchor');
+  if (!anchorSelector) return false;
+  let anchor = null;
+  try { anchor = document.querySelector(anchorSelector); } catch { return false; }
+  if (!anchor || !isShown(anchor)) return false;
+  const rect = anchor.getBoundingClientRect();
+  if (rect.height <= 0) return false;
+  let avoid = null;
+  try { avoid = cssSelector('--toast-avoid') ? document.querySelector(cssSelector('--toast-avoid')) : null; } catch {}
+  const avoidRect = avoid && isShown(avoid) ? avoid.getBoundingClientRect() : null;
+  const height = toastEl.offsetHeight || 48;
+  let bottomEdge;
+  if (rect.top >= 0 && rect.bottom <= window.innerHeight) {
+    bottomEdge = rect.top - DOCK_GAP;
+    if (avoidRect && bottomEdge - height < avoidRect.bottom + 4) bottomEdge = rect.bottom;
+  } else if (avoidRect && avoidRect.top - DOCK_GAP - height >= 0) {
+    // The tools row is scrolled out of view (short screens): sit just above
+    // the transport instead, over the scrubber, never over the transport.
+    bottomEdge = avoidRect.top - DOCK_GAP;
+  } else {
+    return false;
+  }
+  toastEl.style.top = 'auto';
+  toastEl.style.bottom = `${Math.max(0, window.innerHeight - bottomEdge)}px`;
+  return true;
+}
+
 function dockToast() {
   if (!toastEl) return true;
   toastEl.style.removeProperty('bottom');
   toastEl.style.removeProperty('top');
   const panel = openSheetPanel();
-  if (!panel) return true;
+  if (!panel) {
+    anchorDock();
+    return true;
+  }
   const sheetTop = window.innerHeight - panel.offsetHeight;
   const topDocked = isTopDocked();
   // A top-docked toast that clears the sheet stays where it is.
   if (topDocked && (parseFloat(getComputedStyle(toastEl).top) || 0) + TOAST_ROOM <= sheetTop) return true;
   if (sheetTop < TOAST_ROOM) return false;
   // Otherwise it sits just above the sheet's top edge, by its bottom edge only.
-  if (topDocked) toastEl.style.top = 'auto';
+  toastEl.style.top = 'auto';
   toastEl.style.bottom = `${panel.offsetHeight + DOCK_GAP}px`;
   return true;
 }
@@ -192,6 +233,8 @@ export function showToast(message, type = '', options = {}) {
     toastEl.textContent = message;
   }
 
+  // Re-dock now that the toast has its final text and height.
+  dockToast();
   toastEl.classList.add('show');
   hideTimer = setTimeout(hideToast, duration);
   return true;

@@ -164,6 +164,41 @@ function harness(overrides = {}) {
     assert.deepStrictEqual(inputs, [0, 2], 'no input is requested for the divider');
   });
 
+  await test('a Range resume is honoured only where the first connection proves it lands', async () => {
+    const { MASTERING_POLICY } = require('../lib/audio-quality');
+    const pcmPerSecond = MASTERING_POLICY.sampleRate * MASTERING_POLICY.channels * 2;
+    const { orchestrator, manifest } = harness({ chapters: dividerBook(), audioReady: true });
+    manifest.chunks.forEach(chunk => { chunk.status = 'ready'; });
+    const open = (sessionId, extra = {}) => orchestrator.prepareContinuousAudioStream({
+      bookId: 'book', chapterIndex: 0, sessionId, startOffsetSeconds: 5, ...extra
+    });
+    const decodeWholeFirstChapter = source => source.onInputDecoded(
+      { chapterIndex: 0, lastInChapter: true }, 100 * pcmPerSecond
+    );
+
+    // No first connection on record: nothing proves where the bytes are.
+    assert.strictEqual((await open('unknown', { resumeSeconds: 30 })).resumeAccepted, false);
+
+    // The first chapter was still being decoded: every held byte is in it.
+    await open('decoding');
+    const inside = await open('decoding', { resumeSeconds: 30 });
+    assert.strictEqual(inside.resumeAccepted, true);
+    assert.strictEqual(inside.startOffsetSeconds, 5, 'the logical start is the first connection\'s');
+
+    // Measured at 100 s: a resume that stays inside it is honoured…
+    decodeWholeFirstChapter(await open('measured-a'));
+    assert.strictEqual((await open('measured-a', { resumeSeconds: 60 })).resumeAccepted, true);
+    // …one that runs past its end is refused, and the client gets the full stream.
+    decodeWholeFirstChapter(await open('measured-b'));
+    const past = await open('measured-b', { resumeSeconds: 120 });
+    assert.strictEqual(past.resumeAccepted, false);
+    assert.strictEqual(past.startOffsetSeconds, 5);
+    // The refused reconnect replaced the timeline; the next one must still
+    // know the first chapter's length and refuse too.
+    assert.strictEqual((await open('measured-b', { resumeSeconds: 120 })).resumeAccepted, false);
+    assert.strictEqual(orchestrator.continuousTimeline('measured-b').durations[0], 100);
+  });
+
   await test('continuous playback skips a chapter that TTS finds unspeakable', async () => {
     const chapters = dividerBook();
     chapters[1] = { title: 'Chapter 5', type: 'chapter', text: '* * *' };
@@ -739,6 +774,49 @@ function harness(overrides = {}) {
       const status = await orchestrator.chapterAudioStatus({ bookId: 'book', chapterIndex: 0, startOffsetSeconds: 0 });
       assert.strictEqual(status.runwayEarlyStart, false, JSON.stringify(input));
     }
+  });
+
+  await test('a resumed continuous stream decodes from start + resume but keeps the logical start', async () => {
+    // A `Range: bytes=N-` reconnect prepares the encode N seconds into the
+    // stream. The timeline the client maps positions through must keep the
+    // offset the first connection used, or every chapter position shifts.
+    const { orchestrator, calls } = harness({ ready: false });
+    // The first connection of the session, still decoding its first chapter.
+    await orchestrator.prepareContinuousAudioStream({
+      bookId: 'book',
+      chapterIndex: 0,
+      requestedTier: 'instant',
+      sessionId: 'resume-session',
+      startOffsetSeconds: 21.6
+    });
+    calls.length = 0;
+    const source = await orchestrator.prepareContinuousAudioStream({
+      bookId: 'book',
+      chapterIndex: 0,
+      requestedTier: 'instant',
+      sessionId: 'resume-session',
+      startOffsetSeconds: 21.6,
+      resumeSeconds: 409.872
+    });
+    assert.strictEqual(source.resumeAccepted, true);
+    const seek = calls.find(call => call[0] === 'planSeek');
+    assert(seek, 'the seek plan is consulted for the resumed position');
+    assert(Math.abs(seek[3] - (21.6 + 409.872)) < 1e-9, 'chunk selection uses start + resume');
+    assert(Math.abs(source.decodeStartOffsetSeconds - (21.6 + 409.872)) < 1e-9);
+    assert.strictEqual(source.resumeAppliedToDecodeStart, true);
+    assert.strictEqual(source.startOffsetSeconds, 21.6, 'logical start is the first connection\'s');
+    const timeline = orchestrator.continuousTimeline('resume-session');
+    assert.strictEqual(timeline.startOffsetSeconds, 21.6);
+
+    const plain = await orchestrator.prepareContinuousAudioStream({
+      bookId: 'book',
+      chapterIndex: 0,
+      requestedTier: 'instant',
+      sessionId: 'plain-session',
+      startOffsetSeconds: 21.6
+    });
+    assert.strictEqual(plain.decodeStartOffsetSeconds, 21.6);
+    assert.strictEqual(plain.startOffsetSeconds, 21.6);
   });
 
   console.log(`playback-orchestrator tests: ${passed} passed, ${failed} failed`);

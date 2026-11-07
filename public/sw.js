@@ -1,7 +1,7 @@
 importScripts('/js/offline-range.js');
 importScripts('/js/offline-store.js');
 
-const CACHE_VERSION = 'xandrio-v216';
+const CACHE_VERSION = 'xandrio-v221';
 const OFFLINE_ROUTE_CONTRACT_VERSION = 2;
 const OFFLINE_AUDIO_CACHE = 'xandrio-offline-audio';
 const OFFLINE_TITLE_CACHE = 'xandrio-offline-titles';
@@ -12,17 +12,17 @@ const OFFLINE_BLOCK_STORE = self.XandrioOfflineStore?.createStore?.() || null;
 // changes, including the un-versioned js/ modules below, which only
 // invalidate via CACHE_VERSION.
 const ASSET_VERSIONS = {
-  '/style-v3.css': 124,
-  '/composition.css': 9,
-  '/library-composition.css': 8,
-  '/shell.css': 4,
-  '/sheets.css': 2,
-  '/settings.css': 2,
-  '/player.css': 2,
-  '/find.css': 2,
+  '/style-v3.css': 125,
+  '/composition.css': 10,
+  '/library-composition.css': 9,
+  '/shell.css': 5,
+  '/sheets.css': 3,
+  '/settings.css': 3,
+  '/player.css': 3,
+  '/find.css': 3,
   '/js/ios-focus-zoom.js': 2,
   '/js/lifecycle.js': 2,
-  '/app.js': 165
+  '/app.js': 170
 };
 const versionedAsset = (path) => `${path}?v=${ASSET_VERSIONS[path]}`;
 const APP_SHELL = [
@@ -48,6 +48,8 @@ const APP_SHELL = [
   '/js/playback-session.js',
   '/js/smart-rewind.mjs',
   '/js/playback-health.mjs',
+  '/js/page-exit-monitor.mjs',
+  '/js/player-status.mjs',
   '/js/auto-sleep-schedule.mjs',
   '/js/single-file-chapter-player.js',
   '/js/util/format.js',
@@ -87,6 +89,12 @@ const APP_SHELL = [
   '/js/features/import-activity.js',
   '/js/features/sharing.js',
   '/manifest.webmanifest',
+  // Manifest icons: kept with the manifest so install and shortcut menus
+  // still have them offline.
+  '/icon-192.png',
+  '/icon-512.png',
+  '/icon-maskable-192.png',
+  '/icon-maskable-512.png',
   '/icon-xandrio-ankh.png'
 ];
 

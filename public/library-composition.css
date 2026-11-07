@@ -169,8 +169,8 @@ body.has-shell #library-view #stats-btn { display: none; }
   align-items: center;
   gap: 10px;
   width: 168px;
-  min-height: 0;
-  height: 76px;
+  /* Grows with larger text instead of overprinting. */
+  min-height: 76px;
   padding: 0 8px 0 5px;
   border: 0;
   border-radius: 10px;
@@ -186,7 +186,7 @@ body.has-shell #library-view #stats-btn { display: none; }
   -webkit-touch-callout: none;
   user-select: none;
 }
-#library-view .rail-card:hover { background: var(--surface-2); }
+@media (hover: hover) { #library-view .rail-card:hover { background: var(--surface-2); } }
 #library-view .rail-card:focus-visible { outline: 3px solid var(--focus-ring); outline-offset: -3px; }
 #library-view .rail-cover-wrap {
   flex: none;
@@ -212,7 +212,14 @@ body.has-shell #library-view #stats-btn { display: none; }
   white-space: nowrap;
   text-overflow: ellipsis;
 }
+/* Titles take two lines so a card names its book; the resume line stays one. */
 #library-view .rail-title {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  white-space: normal;
+  overflow-wrap: anywhere;
   font-size: var(--text-subhead);
   line-height: var(--leading-subhead);
   font-weight: var(--weight-semibold);
@@ -261,7 +268,6 @@ body.has-shell #library-view #stats-btn { display: none; }
 #library-view #sort-select {
   flex: none;
   width: auto;
-  min-height: 44px;
   padding: 0 22px 0 0;
   border: 0;
   border-radius: 8px;
@@ -318,6 +324,9 @@ body.has-shell #library-view #stats-btn { display: none; }
 #library-view[data-library-state="empty"] .library-table-head,
 #library-view[data-library-state="error"] .library-controls,
 #library-view[data-library-state="error"] .library-table-head { display: none; }
+/* Empty scopes and filters (Downloaded with nothing on the device, an empty
+   shelf, no matches) show their empty card without a table header. */
+#library-view[data-library-visible="0"] .library-table-head { display: none; }
 
 /* ==================== ROWS (list, compact) ==================== */
 
@@ -335,8 +344,8 @@ body.has-shell #library-view #stats-btn { display: none; }
   display: flex;
   align-items: center;
   gap: 4px;
+  /* A floor, not a fixed height: rows grow with larger text. */
   min-height: var(--row-h);
-  height: var(--row-h);
   padding: 0;
   border: 0;
   border-radius: 0;
@@ -351,11 +360,11 @@ body.has-shell #library-view #stats-btn { display: none; }
   right: 0;
   border-top: 1px solid var(--border);
 }
-#library-view .book-list:not(.grid-view) .book-item-inner:hover { border-color: transparent; }
+@media (hover: hover) { #library-view .book-list:not(.grid-view) .book-item-inner:hover { border-color: transparent; } }
 #library-view .book-list:not(.grid-view) .book-card-open {
   flex: 1 1 auto;
   min-width: 0;
-  height: 100%;
+  align-self: stretch;
   display: flex;
   align-items: center;
   gap: 12px;
@@ -490,7 +499,7 @@ body.has-shell #library-view #stats-btn { display: none; }
 #library-view .offline-btn > svg { width: 30px; height: 30px; flex: none; }
 #library-view .offline-btn--retry > svg { width: 26px; height: 26px; }
 #library-view .offline-btn.is-inert { cursor: default; }
-#library-view .offline-btn:hover:not(.is-inert) { background: var(--surface-2); }
+@media (hover: hover) { #library-view .offline-btn:hover:not(.is-inert) { background: var(--surface-2); } }
 #library-view .offline-btn:focus-visible { outline: 3px solid var(--focus-ring); outline-offset: -3px; }
 #library-view .book-local-control--download-offline .offline-btn,
 #library-view .book-local-control--download-unavailable .offline-btn { color: var(--text-muted); }
@@ -581,7 +590,7 @@ body.has-shell #library-view #stats-btn { display: none; }
   display: flex;
   align-items: center;
   gap: 12px;
-  height: var(--row-h);
+  min-height: var(--row-h);
   padding: 0;
   border: 0;
   background: transparent;
@@ -917,15 +926,13 @@ body.has-shell #library-view #stats-btn { display: none; }
   #library-view .library-title {
     flex: 0 1 auto;
     font-size: var(--text-title1);
-    line-height: 34px;
+    line-height: calc(34 * var(--type-unit));
     letter-spacing: -0.01em;
   }
   #library-view .library-scope-button,
   #library-view .library-scope-menu { display: none; }
   #library-view .library-title-text { display: inline; white-space: nowrap; }
   #library-view .header-actions { margin-left: auto; }
-  /* The sidebar carries Audio activity with its count on desktop. */
-  body.has-shell #library-view #queue-status { display: none; }
 
   /* Full-label segmented control; the sidebar repeats it with counts. */
   #library-view .library-tabs {
@@ -956,8 +963,6 @@ body.has-shell #library-view #stats-btn { display: none; }
   }
   #library-view .library-tab:focus-visible { outline: 3px solid var(--focus-ring); outline-offset: 1px; }
 
-  /* With the sidebar docked its scope links replace the segmented control. */
-  body.has-shell:has(.app-sidebar:not([hidden])) #library-view .library-tabs { display: none; }
 
   /* The table is its own switcher (sorted by Last played). */
   #library-view .continue-rail { display: none; }
@@ -981,6 +986,9 @@ body.has-shell #library-view #stats-btn { display: none; }
   }
   #library-view .library-table-head span:first-child { padding-left: calc(var(--row-cover-w) + 12px); }
   #library-view .library-primary:has(.grid-view) .library-table-head { display: none; }
+  /* Speed is stated once: the table header says "Time left at 1.0×", so the
+     sort line repeats it only in grid view, which has no header. */
+  #library-view .library-primary:not(:has(.grid-view)) .library-speed-note { display: none; }
   #library-view { --library-table-cols: minmax(0, 1fr) 150px 170px 150px 44px; }
 
   #library-view .book-list:not(.grid-view) .book-item-inner {
@@ -993,7 +1001,7 @@ body.has-shell #library-view #stats-btn { display: none; }
   }
   #library-view .book-list:not(.grid-view) .book-item-inner::before { display: none; }
   #library-view .book-list:not(.grid-view) .book-item.is-current .book-item-inner { background: var(--surface); }
-  #library-view .book-list:not(.grid-view) .book-item-inner:hover { background: var(--surface); }
+  @media (hover: hover) { #library-view .book-list:not(.grid-view) .book-item-inner:hover { background: var(--surface); } }
   #library-view .book-list:not(.grid-view) .book-title,
   #library-view .book-list:not(.grid-view) .book-author {
     font-size: var(--text-subhead);
@@ -1059,7 +1067,7 @@ body.has-shell #library-view #stats-btn { display: none; }
   #library-view .book-list:not(.grid-view) .book-overflow-trigger:focus-visible { outline: 3px solid var(--focus-ring); }
 
   #library-view .book-list[data-density="comfortable"] { --row-h: 72px; --row-cover-w: 44px; --row-cover-h: 66px; }
-  #library-view .book-list[data-density="comfortable"]:not(.grid-view) .book-item-inner { padding: 0; height: var(--row-h); }
+  #library-view .book-list[data-density="comfortable"]:not(.grid-view) .book-item-inner { padding: 0; min-height: var(--row-h); }
   #library-view .book-list[data-density="comfortable"]:not(.grid-view) .book-progress { display: none; }
 
   #library-view .book-list.grid-view {
@@ -1067,6 +1075,14 @@ body.has-shell #library-view #stats-btn { display: none; }
     gap: 20px 14px;
     margin: 12px 0 0;
   }
+}
+
+/* With the sidebar docked (shell.css: 760px wide and 500px tall) its scope
+   links replace the segmented control and it carries Audio activity with
+   its count. A phone in landscape keeps the tab bar, so both stay. */
+@media (min-width: 760px) and (min-height: 500px) {
+  body.has-shell #library-view #queue-status { display: none; }
+  body.has-shell:has(.app-sidebar:not([hidden])) #library-view .library-tabs { display: none; }
 }
 
 /* Narrow desktop: the book column keeps its room; the offline column is
@@ -1103,6 +1119,7 @@ body.has-shell #library-view #stats-btn { display: none; }
     background: transparent;
   }
   #library-view .library-speed-note { display: none; }
+  #library-view .library-primary:has(.grid-view) .library-speed-note { display: inline; flex: none; }
   #library-view .header-action-label { display: none; }
   #library-view .header-actions > .btn-icon:has(.header-action-label) { width: 44px; padding: 0; }
 }

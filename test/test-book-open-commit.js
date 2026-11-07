@@ -131,6 +131,17 @@ function createHarness({
       events.restoreStarted += 1;
       events.restored = previous;
     }),
+    // Identity and status seams (app.js renderBookIdentity, player status).
+    playerView: null,
+    renderBookIdentity(book) { events.identities = [...(events.identities || []), book?.id ?? null]; },
+    renderChapterOptions() {},
+    renderChapterIdentity() {},
+    renderUnavailableBookIdentity(id) { events.unavailable = [...(events.unavailable || []), id]; },
+    playerStatus: { isFailedFor: () => false, set() {}, get: () => ({ state: 'idle' }) },
+    playerFailureRetry: null,
+    reportPlaybackFailure(error, options) { events.failures = [...(events.failures || []), { error, options }]; },
+    hideAudioLoading() {},
+    navigateTo() {},
     setTimeout,
     clearTimeout,
     ...overrides
@@ -391,6 +402,69 @@ async function run() {
       'a superseded open fails silently: the newer session owns the screen');
   });
 
+  await test('Retry after a failed deep-link open repaints the card, then opens the book', async () => {
+    const { createPlayerStatus } = await import(require('node:url').pathToFileURL(
+      path.join(__dirname, '..', 'public', 'js', 'player-status.mjs')).href);
+    const states = [];
+    const status = createPlayerStatus({ onChange: value => states.push(`${value.state}:${value.chapterIndex}`) });
+    let failing = true;
+    const failures = [];
+    const loadingCards = [];
+    const harness = createHarness({
+      apiGet: async url => {
+        if (failing && url.startsWith('/api/book/')) throw new TypeError('Failed to fetch');
+        return url.startsWith('/api/book/') ? bookData('deep') : {};
+      },
+      getBookPlaybackSettings: async () => ({}),
+      overrides: {
+        currentBook: null,
+        chunkPlayer: null,
+        document: { getElementById: () => null },
+        playerStatus: status,
+        showAudioLoading: text => loadingCards.push(text),
+        // The real reporter records the failure on the status model.
+        reportPlaybackFailure(error, options) {
+          failures.push(options);
+          status.set({ state: 'failed', bookId: options.bookId, chapterIndex: options.phase === 'open' ? null : 0, title: 'x', retry: true });
+        }
+      }
+    });
+    assert.strictEqual(await harness.openBook('deep'), false);
+    assert.strictEqual(failures.length, 1, 'the failed open is reported to the card');
+    assert.strictEqual(failures[0].phase, 'open');
+    assert.deepStrictEqual(harness.events.unavailable, ['deep'], 'the player names the book it could not open');
+    assert.strictEqual(status.get().state, 'failed');
+
+    // Retry while the request still fails: a fresh failure is reported (the
+    // card repaints) instead of the status staying silently "failed".
+    await failures[0].retry();
+    assert.strictEqual(failures.length, 2, 'a retry that fails again repaints the card');
+    assert.ok(loadingCards.includes('Opening book…'), 'the retry shows progress while it runs');
+    assert.deepStrictEqual(states.slice(0, 4), ['preparing:null', 'failed:null', 'preparing:null', 'failed:null']);
+
+    // Retry after the server recovers: the book opens.
+    failing = false;
+    await failures[1].retry();
+    assert.strictEqual(failures.length, 2, 'no failure is reported once the book opens');
+    assert.strictEqual(harness.currentBook().id, 'deep', 'the retried book owns the player');
+    assert.strictEqual(status.get().state, 'preparing', 'the old failure no longer owns the player');
+  });
+
+  await test('a failure before commit restores the previous book status', async () => {
+    const { createPlayerStatus } = await import(require('node:url').pathToFileURL(
+      path.join(__dirname, '..', 'public', 'js', 'player-status.mjs')).href);
+    const status = createPlayerStatus();
+    status.set({ state: 'ready', bookId: 'prior', chapterIndex: 0 });
+    const harness = createHarness({
+      apiGet: async () => { throw Object.assign(new Error('not found'), { status: 404 }); },
+      getBookPlaybackSettings: async () => ({}),
+      overrides: { playerStatus: status }
+    });
+    assert.strictEqual(await harness.openBook('missing'), false);
+    assert.strictEqual(status.get().state, 'ready');
+    assert.strictEqual(status.get().bookId, 'prior');
+  });
+
   await test('the real restorePreviousSession discards itself when superseded', async () => {
     const appSource = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
     const sliceStart = appSource.indexOf('let openBookToken = 0;');
@@ -447,7 +521,8 @@ async function run() {
       currentChapter: 0, chunkPlayer: { isPlaying: false },
       bookTitle: element2, bookAuthorHeader: element2, bookDescription: element2,
       rebuildChaptersBtn: element2, bookDetailsText: element2,
-      bookCover: { src: '', alt: '', onerror: null }, chapterSelect: element2,
+      bookCover: { src: '', alt: '', onerror: null, dataset: {} }, chapterSelect: element2,
+      playerView: null,
       setTimeout, clearTimeout
     };
     vm.createContext(ctx);
@@ -489,6 +564,10 @@ async function run() {
     assert.strictEqual(ctx.chapters.length, 1, 'restored chapters are live in state');
     assert.strictEqual(ctx.currentBookPlaybackSettings.playbackSpeed, 2,
       'restoration restores the prior session settings');
+    // One identity renderer: the cover follows the restored book, not just
+    // the title (the failed book's cover used to stay behind).
+    assert.strictEqual(ctx.bookCover.src, '/api/cover/prior', 'restoration repaints the restored cover');
+    assert.strictEqual(ctx.bookCover.alt, 'Cover of T', 'the cover is described as the restored book');
   });
 
   console.log(`\n${passed} passed, ${failed} failed`);

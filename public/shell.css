@@ -10,13 +10,16 @@
                      toasts sit above it
      --shell-left    sidebar width on desktop (0 on phones)               */
 
+/* Docked heights follow the text size. At the default size they resolve to
+   the design values (tab bar 54px, mini player 64px phone / 72px desktop);
+   larger text makes the bars taller instead of overprinting them. */
 body.has-shell {
-  --tabbar-h: calc(54px + var(--safe-bottom));
+  --tabbar-h: calc(max(54px, 36px + var(--leading-footnote)) + var(--safe-bottom));
   --mini-h: 0px;
   --shell-left: 0px;
   --shell-bottom: calc(var(--tabbar-h) + var(--mini-h));
 }
-body.has-shell.has-mini-player { --mini-h: 64px; }
+body.has-shell.has-mini-player { --mini-h: max(64px, 26px + var(--leading-subhead) + var(--leading-footnote)); }
 body.has-shell[data-view="player"],
 body.has-shell[data-view="guide"] { --tabbar-h: var(--safe-bottom); }
 
@@ -50,7 +53,8 @@ body.has-shell #guide-view {
   z-index: 60;
   display: flex;
   justify-content: space-around;
-  height: var(--tabbar-h);
+  height: auto;
+  min-height: var(--tabbar-h);
   padding: 4px max(10px, var(--safe-right)) var(--safe-bottom) max(10px, var(--safe-left));
   background: var(--surface);
   border-top: 1px solid var(--border);
@@ -83,19 +87,24 @@ body[data-view="guide"] .app-tabbar { display: none; }
 
 /* ==================== SIDEBAR (desktop) ==================== */
 
+/* The sidebar replaces the tab bar at 760px and wider, but only on screens
+   at least 500px tall: a phone in landscape (844x390, 915x412) keeps the
+   tab bar and the phone mini player. Rules elsewhere that depend on the
+   sidebar being present use the same query. */
 .app-sidebar { display: none; }
 
-@media (min-width: 760px) {
+@media (min-width: 760px) and (min-height: 500px) {
   body.has-shell {
     --tabbar-h: var(--safe-bottom);
     --shell-left: 232px;
   }
-  body.has-shell.has-mini-player { --mini-h: 72px; }
+  body.has-shell.has-mini-player { --mini-h: max(72px, 30px + var(--leading-body) + var(--leading-subhead)); }
   .app-tabbar { display: none; }
 
   .app-sidebar:not([hidden]) {
     position: fixed;
-    top: 0;
+    /* Clears the fixed offline banner, as #app does (style-v3.css). */
+    top: var(--offline-banner-offset, 0px);
     bottom: 0;
     left: 0;
     z-index: 60;
@@ -157,7 +166,7 @@ body[data-view="guide"] .app-tabbar { display: none; }
   cursor: pointer;
 }
 .app-sidebar-link svg { width: 22px; height: 22px; flex: none; color: var(--text-secondary); }
-.app-sidebar-link:hover { background: var(--surface-2); }
+@media (hover: hover) { .app-sidebar-link:hover { background: var(--surface-2); } }
 .app-sidebar-link.is-on { background: var(--surface-2); font-weight: var(--weight-bold); }
 .app-sidebar-link.is-on svg { color: var(--accent-text); }
 .app-sidebar-count { margin-left: auto; color: var(--text-secondary); font-weight: 500; }
@@ -167,7 +176,8 @@ body[data-view="guide"] .app-tabbar { display: none; }
 
 body.has-shell .mini-player {
   bottom: var(--tabbar-h);
-  height: 64px;
+  height: auto;
+  min-height: var(--mini-h);
   padding: 0;
   background: var(--surface);
   border-top: 1px solid var(--border);
@@ -176,10 +186,10 @@ body.has-shell .mini-player {
   user-select: none;
   -webkit-touch-callout: none;
 }
-@media (min-width: 760px) {
+@media (min-width: 760px) and (min-height: 500px) {
   body.has-shell .mini-player {
     left: var(--shell-left);
-    height: calc(72px + var(--safe-bottom));
+    min-height: calc(var(--mini-h) + var(--safe-bottom));
     padding-bottom: var(--safe-bottom);
   }
 }
@@ -201,6 +211,9 @@ body.has-shell .mini-player-progress {
 }
 
 body.has-shell .mini-player-content {
+  /* Fills the bar (its height less the 1px top border) and grows with it. */
+  height: auto;
+  min-height: calc(var(--mini-h) - 1px);
   gap: 4px;
   padding: 0 max(4px, var(--safe-right)) 0 max(8px, var(--safe-left));
   cursor: default;
@@ -251,7 +264,7 @@ body.has-shell .mini-player-btn {
 }
 body.has-shell .mini-player-btn svg { width: 30px; height: 30px; }
 body.has-shell .mini-player-btn--play svg { width: 26px; height: 26px; }
-body.has-shell .mini-player-btn:hover { background: var(--surface-2); }
+@media (hover: hover) { body.has-shell .mini-player-btn:hover { background: var(--surface-2); } }
 body.has-shell .mini-player-btn .mini-skip-label {
   font-size: var(--text-footnote);
   line-height: 1;
@@ -265,6 +278,25 @@ body.has-shell .mini-player-btn .mini-skip-label {
 body.has-shell .mini-player-btn--secondary { display: none; }
 @media (min-width: 760px) {
   body.has-shell .mini-player-btn--secondary { display: flex; }
+}
+
+/* Wide bar: the book block keeps a readable measure (480px at most) on the
+   left and the transport sits centred in the bar, as in desktop players,
+   instead of a title stretched across the whole content column. */
+@media (min-width: 960px) {
+  body.has-shell .mini-player-content {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) repeat(3, 44px) minmax(0, 1fr);
+    column-gap: 12px;
+    padding: 0 max(16px, var(--safe-right)) 0 max(12px, var(--safe-left));
+  }
+  body.has-shell .mini-player-open { grid-column: 1; max-width: 480px; }
+  body.has-shell #mini-player-back { grid-column: 2; }
+  body.has-shell #mini-player-play { grid-column: 3; }
+  body.has-shell #mini-player-forward { grid-column: 4; }
+  body.has-shell .mini-player-cover { width: 40px; height: 60px; }
+  body.has-shell .mini-player-title { font-size: var(--text-body); line-height: var(--leading-body); }
+  body.has-shell .mini-player-chapter { font-size: var(--text-subhead); line-height: var(--leading-subhead); }
 }
 
 /* ==================== COACH HINT ==================== */
@@ -358,3 +390,28 @@ body.has-shell .mini-player-btn--secondary { display: none; }
   white-space: nowrap;
   pointer-events: none;
 }
+
+/* ==================== SKIP LINK ==================== */
+/* "Skip to player" leads the tab order whenever a player or mini player is
+   on screen; it stays off screen until it has keyboard focus. */
+.skip-link {
+  position: fixed;
+  top: calc(var(--offline-banner-offset, 0px) + max(8px, var(--safe-top)));
+  left: max(8px, var(--safe-left));
+  z-index: 2200;
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 0 16px;
+  border-radius: var(--radius);
+  background: var(--surface-raised);
+  color: var(--text);
+  box-shadow: var(--shadow);
+  font-size: var(--text-subhead);
+  font-weight: var(--weight-semibold);
+  text-decoration: none;
+  transform: translateY(calc(-100% - 64px));
+}
+.skip-link:focus,
+.skip-link:focus-visible { transform: none; }
+.skip-link[hidden] { display: none; }

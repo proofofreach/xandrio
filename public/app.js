@@ -9,11 +9,11 @@ import { initCoverImages } from './js/ui/cover-images.js';
 import { initKeys, onActivate } from './js/ui/keys.js';
 import { registerSheet } from './js/ui/sheets.js';
 import { initBookmarks, renderBookmarksSection, addBookmarkAtCurrentPosition } from './js/features/bookmarks.js';
-import { initOffline, prepareOfflineStorage, renderOfflineState, queuePendingPosition, ensureRollingOfflineWindow, hasOfflineBookData, getOfflineBookData, shouldUseOfflineBookFallback, offlinePlaybackUrl, localChapterSource, markLocalChapterSuspect, classifyLocalChapter, OFFLINE_WORKER_SCRIPT_URL, certifyOfflineWorkerController, offlineWorkerControllerState } from './js/features/offline.js';
+import { initOffline, prepareOfflineStorage, renderOfflineState, queuePendingPosition, ensureRollingOfflineWindow, hasOfflineBookData, getOfflineBookData, shouldUseOfflineBookFallback, offlinePlaybackUrl, localChapterSource, markLocalChapterSuspect, classifyLocalChapter, OFFLINE_WORKER_SCRIPT_URL, certifyOfflineWorkerController, offlineWorkerControllerState, offlineWorkInProgress } from './js/features/offline.js';
 import { initPronunciationRepair } from './js/features/pronunciations.js';
 import { initQueueStatus } from './js/features/queue-status.js';
 import { loadClientSettings, getSkipInterval, isSmartRewindEnabled, isRollingOfflineEnabled } from './js/client-settings.js';
-import { initLibrary, loadLibrary, cacheBookMeta, getRecentInProgress } from './js/views/library.js';
+import { initLibrary, loadLibrary, cacheBookMeta, getRecentInProgress, getLibraryBook } from './js/views/library.js';
 import { initShell, openUploadSection } from './js/ui/shell.js';
 import { initSearch } from './js/views/search.js';
 import { initSettings } from './js/views/settings.js';
@@ -33,6 +33,8 @@ import { applyRewindForResume, createSmartRewindController } from './js/smart-re
 import { initListeningQueue, loadListeningQueue, getListeningQueueBooks, addToListeningQueue, advanceListeningQueue, getBookPlaybackSettings, saveBookPlaybackSettings } from './js/features/listening-queue.js';
 import { initDeploymentGuard } from './js/deployment-origin.js';
 import { createPlaybackHealth, platformClass, sendPlaybackHealthReport } from './js/playback-health.mjs';
+import { startPageExitMonitor } from './js/page-exit-monitor.mjs';
+import { createPlayerStatus, describePlaybackFailure, isPlayerFailureState } from './js/player-status.mjs';
 
 // SVG Icon constants
 const ICON_PLAY = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="icon"><path fill-rule="evenodd" d="M4.5 5.653c0-1.426 1.529-2.33 2.779-1.643l11.54 6.348c1.295.712 1.295 2.572 0 3.285L7.28 19.991c-1.25.687-2.779-.217-2.779-1.643V5.653z" clip-rule="evenodd"/></svg>';
@@ -53,6 +55,49 @@ let chunkedPlayer = null; // Persistent adapter retained under the legacy variab
 let playbackBackend = 'audio-stream';
 let currentBookPlaybackSettings = {};
 const smartRewind = createSmartRewindController();
+// One status model for the open book (idle, preparing, ready, failed,
+// engine-starting). The player card, mini player and Audio Activity read it
+// through the xandrio:playerstatus event; see js/player-status.mjs.
+const playerStatus = createPlayerStatus({
+  onChange: status => {
+    const book = currentBook && String(currentBook.id) === String(status.bookId) ? currentBook : null;
+    if (globalThis.document?.body?.dataset) document.body.dataset.playerStatus = status.state;
+    if (typeof globalThis.CustomEvent !== 'function' || typeof globalThis.document?.dispatchEvent !== 'function') return;
+    document.dispatchEvent(new CustomEvent('xandrio:playerstatus', {
+      detail: {
+        ...status,
+        book: book ? { id: String(book.id), title: book.title || '', author: book.author || '', hasCover: book.hasCover, coverPath: book.coverPath } : null
+      }
+    }));
+  }
+});
+let playerFailureRetry = null;
+
+// Record a failure on the status model with the words the user sees and the
+// action Retry runs. Returns the status.
+function reportPlaybackFailure(error, { phase = 'chapter', retry = null, bookId = currentBook?.id } = {}) {
+  const description = describePlaybackFailure(error, { phase, online: navigator.onLine !== false });
+  playerFailureRetry = typeof retry === 'function' ? retry : null;
+  return playerStatus.set({
+    ...description,
+    bookId: bookId ?? null,
+    chapterIndex: phase === 'open' ? null : currentChapter
+  });
+}
+
+function markPlayerPreparing() {
+  if (!currentBook) return;
+  playerFailureRetry = null;
+  playerStatus.set({ state: 'preparing', bookId: currentBook.id, chapterIndex: currentChapter });
+}
+
+function retryPlayerFailure() {
+  const retry = playerFailureRetry;
+  playerFailureRetry = null;
+  if (retry) return Promise.resolve(retry()).catch(error => console.error('Retry failed:', error));
+  return loadChapter(currentChapter).catch(error => console.error('Retry failed:', error));
+}
+globalThis.document?.addEventListener?.('xandrio:playerretry', () => { void retryPlayerFailure(); });
 
 // API_BASE and sync identity now live in js/api.js
 const PLAYBACK_CHECKPOINT_PREFIX = 'xandrio_playback_checkpoint:';
@@ -770,14 +815,13 @@ function scheduleAutomaticPlaybackRecovery(error, snapshot) {
   const retryAfterSeconds = Number(error?.retryAfterSeconds);
   if (error?.status === 429 || error?.code === 429) {
     cancelPlaybackRecovery();
-    const wait = Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0
-      ? ` Try again in ${Math.ceil(retryAfterSeconds)}s.`
-      : '';
     if (Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0) {
       rateLimitedUntil = Date.now() + retryAfterSeconds * 1000;
     }
-    setPlaybackReliabilityState('resume', 'Playback temporarily rate-limited');
-    showToast(`Playback requests are temporarily limited.${wait}`, 'error');
+    setPlaybackReliabilityState('hidden', '');
+    hideAudioLoading();
+    const limited = reportPlaybackFailure(error, { retry: () => loadChapter(currentChapter) });
+    showToast(`${limited.title}. ${limited.detail}`, 'error', { key: 'player-failure' });
     return true;
   }
 
@@ -886,6 +930,9 @@ function handleChunkError(error) {
     // A stream that went dead mid-playback. Listed explicitly so a downloaded
     // chapter that stalls recovers the same way a continuous one does.
     || error?.code === 'MEDIA_STALLED'
+    // The media element lost its place (currentTime reset without a seek).
+    // The engine reports the real position; reload there.
+    || error?.code === 'MEDIA_STREAM_RESET'
     || error?.code === 'MEDIA_RELOCATE_FAILED'
     // A rate limit is about the account, not the transport: it must be reported
     // even when the engine that failed had not reached continuous playback.
@@ -914,37 +961,47 @@ function handleChunkError(error) {
     }
     return;
   }
-  if (needsReliablePlayback()) {
-    hideAudioLoading();
-    setPlaybackReliabilityState('resume', 'Audio needs attention');
-    return;
-  }
-  // Desktop: surface a recoverable failure instead of silently hiding the
-  // loader. Retry re-runs chapter preparation for the current chapter.
+  // Every platform gets the same inline failure card: the reason in plain
+  // words, Retry, and the instant narrator where it applies. Retry clears a
+  // quarantined chapter on the server and prepares it again; on iPhone the
+  // play button then starts it inside its own tap.
+  const failedBookId = currentBook?.id;
+  const failedChapter = currentChapter;
   const retry = async () => {
+    if (String(currentBook?.id) !== String(failedBookId)) return;
+    // The POST below can outlive a chapter change or another open. Only the
+    // load that is still current when it answers may reload this chapter.
+    const ownerOpenToken = openBookToken;
+    const ownerLoadToken = loadChapterToken;
+    const stillOwned = () => String(currentBook?.id) === String(failedBookId)
+      && openBookToken === ownerOpenToken
+      && loadChapterToken === ownerLoadToken;
     const tier = chunkPlayer?.servedTier;
     const query = tier ? `?tier=${encodeURIComponent(tier)}` : '';
+    markPlayerPreparing();
+    showAudioLoading('Preparing narration…', { indeterminate: true });
     try {
-      await apiSend('POST', `/api/chunks/${encodeURIComponent(currentBook.id)}/${currentChapter}/retry${query}`, {
+      await apiSend('POST', `/api/chunks/${encodeURIComponent(failedBookId)}/${failedChapter}/retry${query}`, {
         targetChunk: chunkPlayer?.currentChunk || 0,
         tier
       });
-      await loadChapter(currentChapter);
     } catch (retryError) {
-      showToast(retryError.message || 'Chapter retry failed', 'error');
+      // The retry endpoint may itself be limited or down; the load below
+      // reports the reason through the same card.
+      console.warn('Chapter retry request failed:', retryError);
     }
+    if (!stillOwned()) return;
+    await loadChapter(failedChapter);
   };
-  setChunkOverlayState('error', {
-    message: "Couldn't load this chapter",
-    detail: 'The audio failed to load. Check your connection and try again.',
-    onRetry: retry,
-    toastKey: 'chapter-load-error'
-  });
-  // Suppressed while the player's inline status shows this error.
-  showToast("Couldn't load audio for this chapter", 'error', { actionLabel: 'Retry', onAction: retry, key: 'chapter-load-error' });
+  setPlaybackReliabilityState('hidden', '');
+  reportPlaybackFailure(error, { retry });
+  // Suppressed while the player's inline card shows it; seen elsewhere (for
+  // example from the library while the mini player plays).
+  showToast("Couldn't play this chapter", 'error', { actionLabel: 'Retry', onAction: retry, key: 'player-failure' });
 }
 
 function handleChunkReady() {
+  if (currentBook) playerStatus.set({ state: 'ready', bookId: currentBook.id, chapterIndex: currentChapter });
   hideAudioLoading();
   updatePlaybackUI();
   updateMediaSessionPosition();
@@ -1124,8 +1181,19 @@ document.addEventListener('DOMContentLoaded', async () => {
     getPlaybackControlState: () => ({
       isPlaying: Boolean(chunkPlayer?.isPlaying),
       preparing: !playbackEngineOwnsReadySource()
+        && !isPlayerFailureState(playerStatus.get().state)
         && Boolean(openingBookId || chapterLoadIntent || isPlaybackSourcePreparing())
     }),
+    getPlayerStatus: () => playerStatus.get(),
+    retryPlayerFailure,
+    // Dismiss on the failure card: the failure is acknowledged, so the mini
+    // player and Audio Activity stop reporting it and later updates paint.
+    dismissPlayerFailure: () => {
+      const status = playerStatus.get();
+      if (!isPlayerFailureState(status.state)) return;
+      playerFailureRetry = null;
+      playerStatus.set({ state: 'idle', bookId: status.bookId, chapterIndex: status.chapterIndex });
+    },
     iconPlay: ICON_PLAY,
     iconPause: ICON_PAUSE,
     loadChapter,
@@ -1822,12 +1890,116 @@ async function restorePreviousSession(previous) {
   // Replace the failed book's hash instead of pushing, so Back does not keep
   // the book that never opened.
   syncPlayerHash(currentBook.id, { replace: true });
-  chapterSelect.value = currentChapter;
-  bookTitle.textContent = currentBook.title || '';
-  updatePlaybackUI(false);
   playbackSession.setBook(currentBook, { chapterIndex: currentChapter, finished: currentBookFinished });
+  // The whole identity, not just the title: the failed book's author, cover,
+  // chapter row and narrator must not stay behind the restored title.
+  renderBookIdentity(currentBook);
+  renderChapterOptions();
+  renderChapterIdentity();
+  loadVoices();
+  void refreshGuideState(currentBook.id);
+  updatePlaybackUI(false);
   await loadRestoredChapter(currentChapter, previous.position);
   return true;
+}
+
+const BLANK_COVER_SRC = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
+
+// The one writer of the player's book identity: title, author, cover and
+// ambient, About this book, and Rebuild chapters. Every path that changes
+// currentBook (open, restore after a failed open, delete) calls it, so the
+// player can never show one book's title over another book's cover.
+function renderBookIdentity(book) {
+  if (!bookTitle) return;
+  const id = book?.id != null ? String(book.id) : '';
+  // Until a book's chapters are loaded the player has no position to show,
+  // so its chapter row, scrubber, transport and tools stay hidden (CSS).
+  if (playerView) playerView.dataset.book = book && book === currentBook ? 'loaded' : 'none';
+  bookTitle.textContent = book?.title || '';
+  bookAuthorHeader.textContent = book?.author || '';
+
+  const cleanDescription = cleanDisplayText(book?.description);
+  if (!book) bookDescription.textContent = '';
+  else if (cleanDescription) bookDescription.textContent = cleanDescription;
+  else if (book.subjects?.length > 0) bookDescription.textContent = book.subjects.slice(0, 5).join(' • ');
+  else bookDescription.textContent = 'No description available from this source.';
+  const detailsParts = [];
+  if (book?.publishedDate) detailsParts.push(`Published: ${book.publishedDate}`);
+  if (book?.publisher) detailsParts.push(`Publisher: ${book.publisher}`);
+  if (book?.language) detailsParts.push(`Language: ${String(book.language).toUpperCase()}`);
+  if (book?.sourceFormat) detailsParts.push(`Source: ${book.sourceFormat}`);
+  bookDetailsText.textContent = detailsParts.join(' • ');
+  if (rebuildChaptersBtn) rebuildChaptersBtn.hidden = !book?.canRebuildChapters;
+
+  if (!id) {
+    bookCover.onerror = null;
+    delete bookCover.dataset.bookId;
+    bookCover.src = BLANK_COVER_SRC;
+    bookCover.alt = '';
+    updatePlayerAmbient(null);
+    return;
+  }
+  bookCover.alt = book.title
+    ? `Cover of ${book.title}${book.author ? ` by ${book.author}` : ''}`
+    : 'Book cover';
+  // Same book with a loaded cover: keep it (no flash). A different book, or a
+  // cover that fell back to the placeholder, loads again.
+  if (bookCover.dataset.bookId === id && bookCover.dataset.coverState === 'loaded') return;
+  const coverUrl = `${API_BASE}/api/cover/${encodeURIComponent(id)}`;
+  bookCover.dataset.bookId = id;
+  bookCover.dataset.coverState = 'loading';
+  bookCover.onload = () => {
+    if (bookCover.dataset.bookId === id && bookCover.src === coverUrl) bookCover.dataset.coverState = 'loaded';
+  };
+  // A missing cover falls back to a lettered placeholder, not a blank.
+  bookCover.onerror = () => {
+    if (bookCover.dataset.bookId !== id) return;
+    bookCover.onerror = null;
+    bookCover.dataset.coverState = 'placeholder';
+    bookCover.src = coverPlaceholderSrc(book.title);
+  };
+  bookCover.src = coverUrl;
+  updatePlayerAmbient(coverUrl);
+}
+
+// A deep link whose book could not be loaded: name it from the library row
+// when the library has it (title, author, cover), otherwise say plainly that
+// the book is unavailable. A library that loads later fills it in.
+function renderUnavailableBookIdentity(bookId) {
+  const paint = () => {
+    const row = getLibraryBook(bookId);
+    renderBookIdentity(row
+      ? { id: bookId, title: row.title || 'Book unavailable', author: row.author || '' }
+      : { id: bookId, title: 'Book unavailable', author: '' });
+    return Boolean(row);
+  };
+  if (paint()) return;
+  document.addEventListener('xandrio:libraryloaded', () => {
+    if (!currentBook && playerView?.dataset.book === 'none' && bookCover?.dataset.bookId === String(bookId)) paint();
+  }, { once: true });
+}
+
+// The hidden chapter <select> mirrors the chapter list (keyboard and tests).
+function renderChapterOptions() {
+  if (!chapterSelect) return;
+  chapterSelect.innerHTML = chapters.map((ch, i) => {
+    // Skip empty dividers/covers in the dropdown
+    if (ch.empty) return '';
+    const prefix = ch.type === 'divider' ? '── ' : '';
+    const dur = formatDuration(ch.estimatedDuration);
+    const durSuffix = dur ? ` (${dur})` : '';
+    return `<option value="${i}">${escapeHTML(prefix + displayChapterTitle(ch, i) + durSuffix)}</option>`;
+  }).join('');
+}
+
+// Everything that names the current chapter: chapter row and list, mini
+// player, lock screen.
+function renderChapterIdentity() {
+  if (chapterSelect) chapterSelect.value = currentChapter;
+  updateChapterTrigger();
+  renderChapterList();
+  syncMiniPlayerInfo();
+  updateMediaSessionMetadata();
 }
 
 async function prioritizeForegroundBook(bookId = currentBook?.id) {
@@ -1876,6 +2048,8 @@ async function clearDeletedBookFromPlayer(bookId) {
   currentBookPlaybackSettings = {};
   currentBookOfflineFallback = false;
   currentBookFinished = false;
+  renderBookIdentity(null);
+  playerStatus.set({ state: 'idle' });
   if ('mediaSession' in navigator) {
     try { navigator.mediaSession.metadata = null; } catch {}
     try { navigator.mediaSession.playbackState = 'none'; } catch {}
@@ -1981,6 +2155,13 @@ async function openBook(bookId, { attempt = null } = {}) {
   openBookController = controller;
   offlineUnavailableOnlineRetry.clear();
   openingBookId = String(bookId);
+  // A new open intent replaces any earlier failure, so this open's own
+  // outcome (the card, or a playable player) is always painted. The status
+  // before it is kept for a failure that leaves the previous book in place.
+  const statusBeforeOpen = playerStatus.get();
+  const retryBeforeOpen = playerFailureRetry;
+  playerFailureRetry = null;
+  playerStatus.set({ state: 'preparing', bookId: String(bookId), chapterIndex: null });
   try {
     // Fire-and-forget hint: mutates no player state, so it is safe to send
     // before the open is known to succeed. The server drops the preference
@@ -2103,78 +2284,24 @@ async function openBook(bookId, { attempt = null } = {}) {
       });
     }
 
-    // Display book title
-    bookTitle.textContent = currentBook.title;
+    // Identity (title, author, cover, details, chapter options) is written
+    // here, before the position await, through the one renderer every path
+    // that changes currentBook uses.
+    renderBookIdentity(currentBook);
+    renderChapterOptions();
 
-    // Display author in header (compact)
-    if (currentBook.author) {
-      bookAuthorHeader.textContent = currentBook.author;
-    } else {
-      bookAuthorHeader.textContent = '';
-    }
-
-    // Display description if available
-    const cleanDescription = cleanDisplayText(currentBook.description);
-    if (cleanDescription) {
-      bookDescription.textContent = cleanDescription;
-    } else if (currentBook.subjects && currentBook.subjects.length > 0) {
-      bookDescription.textContent = currentBook.subjects.slice(0, 5).join(' • ');
-    } else {
-      bookDescription.textContent = 'No description available from this source.';
-    }
-
-    // Display additional details (publisher, year, etc.)
-    const detailsParts = [];
-    if (currentBook.publishedDate) {
-      detailsParts.push(`Published: ${currentBook.publishedDate}`);
-    }
-    if (currentBook.publisher) {
-      detailsParts.push(`Publisher: ${currentBook.publisher}`);
-    }
-    if (currentBook.language) {
-      detailsParts.push(`Language: ${currentBook.language.toUpperCase()}`);
-    }
-    if (currentBook.sourceFormat) {
-      detailsParts.push(`Source: ${currentBook.sourceFormat}`);
-    }
-    if (rebuildChaptersBtn) rebuildChaptersBtn.hidden = !currentBook.canRebuildChapters;
-    
-    if (detailsParts.length > 0) {
-      bookDetailsText.textContent = detailsParts.join(' • ');
-    } else {
-      bookDetailsText.textContent = '';
-    }
-    
-    // Load book cover
-    const coverUrl = `${API_BASE}/api/cover/${encodeURIComponent(bookId)}`;
-    bookCover.src = coverUrl;
-    bookCover.alt = `Cover of ${currentBook.title} by ${currentBook.author}`;
-
-    // Handle cover load error gracefully — fall back to a lettered placeholder
-    // instead of hiding the cover entirely.
-    bookCover.onerror = () => {
-      if (token !== openBookToken) return;
-      bookCover.onerror = null;
-      bookCover.src = coverPlaceholderSrc(nextBook.title);
-      console.log('No cover available for this book');
-    };
-    updatePlayerAmbient(coverUrl);
-
-    // Populate chapter select
-    chapterSelect.innerHTML = chapters.map((ch, i) => {
-      // Skip empty dividers/covers in the dropdown
-      if (ch.empty) return '';
-      // Dim non-content types (backmatter, etc.)
-      const prefix = ch.type === 'divider' ? '── ' : '';
-      const dur = formatDuration(ch.estimatedDuration);
-      const durSuffix = dur ? ` (${dur})` : '';
-      return `<option value="${i}">${escapeHTML(prefix + displayChapterTitle(ch, i) + durSuffix)}</option>`;
-    }).join('');
-    
     const storedLocalCheckpoint = getLocalPlaybackCheckpoint(bookId);
     const localCheckpoint = positionMatchesChapterStructure(storedLocalCheckpoint, currentBook)
       ? storedLocalCheckpoint
       : null;
+    // Name a chapter of this book (not the outgoing one) while the server
+    // position is awaited; the freshest position below replaces it.
+    playbackSession.setBook(currentBook, {
+      chapterIndex: Math.max(0, Math.min(chapters.length - 1,
+        Number(localCheckpoint?.chapterIndex ?? findPreferredStartChapterIndex(chapters)) || 0)),
+      finished: false
+    });
+    renderChapterIdentity();
     const positionData = await positionPromise;
     if (token !== openBookToken || currentBook?.id !== nextBook.id) return false;
 
@@ -2202,12 +2329,8 @@ async function openBook(bookId, { attempt = null } = {}) {
       chapterIndex: chapterToLoad,
       finished: currentBookFinished
     });
-    chapterSelect.value = currentChapter;
-    updateChapterTrigger();
-    renderChapterList();
-    syncMiniPlayerInfo();
+    renderChapterIdentity();
     renderOfflineState();
-    updateMediaSessionMetadata();
 
     showView('player');
     loadVoices();
@@ -2237,20 +2360,74 @@ async function openBook(bookId, { attempt = null } = {}) {
   } catch (err) {
     if (token !== openBookToken) return false;
     console.error('Failed to open book:', err);
-    // Same key as the player's inline failure card: the card says it already.
-    showToast("Couldn't open book", 'error', { key: 'chapter-load-error' });
     const snapshot = previousSession?.token === token ? previousSession : null;
     previousSession = previousSession && previousSession.token !== token ? previousSession : null;
+    const committed = String(currentBook?.id ?? '') === String(bookId);
+    const failedTitle = committed ? currentBook?.title : '';
     if (snapshot && snapshot.token === token) {
       // Restore the interrupted session: reload the previous book's player
       // state without re-entering openBook (which would rewrite history).
       // Awaited and token-guarded so a slow restore can never overwrite a
-      // newer open that starts while it runs.
+      // newer open that starts while it runs. The restored book owns the
+      // card, so the failed open is reported once, as a toast.
+      let restored = false;
       try {
-        await restorePreviousSession(snapshot);
+        restored = await restorePreviousSession(snapshot);
       } catch (restoreError) {
         console.error('Failed to restore previous playback session:', restoreError);
       }
+      if (token !== openBookToken) return false;
+      // A restored book whose own chapter then failed is still restored: its
+      // identity is back and its card states that chapter's failure.
+      restored = restored || String(currentBook?.id ?? '') === String(snapshot.bookId);
+      if (restored) {
+        showToast(failedTitle ? `Couldn't open ${failedTitle}` : "Couldn't open that book", 'error', { key: 'player-open-failed' });
+        return false;
+      }
+    }
+    if (committed || !currentBook) {
+      // Deep link, or the opened book failed to load its chapter: this book
+      // owns the player, so the inline card states the reason and offers
+      // Retry. A chapter failure has already reported a more specific one.
+      if (!currentBook) {
+        renderUnavailableBookIdentity(bookId);
+        // No chapters were loaded: the chapter row must not keep placeholder
+        // text that looks like a position.
+        for (const id of ['chapter-trigger-ordinal', 'chapter-trigger-title']) {
+          const el = document.getElementById(id);
+          if (el) el.textContent = '';
+        }
+        showView('player');
+      }
+      if (!playerStatus.isFailedFor(bookId, currentChapter)) {
+        hideAudioLoading();
+        reportPlaybackFailure(err, {
+          phase: committed ? 'chapter' : 'open',
+          bookId,
+          retry: committed ? () => loadChapter(currentChapter) : () => {
+            // openBook resets the status synchronously (the card steps
+            // aside), then this card says the open is under way. Its outcome
+            // repaints: the failure card again, or the loaded player.
+            const opening = openBook(bookId);
+            showAudioLoading('Opening book…', { indeterminate: true });
+            return opening;
+          }
+        });
+      }
+      // Suppressed while the card is on screen.
+      showToast("Couldn't open this book", 'error', { key: 'player-failure' });
+    } else {
+      // The fetch failed before this open took over: the previous book is
+      // still loaded, so keep its identity and route and say so briefly.
+      if (playerView?.classList.contains('active')) syncPlayerHash(currentBook.id, { replace: true });
+      else if (/^#\/player\//.test(window.location?.hash || '')) navigateTo('library', null, { replace: true });
+      renderBookIdentity(currentBook);
+      // The previous book's own status (a failure card, or ready) returns.
+      playerStatus.set(statusBeforeOpen);
+      // With its own Retry: a quarantined chapter needs the retry POST, not a
+      // plain reload, to clear the server's circuit breaker.
+      playerFailureRetry = retryBeforeOpen;
+      showToast("Couldn't open that book", 'error', { key: 'player-open-failed' });
     }
     return false;
   } finally {
@@ -2420,6 +2597,8 @@ async function loadChapterWithIntent(index, options) {
   syncMiniPlayerInfo();
   updateMediaSessionMetadata();
 
+  // A new load intent replaces any failure for this book.
+  markPlayerPreparing();
   // Show loading indicator immediately
   showAudioLoading(`Loading: ${displayChapterTitle(chapter, currentChapter)}...`);
 
@@ -2809,13 +2988,9 @@ function recoverIdleUnreadyPlayback() {
   if (isPlaybackSourcePreparing()) return;
   if (Date.now() < rateLimitedUntil) {
     const wait = Math.ceil((rateLimitedUntil - Date.now()) / 1000);
-    setPlaybackReliabilityState('resume', 'Playback temporarily rate-limited');
-    showToast(
-      wait > 0
-        ? `Playback requests are temporarily limited. Try again in ${wait}s.`
-        : 'Playback requests are temporarily limited.',
-      'error'
-    );
+    setPlaybackReliabilityState('hidden', '');
+    const limited = reportPlaybackFailure({ status: 429, retryAfterSeconds: wait }, { retry: () => loadChapter(currentChapter) });
+    showToast(`${limited.title}. ${limited.detail}`, 'error', { key: 'player-failure' });
     return;
   }
   const snapshot = retainRecoverySnapshot({
@@ -2999,10 +3174,13 @@ function scheduleServerPositionSave(delay = 800) {
 function updateMediaSessionMetadata() {
   if (!('mediaSession' in navigator) || !('MediaMetadata' in window) || !currentBook) return;
   const chapter = chapters[currentChapter];
+  // Lock screen order follows Apple Books and Audible: the book is the title,
+  // the line under it is "chapter · author".
+  const chapterName = chapter ? displayChapterTitle(chapter, currentChapter) : '';
   navigator.mediaSession.metadata = new MediaMetadata({
-    title: chapter ? displayChapterTitle(chapter, currentChapter) : currentBook.title,
-    artist: currentBook.author || 'Unknown Author',
-    album: currentBook.title || 'Xandrio',
+    title: currentBook.title || 'Xandrio',
+    artist: [chapterName, currentBook.author].filter(Boolean).join(' · ') || 'Unknown Author',
+    album: currentBook.author || currentBook.title || 'Xandrio',
     artwork: [{ src: `${API_BASE}/api/cover/${encodeURIComponent(currentBook.id)}`, sizes: '512x512', type: 'image/jpeg' }]
   });
 }
@@ -3110,6 +3288,22 @@ function setupMediaSessionHandlers() {
 }
 
 function setupLifecycleHandlers() {
+  // Installed app only: it runs as one instance, so a live heartbeat from a
+  // second browser tab cannot be mistaken for a crashed session.
+  const standalone = navigator.standalone === true || Boolean(window.matchMedia?.('(display-mode: standalone)')?.matches);
+  if (standalone) {
+    startPageExitMonitor({
+      isPlaying: () => Boolean(chunkPlayer?.isPlaying),
+      offlineWork: offlineWorkInProgress,
+      report: exitType => sendPlaybackHealthReport({
+        v: 1,
+        platform: platformClass(navigator.userAgent, navigator.maxTouchPoints),
+        standalone: true,
+        backend: 'unknown',
+        errors: { [exitType]: 1 }
+      }, { apiBase: API_BASE })
+    });
+  }
   document.addEventListener('visibilitychange', () => {
     recordPlaybackEvent({
       type: 'visibilitychange',
