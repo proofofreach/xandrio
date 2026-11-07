@@ -81,7 +81,13 @@ async function main() {
     hungManifestBodies: new Set(),
     oversizedManifestBodies: new Set(),
     postResponses: new Map(),
-    manifestResponses: new Map()
+    manifestResponses: new Map(),
+    failAudio: new Set(),
+    manifestRequests: new Map(),
+    heldAudio: new Set(),
+    audioResponses: new Map(),
+    audioConflicts: new Map(),
+    conflictBumpsRevision: new Set()
   };
   const getFixture = bookId => {
     if (!state.fixtures.has(bookId)) state.fixtures.set(bookId, fixture(bookId));
@@ -124,6 +130,7 @@ async function main() {
     const manifestMatch = url.pathname.match(/^\/api\/offline\/preparation\/([^/]+)\/manifest$/);
     if (manifestMatch && request.method === 'GET') {
       const bookId = decodeURIComponent(manifestMatch[1]);
+      state.manifestRequests.set(bookId, (state.manifestRequests.get(bookId) || 0) + 1);
       if (state.oversizedManifestBodies.has(bookId)) {
         response.writeHead(200, { 'Content-Type': 'application/json' });
         response.write('{"padding":"');
@@ -151,38 +158,67 @@ async function main() {
     const postMatch = url.pathname.match(/^\/api\/offline\/preparation\/([^/]+)(?:\/window)?$/);
     if (postMatch && request.method === 'POST') {
       const bookId = decodeURIComponent(postMatch[1]);
-      state.posts.push({ bookId, deviceId: request.headers['x-xandrio-device-id'] || '' });
-      if (state.heldPosts.has(bookId)) {
-        const responses = state.postResponses.get(bookId) || [];
-        responses.push(response);
-        state.postResponses.set(bookId, responses);
-        return;
-      }
-      response.writeHead(202, { 'Content-Type': 'application/json' });
-      return response.end('{}');
+      let body = '';
+      request.on('data', chunk => { body += chunk; });
+      return request.on('end', () => {
+        let parsed = null;
+        try { parsed = JSON.parse(body || '{}'); } catch {}
+        state.posts.push({
+          bookId, path: url.pathname, body: parsed,
+          deviceId: request.headers['x-xandrio-device-id'] || ''
+        });
+        if (state.heldPosts.has(bookId)) {
+          const responses = state.postResponses.get(bookId) || [];
+          responses.push(response);
+          state.postResponses.set(bookId, responses);
+          return;
+        }
+        response.writeHead(202, { 'Content-Type': 'application/json' });
+        response.end('{}');
+      });
     }
     const audioMatch = url.pathname.match(/^\/api\/offline\/audio\/([^/]+)\/0$/);
     if (audioMatch) {
       const bookId = decodeURIComponent(audioMatch[1]);
-      const item = getFixture(bookId);
       state.audioRequests.push(bookId);
-      const range = /^bytes=(\d+)-(\d+)$/.exec(request.headers.range || '');
-      if (!range || request.headers['if-range'] !== item.descriptor.etag) {
+      if (state.failAudio.has(bookId)) return response.writeHead(503).end();
+      const conflicts = state.audioConflicts.get(bookId) || 0;
+      if (conflicts > 0) {
+        // The package changed between the descriptor and this transfer.
+        const item = getFixture(bookId);
+        state.audioConflicts.set(bookId, conflicts - 1);
+        if (state.conflictBumpsRevision.has(bookId)) {
+          item.manifest.revision = `${item.manifest.revision.split('~')[0]}~${state.audioRequests.length}`;
+        }
         return response.writeHead(409).end();
       }
-      const start = Number(range[1]);
-      const end = Math.min(Number(range[2]), item.bytes.length - 1);
-      const body = item.bytes.subarray(start, end + 1);
-      response.writeHead(206, {
-        'Content-Type': 'audio/mpeg',
-        'Content-Length': body.length,
-        'Content-Range': `bytes ${start}-${end}/${item.bytes.length}`,
-        ETag: item.descriptor.etag
-      });
-      return response.end(body);
+      if (state.heldAudio.has(bookId)) {
+        const held = state.audioResponses.get(bookId) || [];
+        held.push(() => serveAudio(request, response, bookId));
+        state.audioResponses.set(bookId, held);
+        return;
+      }
+      return serveAudio(request, response, bookId);
     }
     response.writeHead(404).end();
   });
+  function serveAudio(request, response, bookId) {
+    const item = getFixture(bookId);
+    const range = /^bytes=(\d+)-(\d+)$/.exec(request.headers.range || '');
+    if (!range || request.headers['if-range'] !== item.descriptor.etag) {
+      return response.writeHead(409).end();
+    }
+    const start = Number(range[1]);
+    const end = Math.min(Number(range[2]), item.bytes.length - 1);
+    const body = item.bytes.subarray(start, end + 1);
+    response.writeHead(206, {
+      'Content-Type': 'audio/mpeg',
+      'Content-Length': body.length,
+      'Content-Range': `bytes ${start}-${end}/${item.bytes.length}`,
+      ETag: item.descriptor.etag
+    });
+    return response.end(body);
+  }
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const origin = `http://127.0.0.1:${server.address().port}`;
   const browser = await chromium.launch({ headless: true });
@@ -579,7 +615,9 @@ async function main() {
         let calls = 0;
         __device.store.finalizeTitle = async (...args) => {
           calls++;
-          if (calls === 1) throw new Error('Offline storage fence is stale');
+          if (calls === 1) {
+            throw Object.assign(new Error('Offline storage fence is stale'), { code: 'OFFLINE_LEASE_LOST' });
+          }
           return original(...args);
         };
         const ok = await Promise.race([
@@ -589,6 +627,517 @@ async function main() {
         return { ok, calls, state: __device.snapshot()[entry.bookId].state };
       }, entry('finalize-book'));
       assert.deepStrictEqual(result, { ok: true, calls: 2, state: 'ready' });
+    } finally {
+      await page.evaluate(() => __device.close());
+      await context.close();
+    }
+  });
+
+  const readLocalStatus = (page, localUrl) => page.evaluate(async localUrl => {
+    const response = await XandrioOfflineStore.createAudioResponse(
+      new Request(localUrl, { headers: { Range: 'bytes=0-1' } }),
+      { store: __device.store, workerVersion: 'test-worker', contractVersion: 2 }
+    );
+    return response.status;
+  }, localUrl);
+
+  const postsFor = bookId => state.posts.filter(call => call.bookId === bookId);
+
+  await test('finishes a paused and retried update without leaving its replacement revision behind', async () => {
+    const context = await browser.newContext();
+    const page = await makePage(context, 'retry-update');
+    const id = 'retry-update-book';
+    try {
+      const seed = entry(id);
+      assert.strictEqual(await page.evaluate(async seed => __device.startFull(
+        seed.titleData.book, seed.titleData.chapters, seed
+      ), seed), true);
+      const update = fixture(id, 'source-v2', 7);
+      update.manifest.chapters = [update.descriptor];
+      state.fixtures.set(id, update);
+      state.heldManifests.add(id);
+      await page.evaluate(seed => {
+        globalThis.__updateCompletion = __device.startFull(seed.titleData.book, seed.titleData.chapters, seed);
+      }, seed);
+      await waitFor(() => state.manifestResponses.has(id));
+      await page.evaluate(id => __device.pause(id), id);
+      state.heldManifests.delete(id);
+      releaseManifest(id);
+      // offline.js preparationEntry spreads the visible entry, replacement included.
+      const retry = await page.evaluate(id => ({ ...__device.snapshot()[id], state: 'preparing' }), id);
+      assert(retry.replacement, 'the paused update must publish its replacement');
+      assert.strictEqual(await page.evaluate(async retry => __device.startFull(
+        retry.titleData.book, retry.titleData.chapters, retry
+      ), retry), true);
+      const finished = await page.evaluate(id => __device.snapshot()[id], id);
+      assert.strictEqual(finished.replacement, undefined);
+      assert.strictEqual(finished.sourceRevision, 'source-v2');
+
+      const second = fixture(id, 'source-v3', 20);
+      second.manifest.chapters = [second.descriptor];
+      state.fixtures.set(id, second);
+      state.failAudio.add(id);
+      const next = await page.evaluate(id => ({ ...__device.snapshot()[id], state: 'preparing' }), id);
+      assert.strictEqual(await page.evaluate(async next => __device.startFull(
+        next.titleData.book, next.titleData.chapters, next
+      ), next), false);
+      const interrupted = await page.evaluate(id => __device.snapshot()[id], id);
+      assert.strictEqual(interrupted.revision, finished.revision);
+      assert.notStrictEqual(interrupted.replacement.storageRevision, finished.revision);
+      assert.strictEqual(await readLocalStatus(page, finished.chapterEntries[0].localUrl), 206);
+    } finally {
+      state.failAudio.delete(id);
+      state.heldManifests.delete(id);
+      releaseManifest(id);
+      await page.evaluate(() => __device.close());
+      await context.close();
+    }
+  });
+
+  const releaseAudio = bookId => {
+    state.heldAudio.delete(bookId);
+    const held = state.audioResponses.get(bookId) || [];
+    state.audioResponses.delete(bookId);
+    for (const replay of held) replay();
+  };
+  const withTimeout = (promise, ms, label) => Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error(`${label} timeout`)), ms))
+  ]);
+  // Another tab that takes over an expired lease writes this control record.
+  const writeLeaseRecord = (page, value) => page.evaluate(value => new Promise((resolve, reject) => {
+    const open = indexedDB.open('xandrio-offline-v4');
+    open.onerror = () => reject(open.error);
+    open.onsuccess = () => {
+      const tx = open.result.transaction(['control'], 'readwrite');
+      if (value) tx.objectStore('control').put({ key: 'lease', value: { ...value, expiresAt: Date.now() + 60_000 } });
+      else tx.objectStore('control').delete('lease');
+      tx.oncomplete = () => { open.result.close(); resolve(); };
+      tx.onerror = () => reject(tx.error);
+    };
+  }), value);
+
+  await test('keeps downloading through repeated package changes in one session', async () => {
+    const bookId = 'changing-package-book';
+    getFixture(bookId);
+    state.audioConflicts.set(bookId, 3);
+    state.conflictBumpsRevision.add(bookId);
+    const context = await browser.newContext();
+    const page = await makePage(context, 'changing-package');
+    try {
+      const ok = await withTimeout(page.evaluate(async seed => __device.startFull(
+        seed.titleData.book, seed.titleData.chapters, seed
+      ), entry(bookId)), 8000, 'package change');
+      const snapshot = await page.evaluate(id => __device.snapshot()[id], bookId);
+      assert.strictEqual(ok, true, JSON.stringify({ state: snapshot?.state, autoResume: snapshot?.autoResume }));
+      assert.strictEqual(snapshot.state, 'ready');
+    } finally {
+      state.audioConflicts.delete(bookId);
+      state.conflictBumpsRevision.delete(bookId);
+      await page.evaluate(() => __device.close());
+      await context.close();
+    }
+  });
+
+  await test('finishes an update resumed after a relaunch without leaving its replacement behind', async () => {
+    const context = await browser.newContext();
+    const id = 'relaunch-update-book';
+    let page = await makePage(context, 'relaunch-update');
+    try {
+      const seed = entry(id);
+      assert.strictEqual(await page.evaluate(async seed => __device.startFull(
+        seed.titleData.book, seed.titleData.chapters, seed
+      ), seed), true);
+      const update = fixture(id, 'source-v2', 7);
+      update.manifest.chapters = [update.descriptor];
+      state.fixtures.set(id, update);
+      state.heldManifests.add(id);
+      page.evaluate(seed => {
+        globalThis.__updateCompletion = __device.startFull(seed.titleData.book, seed.titleData.chapters, seed);
+      }, seed);
+      await waitFor(() => state.manifestResponses.has(id));
+      await page.evaluate(() => __device.close());
+      await page.close();
+      state.heldManifests.delete(id);
+      releaseManifest(id);
+      page = await makePage(context, 'relaunch-update');
+      await page.waitForFunction(id => {
+        const item = __device.snapshot()[id];
+        return item?.sourceRevision === 'source-v2' && item.autoResume === false;
+      }, id, { timeout: 8000 });
+      assert.strictEqual(await page.evaluate(id => __device.snapshot()[id].replacement, id), undefined);
+    } finally {
+      state.heldManifests.delete(id);
+      releaseManifest(id);
+      await page.evaluate(() => __device.close()).catch(() => {});
+      await context.close();
+    }
+  });
+
+  await test('stops refreshing a descriptor that conflicts without changing', async () => {
+    const bookId = 'stuck-package-book';
+    getFixture(bookId);
+    state.audioConflicts.set(bookId, Infinity);
+    const context = await browser.newContext();
+    const page = await makePage(context, 'stuck-package');
+    try {
+      const ok = await withTimeout(page.evaluate(async seed => __device.startFull(
+        seed.titleData.book, seed.titleData.chapters, seed
+      ), entry(bookId)), 8000, 'stuck package');
+      assert.strictEqual(ok, false);
+      const snapshot = await page.evaluate(id => __device.snapshot()[id], bookId);
+      assert.strictEqual(snapshot.state, 'refreshing');
+      assert.strictEqual(snapshot.autoResume, false);
+      assert(state.audioRequests.filter(id => id === bookId).length <= 2);
+    } finally {
+      state.audioConflicts.delete(bookId);
+      await page.evaluate(() => __device.close());
+      await context.close();
+    }
+  });
+
+  await test('does not relaunch a finished update whose playback probe once failed', async () => {
+    const context = await browser.newContext();
+    const id = 'probe-update-book';
+    let page = await makePage(context, 'probe-update');
+    try {
+      const seed = entry(id);
+      assert.strictEqual(await page.evaluate(async seed => __device.startFull(
+        seed.titleData.book, seed.titleData.chapters, seed
+      ), seed), true);
+      const update = fixture(id, 'source-v2', 7);
+      update.manifest.chapters = [update.descriptor];
+      state.fixtures.set(id, update);
+      await page.evaluate(() => { globalThis.__probeFailures = 1; });
+      page.evaluate(seed => {
+        globalThis.__updateCompletion = __device.startFull(seed.titleData.book, seed.titleData.chapters, seed);
+      }, seed);
+      await page.waitForFunction(id => __device.snapshot()[id]?.replacement?.state === 'verifying', id, { timeout: 8000 });
+      await page.evaluate(() => __device.close());
+      await page.close();
+      page = await makePage(context, 'probe-update');
+      await page.waitForFunction(id => {
+        const item = __device.snapshot()[id];
+        return item?.sourceRevision === 'source-v2' && item.autoResume === false;
+      }, id, { timeout: 8000 });
+      assert.strictEqual(await page.evaluate(id => __device.snapshot()[id].replacement, id), undefined);
+      await page.evaluate(() => __device.close());
+      await page.close();
+      const before = postsFor(id).length;
+      page = await makePage(context, 'probe-update');
+      await new Promise(resolve => setTimeout(resolve, 1500));
+      assert.strictEqual(postsFor(id).length, before);
+    } finally {
+      await page.evaluate(() => __device.close()).catch(() => {});
+      await context.close();
+    }
+  });
+
+  await test('bounds refreshes while a package keeps changing without progress', async () => {
+    const bookId = 'churning-package-book';
+    getFixture(bookId);
+    state.audioConflicts.set(bookId, Infinity);
+    state.conflictBumpsRevision.add(bookId);
+    const context = await browser.newContext();
+    const page = await makePage(context, 'churning-package');
+    try {
+      const ok = await withTimeout(page.evaluate(async seed => __device.startFull(
+        seed.titleData.book, seed.titleData.chapters, seed
+      ), entry(bookId)), 8000, 'churning package');
+      assert.strictEqual(ok, false);
+      const requests = state.audioRequests.filter(id => id === bookId).length;
+      assert(requests > 2 && requests <= 9, `audio requests: ${requests}`);
+    } finally {
+      state.audioConflicts.delete(bookId);
+      state.conflictBumpsRevision.delete(bookId);
+      await page.evaluate(() => __device.close());
+      await context.close();
+    }
+  });
+
+  await test('ignores a stored replacement that names the active revision', async () => {
+    const context = await browser.newContext();
+    const id = 'stale-replacement-book';
+    let page = await makePage(context, 'stale-replacement');
+    try {
+      const seed = entry(id);
+      assert.strictEqual(await page.evaluate(async seed => __device.startFull(
+        seed.titleData.book, seed.titleData.chapters, seed
+      ), seed), true);
+      const ready = await page.evaluate(async id => {
+        const item = __device.snapshot()[id];
+        const store = __device.store;
+        const lease = await store.acquireLease('stale-writer');
+        const fence = await store.captureFence(lease, 'stale-replacement', id);
+        await store.saveTitle('stale-replacement', {
+          ...item,
+          replacement: {
+            storageRevision: item.revision, sourceRevision: item.sourceRevision,
+            state: 'verifying', probeRetryable: true
+          }
+        }, fence);
+        await store.releaseLease(lease);
+        return item;
+      }, id);
+      await page.evaluate(() => __device.close());
+      await page.close();
+      const before = postsFor(id).length;
+      page = await makePage(context, 'stale-replacement');
+      await new Promise(resolve => setTimeout(resolve, 1500));
+      assert.strictEqual(postsFor(id).length, before);
+
+      const update = fixture(id, 'source-v2', 7);
+      update.manifest.chapters = [update.descriptor];
+      state.fixtures.set(id, update);
+      state.failAudio.add(id);
+      const next = await page.evaluate(id => ({ ...__device.snapshot()[id], state: 'preparing' }), id);
+      assert.strictEqual(await page.evaluate(async next => __device.startFull(
+        next.titleData.book, next.titleData.chapters, next
+      ), next), false);
+      const interrupted = await page.evaluate(id => __device.snapshot()[id], id);
+      assert.notStrictEqual(interrupted.replacement.storageRevision, ready.revision);
+      assert.strictEqual(await readLocalStatus(page, ready.chapterEntries[0].localUrl), 206);
+    } finally {
+      state.failAudio.delete(id);
+      await page.evaluate(() => __device.close()).catch(() => {});
+      await context.close();
+    }
+  });
+
+  await test('keeps a title playable when another title wrote the same shared artifact', async () => {
+    const shared = fixture('shared-a', 'source-v1', 31);
+    const other = fixture('shared-b', 'source-v1', 31);
+    other.descriptor.url = '/api/offline/audio/shared-b/0';
+    assert.strictEqual(shared.descriptor.artifactId, other.descriptor.artifactId);
+    state.fixtures.set('shared-a', shared);
+    state.fixtures.set('shared-b', other);
+    state.heldAudio.add('shared-a');
+    const context = await browser.newContext();
+    const page = await makePage(context, 'shared');
+    try {
+      await page.evaluate(seed => {
+        globalThis.__sharedA = __device.startFull(seed.titleData.book, seed.titleData.chapters, seed);
+      }, entry('shared-a'));
+      await waitFor(() => state.audioResponses.has('shared-a'));
+      assert.strictEqual(await page.evaluate(seed => __device.startFull(
+        seed.titleData.book, seed.titleData.chapters, seed
+      ), entry('shared-b')), true);
+      releaseAudio('shared-a');
+      assert.strictEqual(await page.evaluate(() => __sharedA), true);
+      const result = await page.evaluate(async () => {
+        const read = async localUrl => {
+          const response = await XandrioOfflineStore.createAudioResponse(
+            new Request(localUrl, { headers: { Range: 'bytes=0-1' } }),
+            { store: __device.store, workerVersion: 'test-worker', contractVersion: 2 }
+          );
+          return response.status;
+        };
+        const localUrl = __device.snapshot()['shared-b'].chapterEntries[0].localUrl;
+        const beforeRemove = await read(localUrl);
+        await __device.remove('shared-a');
+        return { beforeRemove, afterRemove: await read(localUrl) };
+      });
+      assert.deepStrictEqual(result, { beforeRemove: 206, afterRemove: 206 });
+    } finally {
+      releaseAudio('shared-a');
+      await page.evaluate(() => __device.close());
+      await context.close();
+    }
+  });
+
+  await test('posts the full preparation intent when a full download reuses a rolling job', async () => {
+    const context = await browser.newContext();
+    const id = 'rolling-to-full-book';
+    const page = await makePage(context, 'rolling-to-full');
+    try {
+      const seed = { ...entry(id), mode: 'rolling', state: 'partial' };
+      state.heldPosts.add(id);
+      page.evaluate(seed => {
+        globalThis.__windowCompletion = __device.startWindow(seed.titleData.book, seed.titleData.chapters, seed, [0], 0);
+      }, seed);
+      await waitFor(() => postsFor(id).length === 1);
+      page.evaluate(seed => {
+        globalThis.__fullCompletion = __device.startFull(
+          seed.titleData.book, seed.titleData.chapters, { ...seed, mode: 'full', state: 'preparing' }
+        );
+      }, seed);
+      await page.waitForFunction(id => __device.snapshot()[id]?.mode === 'full', id);
+      state.heldPosts.delete(id);
+      release(state.postResponses, id);
+      assert.strictEqual(await page.evaluate(() => Promise.race([
+        __fullCompletion,
+        new Promise((_, reject) => setTimeout(() => reject(new Error('full completion timeout')), 5000))
+      ])), true);
+      assert.deepStrictEqual(postsFor(id).map(call => call.path), [
+        `/api/offline/preparation/${id}/window`,
+        `/api/offline/preparation/${id}`
+      ]);
+    } finally {
+      state.heldPosts.delete(id);
+      release(state.postResponses, id);
+      await page.evaluate(() => __device.close()).catch(() => {});
+      await context.close();
+    }
+  });
+
+  await test('a stale tab cannot replace a newer title revision when it invalidates a chapter', async () => {
+    const bookId = 'stale-tab-book';
+    const context = await browser.newContext();
+    const writer = await makePage(context, 'stale-tab');
+    let stale;
+    try {
+      assert.strictEqual(await writer.evaluate(seed => __device.startFull(
+        seed.titleData.book, seed.titleData.chapters, seed
+      ), entry(bookId)), true);
+      stale = await makePage(context, 'stale-tab');
+      const oldRevision = await stale.evaluate(id => __device.snapshot()[id].revision, bookId);
+      // The writer tab deletes the title, starts it again, and pauses it.
+      state.heldManifests.add(bookId);
+      await writer.evaluate(async seed => {
+        await __device.remove(seed.bookId);
+        globalThis.__restart = __device.startFull(seed.titleData.book, seed.titleData.chapters, seed);
+      }, entry(bookId));
+      await waitFor(() => state.manifestResponses.has(bookId));
+      await writer.evaluate(id => __device.pause(id), bookId);
+      const newer = await writer.evaluate(async id => (await __device.store.listTitles('stale-tab'))[id], bookId);
+      assert.strictEqual(newer.state, 'paused');
+      assert.notStrictEqual(newer.revision, oldRevision);
+      await writer.evaluate(() => __device.close());
+      const result = await stale.evaluate(async id => {
+        const changed = await __device.invalidateChapter(id, 0);
+        const active = (await __device.store.listTitles('stale-tab'))[id];
+        return {
+          changed,
+          active: { revision: active?.revision, state: active?.state },
+          snapshot: __device.snapshot()[id]?.revision
+        };
+      }, bookId);
+      assert.deepStrictEqual(result, {
+        changed: false,
+        active: { revision: newer.revision, state: 'paused' },
+        snapshot: newer.revision
+      });
+    } finally {
+      state.heldManifests.delete(bookId);
+      releaseManifest(bookId);
+      await stale?.evaluate(() => __device.close());
+      await context.close();
+    }
+  });
+
+  await test('posts the new window when a rolling window slides over a live job', async () => {
+    const id = 'sliding-window-book';
+    const sliding = fixture(id);
+    sliding.manifest.state = 'preparing';
+    sliding.manifest.readyChapters = 0;
+    sliding.manifest.chapters = [{ index: 0, state: 'preparing' }];
+    state.fixtures.set(id, sliding);
+    const context = await browser.newContext();
+    const page = await makePage(context, 'sliding-window');
+    try {
+      const seed = {
+        ...entry(id), mode: 'rolling', state: 'partial',
+        titleData: { book: { id, title: id }, chapters: [{ text: 'one' }, { text: 'two' }] }
+      };
+      page.evaluate(seed => {
+        globalThis.__windowCompletion = __device.startWindow(seed.titleData.book, seed.titleData.chapters, seed, [0], 0);
+      }, seed);
+      await page.waitForFunction(id => __device.snapshot()[id]?.state === 'preparing', id);
+      await waitFor(() => postsFor(id).length === 1);
+      page.evaluate(seed => {
+        __device.startWindow(seed.titleData.book, seed.titleData.chapters, seed, [1], 1);
+      }, seed);
+      await waitFor(() => postsFor(id).some(call => call.body?.chapterIndexes?.[0] === 1), 4000);
+      assert.deepStrictEqual(postsFor(id).map(call => call.body.chapterIndexes), [[0], [1]]);
+    } finally {
+      await page.evaluate(() => __device.close()).catch(() => {});
+      await context.close();
+    }
+  });
+
+  await test('resumes after the lease is taken between renewals during a block write', async () => {
+    const context = await browser.newContext();
+    const page = await makePage(context, 'lease-race');
+    try {
+      await page.evaluate(seed => {
+        const original = __device.store.putPendingBlock.bind(__device.store);
+        let calls = 0;
+        globalThis.__leaseTaken = new Promise(resolve => { globalThis.__atFirstWrite = resolve; });
+        globalThis.__continueWrite = null;
+        __device.store.putPendingBlock = async (...args) => {
+          if (++calls === 1) {
+            await new Promise(resolve => {
+              globalThis.__continueWrite = resolve;
+              globalThis.__atFirstWrite();
+            });
+          }
+          return original(...args);
+        };
+        globalThis.__leaseRace = __device.startFull(seed.titleData.book, seed.titleData.chapters, seed);
+      }, entry('lease-race-book'));
+      await page.evaluate(() => __leaseTaken);
+      await writeLeaseRecord(page, { ownerId: 'foreign-tab', epoch: 1_000_000 });
+      await page.evaluate(() => __continueWrite());
+      await new Promise(resolve => setTimeout(resolve, 200));
+      await writeLeaseRecord(page, null);
+      assert.strictEqual(await withTimeout(page.evaluate(() => __leaseRace), 12_000, 'lease race'), true);
+    } finally {
+      await page.evaluate(() => __device.close());
+      await context.close();
+    }
+  });
+
+  await test('resumes a transfer whose storage lease expired to another tab', async () => {
+    const context = await browser.newContext();
+    const id = 'expired-lease-book';
+    state.heldAudio.add(id);
+    const page = await makePage(context, 'expired-lease');
+    try {
+      page.evaluate(seed => {
+        globalThis.__leaseCompletion = __device.startFull(seed.titleData.book, seed.titleData.chapters, seed);
+        __leaseCompletion.then(value => { globalThis.__leaseSettled = value; });
+      }, entry(id));
+      await waitFor(() => state.audioResponses.has(id));
+      // Another tab takes the lease after this tab's lease expired.
+      await page.evaluate(async () => {
+        const other = XandrioOfflineStore.createStore({ now: () => Date.now() + 16_000 });
+        await other.open();
+        globalThis.__otherStore = other;
+        globalThis.__otherLease = await other.acquireLease('other-tab');
+      });
+      state.heldAudio.delete(id);
+      for (const serve of state.audioResponses.get(id) || []) serve();
+      state.audioResponses.delete(id);
+      await new Promise(resolve => setTimeout(resolve, 500));
+      assert.strictEqual(await page.evaluate(() => globalThis.__leaseSettled), undefined);
+      await page.evaluate(() => __otherStore.releaseLease(__otherLease));
+      assert.strictEqual(await page.evaluate(() => Promise.race([
+        __leaseCompletion,
+        new Promise((_, reject) => setTimeout(() => reject(new Error('lease resume timeout')), 12_000))
+      ])), true);
+    } finally {
+      state.heldAudio.delete(id);
+      await page.evaluate(() => __device.close()).catch(() => {});
+      await context.close();
+    }
+  });
+  await test('does not treat a title deleted by another tab as a lost lease', async () => {
+    const bookId = 'deleted-elsewhere-book';
+    const context = await browser.newContext();
+    const page = await makePage(context, 'deleted-elsewhere');
+    try {
+      const ok = await withTimeout(page.evaluate(async seed => {
+        const original = __device.store.finalizeTitle.bind(__device.store);
+        __device.store.finalizeTitle = async (...args) => {
+          await __device.store.deleteTitle('deleted-elsewhere', seed.bookId);
+          return original(...args);
+        };
+        return __device.startFull(seed.titleData.book, seed.titleData.chapters, seed);
+      }, entry(bookId)), 8000, 'delete fence');
+      assert.strictEqual(ok, false);
+      await new Promise(resolve => setTimeout(resolve, 300));
+      assert.strictEqual(state.manifestRequests.get(bookId), 1);
+      assert.deepStrictEqual(await page.evaluate(() => __device.store.listTitles('deleted-elsewhere')), {});
     } finally {
       await page.evaluate(() => __device.close());
       await context.close();

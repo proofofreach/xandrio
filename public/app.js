@@ -1,6 +1,6 @@
 // api.js must be first: importing it installs the 401 token interceptor
 // before anything else can fetch.
-import { API_BASE, apiGet, apiSend, fetchAuthStatus, getCurrentUserId, getCurrentDeviceId, getCurrentDeviceName, getOfflineStorageScopeId } from './js/api.js';
+import { API_BASE, apiGet, apiSend, fetchAuthStatus, getCurrentUserId, getCurrentDeviceId, getCurrentDeviceName, getOfflineStorageScopeId, serverNow } from './js/api.js';
 import { initLogin, showLoginGate } from './js/views/login.js';
 import { initRouter, navigateTo, syncPlayerHash, clearSheetStack } from './js/router.js';
 import { formatDuration, escapeHTML, cleanDisplayText, isIOSLike, needsReliablePlayback, coverPlaceholderSrc } from './js/util/format.js';
@@ -137,6 +137,9 @@ let recoverySnapshot = null;
 let stablePlaybackTimer = null;
 let rollingOfflineTimer = null;
 const playbackSession = createPlaybackSession({
+  // Checkpoint stamps are compared with other devices' progress, so they use
+  // the server's clock, not this device's (see serverNow in js/api.js).
+  now: serverNow,
   onStateChange: (state) => {
     currentBook = state.book;
     currentChapter = state.chapterIndex;
@@ -479,7 +482,9 @@ function handleGaplessChapterAdvance(detail = {}) {
 }
 
 async function handleSleepTimerChapterTargetChange(target, detail = {}) {
-  if (!chunkPlayer?.isContinuous || typeof chunkPlayer.setContinuousEndChapter !== 'function') return;
+  // Finite sources keep the limit too: it is what holds back the gapless
+  // pre-warm. setContinuousEndChapter() reloads only a continuous transport.
+  if (typeof chunkPlayer?.setContinuousEndChapter !== 'function') return;
   // restoreSleepTimer() runs before the incoming book's engine is loaded. Do
   // not retarget an outgoing book; loadChapter() reads the restored target when
   // it constructs the new transport.
@@ -910,6 +915,18 @@ function scheduleAutomaticPlaybackRecovery(error, snapshot) {
 }
 
 
+// Chapter time for the selected chapter. A time pairs only with the chapter
+// it was measured in: after a chapter-limit stop, or while a chapter switch
+// has not committed its source, the engine can still name another chapter
+// than the one selected, and its time then says nothing about this one.
+function selectedChapterTime(error = null) {
+  if (Number.isInteger(error?.chapterIndex) && error.chapterIndex !== currentChapter) return 0;
+  const errorTime = Number(error?.chapterTime);
+  if (error?.chapterTime != null && Number.isFinite(errorTime)) return Math.max(0, errorTime);
+  if (Number.isInteger(chunkPlayer?.chapterIndex) && chunkPlayer.chapterIndex !== currentChapter) return 0;
+  return Math.max(0, Number(chunkPlayer?.getCurrentTime?.()) || 0);
+}
+
 function handleChunkError(error) {
   // A newer seek, chapter, or play intent owns cancellation. Recovering the
   // abandoned operation would reload its old position over that newer intent.
@@ -920,7 +937,12 @@ function handleChunkError(error) {
   setPlaybackBuffering(false);
   if (playbackPausedByUser) return;
   console.error('Chunk playback error:', error);
-  if (error && (error.name === 'NotAllowedError' || error.name === 'AbortError')) {
+  if (
+    error && (error.name === 'NotAllowedError' || error.name === 'AbortError'
+      // The next chapter is loaded; the browser only refused to start it
+      // without a gesture. One tap plays it.
+      || error.code === 'CHAPTER_ADVANCE_NOT_ALLOWED')
+  ) {
     hideAudioLoading();
     setResumePromptVisible(true);
     return;
@@ -943,7 +965,7 @@ function handleChunkError(error) {
     || chunkPlayer?.isContinuous
   ) {
     interruptStablePlaybackWindow();
-    const resumeAt = Math.max(0, Number(error.chapterTime ?? chunkPlayer?.getCurrentTime?.()) || 0);
+    const resumeAt = selectedChapterTime(error);
     checkpointPlayback({ force: true });
     // One immutable snapshot of the canonical request, captured once, here.
     // Every attempt — automatic or manual — replays it verbatim, so all of them
@@ -1248,7 +1270,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     // the listener is rather than the last server save.
     getCurrentPlayback: () => {
       if (!currentBook) return null;
-      const time = Number(chunkPlayer?.getCurrentTime?.());
+      const time = chunkPlayer ? selectedChapterTime() : NaN;
       return {
         bookId: String(currentBook.id),
         chapterIndex: currentChapter,
@@ -2221,7 +2243,7 @@ async function openBook(bookId, { attempt = null } = {}) {
     // load, engine selection, transition) can restore what the user was
     // doing instead of stranding them on a broken book. Stored on the module
     // slot ONLY so the catch block can reach it; each invocation overwrites
-    const liveTime = Number(chunkPlayer?.getCurrentTime?.());
+    const liveTime = chunkPlayer ? selectedChapterTime() : NaN;
     const checkpoint = currentBook ? getLocalPlaybackCheckpoint(String(currentBook.id)) : null;
     const offset = Number.isFinite(liveTime) && liveTime > 0
       ? liveTime
@@ -2721,8 +2743,11 @@ async function loadChapterWithIntent(index, options) {
       commitImmediately: options.commitImmediately
     });
   } catch (error) {
+    // A pause, a sleep-timer expiry or a newer load superseded this one and
+    // cancelled its source. That intent owns the player now; this load did
+    // not fail, so callers (openBook in particular) must not treat it as one.
+    if (token !== loadChapterToken || error?.cancelled) return { loaded: false, reason: 'stale' };
     if (error?.unplayable) {
-      if (token !== loadChapterToken) return { loaded: false, reason: 'stale' };
       return await skipUnplayableChapter(index, error, { ...options, direction: navigationDirection, wasPlaying });
     }
     // Local playback failed. Hand off to the network exactly once, and say so:
@@ -2759,7 +2784,12 @@ async function loadChapterWithIntent(index, options) {
     Number.isFinite(options.seekToSeconds)
     && !chunkPlayer.openedAtOffset?.(index, options.seekToSeconds)
   ) {
-    await chunkPlayer.seek(Math.max(0, options.seekToSeconds));
+    try {
+      await chunkPlayer.seek(Math.max(0, options.seekToSeconds));
+    } catch (error) {
+      if (token !== loadChapterToken || error?.cancelled) return { loaded: false, reason: 'stale' };
+      throw error;
+    }
     if (token !== loadChapterToken) return { loaded: false, reason: 'stale' };
   }
   // Never compete with first-play streaming for bandwidth or storage. Offline
@@ -2991,7 +3021,7 @@ function recoverIdleUnreadyPlayback() {
   const position = {
     bookId: currentBook.id,
     chapterIndex: currentChapter,
-    startOffsetSeconds: Math.max(0, Number(chunkPlayer.getCurrentTime?.()) || 0),
+    startOffsetSeconds: selectedChapterTime(),
     servedTier: chunkPlayer.servedTier || null,
     voiceId: chunkPlayer.voiceId || null,
     endChapterIndex: Number.isInteger(chunkPlayer.endChapterIndex)
@@ -3356,6 +3386,41 @@ function changeChapter(direction) {
   }
 }
 
+// A chapter sleep timer stopped playback at the end of the current chapter,
+// whatever the source. The next chapter with narration is where Play resumes;
+// replaying the finished chapter is not. The engine still holds the finished
+// chapter, so Play loads the selected one instead of resuming that source.
+async function settleSleepTimerChapterStop(owner, stillOwnsCompletion) {
+  // Expiry deliberately invalidates pending playback work. Subsequent
+  // completion work belongs to that paused session until the user acts.
+  owner.loadToken = loadChapterToken;
+  const nextChapter = adjacentPlayableChapter(currentChapter, 1);
+  if (nextChapter !== null) {
+    currentChapter = nextChapter;
+    playbackSession.setBook(currentBook, {
+      chapterIndex: nextChapter,
+      finished: false
+    });
+    if (chapterSelect) chapterSelect.value = String(nextChapter);
+    syncPlaybackProgressScope();
+    updateChapterTrigger();
+    renderChapterList();
+    syncMiniPlayerInfo();
+    updateMediaSessionMetadata();
+    updateMediaSessionPosition();
+    updateBookProgress();
+    checkpointPlayback({ force: true });
+    scheduleServerPositionSave(0);
+  } else {
+    setCurrentBookFinished(true);
+    checkpointPlayback({ force: true, finished: true });
+    await savePosition({ force: true, finished: true });
+    if (!stillOwnsCompletion()) return;
+    updateBookProgress();
+  }
+  updatePlaybackUI(false);
+}
+
 let audioEndOwner = null;
 async function handleAudioEnd(detail = {}) {
   if (!currentBook || !chunkPlayer) return;
@@ -3376,48 +3441,15 @@ async function handleAudioEnd(detail = {}) {
         streamTime: audioPlayer?.currentTime
       });
       expireSleepTimer('chapter');
-      // Expiry deliberately invalidates pending playback work. Subsequent
-      // completion work belongs to that paused session until the user acts.
-      owner.loadToken = loadChapterToken;
-      const nextChapter = adjacentPlayableChapter(currentChapter, 1);
-      if (nextChapter !== null) {
-        currentChapter = nextChapter;
-        playbackSession.setBook(currentBook, {
-          chapterIndex: nextChapter,
-          finished: false
-        });
-        if (chapterSelect) chapterSelect.value = String(nextChapter);
-        syncPlaybackProgressScope();
-        updateChapterTrigger();
-        renderChapterList();
-        syncMiniPlayerInfo();
-        updateMediaSessionMetadata();
-        updateMediaSessionPosition();
-        updateBookProgress();
-        checkpointPlayback({ force: true });
-        scheduleServerPositionSave(0);
-      } else {
-        setCurrentBookFinished(true);
-        checkpointPlayback({ force: true, finished: true });
-        await savePosition({ force: true, finished: true });
-        if (!stillOwnsCompletion()) return;
-        updateBookProgress();
-      }
-      updatePlaybackUI(false);
+      await settleSleepTimerChapterStop(owner, stillOwnsCompletion);
       return;
     }
     // Auto-advance skips sections without narration; null means the book
     // has no audio left after this chapter.
     const nextPlayableChapter = adjacentPlayableChapter(owner.chapter, 1);
     if (isSleepTimerChapterTarget(currentBook?.id, currentChapter)) {
-      if (nextPlayableChapter === null) {
-        setCurrentBookFinished(true);
-        checkpointPlayback({ force: true, finished: true });
-        await savePosition({ force: true, finished: true });
-        if (!stillOwnsCompletion()) return;
-        updateBookProgress();
-      }
       expireSleepTimer('chapter');
+      await settleSleepTimerChapterStop(owner, stillOwnsCompletion);
       return;
     }
     // Continuous online playback advances chapters inside one native resource;

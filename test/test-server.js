@@ -2500,6 +2500,18 @@ section('21. Error responses and bounded caches');
   assert(deletedBookIds.has('deleted-book-0'), 'unrelated deletes do not evict the oldest guard');
   assert(deletedBookIds.has('deleted-book-224'), 'the newest guard is retained');
   deletedBookIds.clear();
+
+  // Delete, re-import, delete again: the first deletion's completed sweeps
+  // must not retire the guard the second deletion set.
+  const { retireDeletedBookId } = serverTestHooks;
+  const firstDeletion = rememberDeletedBookId('redeleted-book');
+  deletedBookIds.delete('redeleted-book');
+  const secondDeletion = rememberDeletedBookId('redeleted-book');
+  retireDeletedBookId('redeleted-book', firstDeletion);
+  assert(deletedBookIds.has('redeleted-book'), 'a stale deletion does not retire a newer deletion guard');
+  retireDeletedBookId('redeleted-book', secondDeletion);
+  assert(!deletedBookIds.has('redeleted-book'), 'a deletion retires its own guard');
+  deletedBookIds.clear();
 }
 
 {

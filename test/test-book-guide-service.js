@@ -16,6 +16,7 @@ const {
   publicProgress
 } = require('../lib/book-guide-service');
 const { createBookGuideStore } = require('../lib/book-guide-store');
+const { createBookMutationLocks } = require('../lib/book-mutation-lock');
 
 const DIGEST = `sha256:${'a'.repeat(64)}`;
 const EVIDENCE = [
@@ -176,7 +177,7 @@ async function waitIdle(service) {
   assert.strictEqual(service.isIdle(), true, 'service did not become idle');
 }
 
-async function harness({ initialSourceText = EVIDENCE.join(' '), segmentChars, modelConcurrency, semanticVerifier } = {}) {
+async function harness({ initialSourceText = EVIDENCE.join(' '), segmentChars, modelConcurrency, semanticVerifier, withBookStateLock } = {}) {
   const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'book-guide-service-'));
   const certificationFile = path.join(temp, 'certification.json');
   const provider = fakeProvider();
@@ -213,6 +214,7 @@ async function harness({ initialSourceText = EVIDENCE.join(' '), segmentChars, m
     journal,
     provider,
     semanticVerifier,
+    withBookStateLock,
     segmentChars,
     modelConcurrency,
     now: () => new Date('2026-08-13T12:00:00.000Z'),
@@ -269,6 +271,50 @@ async function run() {
         assert.strictEqual(result.artifact.verification.policy, 'jev-test-policy');
       } finally { await fs.rm(j.temp, { recursive: true, force: true }); }
     });
+    // DELETE holds the book's mutation lock and awaits the guide's cancel. A
+    // guide (or a start) waiting for that lock must leave the wait on abort,
+    // or neither side ever finishes.
+    for (const phase of ['running job', 'starting request']) {
+      await test(`deleting a book does not deadlock with a ${phase} waiting for its lock`, async () => {
+        const locks = createBookMutationLocks();
+        const d = await harness({ withBookStateLock: locks.withBookStateLock });
+        try {
+          d.setCategory('nonfiction');
+          await d.service.configure({
+            enabled: true,
+            externalProcessingAcknowledged: true,
+            baseUrl: 'https://api.ppq.ai',
+            generatorModel: 'guide:1',
+            verifierModel: 'verify:1'
+          });
+          let started;
+          if (phase === 'running job') {
+            await d.service.start('book_1');
+          } else {
+            started = d.service.start('book_1').then(() => 'started', error => error.code);
+          }
+          const deletion = locks.withBookMutationLock('book_1', () => d.service.removeBook('book_1'));
+          let timer;
+          const timeout = new Promise((_, reject) => {
+            timer = setTimeout(() => reject(new Error('DELETE deadlocked behind the guide')), 2000);
+          });
+          try {
+            await Promise.race([deletion, timeout]);
+          } finally {
+            clearTimeout(timer);
+          }
+          if (started) assert.strictEqual(await started, 'BOOK_GUIDE_CANCELLED');
+          await waitIdle(d.service);
+          assert.strictEqual(d.provider.calls.length, 0, 'the cancelled guide made no model calls');
+          assert.strictEqual(await d.store.read('book_1'), null);
+          assert.strictEqual(await locks.withBookStateLock('book_1', async () => 'free'), 'free',
+            'the book lock is free afterwards');
+        } finally {
+          await fs.rm(d.temp, { recursive: true, force: true });
+        }
+      });
+    }
+
     await test('normalizes durable job phases for the public UI contract', () => {
       assert.strictEqual(publicJobStatus({ status: 'pending' }), 'queued');
       assert.strictEqual(publicJobStatus({ status: 'running', phase: 'extracting' }), 'generating');

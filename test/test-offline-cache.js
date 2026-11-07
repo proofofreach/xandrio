@@ -94,7 +94,12 @@ function installBrowser({
   // controller carrying that exact version is the normal steady state. Tests
   // that need the rollout race pass an unversioned or mismatched scriptURL.
   serviceWorkerController = { scriptURL: `https://reader.test/sw.js?v=${SW_CACHE_VERSION}` },
-  verificationProbe = null
+  verificationProbe = null,
+  // (index, readyDescriptor) => descriptor | null. Overrides what the
+  // transfer manifest says about one chapter.
+  manifestChapter = null,
+  audioBytes = null,
+  locks = null
 }) {
   global.__offlineToasts = [];
   const storage = sharedStorage || new Map();
@@ -166,6 +171,7 @@ function installBrowser({
       serviceWorker: serviceWorkerController === null
         ? {}
         : { controller: serviceWorkerController },
+      ...(locks ? { locks } : {}),
       ...(wakeLockSupported ? {
         wakeLock: {
           async request(type) {
@@ -214,9 +220,56 @@ function installBrowser({
   const preparationCalls = [];
   let remainingAudioFailures = transientAudioFailures;
   let remainingStreamFailures = transientStreamFailures;
+  const chapterBytes = chapter => audioBytes
+    ? audioBytes(chapter)
+    : new TextEncoder().encode(`audio-${variants[chapter]}-${chapter}`);
+  const sha = bytes => `sha256-${crypto.createHash('sha256').update(bytes).digest('hex')}`;
+  const readyDescriptor = index => {
+    const bytes = chapterBytes(index);
+    const blockSize = 1024 * 1024;
+    const blockHashes = [];
+    for (let offset = 0; offset < bytes.byteLength; offset += blockSize) {
+      blockHashes.push(sha(bytes.subarray(offset, offset + blockSize)));
+    }
+    const contentHash = sha(bytes);
+    return {
+      index, state: 'ready', artifactId: contentHash, contentHash, etag: `"${contentHash}"`,
+      size: bytes.byteLength, blockSize, blockHashes, variantKey: variants[index] || 'voice-a',
+      provenance: 'verified'
+    };
+  };
+  const transferManifest = () => {
+    const status = {
+      state: 'ready',
+      readyChapters: chapters.length,
+      packageVariantKey: variants[0] || 'voice-a',
+      ...(preparationResponse || {})
+    };
+    const readyCount = status.state === 'ready' ? chapters.length : Number(status.readyChapters) || 0;
+    const entries = chapters.map((chapter, index) => {
+      if (chapter?.empty) return { index, state: 'empty' };
+      const ready = readyDescriptor(index);
+      if (manifestChapter) return manifestChapter(index, ready) || { index, state: 'pending' };
+      return index < readyCount ? ready : { index, state: 'pending' };
+    });
+    const complete = entries.every(item => ['ready', 'empty'].includes(item.state));
+    const bytesPrepared = entries.reduce((sum, item) => sum + (item.size || 0), 0);
+    return {
+      schemaVersion: 1, bookId: book?.id, sourceRevision: 'source', revision: 'revision',
+      packageVariantKey: status.packageVariantKey,
+      state: complete ? 'ready' : status.state === 'ready' ? 'repair-needed' : status.state,
+      totalChapters: chapters.length, bytesPrepared, bytesTotal: complete ? bytesPrepared : null,
+      chapters: entries
+    };
+  };
   global.__offlineApiSend = async (method, requestPath, body) => {
     if (method === 'GET' && requestPath.startsWith('/api/offline/deletions')) {
       return deletionResponse;
+    }
+    if (method === 'GET' && /^\/api\/offline\/preparation\/[^/]+\/manifest$/.test(requestPath)) {
+      preparationCalls.push({ method, requestPath });
+      if (preparationError) throw preparationError;
+      return transferManifest();
     }
     if (requestPath.startsWith('/api/offline/preparation/')) {
       preparationCalls.push({ method, requestPath });
@@ -261,7 +314,7 @@ function installBrowser({
     if (url.includes('xandrio-offline-scope=') && rangeHeader) {
       verificationProbes.push(url);
       if (verificationProbe) return verificationProbe(url, chapter);
-      const size = new TextEncoder().encode(`audio-${variants[chapter]}-${chapter}`).byteLength;
+      const size = chapterBytes(chapter).byteLength;
       return new Response(new Uint8Array([0, 0]), {
         status: 206,
         headers: {
@@ -280,7 +333,7 @@ function installBrowser({
         remainingAudioFailures -= 1;
         return new Response('try again', { status: 503 });
       }
-      const bytes = new TextEncoder().encode(`audio-${variants[chapter]}-${chapter}`);
+      const bytes = chapterBytes(chapter);
       const responseHeaders = {
         'Content-Length': String(bytes.byteLength),
         ETag: `\"${variants[chapter]}-${chapter}\"`
@@ -463,13 +516,23 @@ function installBrowser({
   await test('one request continues from delayed preparation through verified device download', async () => {
     const preparationResponse = { state: 'preparing', readyChapters: 1, percent: 50 };
     const env = installBrowser({ book, chapters, cache: makeCache(), preparationResponse });
-    await offline.prepareAndDownloadBookForOffline(book, chapters);
-    assert.deepStrictEqual(env.audioRequests, []);
+    assert.strictEqual(await offline.prepareAndDownloadBookForOffline(book, chapters), false);
+    // The prepared chapter is saved now, not after the whole book is ready.
+    assert.deepStrictEqual(env.audioRequests, [0]);
     assert.strictEqual(offline.offlineEntryForBook(book.id).autoResume, true);
     assert.strictEqual(offline.offlineStatusForBook(book.id).preparedChapters, 1);
+    assert.strictEqual(offline.offlineStatusForBook(book.id).cachedChapters, 1);
+    assert.strictEqual(offline.offlineStatusForBook(book.id).downloaded, false);
+    assert.strictEqual(
+      offline.offlineStatusForBook(book.id).label,
+      '1 of 2 chapters on this device · Preparing the rest'
+    );
+    assert.strictEqual(offline.isBookDownloadedForOffline(book.id, 0), true);
+    assert.strictEqual(offline.isBookDownloadedForOffline(book.id, 1), false);
+    assert.strictEqual(await offline.isChapterAvailableOffline(book.id, 0), true);
     Object.assign(preparationResponse, { state: 'ready', readyChapters: 2, percent: 100 });
     await offline.refreshOfflinePreparations();
-    assert.deepStrictEqual(env.audioRequests, [0, 1]);
+    assert.deepStrictEqual(env.audioRequests, [0, 1], 'the verified chapter is not fetched again');
     assert.deepStrictEqual(env.confirmationCalls, []);
     assert.strictEqual(offline.offlineEntryForBook(book.id).state, 'ready');
   });
@@ -1389,7 +1452,7 @@ function installBrowser({
     assert.strictEqual(env.audioRequests.length, 46);
   });
 
-  await test('device transfer remains unavailable until server preparation is complete', async () => {
+  await test('device transfer saves each chapter as soon as server preparation readies it', async () => {
     const cache = makeCache();
     let env = installBrowser({
       book,
@@ -1411,7 +1474,10 @@ function installBrowser({
     assert.strictEqual(offline.offlineStatusForBook(book.id).kind, 'preparing');
     assert.match(offline.offlineStatusForBook(book.id).label, /Safe to close/);
     assert.strictEqual(await offline.downloadBookForOffline(book, chapters), false);
-    assert.deepStrictEqual(env.audioRequests, []);
+    assert.deepStrictEqual(env.audioRequests, [0]);
+    assert.match(env.confirmationCalls[0].message, /so far, with more as chapters are prepared/);
+    assert.strictEqual(offline.offlineStatusForBook(book.id).kind, 'preparing');
+    assert.strictEqual(offline.offlineStatusForBook(book.id).downloaded, false);
 
     env = installBrowser({
       book,
@@ -1428,11 +1494,11 @@ function installBrowser({
     });
     assert.strictEqual(await offline.refreshOfflinePreparation(book.id), true);
     assert.strictEqual(offline.offlineStatusForBook(book.id).kind, 'prepared');
-    assert.strictEqual(offline.offlineStatusForBook(book.id).label, 'Audio prepared · Download to this device');
+    assert.strictEqual(offline.offlineStatusForBook(book.id).label, 'Waiting to download · Keep Xandrio open');
 
     assert.strictEqual(await offline.downloadBookForOffline(book, chapters), true);
     assert.deepStrictEqual(env.prepareCalls, []);
-    assert.deepStrictEqual(env.audioRequests, [0, 1]);
+    assert.deepStrictEqual(env.audioRequests, [1], 'only the chapter not already verified is fetched');
     assert.strictEqual(offline.offlineStatusForBook(book.id).kind, 'downloaded');
   });
 
@@ -3041,6 +3107,470 @@ function installBrowser({
       delete global.indexedDB;
       delete global.HTMLMediaElement;
       delete global.__offlineDeviceModule;
+    }
+  });
+
+  // ---- Progressive, atomic, resumable CacheStorage downloads ---------------
+
+  const progressiveChapters = [{}, {}, {}];
+  const progressiveVariants = ['voice-a', 'voice-a', 'voice-a'];
+  const settle = async (rounds = 20) => {
+    for (let attempt = 0; attempt < rounds; attempt++) await new Promise(resolve => setImmediate(resolve));
+  };
+
+  await test('progressive download saves chapters in order as each is prepared and is Downloaded only at the end', async () => {
+    const preparationResponse = { state: 'preparing', readyChapters: 1, percent: 33 };
+    const env = installBrowser({
+      book, chapters: progressiveChapters, cache: makeCache(), variants: progressiveVariants, preparationResponse
+    });
+    assert.strictEqual(await offline.prepareAndDownloadBookForOffline(book, progressiveChapters), false);
+    assert.deepStrictEqual(env.audioRequests, [0]);
+    let status = offline.offlineStatusForBook(book.id);
+    assert.strictEqual(status.kind, 'preparing');
+    assert.strictEqual(status.downloaded, false);
+    assert.strictEqual(status.label, '1 of 3 chapters on this device · Preparing the rest');
+    assert.deepStrictEqual(offline.getOfflineLibraryBooks(), [book], 'a partial copy opens offline');
+
+    Object.assign(preparationResponse, { readyChapters: 2, percent: 66 });
+    await offline.refreshOfflinePreparations();
+    assert.deepStrictEqual(env.audioRequests, [0, 1]);
+    status = offline.offlineStatusForBook(book.id);
+    assert.strictEqual(status.cachedChapters, 2);
+    assert.strictEqual(status.downloaded, false);
+    assert.strictEqual(offline.isBookDownloadedForOffline(book.id, 1), true);
+    assert.strictEqual(offline.isBookDownloadedForOffline(book.id, 2), false);
+    const local = await offline.localChapterSource(book.id, 1);
+    assert.strictEqual(local.available, true, 'a verified chapter plays locally while the rest prepare');
+    assert.strictEqual((await offline.localChapterSource(book.id, 2)).available, false);
+
+    Object.assign(preparationResponse, { state: 'ready', readyChapters: 3, percent: 100 });
+    await offline.refreshOfflinePreparations();
+    assert.deepStrictEqual(env.audioRequests, [0, 1, 2], 'no verified chapter is fetched twice');
+    assert.strictEqual(offline.offlineStatusForBook(book.id).kind, 'downloaded');
+    assert.strictEqual(offline.offlineEntryForBook(book.id).autoResume, false);
+  });
+
+  await test('a status poll without newly prepared chapters does not fetch the transfer manifest', async () => {
+    const preparationResponse = { state: 'preparing', readyChapters: 1, percent: 33 };
+    const env = installBrowser({
+      book, chapters: progressiveChapters, cache: makeCache(), variants: progressiveVariants, preparationResponse
+    });
+    await offline.prepareAndDownloadBookForOffline(book, progressiveChapters);
+    const manifestFetches = () => env.preparationCalls.filter(call => call.requestPath.endsWith('/manifest')).length;
+    const before = manifestFetches();
+    await offline.refreshOfflinePreparations();
+    await offline.refreshOfflinePreparations();
+    assert.strictEqual(manifestFetches(), before);
+    assert.deepStrictEqual(env.audioRequests, [0]);
+  });
+
+  await test('a chapter enters the manifest only after its stored body verifies block by block', async () => {
+    const blockSize = 1024 * 1024;
+    const big = index => {
+      const bytes = new Uint8Array(blockSize * 2 + 4096);
+      for (let offset = 0; offset < bytes.length; offset++) bytes[offset] = (offset * 31 + index) & 0xff;
+      return bytes;
+    };
+    const cache = makeCache();
+    const observedDuringPut = [];
+    const put = cache.put.bind(cache);
+    cache.put = async (request, response) => {
+      observedDuringPut.push(offline.getOfflineManifest()[book.id]?.chapterEntries?.[0] || null);
+      return put(request, response);
+    };
+    const env = installBrowser({
+      book, chapters: [{}], cache, variants: ['voice-a'], audioBytes: big, serverContentHash: true
+    });
+    const digestSizes = [];
+    const digest = global.crypto.subtle.digest;
+    global.crypto.subtle.digest = (algorithm, data) => {
+      digestSizes.push(data.byteLength);
+      return digest(algorithm, data);
+    };
+    offline.initOffline(env.init);
+    assert.strictEqual(await offline.downloadCurrentBook(), true);
+    assert.deepStrictEqual(observedDuringPut, [null], 'nothing is recorded while bytes are being written');
+    assert.deepStrictEqual(digestSizes, [blockSize, blockSize, 4096], 'verification hashes one block at a time');
+    const entry = offline.offlineEntryForBook(book.id);
+    assert.strictEqual(entry.chapterEntries[0].blockHashes.length, 3);
+    assert.strictEqual(entry.state, 'ready');
+  });
+
+  await test('a block that does not match its server hash is never recorded or kept', async () => {
+    const blockSize = 1024 * 1024;
+    const big = () => new Uint8Array(blockSize + 10).fill(7);
+    const cache = makeCache({
+      transformBytes(bytes) {
+        bytes[blockSize + 5] ^= 0xff;
+        return bytes;
+      }
+    });
+    const env = installBrowser({ book, chapters: [{}], cache, variants: ['voice-a'], audioBytes: big });
+    offline.initOffline(env.init);
+    assert.strictEqual(await offline.downloadCurrentBook(), false);
+    const entry = offline.offlineEntryForBook(book.id);
+    assert.strictEqual(entry.chapterEntries[0], null);
+    assert.strictEqual(cache.entries.size, 0, 'unverified bytes are deleted');
+    assert.strictEqual((await offline.localChapterSource(book.id, 0)).available, false);
+  });
+
+  await test('a kill mid-chapter resumes from the verified chapters without fetching them again', async () => {
+    const cache = makeCache();
+    const env = installBrowser({ book, chapters: progressiveChapters, cache, variants: progressiveVariants });
+    const normalFetch = global.fetch;
+    let releaseChapter;
+    const chapterGate = new Promise(resolve => { releaseChapter = resolve; });
+    global.fetch = async (input, options) => {
+      const url = typeof input === 'string' ? input : (input.url || String(input));
+      if (url.includes('/api/offline/audio/book-1/2')) await chapterGate;
+      return normalFetch(input, options);
+    };
+    offline.initOffline(env.init);
+    const download = offline.downloadCurrentBook({ confirmForeground: false });
+    while ((offline.offlineEntryForBook(book.id)?.chapterEntries?.filter(Boolean).length || 0) < 2) {
+      await new Promise(resolve => setImmediate(resolve));
+    }
+    // What a killed page leaves on disk: the durable manifest as of now, and
+    // only the cache entries that committed.
+    const killedStorage = new Map(env.storage);
+    offline.cancelOfflineDownload(book.id);
+    releaseChapter();
+    await download;
+    assert.strictEqual(cache.entries.has(offlineAudioKey(book.id, 2)), false, 'an interrupted write commits nothing');
+
+    const relaunch = installBrowser({
+      book, chapters: progressiveChapters, cache, variants: progressiveVariants, storage: killedStorage
+    });
+    assert.strictEqual(offline.offlineEntryForBook(book.id).state, 'repairing');
+    assert.strictEqual(await offline.resumeInterruptedOfflineDownloads(), true);
+    assert.deepStrictEqual(relaunch.audioRequests, [2]);
+    assert.strictEqual(offline.offlineStatusForBook(book.id).kind, 'downloaded');
+  });
+
+  await test('a transfer dropped mid-block stores nothing for that chapter and restarts it whole', async () => {
+    const blockSize = 1024 * 1024;
+    const big = () => new Uint8Array(blockSize * 2).fill(3);
+    const cache = makeCache();
+    const env = installBrowser({
+      book, chapters: [{}], cache, variants: ['voice-a'], audioBytes: big, transientStreamFailures: 1
+    });
+    offline.initOffline(env.init);
+    assert.strictEqual(await offline.downloadCurrentBook(), true);
+    assert.deepStrictEqual(env.audioRequests, [0, 0]);
+    assert.strictEqual(offline.offlineEntryForBook(book.id).chapterEntries[0].size, blockSize * 2);
+  });
+
+  await test('a chapter committed to the cache but not yet recorded is verified in place, not downloaded again', async () => {
+    const cache = makeCache();
+    let env = installBrowser({ book, chapters: progressiveChapters, cache, variants: progressiveVariants });
+    offline.initOffline(env.init);
+    assert.strictEqual(await offline.downloadCurrentBook(), true);
+    const killed = structuredClone(offline.getOfflineManifest());
+    killed[book.id].chapterEntries[1] = null;
+    Object.assign(killed[book.id], { state: 'repairing', autoResume: true });
+
+    env = installBrowser({
+      book, chapters: progressiveChapters, cache, variants: progressiveVariants, manifest: killed
+    });
+    assert.strictEqual(await offline.resumeInterruptedOfflineDownloads(), true);
+    assert.deepStrictEqual(env.audioRequests, []);
+    assert(env.hashCalls >= 1, 'the leftover chapter was hashed before it was trusted');
+    assert.strictEqual(offline.offlineStatusForBook(book.id).kind, 'downloaded');
+
+    // The same leftover with a damaged body is replaced, not adopted.
+    const damaged = structuredClone(killed);
+    const key = offlineAudioKey(book.id, 1);
+    const stored = await cache.match(key);
+    await cache.put(key, new Response(new TextEncoder().encode('audio-voice-a-X'), { headers: stored.headers }));
+    env = installBrowser({
+      book, chapters: progressiveChapters, cache, variants: progressiveVariants, manifest: damaged
+    });
+    assert.strictEqual(await offline.resumeInterruptedOfflineDownloads(), true);
+    assert.deepStrictEqual(env.audioRequests, [1]);
+  });
+
+  await test('a re-prepared chapter invalidates only that chapter', async () => {
+    const cache = makeCache();
+    let env = installBrowser({ book, chapters: progressiveChapters, cache, variants: progressiveVariants });
+    offline.initOffline(env.init);
+    assert.strictEqual(await offline.downloadCurrentBook(), true);
+    const before = structuredClone(offline.offlineEntryForBook(book.id).chapterEntries);
+
+    let releaseReplacement;
+    const replacementGate = new Promise(resolve => { releaseReplacement = resolve; });
+    env = installBrowser({
+      book, chapters: progressiveChapters, cache, variants: progressiveVariants,
+      manifest: offline.getOfflineManifest(),
+      audioBytes: index => new TextEncoder().encode(index === 1 ? 'audio-voice-a-1-reprepared' : `audio-voice-a-${index}`),
+      audioGate: replacementGate
+    });
+    offline.initOffline(env.init);
+    const repair = offline.downloadBookForOffline(book, progressiveChapters, { confirmForeground: false });
+    while (env.audioRequests.length === 0) await new Promise(resolve => setImmediate(resolve));
+    assert.strictEqual(
+      offline.offlineEntryForBook(book.id).chapterEntries[1], null,
+      'the changed chapter is withdrawn before its replacement is fetched'
+    );
+    assert.strictEqual(offline.isBookDownloadedForOffline(book.id, 0), true);
+    releaseReplacement();
+    assert.strictEqual(await repair, true);
+    assert.deepStrictEqual(env.audioRequests, [1]);
+    const after = offline.offlineEntryForBook(book.id).chapterEntries;
+    assert.deepStrictEqual(after[0], before[0]);
+    assert.deepStrictEqual(after[2], before[2]);
+    assert.notStrictEqual(after[1].contentHash, before[1].contentHash);
+  });
+
+  await test('a narration package change drops stored chapters of the old package only as the descriptor shows', async () => {
+    const cache = makeCache();
+    let env = installBrowser({ book, chapters: progressiveChapters, cache, variants: progressiveVariants });
+    offline.initOffline(env.init);
+    assert.strictEqual(await offline.downloadCurrentBook(), true);
+    const partial = structuredClone(offline.getOfflineManifest());
+    Object.assign(partial[book.id], { state: 'repairing', autoResume: true });
+    env = installBrowser({
+      book, chapters: progressiveChapters, cache, manifest: partial,
+      variants: ['voice-b', 'voice-b', 'voice-b'],
+      preparationResponse: { state: 'preparing', readyChapters: 1, packageVariantKey: 'voice-b' }
+    });
+    await offline.resumeInterruptedOfflineDownloads();
+    const entry = offline.offlineEntryForBook(book.id);
+    assert.deepStrictEqual(env.audioRequests, [0]);
+    assert.strictEqual(entry.chapterEntries[0].variantKey, 'voice-b');
+    assert.deepStrictEqual(entry.chapterEntries.slice(1), [null, null], 'old-voice chapters are not kept as part of the new copy');
+    assert.strictEqual(cache.entries.has(offlineAudioKey(book.id, 1)), false);
+    assert.strictEqual(entry.state, 'preparing');
+  });
+
+  await test('a descriptor that changes mid-transfer is re-read instead of failing the download', async () => {
+    let served = 0;
+    const env = installBrowser({ book, chapters: [{}], cache: makeCache(), variants: ['voice-a'] });
+    const normalFetch = global.fetch;
+    global.fetch = async (input, options) => {
+      const url = typeof input === 'string' ? input : (input.url || String(input));
+      if (url.includes('/api/offline/audio/') && served++ === 0) {
+        return new Response(JSON.stringify({ error: 'Offline audio identity changed' }), { status: 409 });
+      }
+      return normalFetch(input, options);
+    };
+    offline.initOffline(env.init);
+    assert.strictEqual(await offline.downloadCurrentBook(), true);
+    assert.strictEqual(env.preparationCalls.filter(call => call.requestPath.endsWith('/manifest')).length, 2);
+  });
+
+  await test('another tab that owns the download lock prevents a duplicate transfer', async () => {
+    const lockRequests = [];
+    const locks = {
+      async request(name, options, callback) {
+        lockRequests.push({ name, ifAvailable: options.ifAvailable });
+        return callback(null);
+      }
+    };
+    const env = installBrowser({ book, chapters, cache: makeCache(), locks });
+    offline.initOffline(env.init);
+    assert.strictEqual(await offline.downloadCurrentBook({ confirmForeground: false }), false);
+    assert.deepStrictEqual(env.audioRequests, []);
+    assert.deepStrictEqual(lockRequests, [{ name: 'xandrio-offline-cache-download', ifAvailable: true }]);
+    assert.notStrictEqual(offline.offlineStatusForBook(book.id).kind, 'downloaded');
+  });
+
+  await test('the download lock is held for the whole transfer and released afterwards', async () => {
+    let held = false;
+    let releasedAfterAudio = false;
+    const env = installBrowser({
+      book, chapters, cache: makeCache(),
+      locks: {
+        async request(_name, _options, callback) {
+          held = true;
+          await callback({ name: 'lock' });
+          releasedAfterAudio = env.audioRequests.length === 2;
+          held = false;
+        }
+      }
+    });
+    offline.initOffline(env.init);
+    assert.strictEqual(await offline.downloadCurrentBook({ confirmForeground: false }), true);
+    await settle();
+    assert.strictEqual(held, false);
+    assert.strictEqual(releasedAfterAudio, true);
+  });
+
+  await test('two resume triggers at once run one transfer', async () => {
+    const preparationResponse = { state: 'preparing', readyChapters: 2, percent: 66 };
+    const env = installBrowser({
+      book, chapters: progressiveChapters, cache: makeCache(), variants: progressiveVariants, preparationResponse
+    });
+    await offline.prepareBookForOffline(book, progressiveChapters, { autoResume: true });
+    await Promise.all([
+      offline.resumeInterruptedOfflineDownloads(),
+      offline.resumeInterruptedOfflineDownloads(),
+      offline.refreshOfflinePreparations()
+    ]);
+    assert.deepStrictEqual([...env.audioRequests].sort(), [0, 1]);
+  });
+
+  await test('cancelling a progressive download keeps verified chapters as a partial copy', async () => {
+    const preparationResponse = { state: 'preparing', readyChapters: 1, percent: 33 };
+    const env = installBrowser({
+      book, chapters: progressiveChapters, cache: makeCache(), variants: progressiveVariants, preparationResponse
+    });
+    await offline.prepareAndDownloadBookForOffline(book, progressiveChapters);
+    await offline.cancelOfflinePreparation(book.id);
+    assert(env.preparationCalls.some(call => call.method === 'DELETE'));
+    const status = offline.offlineStatusForBook(book.id);
+    assert.strictEqual(status.kind, 'partial-download');
+    assert.strictEqual(status.downloaded, false);
+    assert.strictEqual(offline.offlineEntryForBook(book.id).autoResume, false);
+    assert.strictEqual(await offline.isChapterAvailableOffline(book.id, 0), true);
+  });
+
+  await test('a repair-needed manifest asks the server to repair, with backoff, and does not spin', async () => {
+    let missingChapterReady = false;
+    const env = installBrowser({
+      book, chapters: progressiveChapters, cache: makeCache(), variants: progressiveVariants,
+      // The server intent is ready, but chapter 2's package is missing.
+      preparationResponse: { state: 'ready', readyChapters: 3, percent: 100 },
+      manifestChapter: (index, ready) => (index === 1 && !missingChapterReady ? null : ready)
+    });
+    const posts = () => env.preparationCalls.filter(call => call.method === 'POST').length;
+    const manifests = () => env.preparationCalls.filter(call => call.requestPath.endsWith('/manifest')).length;
+    const setRetryDue = () => {
+      const stored = offline.getOfflineManifest();
+      stored[book.id].transferRetryAt = Date.now() - 1;
+      localStorage.setItem('xandrio_offline_books:default', JSON.stringify(stored));
+    };
+
+    assert.strictEqual(await offline.downloadBookForOffline(book, progressiveChapters, { confirmForeground: false }), false);
+    assert.deepStrictEqual([...env.audioRequests].sort(), [0, 2]);
+    assert.strictEqual(posts(), 1, 'a manual download asks the server to repair');
+    const firstDelay = offline.offlineEntryForBook(book.id).transferRetryAt - Date.now();
+    assert(firstDelay > 0, 'the next repair request waits');
+
+    const manifestsBefore = manifests();
+    for (let poll = 0; poll < 4; poll++) await offline.refreshOfflinePreparations({ respectBackoff: true });
+    assert.strictEqual(posts(), 1, 'polling does not repeat the repair request before its backoff');
+    assert.strictEqual(manifests(), manifestsBefore, 'polling does not re-read the manifest when nothing changed');
+
+    setRetryDue();
+    await offline.refreshOfflinePreparations({ respectBackoff: true });
+    assert.strictEqual(posts(), 2);
+    const secondDelay = offline.offlineEntryForBook(book.id).transferRetryAt - Date.now();
+    assert(secondDelay > firstDelay, 'repeated repair requests back off');
+
+    missingChapterReady = true;
+    setRetryDue();
+    await offline.refreshOfflinePreparations({ respectBackoff: true });
+    assert.deepStrictEqual([...env.audioRequests].sort(), [0, 1, 2]);
+    assert.strictEqual(offline.offlineStatusForBook(book.id).kind, 'downloaded');
+    assert.strictEqual(offline.offlineEntryForBook(book.id).transferRetryAt ?? null, null);
+  });
+
+  await test('a transient error mid-preparation keeps the title polling and retries with bounded backoff', async () => {
+    const preparationResponse = { state: 'preparing', readyChapters: 1, percent: 33 };
+    const env = installBrowser({
+      book, chapters: progressiveChapters, cache: makeCache(), variants: progressiveVariants, preparationResponse
+    });
+    await offline.prepareAndDownloadBookForOffline(book, progressiveChapters);
+    assert.deepStrictEqual(env.audioRequests, [0]);
+
+    const send = global.__offlineApiSend;
+    let manifestCalls = 0;
+    let failManifestsFrom = 2;
+    global.__offlineApiSend = async (method, requestPath, body) => {
+      if (requestPath.endsWith('/manifest') && ++manifestCalls >= failManifestsFrom) {
+        throw new TypeError('network connection was lost');
+      }
+      return send(method, requestPath, body);
+    };
+    try {
+      Object.assign(preparationResponse, { readyChapters: 2, percent: 66 });
+      // The pass stores chapter 2, then the Wi-Fi blip hits its manifest re-read.
+      await offline.refreshOfflinePreparations();
+      assert.deepStrictEqual(env.audioRequests, [0, 1]);
+      let entry = offline.offlineEntryForBook(book.id);
+      assert.strictEqual(entry.state, 'preparing', 'a transient failure keeps the title pollable');
+      assert.strictEqual(entry.autoResume, true);
+      assert(entry.transferRetryAt > Date.now());
+
+      const delays = [];
+      for (let attempt = 0; attempt < 8; attempt++) {
+        const stored = offline.getOfflineManifest();
+        delays.push(stored[book.id].transferRetryAt - Date.now());
+        stored[book.id].transferRetryAt = Date.now() - 1;
+        localStorage.setItem('xandrio_offline_books:default', JSON.stringify(stored));
+        const before = manifestCalls;
+        await offline.refreshOfflinePreparations({ respectBackoff: true });
+        await offline.refreshOfflinePreparations({ respectBackoff: true });
+        assert.strictEqual(manifestCalls - before, 1, 'one manifest attempt per due retry, none in between');
+        assert.strictEqual(offline.offlineEntryForBook(book.id).state, 'preparing');
+      }
+      for (let index = 1; index < delays.length; index++) {
+        assert(delays[index] >= delays[index - 1] - 50, 'retry delays never shrink while failures continue');
+      }
+      assert(delays.at(-1) <= 5 * 60 * 1000 + 50, 'retry delay is bounded');
+      assert(delays.at(-1) >= 4 * 60 * 1000, 'retry delay grows towards its bound');
+
+      failManifestsFrom = Infinity;
+      Object.assign(preparationResponse, { state: 'ready', readyChapters: 3, percent: 100 });
+      const stored = offline.getOfflineManifest();
+      stored[book.id].transferRetryAt = Date.now() - 1;
+      localStorage.setItem('xandrio_offline_books:default', JSON.stringify(stored));
+      await offline.refreshOfflinePreparations({ respectBackoff: true });
+      assert.deepStrictEqual(env.audioRequests, [0, 1, 2]);
+      assert.strictEqual(offline.offlineStatusForBook(book.id).kind, 'downloaded');
+    } finally {
+      global.__offlineApiSend = send;
+    }
+  });
+
+  await test('preparation polling backs off from 15 to 30 seconds and stops while hidden', async () => {
+    const next = offline.nextPreparationPollDelay;
+    assert.strictEqual(next({ progressed: true }), 15000);
+    assert.strictEqual(next({ previousDelayMs: 15000 }), 22500);
+    assert.strictEqual(next({ previousDelayMs: 22500 }), 30000);
+    assert.strictEqual(next({ previousDelayMs: 30000 }), 30000);
+    assert.strictEqual(next({ previousDelayMs: 30000, progressed: true }), 15000);
+    assert.strictEqual(next({ hidden: true }), null);
+    assert.strictEqual(next({ hidden: true, transferring: true }), 30000);
+
+    const preparationResponse = { state: 'preparing', readyChapters: 0, percent: 0 };
+    installBrowser({
+      book, chapters: progressiveChapters, cache: makeCache(), variants: progressiveVariants, preparationResponse
+    });
+    const delays = [];
+    let pending = null;
+    window.setTimeout = (callback, delay) => {
+      delays.push(delay);
+      pending = callback;
+      return delays.length;
+    };
+    window.clearTimeout = () => { pending = null; };
+    try {
+      document.hidden = true;
+      await offline.prepareBookForOffline(book, progressiveChapters, { autoResume: true });
+      assert.deepStrictEqual(delays, [], 'a hidden idle page does not poll');
+      document.hidden = false;
+      await offline.refreshOfflinePreparations();
+      assert.deepStrictEqual(delays, [15000]);
+      for (let round = 0; round < 3; round++) {
+        const fire = pending;
+        pending = null;
+        fire();
+        await settle();
+      }
+      assert.deepStrictEqual(delays, [15000, 22500, 30000, 30000]);
+      preparationResponse.readyChapters = 1;
+      const fire = pending;
+      pending = null;
+      fire();
+      await settle(40);
+      assert.strictEqual(delays.at(-1), 15000, 'a newly ready chapter returns to the fast cadence');
+      assert.strictEqual(delays.every(delay => delay >= 15000 && delay <= 30000), true);
+    } finally {
+      document.hidden = true;
+      document.dispatchEvent(new Event('visibilitychange'));
+      delete window.setTimeout;
+      delete window.clearTimeout;
     }
   });
 

@@ -40,6 +40,7 @@ const { createPlaybackOrchestrator } = require('./lib/playback-orchestrator');
 const { isPlayableChapter } = require('./lib/chapter-playability');
 const { createPlaybackPrefetchCoordinator } = require('./lib/playback-prefetch');
 const { createOfflinePreparationCoordinator } = require('./lib/offline-preparation-coordinator');
+const { createOfflinePlaybackStitcher } = require('./lib/offline-playback-stitch');
 const { createOfflineTransferManifest } = require('./lib/offline-transfer-manifest');
 const { createOfflineWindowPreparation } = require('./lib/offline-window-preparation');
 const {
@@ -84,6 +85,7 @@ const {
 const { chapterStructureKey, positionMatchesChapterStructure } = require('./lib/chapter-structure');
 const { parseEpub } = require('./lib/epub-parser');
 const { BookImportError, createBookImporter } = require('./lib/book-importer');
+const { createImportClaims, sweepAbandonedImportClaims } = require('./lib/import-claims');
 const { createImportAudioWarmup } = require('./lib/import-audio-warmup');
 const { createUserLibraryState } = require('./lib/user-library-state');
 const { createSearchProviderRegistry } = require('./lib/search-providers');
@@ -426,6 +428,7 @@ app.use(express.static('public', {
 
 // Data directories
 const RUNTIME_DIR = path.join(DATA_DIR, 'runtime');
+const IMPORT_CLAIMS_DIR = path.join(DATA_DIR, 'import-claims');
 const BOOKS_FILE = path.join(DATA_DIR, 'books.json');
 const booksStore = createBooksStore({ filePath: BOOKS_FILE, jsonStore, maxBackups: 5 });
 const POSITIONS_FILE = path.join(DATA_DIR, 'positions.json');
@@ -461,14 +464,25 @@ const searchCoverService = createSearchCoverService({
   }),
   resolveOpenLibraryIdentity
 });
-const deletedBookIds = new Set();
+// bookId -> token of the deletion that owns the guard.
+const deletedBookIds = new Map();
 const bookMutationLocks = createBookMutationLocks();
 
-// A deletion guard is retired only when the same id is deliberately imported
-// again. Count-based eviction lets a burst of unrelated deletes resurrect old
-// generation intents while they are still capable of writing artifacts.
+// A deletion guard is retired when the same id is deliberately imported again,
+// or when the deletion that set it finishes its deferred sweeps. Count-based
+// eviction lets a burst of unrelated deletes resurrect old generation intents
+// while they are still capable of writing artifacts.
 function rememberDeletedBookId(bookId) {
-  deletedBookIds.add(bookId);
+  const token = { bookId };
+  deletedBookIds.set(bookId, token);
+  return token;
+}
+
+// Each deletion retires only its own guard. A re-import and a second delete
+// inside the first delete's sweep window replace the token, so the first
+// delete's last sweep must not clear the guard the second delete relies on.
+function retireDeletedBookId(bookId, token) {
+  if (token && deletedBookIds.get(bookId) === token) deletedBookIds.delete(bookId);
 }
 
 const bookArtifactCleaner = createBookArtifactCleaner({
@@ -491,7 +505,7 @@ const bookArtifactCleaner = createBookArtifactCleaner({
     }
   },
   withSweepLock: (bookId, task) => bookMutationLocks.withBookMutationLock(bookId, task),
-  onSweepsComplete: bookId => deletedBookIds.delete(bookId)
+  onSweepsComplete: retireDeletedBookId
 });
 
 // Unified 500 response lives in lib/http-error.js so route modules without
@@ -1666,6 +1680,23 @@ function shouldRefreshCachedCover(book, force = false, cachedCover = null) {
   return Boolean(cachedCover && !isDisplayQualityCover(cachedCover));
 }
 
+// Every cache/ path one import candidate may create: the download (or the
+// upload temp), the canonical source normalizeBookFile renames it to, the
+// extracted artifact and the cover.
+function importCandidatePaths({ id, originalName, sourcePath, acquirePath }) {
+  const paths = [];
+  for (const input of [sourcePath, acquirePath]) {
+    if (input && path.dirname(path.resolve(input)) === CACHE_DIR) paths.push(path.resolve(input));
+  }
+  if (!requestGuardIsSafeBookId(id)) return paths;
+  for (const name of [originalName, sourcePath, acquirePath]) {
+    const format = name && getBookFormatFromName(name);
+    if (format) paths.push(path.join(CACHE_DIR, `${id}.${format}`));
+  }
+  paths.push(getXBookPath(id), canonicalBookCoverPath(id));
+  return paths;
+}
+
 const bookImporter = createBookImporter({
   normalizeBook: ({ sourcePath, originalName, id }) => normalizeBookFile(sourcePath, originalName, id),
   // An alternative download candidate is probed by writing it to its own
@@ -1673,10 +1704,12 @@ const bookImporter = createBookImporter({
   // happens to belong to an already-imported book destroyed that book's source
   // file. assertImportTargetAvailable throws on a collision; the importer wants
   // a predicate.
-  // Alternative candidates are checked with isPrimary=false: the same-owner
-  // refresh exemption must never open an occupied alternative id.
+  // The importer also asks this for the primary id, so no caller can make it
+  // normalize over, take ownership of, or delete a live book's files.
   isImportTargetAvailable: (id, addedBy) =>
-    assertImportTargetAvailable(id, addedBy, false).then(() => true).catch(() => false),
+    assertImportTargetAvailable(id, addedBy).then(() => true).catch(() => false),
+  importClaims: createImportClaims({ directory: IMPORT_CLAIMS_DIR }),
+  importPaths: importCandidatePaths,
   // Validation, the quality check and persistence use the import document
   // service, so one import extracts each candidate once.
   document: {
@@ -1955,6 +1988,13 @@ function fixedNarrationWorker(voice) {
   return worker;
 }
 
+// Cancel generation claims in every manifest plan, the journal and the queue.
+// Cancelling only the queue leaves the plans owning the work, so reconcile
+// would restart it.
+function releaseGenerationClaimsWhere(matcher) {
+  return chunkedTTS.releaseClaimsWhere(matcher, { peers: [instantChunkedTTS, bookGuideNarrationTTS] });
+}
+
 function ttsForTier(tier, bookId) {
   return bookId ? fixedNarrationWorker(voiceForTier(tier, bookId)) : (tier === 'instant' ? instantChunkedTTS : chunkedTTS);
 }
@@ -2190,9 +2230,16 @@ async function ensureChapterAudioPrepared(bookId, chapterIndex, options = {}) {
     priorityForChunk: uniformPriority ? (() => priority) : getChapterGenerationPriority(0) };
   const jobs = clean ? cleanChapterAudioPrepareJobs : chapterAudioPrepareJobs;
   const key = `${bookId}:${chapterIndex}:${tts.variantKeyProvider()}`;
-  if (jobs.has(key)) {
+  // Offline packaging encodes straight from verified chunks. It may skip the
+  // stitched playback file; any consumer that needs that file restores it.
+  const assemble = clean || options.assemble !== false;
+  // An aborted record is only unwinding; joining it would hand this caller
+  // its retirement. Start a fresh record instead. The old record's cleanup
+  // deletes the key only while it still owns it.
+  if (jobs.has(key) && !jobs.get(key).controller.signal.aborted) {
     throwIfAborted();
     const record = jobs.get(key);
+    if (assemble) record.assemble = true;
     return consumeChapterPreparation(record, options.signal, async () => {
       await tts.claimChapter?.(bookId, chapterIndex, {
         origin: generationOrigin,
@@ -2210,11 +2257,17 @@ async function ensureChapterAudioPrepared(bookId, chapterIndex, options = {}) {
           }
         });
       }
-    }, consumerClaim);
+    }, consumerClaim).then(outputPath => (
+      // The shared job had already passed assembly when this consumer joined.
+      // Its chunks are ready, so a fresh job only concatenates them.
+      outputPath === null && assemble
+        ? ensureChapterAudioPrepared(bookId, chapterIndex, options)
+        : outputPath
+    ));
   }
 
   const controller = new AbortController();
-  const record = { controller, consumers: new Set(), settled: false, promise: null };
+  const record = { controller, consumers: new Set(), settled: false, promise: null, assemble };
   jobs.set(key, record);
   const jobSignal = controller.signal;
   const throwIfJobAborted = () => {
@@ -2284,6 +2337,7 @@ async function ensureChapterAudioPrepared(bookId, chapterIndex, options = {}) {
     if (!refreshed.chunks.every(chunk => chunk.status === 'ready')) {
       throw new Error('Not all chunks are ready');
     }
+    if (!record.assemble) return null;
 
     return clean
       ? tts.concatenateChunksClean(bookId, chapterIndex)
@@ -2592,6 +2646,8 @@ const playbackOrchestrator = createPlaybackOrchestrator({
   waitForJob: jobId => ttsQueue.waitFor(jobId),
   ensureChapterAudio: ensureChapterAudioPrepared,
   inspectChapterAudio,
+  // Continuous and HLS streams cross chapters the request path does not name.
+  holdChapterAudio: (bookId, chapterIndex) => audioCacheBudget.holdForPlayback(bookId, chapterIndex),
   getChapterContext: async (bookId, chapterIndex) => {
     const books = await loadJSON(BOOKS_FILE, {});
     const book = books[bookId];
@@ -2633,7 +2689,7 @@ const playbackPrefetch = createPlaybackPrefetchCoordinator({
   }),
   cancelChapters: async request => {
     const chapterIndexes = new Set(request.chapterIndexes);
-    const cancelled = ttsQueue.cancelWhere(claim =>
+    const cancelled = await releaseGenerationClaimsWhere(claim =>
       claim.origin === GENERATION_ORIGIN.PLAYBACK_LOOKAHEAD &&
       claim.priority === GENERATION_PRIORITY.LOOKAHEAD &&
       claim.bookId === request.bookId &&
@@ -3345,6 +3401,7 @@ function downloadImportCommand(body, { download = searchProviders.download.bind(
         SUPPORTED_BOOK_FORMATS.has(String(alternative.format).toLowerCase()) &&
         isAcceptableFallbackMatch(alternative, expected, selectedIdentity)
       ),
+      acquirePath: path.join(CACHE_DIR, alternativeFilename),
       acquire: async progress => {
         const alternativePath = path.join(CACHE_DIR, alternativeFilename);
         try {
@@ -3371,6 +3428,7 @@ function downloadImportCommand(body, { download = searchProviders.download.bind(
     gutenbergId,
     selectedIdentity,
     alternatives: alternativeCandidates,
+    acquirePath: path.join(CACHE_DIR, safeFilename),
     acquire: progress => acquireDownloadSource(body, path.join(CACHE_DIR, safeFilename), progress)
   };
 }
@@ -3381,22 +3439,23 @@ function downloadImportCommand(body, { download = searchProviders.download.bind(
 // walked straight into that book's record and cache artifacts. Ownership is
 // checked here, before anything is written.
 //
-// isPrimary distinguishes the requested id from an alternative candidate id:
-// re-importing your own book stays a legitimate refresh, but an alternative
-// that happens to carry an id this user already imported is a DIFFERENT book —
-// treating it as available would let this import delete/replace that book's
-// canonical artifact during normalization.
-async function assertImportTargetAvailable(bookId, addedBy, isPrimary = true) {
+// Every occupied id is refused, the requester's own included. A same-owner
+// "refresh" used to pass, but normalization then replaced the live
+// cache/<id>.<ext> and the importer took ownership of it, so a cancel, a failed
+// validation or a losing alternative deleted the live book's files and left
+// its record pointing at nothing; a successful refresh rewrote the record
+// wholesale. A re-import of an owned book now reports that book
+// (existingBookId), which the client shows as already in the library.
+async function assertImportTargetAvailable(bookId, addedBy) {
   const books = await loadJSON(BOOKS_FILE, {});
   const existing = books?.[bookId];
   if (!existing) return;
   if (addedBy && existing.addedBy && existing.addedBy === addedBy) {
-    if (isPrimary) return;
-    throw new BookImportError('An imported book already uses this identifier', {
+    throw Object.assign(new BookImportError('Book already exists in library', {
       statusCode: 409,
-      response: { error: 'A different book already uses this identifier' },
+      response: { error: 'Book already exists in library' },
       existingBookId: bookId
-    });
+    }), { ownedByRequester: true });
   }
   throw new BookImportError('A different book already uses this identifier', {
     statusCode: 409,
@@ -3416,7 +3475,14 @@ async function importDownloadedBook(body, progress, { addedBy = null } = {}) {
     .filter(Boolean)
     .map(String);
   return bookMutationLocks.withBookMutationLocks(candidateIds, async () => {
-    await assertImportTargetAvailable(command.id, addedBy);
+    try {
+      await assertImportTargetAvailable(command.id, addedBy);
+    } catch (error) {
+      // The reader already owns this book. Put it back on their shelf, as a
+      // completed import would, and report it instead of importing again.
+      if (error?.ownedByRequester) await addBookToShelf(addedBy, command.id);
+      throw error;
+    }
     deletedBookIds.delete(command.id);
     const result = await importWithStorageAdmission(command, progress);
     // A fallback candidate can persist under an id other than command.id, so
@@ -3511,11 +3577,14 @@ app.post('/api/download', async (req, res) => {
     }
   }
   const importUserId = positionUserId(req);
+  if (await rejectWhenStorageFull(res)) return;
+  // No await may separate this running-job lookup from createImportJob below;
+  // otherwise two identical requests both miss the lookup while the first
+  // waits on the storage check, and both start an import.
   const existing = [...importJobs.values()].find(job =>
     job.ownerId === importUserId && job.status === 'running' &&
     job.requestHash && job.requestHash === req.body?.hash);
   if (existing) return res.status(202).json({ jobId: existing.id });
-  if (await rejectWhenStorageFull(res)) return;
   const releaseImportPermit = downloadImportGate.tryAcquire();
   if (!releaseImportPermit) {
     res.setHeader('Retry-After', '1');
@@ -3868,6 +3937,7 @@ const bookDeletionService = createBookDeletionService({
     ]);
     await offlineWindowPreparation.cancelBook(bookId);
     await offlineAudioPackage.cancelBook(bookId);
+    await offlinePlaybackStitcher.cancelBook(bookId);
     await Promise.all([
       chunkedTTS.waitForIdle(bookId),
       instantChunkedTTS.waitForIdle(bookId),
@@ -3898,8 +3968,9 @@ app.get('/api/offline/deletions', async (req, res) => {
     if (!Number.isSafeInteger(since)) {
       return res.status(400).json({ error: 'Invalid deletion cursor' });
     }
-    await bookDeletionLog.reconcile(await loadJSON(BOOKS_FILE, {}));
-    res.json(await bookDeletionLog.listSince(since));
+    const books = await loadJSON(BOOKS_FILE, {});
+    await bookDeletionLog.reconcile(books);
+    res.json(await bookDeletionLog.listSince(since, { books }));
   } catch (err) {
     sendServerError(res, err, 'Failed to reconcile deleted books');
   }
@@ -4186,7 +4257,7 @@ async function publishStitchedOfflineSourceMarker(sourcePath, recipe, signal = n
   const markerPath = `${sourcePath}.narration-artifact.json`;
   const tmpPath = `${markerPath}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.tmp`;
   try {
-    await fs.writeFile(tmpPath, JSON.stringify(marker), { mode: 0o600, signal });
+    await fs.writeFile(tmpPath, JSON.stringify(marker), signal ? { mode: 0o600, signal } : { mode: 0o600 });
     throwIfOfflinePreparationAborted(signal);
     // No await separates the last cancellation check from publication.
     fsSync.renameSync(tmpPath, markerPath);
@@ -4273,7 +4344,35 @@ async function inspectOfflineChapterAudio(bookId, chapterIndex, request = {}) {
   };
 }
 
-async function prepareOfflineChapterAudio(request) {
+/**
+ * Chunk sources for a single-pass offline encode, or null when the stitched
+ * playback file must stand in. Every planned chunk must be present in order
+ * and carry verified provenance for the current recipe.
+ */
+async function verifiedOfflineChunkSources(recipe, signal = null) {
+  const artifacts = recipe?.plan?.artifacts || [];
+  if (artifacts.length === 0) return null;
+  const { worker, book, chapterIndex } = recipe;
+  // Reconstruct only when no live manifest exists, so an in-flight generation
+  // for another consumer keeps its own chunk state.
+  const manifest = worker.getChapterManifest?.(book.id, chapterIndex) ||
+    await worker.reconstructChapterManifest(book.id, chapterIndex, recipe.chapter.text, book.language || 'en');
+  throwIfOfflinePreparationAborted(signal);
+  const chunks = manifest?.chunks || [];
+  if (
+    chunks.length !== artifacts.length ||
+    !chunks.every((chunk, index) => chunk.status === 'ready' && chunk.path === artifacts[index].outputPath)
+  ) return null;
+  if (await inspectOfflineSourceChunks(recipe, signal) !== 'verified') return null;
+  return artifacts.map(artifact => artifact.outputPath);
+}
+
+/**
+ * Narration phase of offline preparation: make every chunk of the chapter
+ * durable at the request's generation priority. It never encodes the offline
+ * package, so the caller can narrate the next chapter while this one encodes.
+ */
+async function prepareOfflineChapterSource(request) {
   const identity = pinnedOfflinePreparationIdentity(request);
   const existing = await offlineAudioPackage.inspectChapter({ bookId: request.bookId,
     chapterIndex: request.chapterIndex, sourceVariantKey: identity.sourceVariantKey });
@@ -4281,7 +4380,7 @@ async function prepareOfflineChapterAudio(request) {
     if (!existing.ready || existing.artifactId !== identity.retainedArtifacts?.[request.chapterIndex]) {
       throw new Error('Retained offline audio is no longer available');
     }
-    return existing;
+    return { identity, existing, recipe: null, hasLegacyPackage: false, sourcePath: null };
   }
   const recipe = await offlineSourceRecipe(request.bookId, request.chapterIndex, identity, request.signal);
   // Legacy compact audio can outlive its stitched source. Validate and retain
@@ -4294,18 +4393,53 @@ async function prepareOfflineChapterAudio(request) {
     signal: request.signal,
     tier: 'active',
     tts: offlineSourceWorker(identity),
-    voice: identity.sourceVoice
+    voice: identity.sourceVoice,
+    // Chunk provenance lets the package skip the stitched playback file.
+    assemble: !recipe?.plan?.artifacts?.length
   });
-  const sourceIdentity = recipe && !hasLegacyPackage
-    ? await resolveStitchedOfflineSource(sourcePath, recipe, request.signal)
-    : null;
-  return offlineAudioPackage.ensureChapter({
+  return { identity, existing, recipe, hasLegacyPackage, sourcePath };
+}
+
+/**
+ * Encode phase of offline preparation: one ffmpeg pass from the verified
+ * chunks to the compact package, then hash, fsync, and atomic publication.
+ * Falls back to the stitched playback file only when chunk proof is missing.
+ */
+async function finalizeOfflineChapterAudio(request, source) {
+  const { identity, existing, recipe, hasLegacyPackage } = source;
+  if (identity.retained) return existing;
+  let sourcePath = source.sourcePath;
+  let sourcePaths = null;
+  let provenance = 'legacy-unverified';
+  if (recipe && !hasLegacyPackage) {
+    sourcePaths = await verifiedOfflineChunkSources(recipe, request.signal);
+    if (sourcePaths) {
+      provenance = 'verified';
+    } else {
+      // Reclaimed or pre-provenance chunks: the stitched file is the source.
+      if (!sourcePath) {
+        sourcePath = await ensureChapterAudioPrepared(request.bookId, request.chapterIndex, {
+          priority: request.priority,
+          origin: request.origin,
+          requestId: request.requestId,
+          signal: request.signal,
+          tier: 'active',
+          tts: offlineSourceWorker(identity),
+          voice: identity.sourceVoice
+        });
+      }
+      const sourceIdentity = await resolveStitchedOfflineSource(sourcePath, recipe, request.signal);
+      provenance = sourceIdentity?.provenance === 'verified' ? 'verified' : 'legacy-unverified';
+    }
+  }
+  const packaged = await offlineAudioPackage.ensureChapter({
     bookId: request.bookId,
     chapterIndex: request.chapterIndex,
-    sourcePath,
+    sourcePath: sourcePaths ? null : sourcePath,
+    sourcePaths,
     sourceVariantKey: identity.sourceVariantKey,
     sourceFingerprint: recipe?.sourceFingerprint,
-    provenance: sourceIdentity?.provenance === 'verified' ? 'verified' : 'legacy-unverified',
+    provenance,
     signal: request.signal,
     beforePublish: async () => {
       if (request.signal?.aborted) throw Object.assign(new Error('Offline preparation cancelled'), { name: 'AbortError' });
@@ -4328,6 +4462,59 @@ async function prepareOfflineChapterAudio(request) {
       }
     }
   });
+  // Playback readiness, voice fallback and narration status still read the
+  // stitched file. Rebuild it after publication, off the narration pipeline.
+  if (sourcePaths && packaged?.ready) {
+    offlinePlaybackStitcher.schedule({
+      key: `${request.bookId}:${request.chapterIndex}:${identity.sourceVariantKey}`,
+      bookId: request.bookId,
+      chapterIndex: request.chapterIndex,
+      identity
+    });
+  }
+  return packaged;
+}
+
+/**
+ * Rebuild the stitched playback chapter from verified chunks and publish its
+ * provenance marker. Returns null when the file exists or the chunks cannot
+ * prove it; this optional work never narrates.
+ */
+async function stitchOfflinePlaybackChapter(recipe, signal = null) {
+  const outputPath = recipe.worker.chapterPath(recipe.book.id, recipe.chapterIndex);
+  const exists = await fs.stat(outputPath).then(stat => stat.size > 0, () => false);
+  if (exists) return null;
+  if (!await verifiedOfflineChunkSources(recipe, signal)) return null;
+  const stitchedPath = await recipe.worker.concatenateChunks(
+    recipe.book.id,
+    recipe.chapterIndex,
+    signal ? { signal } : undefined
+  );
+  throwIfOfflinePreparationAborted(signal);
+  await publishStitchedOfflineSourceMarker(stitchedPath, recipe, signal);
+  return stitchedPath;
+}
+
+// One single-threaded stitch at a time, beside the one package encode, keeps
+// most host CPU for narration.
+const offlinePlaybackStitcher = createOfflinePlaybackStitcher({
+  stitch: async ({ bookId, chapterIndex, identity, signal }) => {
+    const recipe = await offlineSourceRecipe(bookId, chapterIndex, identity, signal);
+    if (recipe) await stitchOfflinePlaybackChapter(recipe, signal);
+  },
+  retain: (bookId, chapterIndex) => audioCacheBudget.retain(bookId, chapterIndex),
+  onError: (error, job) => {
+    console.warn(`Offline playback stitch failed for ${job.bookId}:${job.chapterIndex}: ${error.message}`);
+  }
+});
+
+async function prepareOfflineChapterAudio(request) {
+  const release = audioCacheBudget.retain(request.bookId, request.chapterIndex);
+  try {
+    return await finalizeOfflineChapterAudio(request, await prepareOfflineChapterSource(request));
+  } finally {
+    release();
+  }
 }
 
 const offlinePreparationCoordinator = createOfflinePreparationCoordinator({
@@ -4343,8 +4530,19 @@ const offlinePreparationCoordinator = createOfflinePreparationCoordinator({
     request
   ),
   shouldPrepareChapter: ({ chapter }) => !chapter?.empty,
-  prepareChapter: prepareOfflineChapterAudio,
-  cancelRequest: requestId => ttsQueue.cancelWhere({ requestId }),
+  // Narration for later chapters keeps the TTS engine busy while one bounded
+  // encode worker packages earlier chapters.
+  prepareChapter: prepareOfflineChapterSource,
+  finalizeChapter: finalizeOfflineChapterAudio,
+  // Narrated chunks may wait behind other encodes. Recency alone does not
+  // protect old chunks reused from an earlier session.
+  retainChapter: ({ bookId, chapterIndex }) => audioCacheBudget.retain(bookId, chapterIndex),
+  cancelRequest: requestId => {
+    if (typeof requestId !== 'string' || !requestId) return;
+    // Plans and queue are released synchronously; only journal cleanup is awaited.
+    releaseGenerationClaimsWhere(claim => claim.requestId === requestId).catch(error =>
+      console.warn(`Offline request release failed for ${requestId}: ${error.message}`));
+  },
   discardRequest: requestId => generationJournal.removeChaptersForRequest(requestId),
   beforeReadyCommit: rememberReadyOfflinePackage,
   onReady: async event => {
@@ -5101,6 +5299,22 @@ if (require.main === module) {
       );
     }
     startupPhase('artifact paths');
+    // A missing books.json reads as an empty library; sweep nothing then.
+    const importClaimSweep = await sweepAbandonedImportClaims({
+      directory: IMPORT_CLAIMS_DIR,
+      cacheDir: CACHE_DIR,
+      loadBooks: async () => {
+        await fs.access(BOOKS_FILE);
+        return booksStore.load();
+      }
+    }).catch(error => {
+      console.error(`Interrupted import cleanup failed: ${error.message}`);
+      return { removed: 0 };
+    });
+    if (importClaimSweep.removed) {
+      console.log(`Removed ${importClaimSweep.removed} file(s) left by interrupted imports`);
+    }
+    startupPhase('interrupted imports');
     const recoveredRebuilds = await chapterRebuildService.recoverAll();
     if (recoveredRebuilds.length) {
       console.log(`Recovered ${recoveredRebuilds.length} interrupted chapter rebuild(s)`);
@@ -5385,6 +5599,7 @@ module.exports.__test = {
   bookDocument,
   xbookStore,
   rememberDeletedBookId,
+  retireDeletedBookId,
   deletedBookIds,
   concurrencyLimits: CONCURRENCY_LIMITS,
   getAnnasConfig,
@@ -5405,5 +5620,7 @@ module.exports.__test = {
   refreshSettingsSnapshots,
   consumeChapterPreparation,
   resolveStitchedOfflineSource,
+  verifiedOfflineChunkSources,
+  stitchOfflinePlaybackChapter,
   inspectOfflineSourceMarker
 };

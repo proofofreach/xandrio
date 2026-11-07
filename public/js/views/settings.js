@@ -11,6 +11,7 @@ import { confirmSheet } from '../ui/confirm.js';
 import { showToast } from '../ui/toast.js';
 import { renderSegmentedControl } from '../ui/segmented.js';
 import { registerSheet } from '../ui/sheets.js';
+import { applyAppUpdate } from '../sw-update.mjs';
 
 const SETTINGS_PAGES = {
   playback: {},
@@ -298,7 +299,25 @@ export function initSettings(options = {}) {
     }
   }
   versionCheck?.addEventListener('click', checkAppVersion);
-  versionReload?.addEventListener('click', () => location.reload());
+  let versionUpdatePending = false;
+  versionReload?.addEventListener('click', async () => {
+    if (versionUpdatePending) return;
+    versionUpdatePending = true;
+    versionReload.disabled = true;
+    versionCheck.disabled = true;
+    try {
+      // The tap is consent to restart, including while audio is playing.
+      const result = await applyAppUpdate({
+        onStatus: text => { if (versionStatus) versionStatus.textContent = text; }
+      });
+      if (result.ok) return;
+    } catch {
+      if (versionStatus) versionStatus.textContent = 'The update did not install. Try again.';
+    }
+    versionUpdatePending = false;
+    versionReload.disabled = false;
+    versionCheck.disabled = false;
+  });
 
   function loadSettingsSection(section, { hub = false } = {}) {
     renderClientSettings();
