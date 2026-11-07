@@ -193,6 +193,10 @@ function harness(overrides = {}) {
     const past = await open('measured-b', { resumeSeconds: 120 });
     assert.strictEqual(past.resumeAccepted, false);
     assert.strictEqual(past.startOffsetSeconds, 5);
+    // The refused reconnect replaced the timeline; the next one must still
+    // know the first chapter's length and refuse too.
+    assert.strictEqual((await open('measured-b', { resumeSeconds: 120 })).resumeAccepted, false);
+    assert.strictEqual(orchestrator.continuousTimeline('measured-b').durations[0], 100);
   });
 
   await test('continuous playback skips a chapter that TTS finds unspeakable', async () => {
