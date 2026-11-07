@@ -512,6 +512,7 @@ function fakeAudio() {
         chapterLoadPending() { return Boolean(chapterLoadIntent); },
         pausePlaybackForUser,
         handleChunkError,
+        retryPlayerFailure,
         cancelPlaybackRecovery,
         invalidatePlaybackRecoveryForUserSeek,
         offerManualPlaybackRecovery
@@ -1109,6 +1110,7 @@ function fakeAudio() {
       appImports.toasts.length = 0;
       const finitePlayer = engine('finite-429');
       finitePlayer.isContinuous = false;
+      finitePlayer.getCurrentTime = () => 300;
       globalThis.__playbackAppHarness.configure({
         book: { id: 'book-a' },
         chapters: [{ title: 'One' }, { title: 'Two' }],
@@ -1134,6 +1136,14 @@ function fakeAudio() {
       assert(
         appImports.toasts.some(([message]) => /12 seconds/.test(message)),
         'the user is told how long to wait, from Retry-After'
+      );
+      // Retry from the failure card resumes where listening stopped; it used
+      // to reload the chapter from zero.
+      await globalThis.__playbackAppHarness.retryPlayerFailure();
+      assert.deepStrictEqual(
+        finitePlayer.calls.filter(call => call[0] === 'seek').at(-1),
+        ['seek', 300],
+        'the rate-limit retry keeps the listening position'
       );
 
       // --- Manual Resume must play inside the activation window -------------
