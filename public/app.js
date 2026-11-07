@@ -820,7 +820,9 @@ function scheduleAutomaticPlaybackRecovery(error, snapshot) {
     }
     setPlaybackReliabilityState('hidden', '');
     hideAudioLoading();
-    const limited = reportPlaybackFailure(error, { retry: () => loadChapter(currentChapter) });
+    // Retry resumes where listening stopped, through the same lineage a
+    // manual Resume uses; a bare loadChapter would restart the chapter.
+    const limited = reportPlaybackFailure(error, { retry: () => prepareManualResume(lineageSnapshot) });
     showToast(`${limited.title}. ${limited.detail}`, 'error', { key: 'player-failure' });
     return true;
   }
@@ -2986,14 +2988,7 @@ function isPlaybackSourcePreparing() {
 function recoverIdleUnreadyPlayback() {
   if (!currentBook || !chunkPlayer) return;
   if (isPlaybackSourcePreparing()) return;
-  if (Date.now() < rateLimitedUntil) {
-    const wait = Math.ceil((rateLimitedUntil - Date.now()) / 1000);
-    setPlaybackReliabilityState('hidden', '');
-    const limited = reportPlaybackFailure({ status: 429, retryAfterSeconds: wait }, { retry: () => loadChapter(currentChapter) });
-    showToast(`${limited.title}. ${limited.detail}`, 'error', { key: 'player-failure' });
-    return;
-  }
-  const snapshot = retainRecoverySnapshot({
+  const position = {
     bookId: currentBook.id,
     chapterIndex: currentChapter,
     startOffsetSeconds: Math.max(0, Number(chunkPlayer.getCurrentTime?.()) || 0),
@@ -3002,7 +2997,15 @@ function recoverIdleUnreadyPlayback() {
     endChapterIndex: Number.isInteger(chunkPlayer.endChapterIndex)
       ? chunkPlayer.endChapterIndex
       : null
-  });
+  };
+  if (Date.now() < rateLimitedUntil) {
+    const wait = Math.ceil((rateLimitedUntil - Date.now()) / 1000);
+    setPlaybackReliabilityState('hidden', '');
+    const limited = reportPlaybackFailure({ status: 429, retryAfterSeconds: wait }, { retry: () => prepareManualResume(position) });
+    showToast(`${limited.title}. ${limited.detail}`, 'error', { key: 'player-failure' });
+    return;
+  }
+  const snapshot = retainRecoverySnapshot(position);
   if (!snapshot) return;
   offerManualPlaybackRecovery(
     Object.assign(new Error('Playback source is not ready'), { code: 'SOURCE_NOT_READY' }),
