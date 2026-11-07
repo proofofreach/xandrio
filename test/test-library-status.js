@@ -46,6 +46,16 @@ function test(name, fn) {
     assert.strictEqual(state.percent, 46);
     assert.strictEqual(state.tap, 'menu');
   });
+  test('a partial copy that is still preparing states the chapters on the device', () => {
+    const state = deviceState({ kind: 'preparing', preparedChapters: 13, cachedChapters: 9, totalChapters: 21 });
+    assert.strictEqual(state.long, '9/21 on device · Preparing');
+    assert.strictEqual(state.short, '9/21 saved');
+    assert.strictEqual(state.glyph, 'ring');
+    assert.strictEqual(state.percent, 43);
+    assert.strictEqual(state.tap, 'menu');
+    assert.notStrictEqual(state.kind, 'downloaded');
+  });
+
   test('a failed offline preparation offers retry and states the failure in words', () => {
     const state = deviceState({ kind: 'preparation-error' });
     assert.strictEqual(state.long, 'Narration failed');

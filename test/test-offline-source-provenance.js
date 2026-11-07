@@ -103,6 +103,117 @@ const sha = bytes => `sha256-${crypto.createHash('sha256').update(bytes).digest(
       );
     });
 
+    await test('single-pass offline encodes use verified chunks in manifest order', async () => {
+      const chunkFingerprints = ['1', '2'].map(digit => digit.repeat(64));
+      const chunkPaths = chunkFingerprints.map((_, index) => path.join(dir, `chunked_ch0_chunk${index}.mp3`));
+      for (const [index, chunkPath] of chunkPaths.entries()) {
+        const chunkBytes = Buffer.from(`chunk ${index}`);
+        await fs.writeFile(chunkPath, chunkBytes);
+        await fs.writeFile(`${chunkPath}.narration-artifact.json`, JSON.stringify({
+          version: 2,
+          fingerprint: chunkFingerprints[index],
+          bytes: chunkBytes.length,
+          contentHash: sha(chunkBytes),
+          provenance: 'verified'
+        }));
+      }
+      let manifest = {
+        chunks: chunkPaths.map((chunkPath, index) => ({ index, status: 'ready', path: chunkPath }))
+      };
+      const reconstructed = [];
+      const chunkRecipe = {
+        ...recipe,
+        plan: {
+          artifacts: chunkPaths.map((outputPath, index) => ({ outputPath, fingerprint: chunkFingerprints[index] }))
+        },
+        worker: {
+          getChapterManifest: () => manifest,
+          reconstructChapterManifest: async () => {
+            reconstructed.push('reconstruct');
+            return manifest;
+          },
+          concatenateChunks: async () => { throw new Error('single-pass encode must not stitch'); }
+        }
+      };
+      assert.deepStrictEqual(await __test.verifiedOfflineChunkSources(chunkRecipe), chunkPaths);
+      assert.deepStrictEqual(reconstructed, []);
+
+      // A plan that dropped a chunk would encode a truncated chapter.
+      manifest = { chunks: [...manifest.chunks, { index: 2, status: 'ready', path: path.join(dir, 'extra.mp3') }] };
+      assert.strictEqual(await __test.verifiedOfflineChunkSources(chunkRecipe), null);
+      manifest = { chunks: manifest.chunks.slice(0, 2).map(chunk => ({ ...chunk })) };
+      manifest.chunks[1].status = 'pending';
+      assert.strictEqual(await __test.verifiedOfflineChunkSources(chunkRecipe), null);
+
+      // Without a live manifest the chapter is reconstructed from disk.
+      manifest = { chunks: chunkPaths.map((chunkPath, index) => ({ index, status: 'ready', path: chunkPath })) };
+      const live = chunkRecipe.worker.getChapterManifest;
+      chunkRecipe.worker.getChapterManifest = () => null;
+      assert.deepStrictEqual(await __test.verifiedOfflineChunkSources(chunkRecipe), chunkPaths);
+      assert.deepStrictEqual(reconstructed, ['reconstruct']);
+      chunkRecipe.worker.getChapterManifest = live;
+
+      // Legacy or tampered chunks fall back to the stitched source path.
+      await fs.unlink(`${chunkPaths[1]}.narration-artifact.json`);
+      assert.strictEqual(await __test.verifiedOfflineChunkSources(chunkRecipe), null);
+      await fs.writeFile(`${chunkPaths[1]}.narration-artifact.json`, JSON.stringify({
+        version: 2,
+        fingerprint: chunkFingerprints[1],
+        bytes: 7,
+        contentHash: sha(Buffer.from('changed')),
+        provenance: 'verified'
+      }));
+      assert.strictEqual(await __test.verifiedOfflineChunkSources(chunkRecipe), null);
+      assert.strictEqual(await __test.verifiedOfflineChunkSources({ ...chunkRecipe, plan: null }), null);
+    });
+
+    await test('a chunk-sourced package restores the stitched playback file with verified provenance', async () => {
+      const chunkFingerprints = ['3', '4'].map(digit => digit.repeat(64));
+      const chunkPaths = chunkFingerprints.map((_, index) => path.join(dir, `stitch_ch0_chunk${index}.mp3`));
+      for (const [index, chunkPath] of chunkPaths.entries()) {
+        const chunkBytes = Buffer.from(`stitch chunk ${index}`);
+        await fs.writeFile(chunkPath, chunkBytes);
+        await fs.writeFile(`${chunkPath}.narration-artifact.json`, JSON.stringify({
+          version: 2, fingerprint: chunkFingerprints[index], bytes: chunkBytes.length,
+          contentHash: sha(chunkBytes), provenance: 'verified'
+        }));
+      }
+      const stitchedPath = path.join(dir, 'stitch_ch0.mp3');
+      const concatenations = [];
+      const stitchRecipe = {
+        ...recipe,
+        plan: { artifacts: chunkPaths.map((outputPath, index) => ({ outputPath, fingerprint: chunkFingerprints[index] })) },
+        worker: {
+          chapterPath: () => stitchedPath,
+          getChapterManifest: () => ({
+            chunks: chunkPaths.map((chunkPath, index) => ({ index, status: 'ready', path: chunkPath }))
+          }),
+          reconstructChapterManifest: async () => { throw new Error('a live manifest exists'); },
+          concatenateChunks: async (_bookId, _chapterIndex, options) => {
+            concatenations.push(options?.signal ? 'signal' : 'none');
+            await fs.writeFile(stitchedPath, 'stitched playback master');
+            return stitchedPath;
+          }
+        }
+      };
+      assert.strictEqual(await __test.stitchOfflinePlaybackChapter(stitchRecipe), stitchedPath);
+      assert.deepStrictEqual(concatenations, ['none']);
+      // The marker makes the file independent proof once its chunks are reclaimed.
+      const identity = await __test.resolveStitchedOfflineSource(stitchedPath, stitchRecipe);
+      assert.strictEqual(identity.provenance, 'verified');
+      assert.strictEqual(concatenations.length, 1);
+
+      // An existing playback file is never rebuilt.
+      assert.strictEqual(await __test.stitchOfflinePlaybackChapter(stitchRecipe), null);
+      assert.strictEqual(concatenations.length, 1);
+
+      // Unverified chunks are left alone: stitching is optional and never narrates.
+      await fs.unlink(stitchedPath);
+      await fs.unlink(`${chunkPaths[0]}.narration-artifact.json`);
+      assert.strictEqual(await __test.stitchOfflinePlaybackChapter(stitchRecipe), null);
+      assert.strictEqual(concatenations.length, 1);
+    });
+
     await test('one cancelled consumer does not abort shared chapter preparation', async () => {
       const sharedController = new AbortController();
       let resolveShared;
