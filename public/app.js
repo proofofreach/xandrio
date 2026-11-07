@@ -9,7 +9,7 @@ import { initCoverImages } from './js/ui/cover-images.js';
 import { initKeys, onActivate } from './js/ui/keys.js';
 import { registerSheet } from './js/ui/sheets.js';
 import { initBookmarks, renderBookmarksSection, addBookmarkAtCurrentPosition } from './js/features/bookmarks.js';
-import { initOffline, prepareOfflineStorage, renderOfflineState, queuePendingPosition, ensureRollingOfflineWindow, hasOfflineBookData, getOfflineBookData, shouldUseOfflineBookFallback, offlinePlaybackUrl, localChapterSource, markLocalChapterSuspect, classifyLocalChapter, OFFLINE_WORKER_SCRIPT_URL, certifyOfflineWorkerController, offlineWorkerControllerState } from './js/features/offline.js';
+import { initOffline, prepareOfflineStorage, renderOfflineState, queuePendingPosition, ensureRollingOfflineWindow, hasOfflineBookData, getOfflineBookData, shouldUseOfflineBookFallback, offlinePlaybackUrl, localChapterSource, markLocalChapterSuspect, classifyLocalChapter, OFFLINE_WORKER_SCRIPT_URL, certifyOfflineWorkerController, offlineWorkerControllerState, offlineWorkInProgress } from './js/features/offline.js';
 import { initPronunciationRepair } from './js/features/pronunciations.js';
 import { initQueueStatus } from './js/features/queue-status.js';
 import { loadClientSettings, getSkipInterval, isSmartRewindEnabled, isRollingOfflineEnabled } from './js/client-settings.js';
@@ -33,6 +33,7 @@ import { applyRewindForResume, createSmartRewindController } from './js/smart-re
 import { initListeningQueue, loadListeningQueue, getListeningQueueBooks, addToListeningQueue, advanceListeningQueue, getBookPlaybackSettings, saveBookPlaybackSettings } from './js/features/listening-queue.js';
 import { initDeploymentGuard } from './js/deployment-origin.js';
 import { createPlaybackHealth, platformClass, sendPlaybackHealthReport } from './js/playback-health.mjs';
+import { startPageExitMonitor } from './js/page-exit-monitor.mjs';
 import { createPlayerStatus, describePlaybackFailure, isPlayerFailureState } from './js/player-status.mjs';
 
 // SVG Icon constants
@@ -3287,6 +3288,22 @@ function setupMediaSessionHandlers() {
 }
 
 function setupLifecycleHandlers() {
+  // Installed app only: it runs as one instance, so a live heartbeat from a
+  // second browser tab cannot be mistaken for a crashed session.
+  const standalone = navigator.standalone === true || Boolean(window.matchMedia?.('(display-mode: standalone)')?.matches);
+  if (standalone) {
+    startPageExitMonitor({
+      isPlaying: () => Boolean(chunkPlayer?.isPlaying),
+      offlineWork: offlineWorkInProgress,
+      report: exitType => sendPlaybackHealthReport({
+        v: 1,
+        platform: platformClass(navigator.userAgent, navigator.maxTouchPoints),
+        standalone: true,
+        backend: 'unknown',
+        errors: { [exitType]: 1 }
+      }, { apiBase: API_BASE })
+    });
+  }
   document.addEventListener('visibilitychange', () => {
     recordPlaybackEvent({
       type: 'visibilitychange',

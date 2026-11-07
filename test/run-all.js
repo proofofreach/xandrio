@@ -80,6 +80,7 @@ const tests = [
   'test-bookmarks-routes.js',
   'test-client-offline-identity.js',
   'test-playback-health.js',
+  'test-page-exit-monitor.js',
   'test-smart-rewind.js',
   'test-smart-rewind-sync.js',
   'test-resume-activation.js',

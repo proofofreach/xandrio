@@ -202,6 +202,15 @@ export function offlineDownloadsSupported() {
     typeof window.caches?.open === 'function';
 }
 
+// True while this page downloads, verifies or migrates offline audio: the work
+// that holds whole chapters in memory. Read by the page-exit monitor.
+export function offlineWorkInProgress() {
+  return Boolean(
+    activeDownloadCompletion || manifestAudit ||
+    rollingCompletions.size > 0 || legacyCacheMigrations.size > 0
+  );
+}
+
 export function initOffline(options = {}) {
   deps = options;
   // Distrust is session state, and this is the session boundary. A chapter that
