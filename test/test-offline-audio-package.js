@@ -583,6 +583,109 @@ async function withCache(prefix, callback) {
     });
   });
 
+  await test('encodes verified chunks in one pass through a concat list it then removes', async () => {
+    await withCache('offline-audio-chunks-', async cacheDir => {
+      const chunkPaths = ['book_ch0_chunk0.mp3', "book_ch0_chunk1's.mp3"].map(name => path.join(cacheDir, name));
+      for (const chunkPath of chunkPaths) await fs.writeFile(chunkPath, 'rendered chunk');
+      const calls = [];
+      let listContent = '';
+      const audioPackage = createOfflineAudioPackage({
+        cacheDir,
+        runCommand: fakeCommandRunner({
+          onCall: (command, args) => {
+            calls.push({ command, args });
+            const listIndex = args.indexOf('concat');
+            if (listIndex >= 0) listContent = require('fs').readFileSync(args[listIndex + 4], 'utf8');
+          }
+        })
+      });
+      const result = await audioPackage.ensureChapter({
+        bookId: 'book-1',
+        chapterIndex: 0,
+        sourcePaths: chunkPaths,
+        sourceVariantKey: 'voice-a:br160k',
+        sourceFingerprint: 'c'.repeat(64),
+        provenance: 'verified'
+      });
+      assert.strictEqual(result.ready, true);
+      assert.strictEqual(result.provenance, 'verified');
+      assert.match(result.variantKey, /offline-mp3-v1:br48k$/);
+      const encodes = calls.filter(call =>
+        call.command === 'ffmpeg' && call.args[call.args.lastIndexOf('-f') + 1] === 'mp3'
+      );
+      assert.strictEqual(encodes.length, 1);
+      const encode = encodes[0].args;
+      assert.deepStrictEqual(encode.slice(encode.indexOf('-f'), encode.indexOf('-f') + 4),
+        ['-f', 'concat', '-safe', '0']);
+      assert(encode.includes('48k'));
+      assert(encode.includes('asetnsamples=n=576:p=1'));
+      assert.strictEqual(listContent, [
+        `file '${chunkPaths[0]}'`,
+        `file '${chunkPaths[1].replace(/'/g, "'\\''")}'`
+      ].join('\n'));
+      // The playback sources are read, never moved or rewritten.
+      for (const chunkPath of chunkPaths) assert.strictEqual(await fs.readFile(chunkPath, 'utf8'), 'rendered chunk');
+      const leftovers = (await fs.readdir(cacheDir)).filter(name => /\.(?:tmp|part\.mp3)$/.test(name));
+      assert.deepStrictEqual(leftovers, []);
+    });
+  });
+
+  await test('uses real ffmpeg to encode chunks once into a 48 kbps package of the full duration', async () => {
+    if (spawnSync('ffmpeg', ['-version'], { stdio: 'ignore' }).status !== 0 ||
+        spawnSync('ffprobe', ['-version'], { stdio: 'ignore' }).status !== 0) {
+      console.log('    skipped: ffmpeg and ffprobe are unavailable');
+      return;
+    }
+    await withCache('offline-audio-real-chunks-', async cacheDir => {
+      const seconds = [1.4, 2.1, 0.9];
+      const chunkPaths = seconds.map((duration, index) => {
+        const chunkPath = path.join(cacheDir, `book_ch0_chunk${index}.mp3`);
+        const render = spawnSync('ffmpeg', [
+          '-hide_banner', '-loglevel', 'error', '-y',
+          '-f', 'lavfi', '-i', `sine=frequency=${300 + index * 150}:duration=${duration}`,
+          '-ac', '1', '-ar', '24000', '-c:a', 'libmp3lame', '-b:a', '160k', chunkPath
+        ]);
+        assert.strictEqual(render.status, 0, String(render.stderr));
+        return chunkPath;
+      });
+      // Decoded length, not container duration: ffprobe's MP3 duration
+      // includes encoder padding, and how much varies by ffmpeg version.
+      const decodedSeconds = filePath => spawnSync('ffmpeg', [
+        '-hide_banner', '-loglevel', 'error', '-i', filePath,
+        '-f', 's16le', '-ac', '1', '-ar', '24000', '-'
+      ], { maxBuffer: 64 * 1024 * 1024 }).stdout.length / (24000 * 2);
+      const expected = chunkPaths.reduce((sum, chunkPath) => sum + decodedSeconds(chunkPath), 0);
+      const audioPackage = createOfflineAudioPackage({ cacheDir });
+      const result = await audioPackage.ensureChapter({
+        bookId: 'real-book',
+        chapterIndex: 0,
+        sourcePaths: chunkPaths,
+        sourceVariantKey: 'fixture',
+        sourceFingerprint: 'd'.repeat(64),
+        provenance: 'verified'
+      });
+      assert.strictEqual(result.ready, true);
+      assert.strictEqual(result.provenance, 'verified');
+      const probe = JSON.parse(spawnSync('ffprobe', [
+        '-v', 'error',
+        '-show_entries', 'format=duration,size:stream=codec_name,sample_rate,channels,bit_rate',
+        '-of', 'json', result.path
+      ]).stdout);
+      const stream = probe.streams[0];
+      assert.strictEqual(stream.codec_name, 'mp3');
+      assert.strictEqual(Number(stream.sample_rate), 24000);
+      assert.strictEqual(Number(stream.channels), 1);
+      assert.strictEqual(Number(stream.bit_rate), OFFLINE_AUDIO_BITRATE_KBPS * 1000);
+      assert.strictEqual(Number(probe.format.size), result.size);
+      // No narration may be lost; reframing pads at most one 24 ms frame.
+      const duration = decodedSeconds(result.path);
+      assert(duration >= expected - 0.001, `package drops audio: ${duration} vs ${expected}`);
+      assert(duration - expected < 0.1, `package pads too much: ${duration} vs ${expected}`);
+      const leftovers = (await fs.readdir(cacheDir)).filter(name => /\.(?:tmp|part\.mp3)$/.test(name));
+      assert.deepStrictEqual(leftovers, []);
+    });
+  });
+
   await test('does not reuse a derivative from a different narration variant', async () => {
     await withCache('offline-audio-variant-', async cacheDir => {
       const sourcePath = path.join(cacheDir, 'book_ch0.mp3');

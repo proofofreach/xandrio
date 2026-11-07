@@ -3,7 +3,32 @@ const fs = require('fs').promises;
 const os = require('os');
 const path = require('path');
 const GenerationJournal = require('../lib/generation-journal');
-const { createOfflinePreparationCoordinator } = require('../lib/offline-preparation-coordinator');
+const coordinatorModule = require('../lib/offline-preparation-coordinator');
+
+// XANDRIO_OFFLINE_PREP_PIPELINE reruns every case through the two-phase
+// pipeline. "narrate" keeps each case's work in the narration phase;
+// "package" moves it into the bounded packaging phase, so narration runs
+// ahead and every commit is asynchronous.
+const PIPELINE_MODE = process.env.XANDRIO_OFFLINE_PREP_PIPELINE || '';
+function createOfflinePreparationCoordinator(options = {}) {
+  if (!PIPELINE_MODE || options.finalizeChapter) {
+    return coordinatorModule.createOfflinePreparationCoordinator(options);
+  }
+  if (PIPELINE_MODE === 'narrate') {
+    return coordinatorModule.createOfflinePreparationCoordinator({
+      ...options,
+      finalizeChapter: async () => {}
+    });
+  }
+  // Title-admission cases expect concurrent per-title work. The packaging
+  // bound itself is covered in test-offline-preparation-pipeline.js.
+  return coordinatorModule.createOfflinePreparationCoordinator({
+    maxConcurrentFinalizations: 64,
+    ...options,
+    prepareChapter: async request => request,
+    finalizeChapter: async request => options.prepareChapter(request)
+  });
+}
 
 function deferred() {
   let resolve;
@@ -292,6 +317,94 @@ async function test(name, fn) {
     assert.strictEqual(repairChecks.filter(chapterIndex => chapterIndex === 0).length, 1);
     assert(repairChecks.includes(1));
     assert.strictEqual((await journal.getOfflinePreparation('ready-book')).state, 'ready');
+  });
+
+  await test('an interrupted repair of a ready title resumes at the first uncommitted chapter', async () => {
+    for (const interruption of ['error', 'pause']) {
+      const dir = await fs.mkdtemp(path.join(os.tmpdir(), `offline-repair-${interruption}-`));
+      const journal = new GenerationJournal(path.join(dir, 'generation-state.json'));
+      await journal.putOfflinePreparation({
+        bookId: 'repair-book',
+        requestId: 'ready-request',
+        state: 'ready',
+        totalChapters: 3,
+        nextChapter: 3,
+        readyChapters: 3,
+        preparedBytes: 30
+      });
+      // Chapter 0's package was lost after the title became ready.
+      const ready = new Set([1, 2]);
+      let failNarration = true;
+      const narrationStarted = deferred();
+      const coordinator = createOfflinePreparationCoordinator({
+        stateStore: journal,
+        getBookChapters: async bookId => ({ book: { id: bookId }, chapters: [{}, {}, {}] }),
+        chapterStatus: async ({ chapterIndex }) => ({ ready: ready.has(chapterIndex), size: 10 }),
+        prepareChapter: async ({ chapterIndex, signal }) => {
+          if (failNarration) {
+            narrationStarted.resolve();
+            if (interruption === 'error') throw new Error('TTS engine failed');
+            await new Promise((_, reject) => signal.addEventListener('abort', () => reject(
+              Object.assign(new Error('cancelled'), { name: 'AbortError' })), { once: true }));
+          }
+          ready.add(chapterIndex);
+        },
+        // Mirrors retained-package publication, which inspects every chapter.
+        beforeReadyCommit: async () => {
+          if (ready.size !== 3) throw new Error('Retained offline package is not complete');
+        },
+        onError: () => {}
+      });
+      await coordinator.request('repair-book');
+      await narrationStarted.promise;
+      if (interruption === 'pause') await coordinator.cancel('repair-book');
+      await coordinator.waitForIdle('repair-book');
+      const interrupted = await journal.getOfflinePreparation('repair-book');
+      assert.strictEqual(interrupted.state, interruption === 'error' ? 'error' : 'paused');
+      assert.strictEqual(interrupted.nextChapter, 0, `${interruption} must not persist a frontier past chapter 0`);
+      assert.strictEqual(interrupted.readyChapters, 0);
+
+      failNarration = false;
+      await coordinator.request('repair-book');
+      await coordinator.waitForIdle('repair-book');
+      const recovered = await journal.getOfflinePreparation('repair-book');
+      assert.strictEqual(recovered.state, 'ready', `${interruption}: ${recovered.lastError}`);
+      assert.strictEqual(recovered.readyChapters, 3);
+      assert.strictEqual(recovered.preparedBytes, 30);
+      assert(ready.has(0));
+    }
+  });
+
+  await test('a pause that lands between the currency check and a chapter commit stays paused', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'offline-commit-pause-race-'));
+    const journal = new GenerationJournal(path.join(dir, 'generation-state.json'));
+    let armed = false;
+    let coordinator;
+    // recordIsCurrent reads the store outside the mutation queue. A pause is
+    // committed after that read returns and before the chapter commit writes.
+    const store = Object.create(journal);
+    store.getOfflinePreparation = async bookId => {
+      const value = await journal.getOfflinePreparation(bookId);
+      if (armed) {
+        armed = false;
+        await coordinator.cancel(bookId);
+      }
+      return value;
+    };
+    const ready = new Set();
+    coordinator = createOfflinePreparationCoordinator({
+      stateStore: store,
+      getBookChapters: async bookId => ({ book: { id: bookId }, chapters: [{}] }),
+      chapterStatus: async ({ chapterIndex }) => ({ ready: ready.has(chapterIndex), size: 10 }),
+      prepareChapter: async ({ chapterIndex }) => {
+        ready.add(chapterIndex);
+        armed = true;
+      }
+    });
+    await coordinator.request('race-book');
+    await coordinator.waitForIdle('race-book');
+    const record = await journal.getOfflinePreparation('race-book');
+    assert.strictEqual(record.state, 'paused');
   });
 
   await test('a preparation failure retains the failing chapter cursor', async () => {

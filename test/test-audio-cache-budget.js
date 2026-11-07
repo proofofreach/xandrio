@@ -183,6 +183,27 @@ const quiet = { log() {}, warn() {} };
     }
   });
 
+  await test('a retained chapter survives every sweep until its last hold is released', async () => {
+    const { root, cacheDir } = fixture();
+    try {
+      write(cacheDir, 'held_ch3_chunk0.mp3', 1000, 90);
+      write(cacheDir, 'held_ch3.mp3', 1000, 90);
+      const fsp = fakeFs(1);
+      const budget = createAudioCacheBudget({ cacheDir, fsp, now: () => NOW, minFreeBytes: 1, log: quiet });
+      const first = budget.retain('held', 3);
+      const second = budget.retain('held', 3);
+      assert.equal((await budget.sweep()).evictedChapters, 0);
+      first();
+      first();
+      assert.equal((await budget.sweep()).evictedChapters, 0, 'a repeated release must not drop another hold');
+      second();
+      assert.equal((await budget.sweep()).evictedChapters, 1);
+      assert.deepEqual(fs.readdirSync(cacheDir), []);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   await test('spares a chapter whose use is recorded while the sweep runs', async () => {
     const { root, cacheDir } = fixture();
     try {

@@ -40,6 +40,7 @@ const { createPlaybackOrchestrator } = require('./lib/playback-orchestrator');
 const { isPlayableChapter } = require('./lib/chapter-playability');
 const { createPlaybackPrefetchCoordinator } = require('./lib/playback-prefetch');
 const { createOfflinePreparationCoordinator } = require('./lib/offline-preparation-coordinator');
+const { createOfflinePlaybackStitcher } = require('./lib/offline-playback-stitch');
 const { createOfflineTransferManifest } = require('./lib/offline-transfer-manifest');
 const { createOfflineWindowPreparation } = require('./lib/offline-window-preparation');
 const {
@@ -2190,9 +2191,13 @@ async function ensureChapterAudioPrepared(bookId, chapterIndex, options = {}) {
     priorityForChunk: uniformPriority ? (() => priority) : getChapterGenerationPriority(0) };
   const jobs = clean ? cleanChapterAudioPrepareJobs : chapterAudioPrepareJobs;
   const key = `${bookId}:${chapterIndex}:${tts.variantKeyProvider()}`;
+  // Offline packaging encodes straight from verified chunks. It may skip the
+  // stitched playback file; any consumer that needs that file restores it.
+  const assemble = clean || options.assemble !== false;
   if (jobs.has(key)) {
     throwIfAborted();
     const record = jobs.get(key);
+    if (assemble) record.assemble = true;
     return consumeChapterPreparation(record, options.signal, async () => {
       await tts.claimChapter?.(bookId, chapterIndex, {
         origin: generationOrigin,
@@ -2210,11 +2215,17 @@ async function ensureChapterAudioPrepared(bookId, chapterIndex, options = {}) {
           }
         });
       }
-    }, consumerClaim);
+    }, consumerClaim).then(outputPath => (
+      // The shared job had already passed assembly when this consumer joined.
+      // Its chunks are ready, so a fresh job only concatenates them.
+      outputPath === null && assemble
+        ? ensureChapterAudioPrepared(bookId, chapterIndex, options)
+        : outputPath
+    ));
   }
 
   const controller = new AbortController();
-  const record = { controller, consumers: new Set(), settled: false, promise: null };
+  const record = { controller, consumers: new Set(), settled: false, promise: null, assemble };
   jobs.set(key, record);
   const jobSignal = controller.signal;
   const throwIfJobAborted = () => {
@@ -2284,6 +2295,7 @@ async function ensureChapterAudioPrepared(bookId, chapterIndex, options = {}) {
     if (!refreshed.chunks.every(chunk => chunk.status === 'ready')) {
       throw new Error('Not all chunks are ready');
     }
+    if (!record.assemble) return null;
 
     return clean
       ? tts.concatenateChunksClean(bookId, chapterIndex)
@@ -3868,6 +3880,7 @@ const bookDeletionService = createBookDeletionService({
     ]);
     await offlineWindowPreparation.cancelBook(bookId);
     await offlineAudioPackage.cancelBook(bookId);
+    await offlinePlaybackStitcher.cancelBook(bookId);
     await Promise.all([
       chunkedTTS.waitForIdle(bookId),
       instantChunkedTTS.waitForIdle(bookId),
@@ -4186,7 +4199,7 @@ async function publishStitchedOfflineSourceMarker(sourcePath, recipe, signal = n
   const markerPath = `${sourcePath}.narration-artifact.json`;
   const tmpPath = `${markerPath}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.tmp`;
   try {
-    await fs.writeFile(tmpPath, JSON.stringify(marker), { mode: 0o600, signal });
+    await fs.writeFile(tmpPath, JSON.stringify(marker), signal ? { mode: 0o600, signal } : { mode: 0o600 });
     throwIfOfflinePreparationAborted(signal);
     // No await separates the last cancellation check from publication.
     fsSync.renameSync(tmpPath, markerPath);
@@ -4273,7 +4286,35 @@ async function inspectOfflineChapterAudio(bookId, chapterIndex, request = {}) {
   };
 }
 
-async function prepareOfflineChapterAudio(request) {
+/**
+ * Chunk sources for a single-pass offline encode, or null when the stitched
+ * playback file must stand in. Every planned chunk must be present in order
+ * and carry verified provenance for the current recipe.
+ */
+async function verifiedOfflineChunkSources(recipe, signal = null) {
+  const artifacts = recipe?.plan?.artifacts || [];
+  if (artifacts.length === 0) return null;
+  const { worker, book, chapterIndex } = recipe;
+  // Reconstruct only when no live manifest exists, so an in-flight generation
+  // for another consumer keeps its own chunk state.
+  const manifest = worker.getChapterManifest?.(book.id, chapterIndex) ||
+    await worker.reconstructChapterManifest(book.id, chapterIndex, recipe.chapter.text, book.language || 'en');
+  throwIfOfflinePreparationAborted(signal);
+  const chunks = manifest?.chunks || [];
+  if (
+    chunks.length !== artifacts.length ||
+    !chunks.every((chunk, index) => chunk.status === 'ready' && chunk.path === artifacts[index].outputPath)
+  ) return null;
+  if (await inspectOfflineSourceChunks(recipe, signal) !== 'verified') return null;
+  return artifacts.map(artifact => artifact.outputPath);
+}
+
+/**
+ * Narration phase of offline preparation: make every chunk of the chapter
+ * durable at the request's generation priority. It never encodes the offline
+ * package, so the caller can narrate the next chapter while this one encodes.
+ */
+async function prepareOfflineChapterSource(request) {
   const identity = pinnedOfflinePreparationIdentity(request);
   const existing = await offlineAudioPackage.inspectChapter({ bookId: request.bookId,
     chapterIndex: request.chapterIndex, sourceVariantKey: identity.sourceVariantKey });
@@ -4281,7 +4322,7 @@ async function prepareOfflineChapterAudio(request) {
     if (!existing.ready || existing.artifactId !== identity.retainedArtifacts?.[request.chapterIndex]) {
       throw new Error('Retained offline audio is no longer available');
     }
-    return existing;
+    return { identity, existing, recipe: null, hasLegacyPackage: false, sourcePath: null };
   }
   const recipe = await offlineSourceRecipe(request.bookId, request.chapterIndex, identity, request.signal);
   // Legacy compact audio can outlive its stitched source. Validate and retain
@@ -4294,18 +4335,53 @@ async function prepareOfflineChapterAudio(request) {
     signal: request.signal,
     tier: 'active',
     tts: offlineSourceWorker(identity),
-    voice: identity.sourceVoice
+    voice: identity.sourceVoice,
+    // Chunk provenance lets the package skip the stitched playback file.
+    assemble: !recipe?.plan?.artifacts?.length
   });
-  const sourceIdentity = recipe && !hasLegacyPackage
-    ? await resolveStitchedOfflineSource(sourcePath, recipe, request.signal)
-    : null;
-  return offlineAudioPackage.ensureChapter({
+  return { identity, existing, recipe, hasLegacyPackage, sourcePath };
+}
+
+/**
+ * Encode phase of offline preparation: one ffmpeg pass from the verified
+ * chunks to the compact package, then hash, fsync, and atomic publication.
+ * Falls back to the stitched playback file only when chunk proof is missing.
+ */
+async function finalizeOfflineChapterAudio(request, source) {
+  const { identity, existing, recipe, hasLegacyPackage } = source;
+  if (identity.retained) return existing;
+  let sourcePath = source.sourcePath;
+  let sourcePaths = null;
+  let provenance = 'legacy-unverified';
+  if (recipe && !hasLegacyPackage) {
+    sourcePaths = await verifiedOfflineChunkSources(recipe, request.signal);
+    if (sourcePaths) {
+      provenance = 'verified';
+    } else {
+      // Reclaimed or pre-provenance chunks: the stitched file is the source.
+      if (!sourcePath) {
+        sourcePath = await ensureChapterAudioPrepared(request.bookId, request.chapterIndex, {
+          priority: request.priority,
+          origin: request.origin,
+          requestId: request.requestId,
+          signal: request.signal,
+          tier: 'active',
+          tts: offlineSourceWorker(identity),
+          voice: identity.sourceVoice
+        });
+      }
+      const sourceIdentity = await resolveStitchedOfflineSource(sourcePath, recipe, request.signal);
+      provenance = sourceIdentity?.provenance === 'verified' ? 'verified' : 'legacy-unverified';
+    }
+  }
+  const packaged = await offlineAudioPackage.ensureChapter({
     bookId: request.bookId,
     chapterIndex: request.chapterIndex,
-    sourcePath,
+    sourcePath: sourcePaths ? null : sourcePath,
+    sourcePaths,
     sourceVariantKey: identity.sourceVariantKey,
     sourceFingerprint: recipe?.sourceFingerprint,
-    provenance: sourceIdentity?.provenance === 'verified' ? 'verified' : 'legacy-unverified',
+    provenance,
     signal: request.signal,
     beforePublish: async () => {
       if (request.signal?.aborted) throw Object.assign(new Error('Offline preparation cancelled'), { name: 'AbortError' });
@@ -4328,6 +4404,59 @@ async function prepareOfflineChapterAudio(request) {
       }
     }
   });
+  // Playback readiness, voice fallback and narration status still read the
+  // stitched file. Rebuild it after publication, off the narration pipeline.
+  if (sourcePaths && packaged?.ready) {
+    offlinePlaybackStitcher.schedule({
+      key: `${request.bookId}:${request.chapterIndex}:${identity.sourceVariantKey}`,
+      bookId: request.bookId,
+      chapterIndex: request.chapterIndex,
+      identity
+    });
+  }
+  return packaged;
+}
+
+/**
+ * Rebuild the stitched playback chapter from verified chunks and publish its
+ * provenance marker. Returns null when the file exists or the chunks cannot
+ * prove it; this optional work never narrates.
+ */
+async function stitchOfflinePlaybackChapter(recipe, signal = null) {
+  const outputPath = recipe.worker.chapterPath(recipe.book.id, recipe.chapterIndex);
+  const exists = await fs.stat(outputPath).then(stat => stat.size > 0, () => false);
+  if (exists) return null;
+  if (!await verifiedOfflineChunkSources(recipe, signal)) return null;
+  const stitchedPath = await recipe.worker.concatenateChunks(
+    recipe.book.id,
+    recipe.chapterIndex,
+    signal ? { signal } : undefined
+  );
+  throwIfOfflinePreparationAborted(signal);
+  await publishStitchedOfflineSourceMarker(stitchedPath, recipe, signal);
+  return stitchedPath;
+}
+
+// One single-threaded stitch at a time, beside the one package encode, keeps
+// most host CPU for narration.
+const offlinePlaybackStitcher = createOfflinePlaybackStitcher({
+  stitch: async ({ bookId, chapterIndex, identity, signal }) => {
+    const recipe = await offlineSourceRecipe(bookId, chapterIndex, identity, signal);
+    if (recipe) await stitchOfflinePlaybackChapter(recipe, signal);
+  },
+  retain: (bookId, chapterIndex) => audioCacheBudget.retain(bookId, chapterIndex),
+  onError: (error, job) => {
+    console.warn(`Offline playback stitch failed for ${job.bookId}:${job.chapterIndex}: ${error.message}`);
+  }
+});
+
+async function prepareOfflineChapterAudio(request) {
+  const release = audioCacheBudget.retain(request.bookId, request.chapterIndex);
+  try {
+    return await finalizeOfflineChapterAudio(request, await prepareOfflineChapterSource(request));
+  } finally {
+    release();
+  }
 }
 
 const offlinePreparationCoordinator = createOfflinePreparationCoordinator({
@@ -4343,7 +4472,13 @@ const offlinePreparationCoordinator = createOfflinePreparationCoordinator({
     request
   ),
   shouldPrepareChapter: ({ chapter }) => !chapter?.empty,
-  prepareChapter: prepareOfflineChapterAudio,
+  // Narration for later chapters keeps the TTS engine busy while one bounded
+  // encode worker packages earlier chapters.
+  prepareChapter: prepareOfflineChapterSource,
+  finalizeChapter: finalizeOfflineChapterAudio,
+  // Narrated chunks may wait behind other encodes. Recency alone does not
+  // protect old chunks reused from an earlier session.
+  retainChapter: ({ bookId, chapterIndex }) => audioCacheBudget.retain(bookId, chapterIndex),
   cancelRequest: requestId => ttsQueue.cancelWhere({ requestId }),
   discardRequest: requestId => generationJournal.removeChaptersForRequest(requestId),
   beforeReadyCommit: rememberReadyOfflinePackage,
@@ -5405,5 +5540,7 @@ module.exports.__test = {
   refreshSettingsSnapshots,
   consumeChapterPreparation,
   resolveStitchedOfflineSource,
+  verifiedOfflineChunkSources,
+  stitchOfflinePlaybackChapter,
   inspectOfflineSourceMarker
 };
