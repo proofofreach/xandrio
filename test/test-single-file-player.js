@@ -2366,6 +2366,44 @@ function fakeAudio() {
     assert.deepStrictEqual(errors, []);
   });
 
+  await test('app seeks are not resets even though seeking fires later', async () => {
+    for (const run of [
+      player => player.seek(60),
+      player => player.trySeekSync(60),
+      player => player.skip(-30)
+    ]) {
+      const harness = await playingPlayer(stallHarness());
+      const { audio, player, errors } = harness;
+      audio.bufferedEnd = 200;
+      audio.duration = 600;
+      for (let seconds = 1; seconds <= 120; seconds += 1) {
+        audio.currentTime = seconds;
+        audio.emit('timeupdate');
+      }
+      // Real browsers queue 'seeking' after the currentTime assignment.
+      await run(player);
+      audio.emit('timeupdate');
+      audio.emit('seeking');
+      assert.deepStrictEqual(errors, []);
+    }
+  });
+
+  await test('a time update during a native seek is not a reset', async () => {
+    const harness = await playingPlayer(stallHarness());
+    const { audio, errors } = harness;
+    for (let seconds = 1; seconds <= 120; seconds += 1) {
+      audio.currentTime = seconds;
+      audio.emit('timeupdate');
+    }
+    audio.seeking = true;
+    audio.currentTime = 20;
+    audio.emit('timeupdate');
+    audio.seeking = false;
+    audio.emit('seeking');
+    audio.emit('timeupdate');
+    assert.deepStrictEqual(errors, []);
+  });
+
   await test('a stall after a position reset reports the high-water position', async () => {
     const harness = await playingPlayer(stallHarness());
     const { audio, errors } = harness;

@@ -327,6 +327,7 @@ function readThenDrop(port, minBytes) {
 
   await test('/api/audio-continuous passes the resumed seconds to the orchestrator and answers 206', async () => {
     const prepared = [];
+    let accept = true;
     const app = express();
     const playbackOrchestrator = new Proxy({
       resolveTier: async () => ({ servedTier: 'instant' }),
@@ -336,8 +337,9 @@ function readThenDrop(port, minBytes) {
         return makeSource(fixture, {
           startOffsetSeconds: options.startOffsetSeconds,
           // The real orchestrator prepares the decode at start + resume.
-          decodeStartOffsetSeconds: options.startOffsetSeconds + options.resumeSeconds,
-          resumeAppliedToDecodeStart: true
+          decodeStartOffsetSeconds: options.startOffsetSeconds + (accept ? options.resumeSeconds : 0),
+          resumeAppliedToDecodeStart: true,
+          resumeAccepted: accept && options.resumeSeconds > 0
         });
       }
     }, {
@@ -389,6 +391,14 @@ function readThenDrop(port, minBytes) {
       const pcm = await decodePcm(resumed.body);
       // Fixture 12 s, stream starts at 2 s, resumed 3 s in: 7 s remain.
       assert(Math.abs(pcmSeconds(pcm) - 7) < 0.1, `resumed route body decodes to ${pcmSeconds(pcm)}s`);
+
+      // The orchestrator could not prove where the resume lands (for example
+      // past the first chapter): the client gets the unchanged full stream.
+      accept = false;
+      const refused = await get({ Range: `bytes=${headerBytes + 60000}-` });
+      assert.strictEqual(refused.status, 200);
+      assert.strictEqual(refused.headers['accept-ranges'], 'none');
+      assert.strictEqual(refused.body.length, initial.body.length);
     } finally {
       await close(server);
     }

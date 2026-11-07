@@ -1199,6 +1199,13 @@ export class SingleFileChapterPlayer {
     // Only the single MP3 byte stream derives its position from a splice of
     // byte ranges; native HLS keeps segment timing and has its own recovery.
     if (!this.isContinuous || this.continuousTransport === 'hls' || this._isLoading) return false;
+    // A seek from the lock screen or native controls sets 'seeking'
+    // synchronously, before its event; a time update queued ahead of that
+    // event must not be read as a reset.
+    if (this.audio.seeking) {
+      this._resetProgressMark();
+      return false;
+    }
     const streamTime = Number(this.audio.currentTime) || 0;
     const mark = this._progressMark;
     if (mark && streamTime + STREAM_TIME_REGRESSION_SECONDS < mark.streamTime) {
@@ -1824,6 +1831,9 @@ export class SingleFileChapterPlayer {
   trySeekSync(seconds) {
     const { streamTime } = this._streamTimeForChapterTime(seconds);
     if (this.isContinuous && !this._canSeekTo(streamTime)) return false;
+    // Browsers fire 'seeking' as a later task; clear the high-water mark now so
+    // the synchronous time update below cannot read the jump as a reset.
+    this._resetProgressMark();
     this.audio.currentTime = Math.max(0, streamTime);
     this._handleTimeUpdate();
     return true;
@@ -1864,6 +1874,7 @@ export class SingleFileChapterPlayer {
       await this._reloadContinuousAtOffset(chapterTime);
       return true;
     }
+    this._resetProgressMark();
     this.audio.currentTime = Math.max(0, streamTime);
     this._handleTimeUpdate();
     return true;
