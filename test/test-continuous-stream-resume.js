@@ -325,6 +325,69 @@ function readThenDrop(port, minBytes) {
     }
   });
 
+  await test('a failed header probe is retried with backoff, not cached for the life of the process', async () => {
+    const { EventEmitter } = require('events');
+    const { PassThrough } = require('stream');
+    let clock = 0;
+    let spawns = 0;
+    let failNext = true;
+    const spawnProcess = (command, args, options) => {
+      spawns++;
+      if (!failNext) return spawn(command, args, options);
+      failNext = false;
+      // spawn under load: EAGAIN, no output, no close.
+      const child = new EventEmitter();
+      child.stdout = new PassThrough();
+      child.stdin = new PassThrough();
+      process.nextTick(() => child.emit('error', Object.assign(new Error('spawn ffmpeg EAGAIN'), { code: 'EAGAIN' })));
+      return child;
+    };
+    const streamer = createChapterAudioStreamer({ serveAudioFile, spawnProcess, now: () => clock });
+    const reconnect = { headers: { range: `bytes=${headerBytes + 60000}-` } };
+
+    assert.strictEqual(await streamer.planResume({ headers: {} }), null);
+    assert.strictEqual(spawns, 0, 'a request without Range never probes');
+    assert.deepStrictEqual(await streamer.planResume(reconnect), { unavailable: true },
+      'a reconnect that cannot be planned is reported, not served as a full stream');
+    clock += 1000;
+    assert.deepStrictEqual(await streamer.planResume(reconnect), { unavailable: true });
+    assert.strictEqual(spawns, 1, 'no second probe inside the backoff');
+
+    clock += 60 * 1000;
+    const plan = await streamer.planResume(reconnect);
+    assert.strictEqual(spawns, 2, 'the probe is retried after the backoff');
+    assert.strictEqual(plan.firstByte, headerBytes + 60000);
+    assert.strictEqual(plan.seconds, 3);
+    await streamer.planResume(reconnect);
+    assert.strictEqual(spawns, 2, 'a measured header is cached');
+  });
+
+  await test('HEAD on the progressive stream sends headers without waiting for narration', async () => {
+    const waited = [];
+    const streamer = createChapterAudioStreamer({ serveAudioFile });
+    const app = express();
+    app.get('/progressive', (req, res) => streamer.stream(req, res, {
+      format: 'mp3',
+      totalChunks: 1,
+      finalPath: path.join(dir, 'missing.mp3'),
+      waitForChunk: async index => { waited.push(index); return fixture; }
+    }));
+    const server = await listen(app);
+    try {
+      const head = await new Promise((resolve, reject) => {
+        http.request({ host: '127.0.0.1', port: server.address().port, method: 'HEAD', path: '/progressive' }, res => {
+          res.resume();
+          res.on('end', () => resolve({ status: res.statusCode, headers: res.headers }));
+        }).on('error', reject).end();
+      });
+      assert.strictEqual(head.status, 200);
+      assert.strictEqual(head.headers['content-type'], 'audio/mpeg');
+      assert.deepStrictEqual(waited, [], 'HEAD starts no narration or encode');
+    } finally {
+      await close(server);
+    }
+  });
+
   await test('/api/audio-continuous passes the resumed seconds to the orchestrator and answers 206', async () => {
     const prepared = [];
     let accept = true;
@@ -334,6 +397,9 @@ function readThenDrop(port, minBytes) {
       chapterAudioStatus: async () => ({ ready: true, servedTier: 'instant' }),
       prepareContinuousAudioStream: async options => {
         prepared.push(options);
+        if (!accept && options.requireResume) {
+          throw Object.assign(new Error('resume refused'), { statusCode: 410, code: 'CONTINUOUS_RESUME_UNAVAILABLE' });
+        }
         return makeSource(fixture, {
           startOffsetSeconds: options.startOffsetSeconds,
           // The real orchestrator prepares the decode at start + resume.
@@ -372,6 +438,17 @@ function readThenDrop(port, minBytes) {
           res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks) }));
         }).on('error', reject);
       });
+      const head = await new Promise((resolve, reject) => {
+        http.request({ host: '127.0.0.1', port, method: 'HEAD', path: '/api/audio-continuous/book_resume/0?offsetSeconds=2' }, res => {
+          res.resume();
+          res.on('end', () => resolve({ status: res.statusCode, headers: res.headers }));
+        }).on('error', reject).end();
+      });
+      assert.strictEqual(head.status, 200);
+      assert.strictEqual(head.headers['accept-ranges'], 'none');
+      assert.strictEqual(head.headers['content-type'], 'audio/mpeg');
+      assert.strictEqual(prepared.length, 0, 'HEAD prepares no stream, so it starts no encode or narration');
+
       const initial = await get({ Range: 'bytes=0-' });
       assert.strictEqual(initial.status, 200);
       assert.strictEqual(initial.headers['accept-ranges'], 'none');
@@ -392,13 +469,23 @@ function readThenDrop(port, minBytes) {
       // Fixture 12 s, stream starts at 2 s, resumed 3 s in: 7 s remain.
       assert(Math.abs(pcmSeconds(pcm) - 7) < 0.1, `resumed route body decodes to ${pcmSeconds(pcm)}s`);
 
-      // The orchestrator could not prove where the resume lands (for example
-      // past the first chapter): the client gets the unchanged full stream.
+      assert.strictEqual(prepared[2].requireResume, true, 'a reconnect asks for a resume or nothing');
+      assert.strictEqual(prepared[0].requireResume, false);
+
+      // The orchestrator could not prove where the resume lands (a restart,
+      // the 12 h prune, or past the first chapter). A 200 would make Chromium
+      // download and discard every byte it holds; a 416 would read as the end
+      // of the stream. 410 is a load failure: the client reloads at its own
+      // position at once.
       accept = false;
       const refused = await get({ Range: `bytes=${headerBytes + 60000}-` });
-      assert.strictEqual(refused.status, 200);
-      assert.strictEqual(refused.headers['accept-ranges'], 'none');
-      assert.strictEqual(refused.body.length, initial.body.length);
+      assert.strictEqual(refused.status, 410);
+      assert.strictEqual(refused.headers['cache-control'], 'no-store');
+      assert.strictEqual(JSON.parse(refused.body).code, 'CONTINUOUS_RESUME_UNAVAILABLE');
+      // First requests and probes are unchanged.
+      const stillPlays = await get({ Range: 'bytes=0-1' });
+      assert.strictEqual(stillPlays.status, 200);
+      assert.strictEqual(stillPlays.body.length, initial.body.length);
     } finally {
       await close(server);
     }

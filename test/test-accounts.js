@@ -795,6 +795,122 @@ test('disable guards: not yourself, never the last admin', async () => {
   assert.strictEqual((await accounts.findById(member.id)).disabled, false);
 });
 
+// ─── Credential races ──────────────────────────────────────────────────────
+
+// Runs `interleave` once, just before the next accounts.json write, so a
+// concurrent change lands between a login's read and its own write.
+function interleavingJsonStore(base) {
+  let pending = null;
+  return {
+    SKIP_SAVE: base.SKIP_SAVE,
+    load: (...args) => base.load(...args),
+    async update(filePath, mutator, defaultValue) {
+      if (pending && filePath === 'accounts.json') {
+        const run = pending;
+        pending = null;
+        await run();
+      }
+      return base.update(filePath, mutator, defaultValue);
+    },
+    beforeNextAccountsWrite(fn) { pending = fn; }
+  };
+}
+
+test('a stale-hash login rehash does not revert a concurrent password reset', async () => {
+  const jsonStore = interleavingJsonStore(memoryJsonStore());
+  const accounts = createAccountsStore({ filePath: 'accounts.json', jsonStore });
+  const staleRecord = await hashPassword('old-password-1', { N: 16384, r: 8, p: 1 });
+  await jsonStore.update('accounts.json', (data) => {
+    data.accounts = { usr_stale: { id: 'usr_stale', username: 'reader', displayName: 'Reader', role: 'member', password: staleRecord, disabled: false, createdAt: '2026-01-01T00:00:00.000Z', passwordChangedAt: '2026-01-01T00:00:00.000Z' } };
+  }, {});
+
+  jsonStore.beforeNextAccountsWrite(() => accounts.changePassword('usr_stale', 'reset-password-1'));
+  assert((await accounts.verifyLogin('reader', 'old-password-1')), 'the login itself verified the snapshot it read');
+
+  assert.strictEqual(await accounts.verifyLogin('reader', 'old-password-1'), null, 'the old password must not come back');
+  assert((await accounts.verifyLogin('reader', 'reset-password-1')), 'the reset password must still work');
+});
+
+test('a login that raced an admin reset gets a session that is already invalid', async () => {
+  const fixture = await adminRoutesFixture();
+  const { adminRoutes, accounts, middleware, member } = fixture;
+  const realVerify = accounts.verifyLogin;
+  accounts.verifyLogin = async (...args) => {
+    const verified = await realVerify(...args);
+    // The reset (and its session sweep) completes after the old password was
+    // verified but before the login creates its session.
+    await invoke(adminRoutes['POST /api/accounts/:id/password'], {
+      user: { role: 'admin' }, params: { id: member.id }, body: { newPassword: 'fresh-password-1' }, headers: {}
+    });
+    return verified;
+  };
+  const res = response();
+  await fixture.routes.login({ body: { username: 'member', password: 'password123' }, headers: {}, secure: true }, res);
+  accounts.verifyLogin = realVerify;
+  const cookie = res.cookies.find(entry => entry.name === SESSION_COOKIE);
+  if (cookie) {
+    const result = await runMiddleware(middleware, { headers: { cookie: `${SESSION_COOKIE}=${cookie.value}` } });
+    assert.strictEqual(result.res.statusCode, 401, 'a session born from the pre-reset password must not authenticate');
+  }
+});
+
+test('sessions from before a password change stop authenticating; legacy sessions work until then', async () => {
+  const { middleware, sessionStore, accounts, member, jsonStore } = await accountModeFixture();
+  // A session row written before sessions carried a credential epoch.
+  const legacy = await sessionStore.create(member.id);
+  await jsonStore.update('sessions.json', (data) => {
+    for (const session of Object.values(data.sessions)) delete session.credentialEpoch;
+  }, {});
+  const asLegacy = await runMiddleware(middleware, { headers: { cookie: `${SESSION_COOKIE}=${legacy.token}` } });
+  assert(asLegacy.nextCalled, 'a pre-epoch session keeps working');
+
+  // A password change that does not sweep sessions (e.g. a crash between the
+  // write and destroyAllForUser) must still invalidate them.
+  assert.strictEqual(await accounts.changePassword(member.id, 'changed-password-1'), true);
+  const after = await runMiddleware(middleware, { headers: { cookie: `${SESSION_COOKIE}=${legacy.token}` } });
+  assert.strictEqual(after.res.statusCode, 401);
+});
+
+test('self password change keeps the current device signed in through the middleware', async () => {
+  const { routes, middleware, member } = await accountModeFixture();
+  const login = response();
+  await routes.login({ body: { username: 'member', password: 'password123' }, headers: {}, secure: true }, login);
+  const current = login.cookies[0].value;
+  const other = response();
+  await routes.login({ body: { username: 'member', password: 'password123' }, headers: {}, secure: true }, other);
+
+  const authed = await runMiddleware(middleware, { method: 'POST', path: '/api/auth/change-password', headers: { cookie: `${SESSION_COOKIE}=${current}` } });
+  assert(authed.nextCalled);
+  const ok = response();
+  await routes.changePassword({ user: authed.req.user, body: { currentPassword: 'password123', newPassword: 'brand-new-pass' } }, ok);
+  assert.strictEqual(ok.statusCode, 204);
+
+  assert((await runMiddleware(middleware, { headers: { cookie: `${SESSION_COOKIE}=${current}` } })).nextCalled, 'current device stays signed in');
+  assert.strictEqual((await runMiddleware(middleware, { headers: { cookie: `${SESSION_COOKIE}=${other.cookies[0].value}` } })).res.statusCode, 401);
+  assert.strictEqual(member.id, authed.req.user.id);
+});
+
+test('a self password change that raced an admin reset does not overwrite the reset', async () => {
+  const fixture = await adminRoutesFixture();
+  const { adminRoutes, accounts, routes, sessionStore, member } = fixture;
+  const keep = await sessionStore.create(member.id);
+  const user = { id: member.id, username: member.username, sessionToken: keep.token };
+  const realVerify = accounts.verifyLogin;
+  accounts.verifyLogin = async (...args) => {
+    const verified = await realVerify(...args);
+    await invoke(adminRoutes['POST /api/accounts/:id/password'], {
+      user: { role: 'admin' }, params: { id: member.id }, body: { newPassword: 'admin-reset-1' }, headers: {}
+    });
+    return verified;
+  };
+  const res = response();
+  await routes.changePassword({ user, body: { currentPassword: 'password123', newPassword: 'attacker-pass-1' } }, res);
+  accounts.verifyLogin = realVerify;
+  assert.notStrictEqual(res.statusCode, 204);
+  assert((await accounts.verifyLogin('member', 'admin-reset-1')), 'the admin reset stands');
+  assert.strictEqual(await accounts.verifyLogin('member', 'attacker-pass-1'), null);
+});
+
 // ─── Runner ────────────────────────────────────────────────────────────────
 
 (async () => {

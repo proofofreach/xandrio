@@ -119,6 +119,8 @@ function createHarness({
     currentBookPlaybackSettings: {},
     currentChapter: 0,
     chunkPlayer: player,
+    // app.js pairs engine time with the selected chapter; this player owns it.
+    selectedChapterTime: () => player.getCurrentTime(),
     bookTitle: element,
     bookAuthorHeader: element,
     bookDescription: element,

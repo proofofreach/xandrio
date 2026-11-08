@@ -286,6 +286,53 @@ export function syncHeaders(extra = {}) {
   return headers;
 }
 
+// ---- Server clock ----
+// Playback positions are ordered by their stamps across devices, and the
+// server caps every stamp at its own now. A device whose clock is off by
+// minutes must therefore stamp on the server's clock, or a fast device
+// prefers its own older checkpoint over newer progress from other devices
+// and a slow one loses its own newer offline progress. The offset is learned
+// from the Date header of API responses and kept for offline launches.
+const SERVER_CLOCK_OFFSET_KEY = 'xandrio_server_clock_offset_ms';
+// The Date header has one-second resolution; smaller skew is not an offset.
+const SERVER_CLOCK_NOISE_MS = 2000;
+// A slow round trip cannot place the server's time precisely enough.
+const SERVER_CLOCK_MAX_ROUND_TRIP_MS = 5000;
+
+function storedServerClockOffset() {
+  try {
+    const stored = Number(localStorage.getItem(SERVER_CLOCK_OFFSET_KEY));
+    return Number.isFinite(stored) ? stored : 0;
+  } catch {
+    return 0;
+  }
+}
+
+let serverClockOffsetMs = storedServerClockOffset();
+
+/** Learn the device-minus-server clock offset from one response. */
+export function observeServerClock(dateHeader, sentAtMs, receivedAtMs) {
+  const serverMs = Date.parse(dateHeader || '');
+  const roundTripMs = receivedAtMs - sentAtMs;
+  if (!Number.isFinite(serverMs) || !(roundTripMs >= 0 && roundTripMs <= SERVER_CLOCK_MAX_ROUND_TRIP_MS)) return;
+  // Date truncates to the second, so the server read its clock somewhere in
+  // [serverMs, serverMs + 1000); compare with the middle of the round trip.
+  const measured = (sentAtMs + receivedAtMs) / 2 - (serverMs + 500);
+  const offset = Math.abs(measured) < SERVER_CLOCK_NOISE_MS ? 0 : Math.round(measured);
+  if (Math.abs(offset - serverClockOffsetMs) < SERVER_CLOCK_NOISE_MS) return;
+  serverClockOffsetMs = offset;
+  try {
+    localStorage.setItem(SERVER_CLOCK_OFFSET_KEY, String(offset));
+  } catch {
+    // Storage is best effort; the offset still applies for this launch.
+  }
+}
+
+/** The server's current time in epoch milliseconds, by this device's estimate. */
+export function serverNow() {
+  return Date.now() - serverClockOffsetMs;
+}
+
 export async function apiSend(method, path, body = null, options = {}) {
   const { headers: optionHeaders = {}, timeoutMs, signal, ...fetchOptions } = options;
   const headers = syncHeaders(optionHeaders);
@@ -300,7 +347,9 @@ export async function apiSend(method, path, body = null, options = {}) {
     }
   }
   return withRequestDeadline({ timeoutMs, signal }, async requestSignal => {
+    const sentAt = Date.now();
     const response = await fetch(`${API_BASE}${path}`, { ...init, signal: requestSignal });
+    observeServerClock(response.headers?.get?.('Date'), sentAt, Date.now());
     // An authoritative access/deletion response wins even if its error body
     // never arrives. A read deadline must not turn it into an offline fallback.
     if (timeoutMs && [401, 403, 404].includes(response.status)) {

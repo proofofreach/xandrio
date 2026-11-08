@@ -176,6 +176,10 @@ export class SingleFileChapterPlayer {
     this.continuousTransport = null;
     this.streamStartOffset = 0;
     this.requestedStartOffset = 0;
+    // Chapter time the engine is opening at, until that source commits. While
+    // set, the element still holds the previous source (or none), so its time
+    // and duration do not describe `chapterIndex`.
+    this._pendingChapterTime = null;
     this.playbackSessionId = null;
     this.playbackOwnerId = this._newPlaybackSessionId();
     this.endChapterIndex = null;
@@ -263,6 +267,7 @@ export class SingleFileChapterPlayer {
   }
 
   _commitReadySource() {
+    this._pendingChapterTime = null;
     if (!this.bookId || !Number.isInteger(this.chapterIndex)) {
       this._readySource = null;
       return;
@@ -326,6 +331,7 @@ export class SingleFileChapterPlayer {
     // relocating. Overwritten below if a finite chapter source is used instead.
     this.streamStartOffset = startOffsetSeconds;
     this.requestedStartOffset = startOffsetSeconds;
+    this._pendingChapterTime = startOffsetSeconds;
     this.playbackSessionId = null;
     this.endChapterIndex = Number.isInteger(options.endChapterIndex)
       ? this._normalizeEndChapter(options.endChapterIndex, chapterIndex)
@@ -393,7 +399,7 @@ export class SingleFileChapterPlayer {
       } catch (error) {
         if (gen === this._generation) {
           this._isLoading = false;
-          if (!error?.cancelled) this.onError?.(error);
+          if (!error?.cancelled) this.onError?.(this._stampPendingPosition(error));
         }
         throw error;
       }
@@ -468,7 +474,7 @@ export class SingleFileChapterPlayer {
       if (gen === this._generation && !error?.cancelled) {
         await this._classifyLoadFailure(error, sourceCandidates);
         if (gen !== this._generation) throw error;
-        this.onError?.(error);
+        this.onError?.(this._stampPendingPosition(error));
       }
       throw error;
     } finally {
@@ -477,6 +483,19 @@ export class SingleFileChapterPlayer {
     if (gen !== this._generation) return;
     this.onReady?.();
     this._handleTimeUpdate();
+  }
+
+  /**
+   * Name the chapter and time a failed load was for. Recovery otherwise reads
+   * getCurrentTime() alone and cannot tell which chapter that time belongs to.
+   */
+  _stampPendingPosition(error) {
+    if (!error || typeof error !== 'object') return error;
+    try {
+      if (!Number.isInteger(error.chapterIndex)) error.chapterIndex = this.chapterIndex;
+      if (!Number.isFinite(error.chapterTime)) error.chapterTime = this.getCurrentTime();
+    } catch {}
+    return error;
   }
 
   _attach() {
@@ -668,6 +687,17 @@ export class SingleFileChapterPlayer {
       this._attemptSessions.delete(this._attemptSessions.keys().next().value);
     }
     return sessionId;
+  }
+
+  // A native HLS stream that died mid-playback answers 410 to its playlist URL
+  // from then on (lib/hls-audio-stream.js), so recovery must not reuse its
+  // session id even when it reloads the same position. Load retries keep
+  // theirs: they join a session that has not failed.
+  _forgetFailedHlsSession() {
+    if (this.continuousTransport !== 'hls' || !this.playbackSessionId) return;
+    for (const [attemptKey, sessionId] of this._attemptSessions) {
+      if (sessionId === this.playbackSessionId) this._attemptSessions.delete(attemptKey);
+    }
   }
 
   _normalizeEndChapter(value, startChapterIndex = this.chapterIndex) {
@@ -1169,6 +1199,7 @@ export class SingleFileChapterPlayer {
     error.code = 'MEDIA_STALLED';
     error.recoverable = true;
     Object.assign(error, this._recoveryPosition());
+    this._forgetFailedHlsSession();
     this.onError?.(error);
   }
 
@@ -1677,6 +1708,7 @@ export class SingleFileChapterPlayer {
       errorCode: Number(this.audio.error?.code) || 0
     });
     if (this._isLoading) return;
+    this._forgetFailedHlsSession();
     // A mid-playback media error is recovered by reloading at the listener's
     // position; carry it so recovery does not read a reset element.
     this.onError?.(Object.assign(this._audioError(), this._recoveryPosition()));
@@ -1716,7 +1748,9 @@ export class SingleFileChapterPlayer {
     if (this._awaitingBoundaryPrewarm) {
       this._isPlaying = true;
       if (this._advanceToPrewarmedChapter()) return;
-      if (this._prewarmInFlight !== this.chapterIndex + 1) {
+      // The same target the boundary wait chose: sections without narration
+      // are skipped, so the in-flight chapter need not be the adjacent one.
+      if (this._prewarmInFlight !== this._nextPlayableChapterIndex()) {
         this._finishEndedWithoutPrewarm();
         return;
       }
@@ -1735,7 +1769,9 @@ export class SingleFileChapterPlayer {
     this._pauseReason = null;
     this._playReason = 'app';
     this._isPlaying = true;
-    const startTime = Number(this.audio.currentTime) || 0;
+    // play() on an ended element restarts it from the beginning, so the end
+    // time is not where progress is measured from.
+    const startTime = this.audio.ended ? 0 : Number(this.audio.currentTime) || 0;
     const alreadyPlaying = !this.audio.paused && this.audio.readyState >= 3;
     const wait = waitForMediaEvents(this.audio, {
       resolveEvents: ['playing'],
@@ -1763,7 +1799,11 @@ export class SingleFileChapterPlayer {
       // that the successful start actually produces advancing audio.
       if (!alreadyPlaying) await wait.promise;
       if (playRevision !== this._playRevision) throw new LifecycleCancelledError('Playback start cancelled');
-      progressWait = this._waitForPlaybackProgress(startTime);
+      // Any other restart or seek the platform applied while starting moves
+      // the baseline back with it.
+      progressWait = this._waitForPlaybackProgress(
+        Math.min(startTime, Number(this.audio.currentTime) || 0)
+      );
       this._playProgressWait = progressWait;
       progressWait.promise.catch(() => {});
       await progressWait.promise;
@@ -1927,6 +1967,7 @@ export class SingleFileChapterPlayer {
     this._detach();
     this.audio.pause();
     this._isLoading = true;
+    this._pendingChapterTime = Math.max(0, Number(chapterTime) || 0);
     try {
       // A seek outside the native buffer opens a new server-side transport.
       // Prepare the exact offset first; otherwise a cold target correctly
@@ -2103,10 +2144,12 @@ export class SingleFileChapterPlayer {
   getVolume() { return this._volume; }
   getBufferRunway() { return this._bufferRunway(); }
   getCurrentTime() {
+    if (this._pendingChapterTime !== null) return this._pendingChapterTime;
     return this._chapterAtStreamTime(this._effectiveStreamTime()).chapterTime;
   }
   getTotalTime() {
     if (this.isContinuous) return this._estimatedDuration(this.chapterIndex);
+    if (this._pendingChapterTime !== null) return this._estimatedDuration(this.chapterIndex);
     if (Number.isFinite(this.audio.duration) && this.audio.duration > 0) return this.audio.duration;
     return this._estimatedDuration(this.chapterIndex);
   }

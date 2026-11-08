@@ -382,6 +382,82 @@ function fakeAudio() {
     assert.strictEqual(player.isContinuous, true);
   });
 
+  await test('a failed HLS stream is rebuilt under a new session id even at the same position', async () => {
+    // The server answers 410 to a failed ready playlist's URL instead of
+    // re-encoding it from its original offset. Recovery at an unchanged
+    // position must therefore not reuse that URL's session id.
+    for (const failure of ['error', 'stall']) {
+      const audio = fakeAudio();
+      audio.canPlayType = type => type === 'application/vnd.apple.mpegurl' ? 'maybe' : '';
+      audio.buffered = { length: 1, start: () => 0, end: () => 10 };
+      let clockMs = 0;
+      const errors = [];
+      const { player } = makePlayer(audio, {
+        isIOSLike: () => true,
+        now: () => clockMs,
+        stallTimeoutMs: 20000,
+        onError: error => errors.push(error)
+      });
+      const session = () => new URL(audio.src, 'https://xandrio.test').searchParams.get('session');
+      const load = player.loadChapter('book1', 0);
+      audio.emit('loadedmetadata');
+      await load;
+      const failed = session();
+      audio.paused = false;
+      audio.emit('playing');
+      if (failure === 'error') {
+        audio.emit('error');
+      } else {
+        player._checkForStall();
+        clockMs += 20000;
+        player._checkForStall();
+      }
+      assert.strictEqual(errors.length, 1, `${failure} is reported once`);
+      const reload = player.loadChapter('book1', 0);
+      audio.emit('loadedmetadata');
+      await reload;
+      assert.notStrictEqual(session(), failed, `${failure} recovery must not reuse the failed session`);
+    }
+  });
+
+  await test('a refused MP3 reconnect is recovered at the listener position, not as the end of the stream', async () => {
+    // The server answers 410 to a `Range: bytes=N-` reconnect it cannot
+    // resume. Chromium fails the load and the element raises a media error;
+    // the engine must report it with the listener's position so the app
+    // reloads there, and must not report a chapter end.
+    const audio = fakeAudio();
+    const errors = [];
+    const ends = [];
+    const { player } = makePlayer(audio, {
+      onError: error => errors.push(error),
+      onChapterEnd: event => ends.push(event)
+    });
+    const params = () => new URL(audio.src, 'https://xandrio.test').searchParams;
+    const load = player.loadChapter('book1', 0);
+    audio.emit('loadedmetadata');
+    await load;
+    assert.strictEqual(player.isContinuous, true);
+    const firstSession = params().get('session');
+    audio.paused = false;
+    audio.emit('playing');
+    audio.currentTime = 42;
+    audio.emit('timeupdate');
+
+    audio.error = { code: 2, message: 'MEDIA_ELEMENT_ERROR: network error' };
+    audio.emit('error');
+    assert.strictEqual(errors.length, 1);
+    assert.strictEqual(errors[0].chapterIndex, 0);
+    assert.strictEqual(errors[0].chapterTime, 42);
+    assert.deepStrictEqual(ends, []);
+
+    audio.error = null;
+    const reload = player.loadChapter('book1', 0, { startOffsetSeconds: errors[0].chapterTime });
+    assert.strictEqual(params().get('offsetSeconds'), '42', 'the reload starts at the listener position');
+    assert.notStrictEqual(params().get('session'), firstSession, 'the reload is a new stream, not the refused one');
+    audio.emit('loadedmetadata');
+    await reload;
+  });
+
   await test('iOS without native HLS skips open-ended MP3 and loads finite chapter audio', async () => {
     const audio = fakeAudio();
     audio.canPlayType = () => '';
@@ -2441,6 +2517,143 @@ function fakeAudio() {
     audio.emit('timeupdate');
     assert.deepStrictEqual(errors, [], 'zero on a new source is where it starts');
     assert.strictEqual(player.getCurrentTime(), 401);
+  });
+
+  // A sleep timer stopped a downloaded chapter at its end. The element plays
+  // again from zero, so the progress baseline must be zero, not the duration.
+  await test('Play after a finite chapter ended measures progress from the restart', async () => {
+    const audio = fakeAudio();
+    audio.play = async function play() {
+      this.playCalls += 1;
+      if (this.ended) {
+        this.currentTime = 0;
+        this.ended = false;
+      }
+      this.paused = false;
+    };
+    const { player, chapterEnds } = downloadedPlayer(audio, {
+      getContinuousEndChapter: () => 0,
+      playProgressTimeoutMs: 50
+    });
+    await playDownloadedChapter(player, audio);
+    audio.currentTime = 10;
+    audio.ended = true;
+    audio.paused = true;
+    audio.emit('ended');
+    assert.strictEqual(chapterEnds.length, 1);
+
+    const play = player.play();
+    await Promise.resolve();
+    audio.emit('playing');
+    audio.currentTime = 0.5;
+    audio.emit('timeupdate');
+    await play;
+    assert.strictEqual(player.isPlaying, true);
+    player.dispose();
+  });
+
+  // The selected chapter changed, but its source never committed. The element
+  // still holds the previous chapter's audio and time; neither describes the
+  // chapter the engine now names.
+  await test('a chapter switch reports the requested start until its source commits', async () => {
+    const audio = fakeAudio();
+    const errors = [];
+    const { player } = makePlayer(audio, {
+      getChapterCount: () => 10,
+      getEstimatedDuration: () => 900,
+      onError: error => errors.push(error)
+    });
+    const first = player.loadChapter('book1', 2);
+    audio.emit('loadedmetadata');
+    await first;
+    audio.currentTime = 1500;
+    audio.duration = 1600;
+    assert.strictEqual(player.getCurrentTime(), 1500);
+
+    let answerRunway;
+    player.preparePlaybackRunway = true;
+    player.fetch = () => new Promise(resolve => { answerRunway = resolve; });
+    const switching = player.loadChapter('book1', 7, { startOffsetSeconds: 30 });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.strictEqual(player.chapterIndex, 7);
+    assert.strictEqual(player.getCurrentTime(), 30, 'pending chapter time is the requested start');
+    assert.strictEqual(player.getPosition().currentTime, 30);
+    assert.strictEqual(player.getTotalTime(), 900, 'pending chapter length is its own estimate');
+
+    answerRunway({
+      ok: false,
+      status: 429,
+      headers: { get: () => '30' },
+      async json() { return { error: 'Too many requests' }; }
+    });
+    await assert.rejects(switching, error => error.status === 429);
+    assert.strictEqual(errors.length, 1);
+    assert.strictEqual(errors[0].chapterIndex, 7, 'a load error names the chapter it was for');
+    assert.strictEqual(errors[0].chapterTime, 30, 'a load error carries the requested start');
+    assert.strictEqual(player.getCurrentTime(), 30, 'a failed switch keeps the pending chapter time');
+
+    // A media failure on the replacement source is stamped the same way.
+    player.preparePlaybackRunway = false;
+    const mediaFailure = player.loadChapter('book1', 8);
+    audio.emit('error');
+    await assert.rejects(mediaFailure);
+    assert.strictEqual(errors.at(-1).chapterIndex, 8);
+    assert.strictEqual(errors.at(-1).chapterTime, 0);
+    assert.strictEqual(player.getCurrentTime(), 0);
+
+    player.preferStandardAudio = true;
+    const committed = player.loadChapter('book1', 8, { startOffsetSeconds: 12 });
+    audio.currentTime = 12;
+    audio.emit('loadedmetadata');
+    await committed;
+    audio.currentTime = 13;
+    assert.strictEqual(player.getCurrentTime(), 13, 'a committed source reports its own time');
+    player.dispose();
+  });
+
+  await test('Play during a boundary wait keeps waiting for the next narrated chapter', async () => {
+    const audio = fakeAudio();
+    audio.canPlayType = () => '';
+    let finishFetch;
+    const chapterEnds = [];
+    const { player } = makePlayer(audio, {
+      isIOSLike: () => true,
+      getChapterCount: () => 4,
+      isChapterPlayable: (_bookId, chapterIndex) => chapterIndex !== 1,
+      resolveNextChapterUrl: async () => null,
+      onChapterEnd: detail => chapterEnds.push(detail ?? null),
+      fetch: () => new Promise(resolve => {
+        finishFetch = () => resolve({
+          ok: true,
+          status: 200,
+          async blob() { return new Blob(['audio']); }
+        });
+      })
+    });
+
+    const load = player.loadChapter('book1', 0);
+    await new Promise(resolve => setImmediate(resolve));
+    audio.emit('loadedmetadata');
+    await load;
+    const play = player.play();
+    audio.emit('playing');
+    audio.currentTime = 1;
+    audio.emit('timeupdate');
+    await play;
+    await new Promise(resolve => setImmediate(resolve));
+    assert.strictEqual(player._prewarmInFlight, 2, 'the pre-warm skips the section without narration');
+
+    audio.ended = true;
+    audio.paused = true;
+    audio.emit('ended');
+    await player.play();
+    assert.deepStrictEqual(chapterEnds, [], 'Play does not abandon the in-flight pre-warm');
+
+    finishFetch();
+    await new Promise(resolve => setImmediate(resolve));
+    await new Promise(resolve => setImmediate(resolve));
+    assert.strictEqual(player.chapterIndex, 2);
+    player.dispose();
   });
 
   console.log(`\n${passed} passed, ${failed} failed`);

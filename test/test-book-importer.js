@@ -1012,6 +1012,63 @@ section('Successful direct import');
   assert(seeds.at(-1) === 'Artifact title' && substitutedResult.book.title === 'Artifact title',
     'lookups restart from the artifact metadata when an artifact writer substitutes it');
 
+  section('Acquired source ownership');
+  const cancelledAfterDownload = createFixture();
+  let cancelledError;
+  try {
+    await cancelledAfterDownload.importer.import(command({
+      kind: 'download',
+      sourcePath: undefined,
+      acquire: async () => '/library/hash_Downloaded Title.epub'
+    }), step => {
+      if (step === 3) throw Object.assign(new Error('Import cancelled'), { code: 'IMPORT_CANCELLED' });
+    });
+  } catch (error) {
+    cancelledError = error;
+  }
+  assert(cancelledError?.code === 'IMPORT_CANCELLED', 'a cancel right after the download stops the import');
+  assert(cancelledAfterDownload.calls.includes('remove:/library/hash_Downloaded Title.epub'),
+    'a cancel right after the download removes the downloaded file');
+
+  const failedNormalize = createFixture({
+    normalizeBook: async () => { throw new Error('Unsupported book format: .zip'); }
+  });
+  await failedNormalize.importer.import(command({
+    kind: 'download', sourcePath: undefined, acquire: async () => '/library/hash_Bad.zip'
+  })).catch(() => undefined);
+  assert(failedNormalize.calls.includes('remove:/library/hash_Bad.zip'),
+    'a download that cannot be normalized is removed');
+
+  const acquiredSuccess = createFixture();
+  const acquiredResult = await acquiredSuccess.importer.import(command({
+    kind: 'download', sourcePath: undefined, acquire: async () => '/library/hash_Good.epub'
+  }));
+  assert(acquiredResult.book.path === '/library/book-1.epub' &&
+    !acquiredSuccess.calls.some(call => call.startsWith('remove:')),
+  'a successful import keeps its normalized file and removes nothing');
+
+  const handedSource = createFixture({
+    normalizeBook: async () => { throw new Error('Unsupported book format: .zip'); }
+  });
+  await handedSource.importer.import(command()).catch(() => undefined);
+  assert(!handedSource.calls.includes('remove:/uploads/book.epub'),
+    'a caller-provided source path stays the caller\'s to remove');
+
+  section('Primary id owned by a live book');
+  const livePrimary = createFixture({
+    isImportTargetAvailable: async id => id !== 'book-1'
+  });
+  let livePrimaryError;
+  try {
+    await livePrimary.importer.import(command({ addedBy: 'member-1' }));
+  } catch (error) {
+    livePrimaryError = error;
+  }
+  assert(livePrimaryError instanceof BookImportError && livePrimaryError.existingBookId === 'book-1',
+    'an import whose primary id is already a book reports that existing book');
+  assert(!livePrimary.calls.some(call => call.startsWith('normalize:') || call.startsWith('remove:')),
+    'an import never normalizes over, or removes, a live book\'s canonical files');
+
   console.log(`\nBook Importer tests: ${passed} passed, ${failed} failed`);
   if (failed) process.exit(1);
 })().catch(error => {

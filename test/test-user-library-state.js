@@ -104,6 +104,41 @@ section('1. position conflict resolution');
   assertEqual(ancient.position.updatedAtMs, NOW, 'An implausibly old client timestamp falls back to the server clock');
 })();
 
+(() => {
+  // A device whose clock runs a few minutes fast must not order its write
+  // after progress the server receives later from a correct clock.
+  let nowMs = 1_735_689_600_000;
+  const skewed = createUserLibraryState({ now: () => nowMs });
+  const positions = { users: {} };
+  const fast = skewed.recordPosition(positions, {
+    userId: 'alice', bookId: 'bookA', chapterIndex: 1, timestamp: 10,
+    updatedAtMs: nowMs + 4 * 60_000, wasPlaying: true
+  });
+  assertEqual(fast.position.updatedAtMs, nowMs, 'A fast client clock is capped at the server clock');
+  nowMs += 30_000;
+  const correct = skewed.recordPosition(positions, {
+    userId: 'alice', bookId: 'bookA', chapterIndex: 1, timestamp: 40,
+    updatedAtMs: nowMs, wasPlaying: true
+  });
+  assertEqual(correct.ignored, undefined, 'A later write from a correct clock is not rejected as older');
+  assertEqual(positions.users.alice.bookA.timestamp, 40, 'The later correct-clock progress is stored');
+
+  const replay = skewed.recordPosition(positions, {
+    userId: 'alice', bookId: 'bookA', chapterIndex: 1, timestamp: 5,
+    updatedAtMs: nowMs - 60 * 60_000, allowBackward: true, wasPlaying: false
+  });
+  assertEqual(replay.ignored, true, 'A late offline replay with an older stamp still loses');
+
+  // A position stored before the cap with a future stamp must not block either.
+  positions.users.alice.bookA.updatedAtMs = nowMs + 4 * 60_000;
+  nowMs += 1_000;
+  const afterLegacy = skewed.recordPosition(positions, {
+    userId: 'alice', bookId: 'bookA', chapterIndex: 1, timestamp: 50,
+    updatedAtMs: nowMs, wasPlaying: true
+  });
+  assertEqual(afterLegacy.ignored, undefined, 'A stored future stamp does not block a newer write');
+})();
+
 section('2. canonical sync profile state');
 
 (() => {

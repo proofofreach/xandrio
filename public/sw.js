@@ -1,7 +1,7 @@
 importScripts('/js/offline-range.js');
 importScripts('/js/offline-store.js');
 
-const CACHE_VERSION = 'xandrio-v222';
+const CACHE_VERSION = 'xandrio-v226';
 const OFFLINE_ROUTE_CONTRACT_VERSION = 2;
 const OFFLINE_AUDIO_CACHE = 'xandrio-offline-audio';
 const OFFLINE_TITLE_CACHE = 'xandrio-offline-titles';
@@ -22,7 +22,7 @@ const ASSET_VERSIONS = {
   '/find.css': 3,
   '/js/ios-focus-zoom.js': 2,
   '/js/lifecycle.js': 2,
-  '/app.js': 171
+  '/app.js': 175
 };
 const versionedAsset = (path) => `${path}?v=${ASSET_VERSIONS[path]}`;
 const APP_SHELL = [
@@ -52,6 +52,7 @@ const APP_SHELL = [
   '/js/player-status.mjs',
   '/js/auto-sleep-schedule.mjs',
   '/js/single-file-chapter-player.js',
+  '/js/sw-update.mjs',
   '/js/util/format.js',
   '/js/util/time-left.mjs',
   '/js/util/library-status.mjs',
@@ -180,13 +181,20 @@ self.addEventListener('push', event => {
   } catch {}
   if (payload.type !== 'offline-audio-ready') return;
   const title = String(payload.title || 'Your audiobook').slice(0, 180);
-  event.waitUntil(self.registration.showNotification(`${title} is ready`, {
-    body: 'Audio preparation is complete. Open Xandrio to download it to this device.',
-    icon: '/icon-xandrio-ankh.png',
-    badge: '/icon-xandrio-ankh.png',
-    tag: `offline-audio-ready:${String(payload.bookId || '').slice(0, 128)}`,
-    data: { url: payload.url || '/' }
-  }));
+  const bookId = String(payload.bookId || '').slice(0, 128);
+  event.waitUntil(Promise.all([
+    self.registration.showNotification(`${title} is ready`, {
+      body: 'Audio preparation is complete. Open Xandrio to download it to this device.',
+      icon: '/icon-xandrio-ankh.png',
+      badge: '/icon-xandrio-ankh.png',
+      tag: `offline-audio-ready:${bookId}`,
+      data: { url: payload.url || '/' }
+    }),
+    // An open page finishes its download now instead of at its next poll.
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true })
+      .then(windows => windows.forEach(client => client.postMessage({ type: 'XANDRIO_OFFLINE_AUDIO_READY', bookId })))
+      .catch(() => {})
+  ]));
 });
 
 self.addEventListener('notificationclick', event => {

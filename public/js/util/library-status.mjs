@@ -44,6 +44,14 @@ export function deviceState(status = {}, { pending = false } = {}) {
   }
   switch (kind) {
     case 'preparing': {
+      // Chapters are saved as each is prepared. Once some are on the device,
+      // that count is the fact worth stating; the ring follows it too.
+      if (cached > 0 && total > 0) {
+        return {
+          ...state(`${cached}/${total} on device · Preparing`, `${cached}/${total} saved`),
+          kind, glyph: 'ring', percent: percentOf(cached, total), tap: 'menu', notable: true, column: `${cached}/${total} saved`
+        };
+      }
       const percent = percentOf(status.preparedChapters, total);
       return {
         ...state(percent === null ? 'Preparing' : `Preparing ${percent}%`, percent === null ? 'Preparing' : `${percent}% ready`),
@@ -51,6 +59,9 @@ export function deviceState(status = {}, { pending = false } = {}) {
       };
     }
     case 'preparation-waiting':
+      if (cached > 0 && total > 0) {
+        return { ...state(`${cached}/${total} on device · Waiting`, `${cached}/${total} saved`), kind, glyph: 'ring', percent: percentOf(cached, total), tap: 'menu', notable: true, column: `${cached}/${total} saved` };
+      }
       return { ...state('Waiting for audio', 'Waiting'), kind, glyph: 'ring', percent: null, tap: 'menu', notable: true, column: 'Waiting' };
     case 'downloading': {
       const percent = percentOf(cached, total);
