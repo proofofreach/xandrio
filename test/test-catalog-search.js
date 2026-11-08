@@ -393,6 +393,24 @@ await (async () => {
   );
 })();
 
+section('title plus author queries');
+
+await (async () => {
+  const zlib = (title, author, format, hash) => result({ title, author, format, hash, source: 'zlibrary' });
+  const candidates = [
+    zlib('Algorithm design', 'Jon Kleinberg; Éva Tardos', 'PDF', 'kleinberg'),
+    zlib('Mastering algorithms with Perl', 'Jon Orwant', 'PDF', 'orwant'),
+    zlib('Instructor Solutions Manual for Algorithm Design', 'Jon Kleinberg', 'PDF', 'manual'),
+    zlib('The Algorithm: The Hypergrowth Formula That Transformed Tesla, Lululemon, General Motors, and SpaceX', 'Jon McNeill', 'EPUB', 'mcneill')
+  ];
+  for (const query of ['The Algorithm Jon McNeill', 'The Algorithm McNeill', 'The Algorithm']) {
+    const response = await buildCatalogSearchResponse({ query, results: candidates });
+    assertEqual(response.recommended.hash, 'mcneill', `"${query}" ranks the long-subtitled exact title first`);
+  }
+  const byShared = await buildCatalogSearchResponse({ query: 'Algorithm Design Kleinberg', results: candidates });
+  assertEqual(byShared.recommended.hash, 'kleinberg', 'A surname plus title still finds the named author\'s title');
+})();
+
 console.log(`\n${'═'.repeat(50)}`);
 console.log(`Catalog search tests: ${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

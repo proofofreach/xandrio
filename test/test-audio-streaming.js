@@ -135,6 +135,61 @@ async function test(name, fn) {
     assert.strictEqual((await response.arrayBuffer()).byteLength, 0);
   });
 
+  // Chapter audio is served from fixed paths that pronunciation repair and
+  // chapter rebuilds rewrite in place (delete, then rename). Without a
+  // validator a Range request issued mid-playback splices two encodes.
+  await test('a file served without an artifact identity carries a strong validator', async () => {
+    const response = await fetch(`${base}/ok`, { headers: { Range: 'bytes=0-1023' } });
+    const etag = response.headers.get('etag');
+    assert.match(etag || '', /^"[^"]+"$/, 'strong ETag');
+    assert.ok(response.headers.get('last-modified'), 'Last-Modified');
+    await response.arrayBuffer();
+  });
+
+  await test('a matching If-Range on a mutable path returns the range', async () => {
+    const first = await fetch(`${base}/ok`);
+    const etag = first.headers.get('etag');
+    await first.arrayBuffer();
+    const response = await fetch(`${base}/ok`, { headers: { Range: 'bytes=1024-2047', 'If-Range': etag } });
+    assert.strictEqual(response.status, 206);
+    assert.strictEqual(response.headers.get('etag'), etag);
+    assert.strictEqual((await response.arrayBuffer()).byteLength, 1024);
+  });
+
+  await test('an in-place rewrite changes the ETag and a stale If-Range gets the full new file', async () => {
+    const first = await fetch(`${base}/ok`);
+    const staleEtag = first.headers.get('etag');
+    const staleModified = first.headers.get('last-modified');
+    await first.arrayBuffer();
+    // Same length, different content: the case a total-length check cannot catch.
+    const rewritten = Buffer.alloc(fixture.length, 9);
+    const temporary = `${audioPath}.rewrite`;
+    await fsp.writeFile(temporary, rewritten);
+    await fsp.rm(audioPath);
+    await fsp.rename(temporary, audioPath);
+    try {
+      const response = await fetch(`${base}/ok`, { headers: { Range: 'bytes=1024-2047', 'If-Range': staleEtag } });
+      assert.strictEqual(response.status, 200);
+      assert.notStrictEqual(response.headers.get('etag'), staleEtag);
+      const body = Buffer.from(await response.arrayBuffer());
+      assert.strictEqual(body.byteLength, rewritten.length);
+      assert.ok(body.equals(rewritten));
+      const weak = await fetch(`${base}/ok`, { headers: { Range: 'bytes=0-1', 'If-Range': `W/${response.headers.get('etag')}` } });
+      assert.strictEqual(weak.status, 200, 'a weak validator never satisfies If-Range');
+      await weak.arrayBuffer();
+      const dated = await fetch(`${base}/ok`, { headers: { Range: 'bytes=0-1', 'If-Range': staleModified } });
+      assert.strictEqual(dated.status, 200, 'a date validator older than the rewrite gets the full body');
+      await dated.arrayBuffer();
+      // Two writes in one second share a Last-Modified value, so even a date
+      // equal to the current one cannot prove the client holds these bytes.
+      const current = await fetch(`${base}/ok`, { headers: { Range: 'bytes=0-1', 'If-Range': response.headers.get('last-modified') } });
+      assert.strictEqual(current.status, 200, 'a date validator never satisfies If-Range on a mutable file');
+      await current.arrayBuffer();
+    } finally {
+      await fsp.writeFile(audioPath, fixture);
+    }
+  });
+
   await test('a client aborting mid-stream does not raise an unhandled error', async () => {
     const controller = new AbortController();
     const response = await fetch(`${base}/ok`, { signal: controller.signal });

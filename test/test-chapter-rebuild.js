@@ -251,7 +251,32 @@ async function fixture(onStep = null, serviceOptions = {}) {
     }
   }
 
-  console.log('27 passed, 0 failed');
+  {
+    // GET /api/book holds the same per-book mutation lock while it reads
+    // chapters. That reader is not a rebuild, so a rebuild must wait for it
+    // and run, not report "rebuild-in-progress" without rebuilding anything.
+    const value = await fixture();
+    try {
+      let releaseReader;
+      const reader = value.service.locks.withBookMutationLock('book', () =>
+        new Promise(resolve => { releaseReader = resolve; }));
+      await new Promise(resolve => setImmediate(resolve));
+      const rebuild = value.service.rebuild('book');
+      const concurrent = value.service.rebuild('book');
+      releaseReader();
+      await reader;
+      const result = await rebuild;
+      assert(result.changed, 'a rebuild queued behind a non-rebuild lock holder still rebuilds');
+      assert.deepStrictEqual(await concurrent, { changed: false, reason: 'rebuild-in-progress' },
+        'a second rebuild issued while one is pending reports that a rebuild is running');
+      const artifact = await jsonStore.load(value.artifactPath);
+      assert.strictEqual(artifact.chapters[0].title, 'Authored boundary');
+    } finally {
+      await fs.rm(value.dir, { recursive: true, force: true });
+    }
+  }
+
+  console.log('30 passed, 0 failed');
 })().catch(error => {
   console.error(error);
   process.exit(1);

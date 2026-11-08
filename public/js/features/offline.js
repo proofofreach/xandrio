@@ -27,7 +27,7 @@ const OFFLINE_CONTRACT_MARKER = 'x-xandrio-offline-contract';
  * with OFFLINE_ROUTE_CONTRACT_VERSION instead of tying downloads to a build id.
  * This value MUST equal CACHE_VERSION in public/sw.js.
  */
-export const EXPECTED_OFFLINE_SW_VERSION = 'xandrio-v222';
+export const EXPECTED_OFFLINE_SW_VERSION = 'xandrio-v226';
 export const MINIMUM_OFFLINE_ROUTE_CONTRACT = 1;
 const BLOCK_OFFLINE_ROUTE_CONTRACT = 2;
 // A chapter is only ever invalidated after this many playback failures whose
@@ -44,8 +44,24 @@ const DOWNLOAD_RETRY_DELAYS_MS = [0, 350, 1000];
 const PREPARE_POLL_MIN_MS = 1500;
 const PREPARE_POLL_MAX_MS = 15000;
 const PREPARE_POLL_BACKOFF = 1.5;
-// Cadence for on-screen preparation progress once nobody is looking at it.
-const PREPARATION_POLL_HIDDEN_MS = 30000;
+// Whole-book preparation takes hours. Its status poll started at 5 seconds,
+// which measured ~440 requests in 37 minutes for one phone. Check every 15
+// seconds right after a chapter becomes ready, stretch towards 30 seconds
+// while nothing changes, and stop while hidden unless a transfer is running.
+const PREPARATION_POLL_MIN_MS = 15000;
+const PREPARATION_POLL_MAX_MS = 30000;
+const PREPARATION_POLL_BACKOFF = 1.5;
+const OFFLINE_TRANSFER_SCHEMA_VERSION = 1;
+const SHA256_IDENTITY = /^sha256-[a-f0-9]{64}$/;
+// Cross-tab exclusion for the CacheStorage writer. The browser releases a Web
+// Lock when its page dies, so a killed download never strands the next launch.
+const OFFLINE_DOWNLOAD_LOCK = 'xandrio-offline-cache-download';
+const DESCRIPTOR_REFRESH_LIMIT = 2;
+// A transfer pass that cannot progress (a network blip, a 5xx, or a server
+// package that needs repair) waits 15 s, then doubles up to 5 minutes. The
+// poll honours this; user-driven triggers (launch, online, foreground) do not.
+const TRANSFER_RETRY_MIN_MS = 15000;
+const TRANSFER_RETRY_MAX_MS = 5 * 60 * 1000;
 
 export function shouldUseOfflineBookFallback(error, online = navigator.onLine) {
   if (!online) return true;
@@ -276,6 +292,10 @@ export function initOffline(options = {}) {
   // while an older worker is still in charge. Both resolve on their own, so
   // re-check at startup and whenever the controlling worker changes rather than
   // leaving the user with a book stuck in "Verifying".
+  navigator.serviceWorker?.addEventListener?.('message', event => {
+    if (event?.data?.type !== 'XANDRIO_OFFLINE_AUDIO_READY') return;
+    void refreshOfflinePreparations().catch(() => {});
+  });
   navigator.serviceWorker?.addEventListener?.(
     'controllerchange',
     () => {
@@ -607,7 +627,12 @@ function validTitleData(entry) {
  */
 function isHydratableOfflineEntry(entry) {
   if (entry?.mode !== 'full' || !validTitleData(entry)) return false;
-  return ['ready', 'repairing', 'incomplete', 'verifying'].includes(offlineState(entry));
+  // A progressive download keeps its verified chapters while the server
+  // prepares the rest, so the preparation states are partial copies too.
+  return [
+    'ready', 'repairing', 'incomplete', 'verifying',
+    'preparing', 'preparation-waiting', 'prepared', 'preparation-error', 'preparation-paused'
+  ].includes(offlineState(entry));
 }
 
 /**
@@ -703,7 +728,9 @@ export function offlineStatusForBook(bookId, manifest = getOfflineManifest()) {
   if (state === 'preparing') {
     return {
       kind: 'preparing',
-      label: `Preparing audio · ${Number(entry.preparedChapters) || 0} of ${totalChapters} · Safe to close`,
+      label: cachedChapters > 0
+        ? `${cachedChapters} of ${totalChapters} chapters on this device · Preparing the rest`
+        : `Preparing audio · ${Number(entry.preparedChapters) || 0} of ${totalChapters} · Safe to close`,
       downloaded: false,
       cachedChapters,
       totalChapters,
@@ -713,7 +740,9 @@ export function offlineStatusForBook(bookId, manifest = getOfflineManifest()) {
   if (state === 'preparation-waiting') {
     return {
       kind: 'preparation-waiting',
-      label: `Waiting for audio · ${Number(entry.preparedChapters) || 0} of ${totalChapters}`,
+      label: cachedChapters > 0
+        ? `${cachedChapters} of ${totalChapters} chapters on this device · Waiting for audio`
+        : `Waiting for audio · ${Number(entry.preparedChapters) || 0} of ${totalChapters}`,
       downloaded: false,
       cachedChapters,
       totalChapters
@@ -1229,6 +1258,10 @@ async function localChapterBodyMatchesManifest(bookId, chapterIndex) {
     const cache = await caches.open(offlineCacheName(OFFLINE_AUDIO_CACHE));
     const cached = await cache.match(offlineAudioRequest(bookId, chapterIndex));
     if (!cached) return false;
+    if (Array.isArray(expected.blockHashes) && expected.blockSize > 0) {
+      // Block-hashed chapters are checked as a stream, one block at a time.
+      return await cachedBodyMatchesDescriptor(cached, { ...expected, state: 'ready' });
+    }
     const identity = await contentIdentity(cached, { verifyBody: true });
     return canReuseChapter(expected, identity, expected.variantKey);
   } catch {
@@ -1349,6 +1382,9 @@ async function auditCurrentOfflineVariant() {
   if (!book?.id) return;
   const entry = offlineEntryForBook(book.id);
   if (entry?.storageBackend === 'idb') return;
+  // A running progressive download checks every chapter against the server
+  // descriptor itself and replaces only the chapters that changed.
+  if (entry?.autoResume === true) return;
   const sampleChapterIndex = entry?.chapterEntries?.findIndex(Boolean) ?? -1;
   if (
     !isHydratableOfflineEntry(entry) ||
@@ -1470,37 +1506,117 @@ function applyPreparationStatus(bookId, status, seed = null, { showReadyToast = 
   return state === 'prepared';
 }
 
-function schedulePreparationPoll(delayMs = 5000) {
+let preparationPollDelayMs = PREPARATION_POLL_MIN_MS;
+let preparationPollProgress = -1;
+
+/**
+ * Delay before the next preparation status check, or null for none.
+ *
+ * Pure so the cadence can be tested without timers: fast right after a
+ * chapter became ready, backing off while nothing changes, and no polling at
+ * all while hidden unless this page is actively transferring audio.
+ */
+export function nextPreparationPollDelay({
+  previousDelayMs = PREPARATION_POLL_MIN_MS,
+  progressed = false,
+  hidden = false,
+  transferring = false
+} = {}) {
+  if (hidden && !transferring) return null;
+  if (hidden) return PREPARATION_POLL_MAX_MS;
+  if (progressed) return PREPARATION_POLL_MIN_MS;
+  return Math.min(
+    PREPARATION_POLL_MAX_MS,
+    Math.max(PREPARATION_POLL_MIN_MS, Math.round((Number(previousDelayMs) || 0) * PREPARATION_POLL_BACKOFF))
+  );
+}
+
+function pollablePreparationEntries(manifest = getOfflineManifest()) {
+  return Object.values(manifest).filter(entry =>
+    entry?.storageBackend !== 'idb' &&
+    (['preparing', 'preparation-waiting'].includes(offlineState(entry)) ||
+      (entry.autoResume && offlineState(entry) === 'prepared') ||
+      // A scheduled transfer retry keeps the poll alive to run it.
+      (entry.autoResume && Number(entry.transferRetryAt) > 0))
+  );
+}
+
+export function transferRetryDelayMs(attempts = 0) {
+  const exponent = Math.max(0, Math.min(20, Number(attempts) || 0));
+  return Math.min(TRANSFER_RETRY_MAX_MS, TRANSFER_RETRY_MIN_MS * (2 ** exponent));
+}
+
+function scheduleTransferRetry(entry) {
+  const attempts = Math.max(0, Number(entry.transferRetryAttempts) || 0);
+  entry.transferRetryAttempts = attempts + 1;
+  entry.transferRetryAt = Date.now() + transferRetryDelayMs(attempts);
+}
+
+function clearTransferRetry(entry) {
+  delete entry.transferRetryAt;
+  delete entry.transferRetryAttempts;
+}
+
+function carryTransferRetry(entry, existing) {
+  if (Number(existing?.transferRetryAttempts) > 0) {
+    entry.transferRetryAttempts = Number(existing.transferRetryAttempts);
+  }
+  if (Number(existing?.transferRetryAt) > 0) entry.transferRetryAt = Number(existing.transferRetryAt);
+}
+
+function transientTransferError(error) {
+  if (error?.name === 'AbortError' || error?.message === 'Download cancelled') return false;
+  if (['VERIFICATION_FAILED', 'DESCRIPTOR_CHANGED', 'BOOK_CHANGED'].includes(error?.code)) return false;
+  return isTransientDownloadError(error);
+}
+
+function preparationProgressMark(entries) {
+  return entries.reduce((sum, entry) => sum + (Number(entry.preparedChapters) || 0), 0);
+}
+
+function schedulePreparationPoll(delayMs = null) {
+  watchPreparationVisibility();
   if (
     preparationPollTimer ||
     typeof window.setTimeout !== 'function' ||
-    !navigator.onLine ||
-    !Object.values(getOfflineManifest()).some(entry =>
-      entry?.storageBackend !== 'idb' &&
-      (['preparing', 'preparation-waiting'].includes(offlineState(entry)) ||
-        (entry.autoResume && offlineState(entry) === 'prepared'))
-    )
+    !navigator.onLine
   ) return;
-  // Server-side preparation continues whether or not anyone is looking at it,
-  // and its only consumer is on-screen progress. Backgrounded, this poll was
-  // pure overhead competing with the playback it was preparing for.
-  const interval = globalThis.document?.hidden
-    ? PREPARATION_POLL_HIDDEN_MS
-    : Math.max(1000, Number(delayMs) || 5000);
-  watchPreparationVisibility();
+  const entries = pollablePreparationEntries();
+  if (entries.length === 0) {
+    preparationPollDelayMs = PREPARATION_POLL_MIN_MS;
+    preparationPollProgress = -1;
+    return;
+  }
+  const mark = preparationProgressMark(entries);
+  const progressed = mark !== preparationPollProgress;
+  preparationPollProgress = mark;
+  const cadence = nextPreparationPollDelay({
+    previousDelayMs: preparationPollDelayMs,
+    progressed,
+    hidden: Boolean(globalThis.document?.hidden),
+    transferring: Boolean(downloadAbort)
+  });
+  if (cadence === null) {
+    // The next visible check starts at the fast cadence.
+    preparationPollDelayMs = PREPARATION_POLL_MIN_MS;
+    preparationPollProgress = -1;
+    return;
+  }
+  preparationPollDelayMs = cadence;
+  const interval = delayMs == null ? cadence : Math.max(0, Number(delayMs) || 0);
   preparationPollTimer = window.setTimeout(() => {
     preparationPollTimer = null;
-    void refreshOfflinePreparations().finally(() => schedulePreparationPoll());
+    void refreshOfflinePreparations({ respectBackoff: true }).finally(() => schedulePreparationPoll());
   }, interval);
 }
 
 let preparationVisibilityWatched = false;
 
 /**
- * Resume the visible cadence the moment the screen comes back, so returning to
- * the app never shows progress frozen at whatever the slow poll last saw.
- * Attached on first use rather than at import, because this module is also
- * loaded outside a document.
+ * Hidden pages do not poll. Returning to the app checks at once, so progress
+ * is never shown frozen at whatever the last poll saw. Attached on first use
+ * rather than at import, because this module is also loaded outside a
+ * document.
  */
 function watchPreparationVisibility() {
   if (preparationVisibilityWatched || typeof globalThis.document?.addEventListener !== 'function') {
@@ -1508,10 +1624,17 @@ function watchPreparationVisibility() {
   }
   preparationVisibilityWatched = true;
   globalThis.document.addEventListener('visibilitychange', () => {
-    if (globalThis.document.hidden || preparationPollTimer === null) return;
-    window.clearTimeout(preparationPollTimer);
+    if (globalThis.document.hidden) {
+      if (preparationPollTimer !== null && !downloadAbort) {
+        window.clearTimeout?.(preparationPollTimer);
+        preparationPollTimer = null;
+      }
+      return;
+    }
+    if (preparationPollTimer !== null) window.clearTimeout?.(preparationPollTimer);
     preparationPollTimer = null;
-    schedulePreparationPoll(1000);
+    preparationPollDelayMs = PREPARATION_POLL_MIN_MS;
+    schedulePreparationPoll(0);
   });
 }
 
@@ -1570,7 +1693,11 @@ export async function prepareAndDownloadBookForOffline(book, chapters, options =
     const [downloaded] = await Promise.all([blockDownload.completion, notificationReady]);
     return downloaded;
   }
-  if (!await prepareBookForOffline(book, chapters, { showReadyToast: false, autoResume: true })) {
+  const ready = await prepareBookForOffline(book, chapters, { showReadyToast: false, autoResume: true });
+  // Chapters are saved as each one is prepared, so a running preparation is
+  // not a reason to wait. Errors, capacity, pauses and cancellation are.
+  const entry = offlineEntryForBook(book.id);
+  if (!ready && !(entry?.autoResume && ['preparing', 'preparation-waiting'].includes(offlineState(entry)))) {
     await notificationReady;
     return false;
   }
@@ -1680,15 +1807,17 @@ export async function refreshOfflinePreparation(bookId) {
   return applyPreparationStatus(id, status, seed);
 }
 
-export async function refreshOfflinePreparations() {
+export async function refreshOfflinePreparations(options = {}) {
   if (!navigator.onLine) return false;
+  // Event listeners pass an Event here; only the poll asks for backoff.
+  const resume = { respectBackoff: options?.respectBackoff === true };
   const preparingIds = Object.values(getOfflineManifest())
     .filter(entry => entry?.storageBackend !== 'idb' &&
       ['preparing', 'preparation-waiting'].includes(offlineState(entry)))
     .map(entry => String(entry.bookId));
-  if (preparingIds.length === 0) return resumeInterruptedOfflineDownloads();
+  if (preparingIds.length === 0) return resumeInterruptedOfflineDownloads(resume);
   const results = await Promise.allSettled(preparingIds.map(refreshOfflinePreparation));
-  await resumeInterruptedOfflineDownloads();
+  await resumeInterruptedOfflineDownloads(resume);
   schedulePreparationPoll();
   return results.some(result => result.status === 'fulfilled' && result.value);
 }
@@ -1717,6 +1846,13 @@ export async function cancelOfflinePreparation(bookId) {
     pending[id] = { ...pending[id], autoResume: false };
     saveOfflineManifest(pending);
   }
+  // A progressive transfer may be saving a chapter of this title right now.
+  // Stop it and let its late writes settle before deciding what remains.
+  if (downloadAbort && String(activeDownloadBookId) === id) {
+    const completion = activeDownloadCompletion;
+    downloadAbort.abort();
+    await completion;
+  }
   await apiSend('DELETE', `/api/offline/preparation/${encodeURIComponent(id)}`);
   const manifest = getOfflineManifest();
   const entry = manifest[id];
@@ -1726,9 +1862,22 @@ export async function cancelOfflinePreparation(bookId) {
     'preparation-waiting',
     'preparation-error',
     'preparation-capacity',
-    'preparation-paused'
+    'preparation-paused',
+    'repairing',
+    'incomplete'
   ].includes(offlineState(entry))) {
-    delete manifest[id];
+    if (hasCachedChapter(entry)) {
+      // Verified chapters already on the device stay playable as a partial
+      // download; they are not counted as Downloaded.
+      manifest[id] = {
+        ...entry,
+        state: 'incomplete',
+        autoResume: false,
+        progressPhase: 'Cancelled'
+      };
+    } else {
+      delete manifest[id];
+    }
     saveOfflineManifest(manifest);
   }
   showToast('Download cancelled');
@@ -1737,18 +1886,18 @@ export async function cancelOfflinePreparation(bookId) {
 
 let resumingDownload = false;
 
-export async function resumeInterruptedOfflineDownloads() {
+export async function resumeInterruptedOfflineDownloads(options = {}) {
   if (resumingDownload) return false;
   resumingDownload = true;
   try {
-    return await resumeNextOfflineDownload();
+    return await resumeNextOfflineDownload({ respectBackoff: options?.respectBackoff === true });
   } finally {
     resumingDownload = false;
     schedulePreparationPoll();
   }
 }
 
-async function resumeNextOfflineDownload() {
+async function resumeNextOfflineDownload({ respectBackoff = false } = {}) {
   if (
     downloadAbort ||
     !navigator.onLine ||
@@ -1763,7 +1912,9 @@ async function resumeNextOfflineDownload() {
       entry?.storageBackend !== 'idb' &&
       entry?.mode === 'full' &&
       validTitleData(entry) &&
-      ['prepared', 'repairing', 'incomplete'].includes(offlineState(entry))
+      (!respectBackoff || !(Number(entry.transferRetryAt) > Date.now())) &&
+      (['prepared', 'repairing', 'incomplete'].includes(offlineState(entry)) ||
+        (['preparing', 'preparation-waiting'].includes(offlineState(entry)) && hasNewPreparedWork(entry)))
     )
     .sort((left, right) =>
       String(left.downloadStartedAt || '').localeCompare(String(right.downloadStartedAt || ''))
@@ -1774,6 +1925,23 @@ async function resumeNextOfflineDownload() {
     candidate.titleData.chapters,
     { confirmForeground: false, showOverlay: false, requireIntent: true }
   );
+}
+
+/**
+ * Has the server prepared something this device has not yet looked at?
+ *
+ * The status poll is cheap; the per-chapter descriptor is not. A transfer
+ * pass records how many chapters the server had prepared when it last ran,
+ * and only a higher count, or a different narration package, starts another.
+ */
+function hasNewPreparedWork(entry) {
+  const checked = Number(entry?.transferCheckedPrepared);
+  if (!Number.isFinite(checked)) return true;
+  if (
+    entry.packageVariantKey && entry.variantKey &&
+    entry.packageVariantKey !== entry.variantKey
+  ) return true;
+  return (Number(entry.preparedChapters) || 0) > checked;
 }
 
 async function requestPersistentOfflineStorage() {
@@ -1848,21 +2016,299 @@ async function releaseDownloadWakeLock() {
   await sentinel.release().catch(() => {});
 }
 
-function discardWorkingAudioForChangedVariant(existing, working, packageVariantKey) {
-  if (!existing?.variantKey || existing.variantKey === packageVariantKey) return false;
-  working.variantKey = packageVariantKey;
-  working.chapterEntries.fill(null);
-  working.bytes = 0;
-  working.downloadedAt = null;
-  return true;
+/**
+ * One prepared chapter as the server's transfer descriptor names it. Anything
+ * that does not carry a complete identity is treated as not yet prepared:
+ * an incomplete descriptor can never authorise a download or a reuse.
+ */
+function normalizeChapterDescriptor(item, index) {
+  if (item?.state === 'empty') return { index, state: 'empty' };
+  const size = Number(item?.size);
+  const blockSize = Number(item?.blockSize);
+  const ready = item?.state === 'ready' &&
+    SHA256_IDENTITY.test(String(item.artifactId || '')) &&
+    item.contentHash === item.artifactId &&
+    Number.isSafeInteger(size) && size > 0 &&
+    Number.isSafeInteger(blockSize) && blockSize > 0 &&
+    Array.isArray(item.blockHashes) &&
+    item.blockHashes.length === Math.ceil(size / blockSize) &&
+    item.blockHashes.every(hash => SHA256_IDENTITY.test(String(hash || ''))) &&
+    typeof item.variantKey === 'string' && item.variantKey.length > 0;
+  if (!ready) return { index, state: item?.state === 'error' ? 'error' : 'pending' };
+  return {
+    index,
+    state: 'ready',
+    artifactId: item.artifactId,
+    contentHash: item.contentHash,
+    etag: typeof item.etag === 'string' && item.etag ? item.etag : `"${item.artifactId}"`,
+    size,
+    blockSize,
+    blockHashes: item.blockHashes.slice(),
+    variantKey: item.variantKey,
+    url: typeof item.url === 'string' && item.url.startsWith('/api/offline/audio/') ? item.url : ''
+  };
 }
 
+/**
+ * The per-chapter transfer descriptor: which chapters are prepared right now
+ * and the exact bytes (size, whole-file and per-block SHA-256) each one is.
+ */
+async function fetchTransferManifest(bookId) {
+  const manifest = await apiSend(
+    'GET',
+    `/api/offline/preparation/${encodeURIComponent(bookId)}/manifest`
+  );
+  if (
+    manifest?.schemaVersion !== OFFLINE_TRANSFER_SCHEMA_VERSION ||
+    String(manifest.bookId) !== String(bookId) ||
+    !Array.isArray(manifest.chapters) ||
+    Number(manifest.totalChapters) !== manifest.chapters.length
+  ) {
+    throw new Error('The server described this title’s audio in an unexpected way');
+  }
+  const chapters = manifest.chapters.map(normalizeChapterDescriptor);
+  return {
+    state: String(manifest.state || ''),
+    packageVariantKey: String(manifest.packageVariantKey || ''),
+    bytesPrepared: Math.max(0, Number(manifest.bytesPrepared) || 0),
+    bytesTotal: Math.max(0, Number(manifest.bytesTotal) || 0),
+    chapters,
+    complete: chapters.length > 0 && chapters.every(item => ['ready', 'empty'].includes(item.state))
+  };
+}
+
+function preparedChapterCount(transfer) {
+  return transfer.chapters.filter(item => ['ready', 'empty'].includes(item.state)).length;
+}
+
+function chapterIdentityFromDescriptor(descriptor) {
+  return {
+    size: descriptor.size,
+    contentHash: descriptor.contentHash,
+    etag: descriptor.etag,
+    variantKey: descriptor.variantKey,
+    artifactId: descriptor.artifactId,
+    blockSize: descriptor.blockSize,
+    blockHashes: descriptor.blockHashes.slice(),
+    bodyVerificationVersion: OFFLINE_BODY_VERIFICATION_VERSION
+  };
+}
+
+function storedChapterMatches(stored, descriptor) {
+  return Boolean(
+    stored && descriptor?.state === 'ready' &&
+    stored.contentHash === descriptor.contentHash &&
+    stored.size === descriptor.size &&
+    stored.variantKey === descriptor.variantKey
+  );
+}
+
+/**
+ * Drop exactly the stored chapters the server no longer stands behind: a
+ * chapter whose prepared bytes changed, one that is now empty, or one from a
+ * different narration package. Every other verified chapter is kept.
+ *
+ * @returns {number[]} chapter indexes whose stored bytes must be deleted
+ */
+function dropChangedChapters(entry, transfer) {
+  const dropped = [];
+  entry.chapterEntries.forEach((stored, index) => {
+    if (!stored) return;
+    const descriptor = transfer.chapters[index];
+    const stale = !descriptor || descriptor.state === 'empty'
+      ? true
+      : descriptor.state === 'ready'
+        ? !storedChapterMatches(stored, descriptor)
+        : Boolean(transfer.packageVariantKey) && stored.variantKey !== transfer.packageVariantKey;
+    if (!stale) return;
+    entry.chapterEntries[index] = null;
+    dropped.push(index);
+  });
+  entry.bytes = entry.chapterEntries.reduce((sum, chapter) => sum + (Number(chapter?.size) || 0), 0);
+  return dropped;
+}
+
+/**
+ * Stream a stored chapter back out of CacheStorage and check every block
+ * against the server's per-block SHA-256. Holds at most one block (1 MiB) in
+ * memory, so verification never materialises a whole chapter on iOS.
+ */
+async function cachedBodyMatchesDescriptor(response, descriptor, signal = null) {
+  if (!response || descriptor?.state !== 'ready') return false;
+  const declared = Number(response.headers?.get?.('Content-Length'));
+  if (Number.isFinite(declared) && declared > 0 && declared !== descriptor.size) return false;
+  const block = new Uint8Array(Math.min(descriptor.blockSize, descriptor.size));
+  let filled = 0;
+  let blockIndex = 0;
+  let received = 0;
+  const blockLength = () => Math.min(descriptor.blockSize, descriptor.size - (blockIndex * descriptor.blockSize));
+  const consume = async chunk => {
+    let offset = 0;
+    while (offset < chunk.byteLength) {
+      if (blockIndex >= descriptor.blockHashes.length) return false;
+      const take = Math.min(blockLength() - filled, chunk.byteLength - offset);
+      block.set(chunk.subarray(offset, offset + take), filled);
+      filled += take;
+      offset += take;
+      if (filled === blockLength()) {
+        if (await hashBytes(block.subarray(0, filled)) !== descriptor.blockHashes[blockIndex]) return false;
+        blockIndex += 1;
+        filled = 0;
+      }
+    }
+    return true;
+  };
+  if (!response.body?.getReader) {
+    // Only reached by engines without response streams; none of them is iOS.
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    if (bytes.byteLength !== descriptor.size) return false;
+    if (!await consume(bytes)) return false;
+    return blockIndex === descriptor.blockHashes.length && filled === 0;
+  }
+  const reader = response.body.getReader();
+  let finished = false;
+  try {
+    while (true) {
+      throwIfDownloadAborted(signal);
+      const { done, value } = await reader.read();
+      if (done) {
+        finished = true;
+        break;
+      }
+      const chunk = value instanceof Uint8Array ? value : new Uint8Array(value);
+      received += chunk.byteLength;
+      if (received > descriptor.size || !await consume(chunk)) return false;
+    }
+  } finally {
+    // Not awaited: cancelling one branch of a teed (cloned) body settles only
+    // once every branch is cancelled.
+    if (!finished) void reader.cancel().catch(() => {});
+  }
+  return received === descriptor.size && blockIndex === descriptor.blockHashes.length && filled === 0;
+}
+
+function descriptorChangedError(chapterIndex) {
+  const error = new Error(`The server replaced the audio for chapter ${chapterIndex + 1}`);
+  error.code = 'DESCRIPTOR_CHANGED';
+  // Not transient: retrying the same descriptor cannot succeed.
+  error.status = 409;
+  return error;
+}
+
+/**
+ * Store one chapter so that it is either complete and verified or absent.
+ *
+ * CacheStorage commits an entry only after its whole body has been read, so
+ * an interrupted transfer leaves nothing behind. The stored body is then
+ * re-read and checked block by block before the caller may record it. A
+ * chapter that a killed run committed but never recorded is verified in
+ * place and adopted instead of being downloaded again.
+ */
+async function storeVerifiedChapter({ bookId, descriptor, cache, signal, onProgress = null }) {
+  const chapterIndex = descriptor.index;
+  const request = offlineAudioRequest(bookId, chapterIndex);
+  const identity = chapterIdentityFromDescriptor(descriptor);
+  const leftover = await cache.match(request).catch(() => null);
+  if (leftover) {
+    const stored = contentIdentityFromHeaders(leftover.headers);
+    if (
+      stored?.contentHash === descriptor.contentHash &&
+      stored.size === descriptor.size &&
+      await cachedBodyMatchesDescriptor(leftover, descriptor, signal)
+    ) {
+      onProgress?.(1, { received: descriptor.size, total: descriptor.size });
+      return identity;
+    }
+    await cache.delete(request).catch(() => {});
+  }
+  const route = descriptor.url ||
+    `/api/offline/audio/${encodeURIComponent(bookId)}/${chapterIndex}` +
+    `?variant=${encodeURIComponent(descriptor.variantKey)}&artifact=${encodeURIComponent(descriptor.artifactId)}`;
+  return retryDownloadOperation(async () => {
+    const response = await fetch(`${API_BASE}${route}`, {
+      signal,
+      headers: { 'X-Xandrio-Offline-Download': '1' }
+    });
+    if (!response.ok) {
+      await response.body?.cancel?.().catch?.(() => {});
+      if (response.status === 409) throw descriptorChangedError(chapterIndex);
+      const error = new Error(`Audio download failed for chapter ${chapterIndex + 1}`);
+      error.status = response.status;
+      throw error;
+    }
+    const declared = Number(response.headers.get('Content-Length'));
+    const served = response.headers.get(OFFLINE_CONTENT_HASH_HEADER);
+    if (
+      (Number.isFinite(declared) && declared > 0 && declared !== descriptor.size) ||
+      (served && served !== descriptor.contentHash)
+    ) {
+      await response.body?.cancel?.().catch?.(() => {});
+      throw descriptorChangedError(chapterIndex);
+    }
+    // The stored headers carry the descriptor's identity, so later presence
+    // checks and audits can compare without reading the body again.
+    const headers = new Headers(response.headers);
+    headers.set('Content-Length', String(descriptor.size));
+    headers.set(OFFLINE_CONTENT_HASH_HEADER, descriptor.contentHash);
+    headers.set('ETag', descriptor.etag);
+    if (!headers.get('Content-Type')) headers.set('Content-Type', 'audio/mpeg');
+    const streamed = responseStreamWithProgress(response, signal, onProgress);
+    await cache.put(request, new Response(streamed.body, { status: 200, headers }));
+    const saved = await cache.match(request);
+    if (!await cachedBodyMatchesDescriptor(saved, descriptor, signal)) {
+      await cache.delete(request).catch(() => {});
+      throw Object.assign(
+        new Error(`Offline cache verification failed for chapter ${chapterIndex + 1}`),
+        { code: 'VERIFICATION_FAILED' }
+      );
+    }
+    onProgress?.(1, { received: descriptor.size, total: descriptor.size });
+    return identity;
+  }, signal);
+}
+
+/**
+ * Exclusive ownership of the CacheStorage writer across tabs and windows.
+ * Resolves to a release function, or null when another page holds it.
+ */
+function acquireOfflineDownloadLock() {
+  const locks = globalThis.navigator?.locks;
+  if (typeof locks?.request !== 'function') return Promise.resolve(() => {});
+  return new Promise((resolve, reject) => {
+    locks.request(OFFLINE_DOWNLOAD_LOCK, { ifAvailable: true }, lock => {
+      if (!lock) {
+        resolve(null);
+        return undefined;
+      }
+      return new Promise(release => resolve(release));
+    }).catch(reject);
+  });
+}
+
+function waitingStateForTransfer(transfer) {
+  if (transfer.state === 'error') return 'preparation-error';
+  if (transfer.state === 'waiting') return 'preparation-waiting';
+  return 'preparing';
+}
+
+/**
+ * Save a title for offline use, chapter by chapter, as the server prepares it.
+ *
+ * Each pass reads the transfer descriptor, drops only the stored chapters
+ * whose server identity changed, and stores every newly prepared chapter in
+ * reading order. When preparation is still running the pass ends with the
+ * title in a preparing state that keeps its verified chapters playable; the
+ * preparation poll starts the next pass once more chapters are ready. The
+ * title becomes Downloaded only after every playable chapter is stored and
+ * verified and the scoped worker route has served one of them.
+ */
 export async function downloadBookForOffline(book, chapters, options = {}) {
   if (!book?.id || !Array.isArray(chapters) || chapters.length === 0) return false;
   if (!offlineDownloadsSupported()) return false;
   const blockDownload = await startBlockOfflineDownload(book, chapters, options);
   if (blockDownload.handled) return blockDownload.completion;
   if (downloadAbort) {
+    if (options.requireIntent) return false;
     if (String(activeDownloadBookId) === String(book.id)) {
       downloadAbort.abort();
     } else {
@@ -1870,36 +2316,113 @@ export async function downloadBookForOffline(book, chapters, options = {}) {
     }
     return false;
   }
-  const preparation = await apiSend(
-    'GET',
-    `/api/offline/preparation/${encodeURIComponent(book.id)}`
-  );
-  if (options.requireIntent && !offlineEntryForBook(book.id)?.autoResume) return false;
-  if (downloadAbort) return false;
-  let preparationReady = false;
+  // An automatic pass that cannot read the descriptor keeps its title
+  // pollable and retries on the bounded backoff instead of every poll.
+  const deferAutomaticPass = error => {
+    const entry = offlineEntryForBook(book.id);
+    if (!options.requireIntent || !entry || !transientTransferError(error)) return;
+    scheduleTransferRetry(entry);
+    try { persistWorkingEntry(book.id, entry); } catch {}
+  };
+  let transfer;
   try {
-    preparationReady = applyPreparationStatus(
-      book.id,
-      preparation,
-      preparationEntry(book, chapters, offlineEntryForBook(book.id))
-    );
-  } catch {
-    showToast('Could not save offline download state', 'error');
+    transfer = await fetchTransferManifest(book.id);
+  } catch (error) {
+    if (!options.requireIntent) showToast('Could not check this book’s audio. Try again.', 'error');
+    deferAutomaticPass(error);
     return false;
   }
-  if (!preparationReady || !preparation?.packageVariantKey) {
-    showToast('Audio is still preparing. You can safely close Xandrio.', 'error');
+  if (options.requireIntent && !offlineEntryForBook(book.id)?.autoResume) return false;
+  if (downloadAbort) return false;
+  if (transfer.chapters.length !== chapters.length) {
+    const changed = offlineEntryForBook(book.id);
+    if (changed && options.requireIntent) {
+      try { persistWorkingEntry(book.id, { ...changed, autoResume: false, state: 'incomplete' }); } catch {}
+    }
+    showToast('This book changed on the server. Open it and download again.', 'error');
+    return false;
+  }
+  // The server cannot finish without being asked when its intent is ready
+  // but a chapter package is missing ('repair-needed'): every pass asks once,
+  // and passes are spaced by the transfer backoff. A user asking to finish a
+  // partial download also restarts preparation that is no longer running; an
+  // automatic pass respects that it stopped.
+  const repairNeeded = !transfer.complete && transfer.state === 'repair-needed';
+  const restartStopped = !transfer.complete && !options.requireIntent &&
+    ['not-requested', 'paused'].includes(transfer.state);
+  if (repairNeeded || restartStopped) {
+    if (repairNeeded) {
+      await apiSend('POST', `/api/offline/preparation/${encodeURIComponent(book.id)}`).catch(() => null);
+    } else if (!await prepareBookForOffline(book, chapters, { showReadyToast: false, autoResume: true }).catch(() => false)) {
+      const entry = offlineEntryForBook(book.id);
+      if (!entry?.autoResume) return false;
+    }
+    try {
+      transfer = await fetchTransferManifest(book.id);
+    } catch (error) {
+      deferAutomaticPass(error);
+      return false;
+    }
+    if (downloadAbort) return false;
+  }
+  const existing = offlineEntryForBook(book.id);
+  const hasWork = transfer.chapters.some((descriptor, index) =>
+    descriptor.state === 'ready' && !storedChapterMatches(existing?.chapterEntries?.[index], descriptor)
+  );
+  if (!transfer.complete && !hasWork) {
+    // Nothing new is prepared yet. Record that and let the poll come back.
+    const waiting = createWorkingEntry(book, chapters, existing, options.voiceLabel || existing?.voiceLabel || currentVoiceLabel());
+    carryTransferRetry(waiting, existing);
+    // A package still awaiting repair is asked again only after the backoff.
+    if (transfer.state === 'repair-needed') scheduleTransferRetry(waiting);
+    else clearTransferRetry(waiting);
+    const dropped = dropChangedChapters(waiting, transfer);
+    const prepared = preparedChapterCount(transfer);
+    Object.assign(waiting, {
+      variantKey: transfer.packageVariantKey || waiting.variantKey,
+      packageVariantKey: transfer.packageVariantKey || existing?.packageVariantKey || '',
+      preparedChapters: prepared,
+      transferCheckedPrepared: prepared,
+      progressPercent: Math.min(99, Math.round((prepared / Math.max(1, chapters.length)) * 100)),
+      progressPhase: 'Preparing audio',
+      autoResume: options.requireIntent ? existing?.autoResume === true : true,
+      state: waitingStateForTransfer(transfer)
+    });
+    if (['not-requested', 'paused'].includes(transfer.state)) {
+      waiting.autoResume = false;
+      waiting.state = 'incomplete';
+    }
+    try {
+      if (waiting.state === 'incomplete' && !hasCachedChapter(waiting)) {
+        const manifest = getOfflineManifest();
+        delete manifest[book.id];
+        saveOfflineManifest(manifest);
+      } else {
+        persistWorkingEntry(book.id, waiting);
+      }
+    } catch {
+      showToast('Could not save offline download state', 'error');
+      return false;
+    }
+    await deleteDroppedChapters(book.id, dropped);
+    if (!options.requireIntent) {
+      showToast(waiting.state === 'incomplete'
+        ? 'Audio preparation stopped. Tap Download to start it again.'
+        : 'Audio is still preparing. Chapters save as they are ready.');
+    }
+    schedulePreparationPoll();
     return false;
   }
   if (options.confirmForeground !== false) {
-    const packageBytes = Math.max(0, Number(preparation.bytesTotal) || 0);
+    const packageBytes = transfer.bytesTotal || transfer.bytesPrepared;
     const packageSize = packageBytes >= 1024 * 1024 * 1024
       ? `${(packageBytes / 1024 / 1024 / 1024).toFixed(1)} GB`
       : `${Math.max(1, Math.round(packageBytes / 1024 / 1024))} MB`;
+    const sizeNote = transfer.complete ? '' : ' so far, with more as chapters are prepared';
     const dataSaverNote = navigator.connection?.saveData ? ' Data Saver is on.' : '';
     const confirmed = await confirmSheet({
       title: 'Keep Xandrio visible',
-      message: `This download is about ${packageSize} and may use Wi-Fi or mobile data.${dataSaverNote} Do not close Xandrio, switch apps, or lock the screen until it finishes. The system may stop the transfer.`,
+      message: `This download is about ${packageSize}${sizeNote} and may use Wi-Fi or mobile data.${dataSaverNote} Do not close Xandrio, switch apps, or lock the screen until it finishes. The system may stop the transfer.`,
       confirmLabel: 'Start download',
       danger: false
     });
@@ -1912,17 +2435,19 @@ export async function downloadBookForOffline(book, chapters, options = {}) {
   // Downloads are background activity. Callers may explicitly request the
   // legacy blocking overlay, but the normal surface is the Activity pane.
   const showOverlay = options.showOverlay === true;
-  const existing = offlineEntryForBook(book.id);
   const working = createWorkingEntry(
     book,
     chapters,
     existing,
     options.voiceLabel || currentVoiceLabel()
   );
-  working.variantKey = String(preparation.packageVariantKey);
-  working.packageBytes = Math.max(0, Number(preparation.bytesTotal) || 0);
-  working.packageBitrateKbps = Math.max(0, Number(preparation.bitrateKbps) || 0);
-  discardWorkingAudioForChangedVariant(existing, working, working.variantKey);
+  working.variantKey = transfer.packageVariantKey || working.variantKey;
+  working.packageVariantKey = transfer.packageVariantKey || existing?.packageVariantKey || '';
+  working.packageBytes = transfer.bytesTotal || transfer.bytesPrepared;
+  working.packageBitrateKbps = Math.max(0, Number(existing?.packageBitrateKbps) || 0);
+  working.preparedChapters = preparedChapterCount(transfer);
+  carryTransferRetry(working, existing);
+  const droppedAtStart = dropChangedChapters(working, transfer);
   const reportProgress = downloadProgressTracker(book, chapters, working, showOverlay);
   downloadAbort = new AbortController();
   activeDownloadBookId = book.id;
@@ -1930,17 +2455,24 @@ export async function downloadBookForOffline(book, chapters, options = {}) {
   activeDownloadCompletion = new Promise(resolve => { resolveDownloadCompletion = resolve; });
   const signal = downloadAbort.signal;
   let completed = false;
+  let releaseLock = null;
   try {
+    releaseLock = await acquireOfflineDownloadLock().catch(() => () => {});
+    if (!releaseLock) {
+      // Another Xandrio page is saving audio. It owns the transfer; this page
+      // picks up its verified chapters from the shared manifest.
+      return false;
+    }
     await holdDownloadWakeLock();
     await requestPersistentOfflineStorage();
     rollingAbort?.abort();
     rollingAbort = null;
     rollingRequestKey = '';
     reportProgress(-1, 0, 'Starting download');
-    const manifest = getOfflineManifest();
-    manifest[book.id] = working;
-    saveOfflineManifest(manifest);
-    renderOfflineState();
+    // Changed chapters leave the manifest before their bytes leave the cache,
+    // so no reader can see a pointer to bytes that are about to change.
+    persistWorkingEntry(book.id, working);
+    renderOfflineState({ audit: false });
     if (showOverlay) {
       deps.showAudioLoading?.('Downloading book for offline', {
         detail: 'Checking storage...',
@@ -1949,6 +2481,9 @@ export async function downloadBookForOffline(book, chapters, options = {}) {
       });
     }
     const cache = await caches.open(offlineCacheName(OFFLINE_AUDIO_CACHE));
+    for (const index of droppedAtStart) {
+      await cache.delete(offlineAudioRequest(book.id, index)).catch(() => {});
+    }
     const estimate = await navigator.storage?.estimate?.();
     const available = estimate?.quota && estimate?.usage ? Math.max(0, estimate.quota - estimate.usage) : null;
     if (showOverlay && available != null) {
@@ -1959,37 +2494,118 @@ export async function downloadBookForOffline(book, chapters, options = {}) {
       });
     }
 
-    let nextChapterIndex = 0;
-    let firstError = null;
-    const worker = async () => {
-      while (!firstError && nextChapterIndex < chapters.length) {
-        const chapterIndex = nextChapterIndex++;
-        try {
-          await processFullDownloadChapter({
-            book,
-            chapterIndex,
-            chapter: chapters[chapterIndex],
-            existing,
-            working,
-            cache,
-            signal,
-            reportProgress
-          });
-        } catch (error) {
-          firstError ||= error;
-          downloadAbort?.abort();
+    let descriptorRefreshes = 0;
+    while (true) {
+      throwIfDownloadAborted(signal);
+      for (let index = 0; index < chapters.length; index++) {
+        if (transfer.chapters[index].state !== 'empty' && !chapters[index]?.empty) continue;
+        if (working.chapterEntries[index]) working.chapterEntries[index] = null;
+        await cache.delete(offlineAudioRequest(book.id, index)).catch(() => {});
+        reportProgress(index, 1, `Skipping empty section ${index + 1} of ${working.chapters}`);
+      }
+      // A recorded chapter must still be in the cache under the same
+      // identity. Header metadata answers that without reading the body;
+      // anything evicted or replaced is dropped and fetched again.
+      let evicted = false;
+      for (const descriptor of transfer.chapters) {
+        const stored = working.chapterEntries[descriptor.index];
+        if (!storedChapterMatches(stored, descriptor)) continue;
+        const present = await cache.match(offlineAudioRequest(book.id, descriptor.index)).catch(() => null);
+        const identity = present ? contentIdentityFromHeaders(present.headers) : null;
+        if (identity && canReuseChapter(stored, identity, stored.variantKey)) continue;
+        working.chapterEntries[descriptor.index] = null;
+        evicted = true;
+      }
+      if (evicted) persistWorkingEntry(book.id, working);
+      const candidates = transfer.chapters
+        .filter(descriptor =>
+          descriptor.state === 'ready' &&
+          !chapters[descriptor.index]?.empty &&
+          !storedChapterMatches(working.chapterEntries[descriptor.index], descriptor)
+        )
+        .map(descriptor => descriptor.index);
+      for (const index of working.chapterEntries.keys()) {
+        if (working.chapterEntries[index]) reportProgress(index, 1, 'Downloading');
+      }
+      let nextCandidate = 0;
+      let firstError = null;
+      const worker = async () => {
+        while (!firstError && nextCandidate < candidates.length) {
+          const chapterIndex = candidates[nextCandidate++];
+          try {
+            await processFullDownloadChapter({
+              book,
+              descriptor: transfer.chapters[chapterIndex],
+              working,
+              cache,
+              signal,
+              reportProgress
+            });
+          } catch (error) {
+            firstError ||= error;
+          }
+        }
+      };
+      const workerCount = Math.min(FULL_DOWNLOAD_CONCURRENCY, candidates.length);
+      await Promise.all(Array.from({ length: workerCount }, () => worker()));
+      if (firstError?.code === 'DESCRIPTOR_CHANGED' && descriptorRefreshes < DESCRIPTOR_REFRESH_LIMIT && !signal.aborted) {
+        descriptorRefreshes += 1;
+      } else if (firstError) {
+        throw firstError;
+      } else if (transfer.complete) {
+        break;
+      } else if (candidates.length === 0) {
+        break;
+      }
+      // Preparation continues on the server. Pick up chapters that became
+      // ready (or changed) while this batch transferred.
+      transfer = await fetchTransferManifest(book.id);
+      throwIfDownloadAborted(signal);
+      if (transfer.chapters.length !== chapters.length) {
+        throw Object.assign(
+          new Error('This book changed on the server. Open it and download again.'),
+          { code: 'BOOK_CHANGED' }
+        );
+      }
+      working.preparedChapters = preparedChapterCount(transfer);
+      working.packageBytes = transfer.bytesTotal || transfer.bytesPrepared || working.packageBytes;
+      const dropped = dropChangedChapters(working, transfer);
+      if (dropped.length > 0) {
+        persistWorkingEntry(book.id, working);
+        for (const index of dropped) {
+          await cache.delete(offlineAudioRequest(book.id, index)).catch(() => {});
         }
       }
-    };
-    const workerCount = Math.min(FULL_DOWNLOAD_CONCURRENCY, chapters.length);
-    await Promise.all(Array.from({ length: workerCount }, () => worker()));
-    if (firstError) throw firstError;
+    }
 
+    if (!transfer.complete) {
+      // Every prepared chapter is stored and verified; the rest are still
+      // being prepared. Keep the verified chapters playable and wait.
+      const prepared = preparedChapterCount(transfer);
+      Object.assign(working, {
+        preparedChapters: prepared,
+        transferCheckedPrepared: prepared,
+        progressPercent: Math.min(99, Math.round((prepared / Math.max(1, chapters.length)) * 100)),
+        progressPhase: 'Preparing audio',
+        state: waitingStateForTransfer(transfer),
+        autoResume: true
+      });
+      if (['not-requested', 'paused'].includes(transfer.state)) {
+        working.state = 'incomplete';
+        working.autoResume = false;
+      }
+      if (transfer.state === 'repair-needed') scheduleTransferRetry(working);
+      else clearTransferRetry(working);
+      persistWorkingEntry(book.id, working);
+      return false;
+    }
+
+    clearTransferRetry(working);
     reportProgress(-1, 0, 'Verifying download');
     await cacheOfflineCover(book, signal);
     if (signal.aborted) throw new Error('Download cancelled');
     if (!await verifyOfflineEntry(cache, working)) {
-      throw new Error('Offline audio verification failed');
+      throw Object.assign(new Error('Offline audio verification failed'), { code: 'VERIFICATION_FAILED' });
     }
     if (signal.aborted) throw new Error('Download cancelled');
 
@@ -2007,6 +2623,7 @@ export async function downloadBookForOffline(book, chapters, options = {}) {
       );
     working.autoResume = false;
     working.progressPercent = 100;
+    working.preparedChapters = chapters.length;
     working.downloadedAt = new Date().toISOString();
     working.probedSwVersion = routeCheck.swVersion || '';
     working.probedContractVersion = routeCheck.contractVersion || 0;
@@ -2016,18 +2633,31 @@ export async function downloadBookForOffline(book, chapters, options = {}) {
     setDownloadActivity(book, 100, working.progressPhase);
     completed = true;
     showToast(routeCheck.ok
-      ? (existing ? 'Offline download repaired' : 'Book downloaded for offline')
+      ? (offlineState(existing) === 'ready' ? 'Offline download repaired' : 'Book downloaded for offline')
       : 'Download saved — reopen Xandrio to finish verifying it');
   } catch (err) {
     const cancelled = err?.name === 'AbortError' || err?.message === 'Download cancelled';
-    working.state = 'incomplete';
-    working.autoResume = !cancelled;
-    working.progressPhase = cancelled ? 'Cancelled' : 'Interrupted';
+    const transient = !cancelled && transientTransferError(err);
+    if (transient) {
+      // A network blip or a 5xx is not a failed download. Keep the verified
+      // chapters, stay pollable while preparation runs, and retry on the
+      // bounded backoff.
+      scheduleTransferRetry(working);
+      working.state = transfer?.complete ? 'incomplete' : waitingStateForTransfer(transfer);
+      working.autoResume = true;
+      working.progressPhase = 'Retrying soon';
+    } else {
+      working.state = 'incomplete';
+      working.autoResume = !cancelled;
+      working.progressPhase = cancelled ? 'Cancelled' : 'Interrupted';
+    }
     try {
-      persistWorkingEntry(book.id, working);
+      // A title removed while its chapter was in flight stays removed.
+      if (offlineEntryForBook(book.id)) persistWorkingEntry(book.id, working);
     } catch {}
-    showToast(err.message || 'Offline download failed', 'error');
+    if (!(transient && options.requireIntent)) showToast(err.message || 'Offline download failed', 'error');
   } finally {
+    releaseLock?.();
     resolveDownloadCompletion();
     downloadAbort = null;
     activeDownloadBookId = '';
@@ -2036,84 +2666,48 @@ export async function downloadBookForOffline(book, chapters, options = {}) {
     clearDownloadActivity();
     if (showOverlay) deps.hideAudioLoading?.();
     renderOfflineState();
+    schedulePreparationPoll();
   }
   return completed;
 }
 
+async function deleteDroppedChapters(bookId, indexes) {
+  if (!indexes.length || !('caches' in globalThis)) return;
+  const cache = await caches.open(offlineCacheName(OFFLINE_AUDIO_CACHE)).catch(() => null);
+  for (const index of indexes) {
+    await cache?.delete(offlineAudioRequest(bookId, index)).catch(() => {});
+  }
+}
+
 async function processFullDownloadChapter({
   book,
-  chapterIndex,
-  chapter,
-  existing,
+  descriptor,
   working,
   cache,
   signal,
   reportProgress
 }) {
   throwIfDownloadAborted(signal);
-  const cacheRequest = offlineAudioRequest(book.id, chapterIndex);
-  if (chapter?.empty) {
-    await cache.delete(cacheRequest);
-    working.chapterEntries[chapterIndex] = null;
-    reportProgress(
-      chapterIndex,
-      1,
-      `Skipping empty section ${chapterIndex + 1} of ${working.chapters}`
-    );
-    persistWorkingEntry(book.id, working);
-    return;
-  }
-  reportProgress(chapterIndex, 0.01, 'Preparing download');
-  const previous = working.chapterEntries[chapterIndex];
-  const cached = await cache.match(cacheRequest);
-  const cachedIdentity = cached
-    ? await contentIdentity(cached, {
-        verifyBody: previous?.bodyVerificationVersion !== OFFLINE_BODY_VERIFICATION_VERSION
-      })
-    : null;
-  if (cachedIdentity) {
-    cachedIdentity.bodyVerificationVersion = OFFLINE_BODY_VERIFICATION_VERSION;
-  }
-  const cacheIsValid = cachedIdentity && canReuseChapter(previous, cachedIdentity, previous?.variantKey);
-  const variantKey = String(working.variantKey || '');
-  const legacyCacheIsUsable = cachedIdentity &&
-    isLegacyEntry(existing) &&
-    !previous?.contentHash &&
-    cachedIdentity.size > 0 &&
-    existing?.variantKey === variantKey &&
-    /:offline-mp3-v\d+:br48k$/.test(variantKey);
-
-  if (cacheIsValid || legacyCacheIsUsable) {
-    if (!variantKey && cacheIsValid) working.variantKey = previous.variantKey;
-  }
-
-  if (cacheIsValid && variantKey && variantKey === previous.variantKey) {
-    working.chapterEntries[chapterIndex] = { ...previous, ...cachedIdentity, variantKey };
-  } else if (legacyCacheIsUsable && variantKey) {
-    working.chapterEntries[chapterIndex] = { ...cachedIdentity, variantKey };
-  } else {
-    if (!variantKey) throw new Error('Offline audio package identity is missing');
-    const url = `/api/offline/audio/${encodeURIComponent(book.id)}/${chapterIndex}` +
-      `?variant=${encodeURIComponent(variantKey)}`;
-    const identity = await downloadAndVerifyChapter(
-      cache,
-      cacheRequest,
-      `${API_BASE}${url}`,
-      signal,
-      chapterIndex,
-      (fraction, transfer) => reportProgress(chapterIndex, fraction, 'Downloading', transfer)
-    );
-    throwIfDownloadAborted(signal);
-    working.chapterEntries[chapterIndex] = { ...identity, variantKey };
-  }
-
+  const chapterIndex = descriptor.index;
+  reportProgress(chapterIndex, 0.01, 'Downloading');
+  const identity = await storeVerifiedChapter({
+    bookId: book.id,
+    descriptor,
+    cache,
+    signal,
+    onProgress: (fraction, transfer) => reportProgress(chapterIndex, fraction, 'Downloading', transfer)
+  });
   throwIfDownloadAborted(signal);
-  if (chapterIndex === 0) working.variantKey = variantKey;
+  // The manifest records a chapter only after its stored body has verified.
+  working.chapterEntries[chapterIndex] = identity;
+  // Progress resets the retry backoff.
+  clearTransferRetry(working);
   working.bytes = working.chapterEntries.reduce(
     (total, chapter) => total + (Number(chapter?.size) || 0),
     0
   );
   reportProgress(chapterIndex, 1, 'Downloading');
+  if (!offlineEntryForBook(book.id)) throw downloadAbortError();
   persistWorkingEntry(book.id, working);
 }
 
@@ -2565,7 +3159,13 @@ function offlineStateLabel(entry) {
     return `Auto-cached · ${count} chapter${count === 1 ? '' : 's'}`;
   }
   switch (offlineState(entry)) {
-    case 'preparing': return `Preparing audio · ${Number(entry.preparedChapters) || 0}/${Number(entry.chapters) || 0}`;
+    case 'preparing': {
+      const cached = entry.chapterEntries?.filter(Boolean).length || 0;
+      const total = Number(entry.chapters) || 0;
+      return cached > 0
+        ? `${cached}/${total} chapters on this device · Preparing the rest`
+        : `Preparing audio · ${Number(entry.preparedChapters) || 0}/${total}`;
+    }
     case 'prepared': return 'Ready to download to this device';
     case 'preparation-error': return 'Audio preparation needs attention';
     case 'preparation-waiting': return 'Waiting for audio';
@@ -2844,6 +3444,11 @@ async function pruneUnavailableChapterEntries(
   scopeId,
   { presenceOnly = false } = {}
 ) {
+  // A running transfer owns its title's cache entries and checks them itself.
+  // An audit that read the manifest before the transfer replaced a chapter
+  // would otherwise delete the freshly verified bytes.
+  const transferring = () => String(activeDownloadBookId) === String(bookId);
+  if (transferring()) return false;
   const manifest = getOfflineManifest(scopeId);
   const entry = manifest[bookId];
   if (!entry || !Array.isArray(entry.chapterEntries)) return false;
@@ -2858,6 +3463,7 @@ async function pruneUnavailableChapterEntries(
           verifyBody: expected.bodyVerificationVersion !== OFFLINE_BODY_VERIFICATION_VERSION
         })
       : null;
+    if (transferring()) return false;
     if (response && (presenceOnly || canReuseChapter(expected, identity, expected.variantKey))) {
       if (!presenceOnly && expected.bodyVerificationVersion !== OFFLINE_BODY_VERIFICATION_VERSION) {
         expected.bodyVerificationVersion = OFFLINE_BODY_VERIFICATION_VERSION;

@@ -106,6 +106,61 @@ function fakeChild() {
     await supervisor.stop();
   });
 
+  await test('relaunches only after the old server has exited, even when it needs SIGKILL', async () => {
+    const root = fixtureRoot();
+    const children = [];
+    const events = [];
+    let now = 1_000;
+    const supervisor = createRuntimeSupervisor({
+      root,
+      stableMs: 0,
+      stopTimeoutMs: 20,
+      now: () => now,
+      spawnChild: () => {
+        const child = new EventEmitter();
+        child.exitCode = null;
+        child.signalCode = null;
+        // A draining server ignores SIGTERM past the timeout; the process
+        // (and its listening socket) goes away a moment after SIGKILL.
+        child.kill = signal => {
+          events.push(`kill:${signal}`);
+          if (signal === 'SIGKILL') {
+            setTimeout(() => {
+              child.signalCode = signal;
+              events.push('exit');
+              child.emit('exit', null, signal);
+            }, 30);
+          }
+          return true;
+        };
+        children.push(child);
+        events.push(`launch:${children.length}`);
+        return child;
+      },
+      log: () => {}
+    });
+
+    supervisor.start({ schedule: false });
+    fs.writeFileSync(path.join(root, 'lib', 'feature.js'), 'module.exports = "v2";\n');
+    await supervisor.checkNow();
+    now += 1;
+    await supervisor.checkNow();
+    assert.deepStrictEqual(events, ['launch:1', 'kill:SIGTERM', 'kill:SIGKILL', 'exit', 'launch:2']);
+    children[1].kill = () => {
+      setImmediate(() => { children[1].exitCode = 0; children[1].emit('exit', 0, null); });
+      return true;
+    };
+    await supervisor.stop();
+  });
+
+  await test('default stop timeout outlasts the server shutdown drain', () => {
+    const { DEFAULT_STOP_TIMEOUT_MS } = require('../lib/local-service-runtime');
+    const { DEFAULT_SHUTDOWN_TIMEOUT_MS } = require('../lib/graceful-shutdown');
+    assert.ok(Number.isFinite(DEFAULT_SHUTDOWN_TIMEOUT_MS), 'shutdown drain deadline is exported');
+    assert.ok(DEFAULT_STOP_TIMEOUT_MS > DEFAULT_SHUTDOWN_TIMEOUT_MS,
+      `stop timeout ${DEFAULT_STOP_TIMEOUT_MS} must exceed the ${DEFAULT_SHUTDOWN_TIMEOUT_MS} ms drain`);
+  });
+
   await test('launch agent always starts the tracked supervisor from this checkout', () => {
     const plist = createLaunchAgentPlist({
       label: 'com.xandrio.server',
@@ -114,6 +169,8 @@ function fakeChild() {
     });
     assert(plist.includes('/Users/example/Xandrio &amp; Books/scripts/local-service.js'));
     assert(plist.includes('<key>KeepAlive</key>'));
+    // launchd must not SIGKILL the supervisor while it waits for the server.
+    assert(plist.includes('<key>ExitTimeOut</key>\n  <integer>30</integer>'));
     assert(!plist.includes('<string>server.js</string>'));
   });
 

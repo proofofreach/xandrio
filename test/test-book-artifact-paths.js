@@ -128,6 +128,27 @@ async function test(name, callback) {
     assert.equal(isManagedArtifactName('', 'abc.epub'), false);
   });
 
+  await test('recognizes per-writer TTS and concat temporaries for the owning id only', () => {
+    const owned = [
+      // lib/tts-queue.js uniquePartPath
+      'abc_ch0_chunk3.mp3.4242.0a1b2c3d.7.part',
+      'abc_tts0123456789_ch0_chunk3.mp3.4242.0a1b2c3d.7.part.mp3',
+      'abc_tts0123456789_ch0_chunk3.wav.4242.0a1b2c3d.12.part.wav',
+      // lib/chunked-tts.js single-chunk copy and concat output
+      'abc_ch0.mp3.4242.0a1b2c3d.part.mp3',
+      'abc_tts0123456789_ch2.m4a.4242.0a1b2c3d.part.m4a',
+      // lib/chunked-tts.js per-run concat lists
+      'abc_ch0_concat.txt.4242.0a1b2c3d.tmp',
+      'abc_tts0123456789_ch0_concat_clean.txt.4242.0a1b2c3d.tmp'
+    ];
+    for (const filename of owned) {
+      assert.equal(isManagedArtifactName('abc', filename), true, filename);
+      assert.equal(isManagedArtifactName('abc_2', filename), false, `abc_2 does not own ${filename}`);
+    }
+    assert.equal(isManagedArtifactName('abc', 'abc_2_ch0_chunk3.mp3.4242.0a1b2c3d.7.part'), false);
+    assert.equal(isManagedArtifactName('abc', 'abc_2_ch0_concat.txt.4242.0a1b2c3d.tmp'), false);
+  });
+
   await test('canonicalArtifactPath only rebinds a book onto its own artifact', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xandrio-owner-'));
     try {

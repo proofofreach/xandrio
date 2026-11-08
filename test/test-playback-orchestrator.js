@@ -75,7 +75,7 @@ function harness(overrides = {}) {
       };
     },
     prefetchNextChapter: (...args) => calls.push(['prefetch', ...args]),
-    getChapterContext: async (_bookId, chapterIndex) => ({
+    getChapterContext: async (_bookId, chapterIndex) => (await overrides.beforeContext?.(), {
       book: { language: 'en' },
       chapter: overrides.chapters?.[chapterIndex] || {
         text: 'Current chapter narration text is long enough for testing.',
@@ -197,6 +197,35 @@ function harness(overrides = {}) {
     // know the first chapter's length and refuse too.
     assert.strictEqual((await open('measured-b', { resumeSeconds: 120 })).resumeAccepted, false);
     assert.strictEqual(orchestrator.continuousTimeline('measured-b').durations[0], 100);
+  });
+
+  await test('a reconnect that cannot be resumed is refused with 410, not served from the start', async () => {
+    // A 200 full stream makes Chromium download and discard every byte it
+    // already holds, then stall. The transport refuses instead, and the client
+    // reloads at its own position.
+    const { MASTERING_POLICY } = require('../lib/audio-quality');
+    const pcmPerSecond = MASTERING_POLICY.sampleRate * MASTERING_POLICY.channels * 2;
+    const { orchestrator, manifest } = harness({ chapters: dividerBook(), audioReady: true });
+    manifest.chunks.forEach(chunk => { chunk.status = 'ready'; });
+    const open = (sessionId, extra = {}) => orchestrator.prepareContinuousAudioStream({
+      bookId: 'book', chapterIndex: 0, sessionId, startOffsetSeconds: 5, ...extra
+    });
+    const refused = error => error.statusCode === 410 && error.code === 'CONTINUOUS_RESUME_UNAVAILABLE';
+
+    // No first connection on record: the server restarted, or the 12 h prune.
+    await assert.rejects(open('restarted', { resumeSeconds: 30, requireResume: true }), refused);
+    assert.strictEqual(orchestrator.continuousTimeline('restarted'), null, 'a refusal registers no timeline');
+
+    // The bytes the client holds run past the measured first chapter.
+    (await open('measured')).onInputDecoded({ chapterIndex: 0, lastInChapter: true }, 100 * pcmPerSecond);
+    await assert.rejects(open('measured', { resumeSeconds: 120, requireResume: true }), refused);
+    assert.strictEqual(orchestrator.continuousTimeline('measured').durations[0], 100,
+      'a refusal leaves the live timeline in place');
+    assert.strictEqual(
+      (await open('measured', { resumeSeconds: 60, requireResume: true })).resumeAccepted,
+      true,
+      'a provable resume is still honoured'
+    );
   });
 
   await test('continuous playback skips a chapter that TTS finds unspeakable', async () => {
@@ -817,6 +846,98 @@ function harness(overrides = {}) {
     });
     assert.strictEqual(plain.decodeStartOffsetSeconds, 21.6);
     assert.strictEqual(plain.startOffsetSeconds, 21.6);
+  });
+
+  await test('an abandoned or superseded continuous prepare never replaces the live session timeline', async () => {
+    const gate = { promise: null, release: null };
+    gate.promise = new Promise(resolve => { gate.release = resolve; });
+    let holdNext = true;
+    const { orchestrator } = harness({
+      ready: false,
+      beforeContext: async () => {
+        if (!holdNext) return;
+        holdNext = false;
+        await gate.promise;
+      }
+    });
+    // Session A disconnects while it prepares; B reuses the session id.
+    const abandoned = new AbortController();
+    const slow = orchestrator.prepareContinuousAudioStream({
+      bookId: 'book', chapterIndex: 0, sessionId: 'shared-session', startOffsetSeconds: 0,
+      signal: abandoned.signal
+    });
+    abandoned.abort();
+    await orchestrator.prepareContinuousAudioStream({
+      bookId: 'book', chapterIndex: 0, sessionId: 'shared-session', startOffsetSeconds: 12
+    });
+    assert.strictEqual(orchestrator.continuousTimeline('shared-session').startOffsetSeconds, 12);
+    gate.release();
+    await slow.catch(() => {});
+    assert.strictEqual(orchestrator.continuousTimeline('shared-session').startOffsetSeconds, 12,
+      'an aborted prepare must not register its timeline');
+
+    // An older prepare that is not aborted still loses to a newer one.
+    gate.promise = new Promise(resolve => { gate.release = resolve; });
+    holdNext = true;
+    const older = orchestrator.prepareContinuousAudioStream({
+      bookId: 'book', chapterIndex: 0, sessionId: 'ordered-session', startOffsetSeconds: 0
+    });
+    await orchestrator.prepareContinuousAudioStream({
+      bookId: 'book', chapterIndex: 0, sessionId: 'ordered-session', startOffsetSeconds: 30
+    });
+    gate.release();
+    await older;
+    assert.strictEqual(orchestrator.continuousTimeline('ordered-session').startOffsetSeconds, 30,
+      'an older prepare must not replace a newer timeline');
+  });
+
+  await test('continuous chunks far ahead of the listener wait at look-ahead priority until the listener nears them', async () => {
+    const { orchestrator, calls, tts } = harness({ ready: false });
+    const source = await orchestrator.prepareContinuousAudioStream({
+      bookId: 'book', chapterIndex: 0, requestedTier: 'instant'
+    });
+    let lead = 0;
+    const leadWaiters = [];
+    const transport = {
+      leadSeconds: () => lead,
+      waitForLeadBelow: (seconds, signal) => new Promise((resolve, reject) => {
+        const waiter = { seconds, resolve };
+        leadWaiters.push(waiter);
+        signal?.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+      })
+    };
+    const setLead = value => {
+      lead = value;
+      for (const waiter of leadWaiters.splice(0)) {
+        if (lead < waiter.seconds) waiter.resolve(); else leadWaiters.push(waiter);
+      }
+    };
+    const iterator = source.iterateInputs(undefined, transport);
+    const priorities = index => calls
+      .filter(call => call[0] === 'prioritize' && call[3] === index)
+      .map(call => call[4]);
+    // Startup: the listener has nothing yet, so the first chunk is urgent.
+    const first = iterator.next();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepStrictEqual(priorities(0), ['immediate']);
+    tts.emit('chunk:ready', { bookId: 'book', chapterIndex: 0, chunkIndex: 0, path: '/c0.mp3' });
+    await first;
+
+    // The encoder is minutes ahead of what the listener fetched.
+    setLead(280);
+    calls.length = 0;
+    const second = iterator.next();
+    await new Promise(resolve => setImmediate(resolve));
+    assert(!priorities(1).includes('immediate'), 'a chunk minutes ahead must not take immediate priority');
+    assert(priorities(1).includes('lookahead'));
+
+    // The listener catches up while the chunk is still pending.
+    setLead(30);
+    await new Promise(resolve => setImmediate(resolve));
+    assert(priorities(1).includes('immediate'), 'a chunk the listener is about to need is promoted');
+    tts.emit('chunk:ready', { bookId: 'book', chapterIndex: 0, chunkIndex: 1, path: '/c1.mp3' });
+    await second;
+    await iterator.return();
   });
 
   console.log(`playback-orchestrator tests: ${passed} passed, ${failed} failed`);

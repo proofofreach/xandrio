@@ -13,6 +13,10 @@ const PROBE_TIMEOUT_MS = 5_000;
 const DESCRIPTOR_TIMEOUT_MS = 15_000;
 const METADATA_MAX_BYTES = 2 * 1024 * 1024;
 const QUANTUM_BYTES = 16 * 1024 * 1024;
+// Descriptor refreshes allowed in a row without a completed chapter. Chapters
+// are published as they are prepared, so a package can change several times
+// during one download; a refresh that returns the same revision ends the job.
+const MAX_DESCRIPTOR_REFRESHES = 8;
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const clone = value => value == null ? value : structuredClone(value);
@@ -71,7 +75,24 @@ function validManifest(manifest, bookId) {
   );
 }
 
+const STORE_LEASE_LOST = 'OFFLINE_LEASE_LOST';
+
+// The store marks a lease failure with a code. Delete and account-switch
+// fences have their own codes and must not be retried as a lost lease.
+function leaseLostError(error) {
+  return error?.code === 'LEASE_LOST' || error?.code === STORE_LEASE_LOST ||
+    error?.cause?.code === STORE_LEASE_LOST;
+}
+
+function normalizeLeaseLoss(error) {
+  if (!leaseLostError(error) || error?.code === 'LEASE_LOST') return error;
+  return new OfflineTransferError('LEASE_LOST', 'Another Xandrio tab owns offline storage', {
+    status: 499, cause: error
+  });
+}
+
 function isStorageFailure(error) {
+  if (leaseLostError(error)) return false;
   if (error?.code === 'STORAGE_FAILED') return true;
   return ['QuotaExceededError', 'UnknownError', 'InvalidStateError'].includes(error?.name);
 }
@@ -83,12 +104,35 @@ function transferState(error) {
   if (error?.code === 'STORAGE_RESERVE') return 'storage-error';
   if (isStorageFailure(error)) return 'storage-error';
   if (error?.code === 'TRANSFER_CANCELLED') return 'interrupted';
+  if (error?.code === 'LEASE_LOST') return 'interrupted';
   if (error?.code === 'HIDDEN') return 'hidden';
   if (error?.code === 'OFFLINE') return 'offline';
   if (error?.code === 'AUTH_SCOPE_CHANGED') return 'auth-changed';
   if (error?.code === 'MANUAL_PAUSE') return 'paused';
   if (error?.code === 'DESCRIPTOR_CHANGED') return 'refreshing';
   return 'transfer-error';
+}
+
+// A replacement is live only while a playable base is active under a different
+// revision. Finalization adopts the replacement revision as the base, so a
+// replacement that names the base revision is stale and must be ignored.
+function liveReplacement(entry, base = entry) {
+  const replacement = entry?.replacement;
+  const storageRevision = String(replacement?.storageRevision || '');
+  const baseReady = base?.mode === 'full' && base?.state === 'ready' &&
+    Array.isArray(base?.chapterEntries) && base.chapterEntries.some(Boolean);
+  if (!storageRevision || !baseReady || storageRevision === String(base?.revision || '')) return null;
+  return replacement;
+}
+
+function withoutReplacement(entry) {
+  if (!entry || typeof entry !== 'object' || !('replacement' in entry)) return entry;
+  const { replacement, ...rest } = entry;
+  return rest;
+}
+
+function intentKey(job) {
+  return job.mode === 'rolling' ? `rolling:${job.windowIndexes.slice(0, 4).join(',')}` : 'full';
 }
 
 function resumableError(error) {
@@ -366,10 +410,16 @@ export function createOfflineDeviceCoordinator({
     await store.open();
     await store.importLegacy(snapshotScope, legacyManifest || {});
     snapshot = await store.listTitles(snapshotScope);
+    // Records finalized before replacements were cleared still carry one that
+    // names their own revision. Drop it so no caller can resume it.
+    for (const [bookId, entry] of Object.entries(snapshot)) {
+      if (entry?.replacement && !liveReplacement(entry)) snapshot[bookId] = withoutReplacement(entry);
+    }
     emitSnapshot();
     for (const entry of Object.values(snapshot)) {
+      const replacement = liveReplacement(entry);
       const probeRetryable = entry?.state === 'verifying' || entry?.probeRetryable === true ||
-        entry?.replacement?.state === 'verifying' || entry?.replacement?.probeRetryable === true;
+        replacement?.state === 'verifying' || replacement?.probeRetryable === true;
       if (entry?.storageBackend !== 'idb' || (entry?.autoResume !== true && !probeRetryable) || entry?.manualPaused) continue;
       const bookId = String(entry.bookId || '');
       if (!bookId || jobs.has(bookId)) continue;
@@ -386,8 +436,9 @@ export function createOfflineDeviceCoordinator({
     const baseCandidate = priorEntry || entry;
     const playableBase = baseCandidate?.mode === 'full' && baseCandidate?.state === 'ready' &&
       Array.isArray(baseCandidate?.chapterEntries) && baseCandidate.chapterEntries.some(Boolean);
+    const replacement = liveReplacement(entry, baseCandidate);
     const storageRevision = String(
-      entry?.replacement?.storageRevision || entry?.revision || newStorageRevision(now)
+      replacement?.storageRevision || entry?.revision || newStorageRevision(now)
     );
     return {
       bookId: id,
@@ -395,27 +446,30 @@ export function createOfflineDeviceCoordinator({
       book: clone(book),
       chapters: clone(chapters),
       mode,
-      entry: clone({ ...entry, revision: storageRevision }),
+      // saveJob rebuilds the replacement from the job; the staged entry never carries one.
+      entry: clone({ ...withoutReplacement(entry), revision: storageRevision }),
       storageRevision,
       baseEntry: playableBase ? clone(baseCandidate) : null,
       baseReady: playableBase,
-      state: entry?.replacement?.state || (entry?.state === 'paused' ? 'paused' : 'preparing'),
+      state: replacement?.state || (entry?.state === 'paused' ? 'paused' : 'preparing'),
       autoResume: entry?.autoResume !== false,
       manualPaused: Boolean(entry?.manualPaused),
-      sourceRevision: String(entry?.replacement?.sourceRevision || entry?.sourceRevision || ''),
+      sourceRevision: String(replacement?.sourceRevision || entry?.sourceRevision || ''),
       descriptor: null,
       descriptorEtag: '',
       newEntries: [],
       completed: new Set(),
       rotation: 0,
       currentChapter: Math.max(0, Number(entry?.currentChapter) || 0),
-      refreshedProtocol: false,
+      descriptorRefreshes: 0,
+      refreshFailedRevision: '',
       retryAt: Number(entry?.retryAt) || 0,
       probeAttempts: 0,
       nextRunAt: 0,
       controllers: new Set(),
-      intentPosted: false,
+      intentPostedKey: '',
       intentPromise: null,
+      intentPromiseKey: '',
       fence: null,
       savedVisible: null,
       resolve: null,
@@ -486,20 +540,31 @@ export function createOfflineDeviceCoordinator({
     return true;
   }
 
+  // A live job can change mode or slide its window while a POST is in flight.
+  // The posted intent is keyed by both, so the server always receives the
+  // intent the job is about to poll for.
   async function ensureIntent(job) {
-    if (job.intentPosted) return true;
-    if (job.intentPromise) return job.intentPromise;
-    const pending = postIntent(job).then(() => {
-      if (jobs.get(job.bookId) !== job || job.scope !== snapshotScope) {
-        throw cancellation('TRANSFER_CANCELLED', 'Offline download no longer exists');
+    while (job.intentPostedKey !== intentKey(job)) {
+      const key = intentKey(job);
+      if (!job.intentPromise || job.intentPromiseKey !== key) {
+        const pending = postIntent(job).then(() => {
+          if (jobs.get(job.bookId) !== job || job.scope !== snapshotScope) {
+            throw cancellation('TRANSFER_CANCELLED', 'Offline download no longer exists');
+          }
+          if (job.intentPromise === pending) job.intentPostedKey = key;
+          return true;
+        }).finally(() => {
+          if (job.intentPromise === pending) {
+            job.intentPromise = null;
+            job.intentPromiseKey = '';
+          }
+        });
+        job.intentPromise = pending;
+        job.intentPromiseKey = key;
       }
-      job.intentPosted = true;
-      return true;
-    }).finally(() => {
-      if (job.intentPromise === pending) job.intentPromise = null;
-    });
-    job.intentPromise = pending;
-    return pending;
+      await job.intentPromise;
+    }
+    return true;
   }
 
   async function storageBudgetAllows(scope, descriptor) {
@@ -631,10 +696,7 @@ export function createOfflineDeviceCoordinator({
       );
     } catch (error) {
       job.autoResume = true;
-      if (/lease|fence is stale|fence is not current/i.test(String(error?.message || ''))) {
-        throw cancellation('LEASE_LOST', 'Offline finalization lost its storage lease');
-      }
-      throw error;
+      throw normalizeLeaseLoss(error);
     }
     if (jobs.get(job.bookId) !== job || job.scope !== snapshotScope) return false;
     snapshot[job.bookId] = clone(finalized || job.savedVisible || job.entry);
@@ -672,6 +734,8 @@ export function createOfflineDeviceCoordinator({
         }
       });
       if (result.complete) {
+        job.descriptorRefreshes = 0;
+        job.refreshFailedRevision = '';
         job.completed.add(descriptor.index);
         job.newEntries[descriptor.index] = chapterEntry(descriptor, job.scope);
         job.rotation += 1;
@@ -718,10 +782,15 @@ export function createOfflineDeviceCoordinator({
       await transferOne(job, manifest.chapters[candidates[0]]);
       job.nextRunAt = 0;
       await finishIfComplete(job);
-    } catch (error) {
+    } catch (caught) {
+      const error = normalizeLeaseLoss(caught);
       if (error?.code === 'DESCRIPTOR_CHANGED' || error?.code === 'TRANSFER_CONTRACT') {
-        if (!job.refreshedProtocol) {
-          job.refreshedProtocol = true;
+        const failedRevision = String(manifest?.revision || '');
+        // Refresh again only when the package changed since the last refresh.
+        if (job.descriptorRefreshes < MAX_DESCRIPTOR_REFRESHES &&
+            (job.descriptorRefreshes === 0 || failedRevision !== job.refreshFailedRevision)) {
+          job.descriptorRefreshes += 1;
+          job.refreshFailedRevision = failedRevision;
           manifest = await fetchManifest(job, { force: true });
           if (manifest.sourceRevision !== job.sourceRevision) {
             job.sourceRevision = manifest.sourceRevision;
@@ -777,7 +846,8 @@ export function createOfflineDeviceCoordinator({
       while (running.size < slots && runnable.length) {
         const job = runnable.shift();
         const task = processJob(job)
-          .catch(async error => {
+          .catch(async caught => {
+            const error = normalizeLeaseLoss(caught);
             job.state = transferState(error);
             job.autoResume = !isStorageFailure(error) && resumableError(error);
             if (job.autoResume && error?.code !== 'TRANSFER_RETRY_LATER') {
@@ -933,7 +1003,18 @@ export function createOfflineDeviceCoordinator({
     next.chapterEntries[chapterIndex] = null;
     next.bytes = next.chapterEntries.reduce((sum, item) => sum + (Number(item?.size) || 0), 0);
     if (next.mode !== 'rolling') next.state = 'incomplete';
-    await store.saveTitle(snapshotScope, next, fence);
+    try {
+      await store.saveTitle(snapshotScope, next, fence, { requireActive: true });
+    } catch (error) {
+      if (error?.code !== 'OFFLINE_TITLE_STALE' && error?.code !== 'OFFLINE_TITLE_DELETED') throw error;
+      // Another tab replaced or deleted this title. Show its current record
+      // instead of writing an orphan for the old revision.
+      const current = (await store.listTitles(snapshotScope))[id];
+      if (current) snapshot[id] = current;
+      else delete snapshot[id];
+      emitSnapshot();
+      return false;
+    }
     snapshot[id] = next;
     emitSnapshot();
     return true;

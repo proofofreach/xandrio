@@ -512,6 +512,8 @@ function fakeAudio() {
         chapterLoadPending() { return Boolean(chapterLoadIntent); },
         pausePlaybackForUser,
         handleChunkError,
+        handleSleepTimerChapterTargetChange,
+        clearRateLimit() { rateLimitedUntil = 0; },
         retryPlayerFailure,
         cancelPlaybackRecovery,
         invalidatePlaybackRecoveryForUserSeek,
@@ -1426,6 +1428,142 @@ function fakeAudio() {
         1,
         'the next chapter is the resume position after a chapter-limit stop'
       );
+
+      {
+        const settleApp = async () => {
+          for (let index = 0; index < 12; index++) await new Promise(resolve => setImmediate(resolve));
+        };
+        const twoChapters = () => [{ title: 'One' }, { title: 'Two' }];
+
+        // A downloaded chapter stopped by an end-of-chapter sleep timer ends
+        // like the continuous limit: the next chapter is where Play resumes,
+        // not a replay of the one just finished.
+        const finiteEndPlayer = engine('finite-sleep-end', { backend: 'single-file' });
+        finiteEndPlayer.bookId = 'book-a';
+        finiteEndPlayer.chapterIndex = 0;
+        globalThis.__playbackAppHarness.configure({
+          book: { id: 'book-a' }, chapters: twoChapters(), player: finiteEndPlayer, chapter: uiElement, chapterIndex: 0
+        });
+        appImports.sleepTarget = true;
+        appImports.sleepExpiries.length = 0;
+        globalThis.__playbackAppHarness.handleChapterEnd({});
+        await settleApp();
+        appImports.sleepTarget = false;
+        assert.deepStrictEqual(appImports.sleepExpiries, ['chapter']);
+        assert.strictEqual(
+          globalThis.__playbackAppHarness.currentChapter(),
+          1,
+          'a finite chapter sleep stop selects the next chapter to resume'
+        );
+
+        // The continuous engine still sits at the end of chapter 0 after the
+        // stop. Its time must not be paired with the selected chapter 1.
+        const stoppedPlayer = engine('continuous-sleep-stopped', { backend: 'audio-stream' });
+        stoppedPlayer.bookId = 'book-a';
+        stoppedPlayer.chapterIndex = 0;
+        stoppedPlayer.isContinuous = true;
+        stoppedPlayer.endChapterIndex = 0;
+        stoppedPlayer.getCurrentTime = () => 600;
+        stoppedPlayer.ownsReadySource = () => false;
+        stoppedPlayer.isPreparingSource = () => false;
+        globalThis.__playbackAppHarness.cancelPlaybackRecovery();
+        // An earlier scenario's 429 would otherwise hold Play behind its wait.
+        globalThis.__playbackAppHarness.clearRateLimit();
+        appImports.transitionRequests.length = 0;
+        globalThis.__playbackAppHarness.configure({
+          book: { id: 'book-a' }, chapters: twoChapters(), player: stoppedPlayer, chapter: uiElement, chapterIndex: 1
+        });
+        await globalThis.__playbackAppHarness.togglePlayPause(true);
+        await settleApp();
+        assert.strictEqual(appImports.transitionRequests.at(-1)?.chapterIndex, 1);
+        assert.strictEqual(
+          appImports.transitionRequests.at(-1).sourceTuple?.startOffsetSeconds,
+          undefined,
+          'Play after a chapter-limit stop opens the next chapter at its start'
+        );
+
+        // The same rule holds for a recovery snapshot built from an error.
+        globalThis.__playbackAppHarness.cancelPlaybackRecovery();
+        appImports.pendingTimeouts.length = 0;
+        appImports.transitionRequests.length = 0;
+        globalThis.__playbackAppHarness.handleChunkError(
+          Object.assign(new Error('stream died'), { code: 'MEDIA_STALLED', recoverable: true })
+        );
+        const staleRetry = appImports.pendingTimeouts.find(entry => !entry.cancelled && entry.delay === 250);
+        assert(staleRetry, 'recovery is scheduled');
+        staleRetry.cancelled = true;
+        await staleRetry.callback();
+        await settleApp();
+        assert.strictEqual(appImports.transitionRequests.at(-1)?.chapterIndex, 1);
+        assert.strictEqual(
+          appImports.transitionRequests.at(-1).sourceTuple?.startOffsetSeconds,
+          undefined,
+          'recovery does not resume the selected chapter at another chapter\'s time'
+        );
+        globalThis.__playbackAppHarness.cancelPlaybackRecovery();
+
+        // Cancelling a chapter sleep timer on a downloaded chapter clears the
+        // engine's limit, or the gapless pre-warm stays disabled.
+        const finiteSleepPlayer = engine('finite-sleep-cancel', { backend: 'single-file' });
+        finiteSleepPlayer.bookId = 'book-a';
+        finiteSleepPlayer.chapterIndex = 0;
+        finiteSleepPlayer.isContinuous = false;
+        finiteSleepPlayer.endChapterIndex = 0;
+        finiteSleepPlayer.setContinuousEndChapter = async value => { finiteSleepPlayer.endChapterIndex = value; };
+        globalThis.__playbackAppHarness.configure({
+          book: { id: 'book-a' }, chapters: twoChapters(), player: finiteSleepPlayer, chapter: uiElement, chapterIndex: 0
+        });
+        await globalThis.__playbackAppHarness.handleSleepTimerChapterTargetChange(null, { reason: 'cleared' });
+        assert.strictEqual(finiteSleepPlayer.endChapterIndex, null, 'a cancelled timer clears a finite source limit');
+
+        // A refused boundary play needs one tap, not a failure card.
+        appImports.resumePromptStates.length = 0;
+        appImports.reliabilityStates.length = 0;
+        globalThis.__playbackAppHarness.handleChunkError(Object.assign(
+          new Error('Chapter did not start after the boundary'),
+          { code: 'CHAPTER_ADVANCE_NOT_ALLOWED', recoverable: true, chapterIndex: 1 }
+        ));
+        assert.deepStrictEqual(appImports.resumePromptStates, [true], 'a refused chapter advance offers Resume');
+        assert(
+          !appImports.reliabilityStates.some(([state]) => state === 'hidden'),
+          'a refused chapter advance does not show the failure card'
+        );
+
+        // A pause while the opening chapter loads (a sleep timer expiring, a
+        // lock-screen pause) cancels that load. openBook() awaits this load
+        // and keeps the new book for any result other than a throw; a
+        // cancellation thrown from here reverted to the previous book.
+        const openPlayer = engine('paused-open', { backend: 'audio-stream' });
+        openPlayer.bookId = 'book-a';
+        globalThis.__playbackAppHarness.configure({
+          book: { id: 'book-a' }, chapters: twoChapters(), player: openPlayer, chapter: uiElement
+        });
+        let releaseOpenLoad;
+        appImports.transitionGate = new Promise(resolve => { releaseOpenLoad = resolve; });
+        appImports.transitionFailure = () => Object.assign(new Error('Chapter load cancelled'), { cancelled: true });
+        appImports.transitionRequests.length = 0;
+        const restoring = globalThis.__playbackAppHarness.loadRestoredChapter(1, { chapterIndex: 1, timestamp: 75 });
+        for (let index = 0; index < 50 && appImports.transitionRequests.length === 0; index++) {
+          await new Promise(resolve => setImmediate(resolve));
+        }
+        assert.strictEqual(appImports.transitionRequests.length, 1, 'the opening chapter load started');
+        globalThis.__playbackAppHarness.pausePlaybackForUser();
+        releaseOpenLoad();
+        let restoredResult;
+        try {
+          restoredResult = await restoring;
+        } catch (error) {
+          restoredResult = { threw: error.message };
+        } finally {
+          appImports.transitionGate = null;
+          appImports.transitionFailure = null;
+        }
+        assert.deepStrictEqual(
+          restoredResult,
+          { loaded: false, reason: 'stale' },
+          'a pause during the opening load is not an open failure'
+        );
+      }
 
       {
         // A server restart outlasts both automatic attempts. Recovery waits for

@@ -696,7 +696,7 @@ function zeroCrossingRate(pcm) {
       }
     });
 
-    await test('HLS unready retries do not consume creation quota and failed sessions recheck admission', async () => {
+    await test('HLS unready retries do not consume creation quota and evicted sessions recheck admission', async () => {
       const tonePath = path.join(dir, 'hls-admission-retry.mp3');
       await createTone(tonePath, 2, 440);
       const source = { async *iterateInputs() { yield tonePath; } };
@@ -707,7 +707,7 @@ function zeroCrossingRate(pcm) {
       };
       const app = routeHarness(source, options);
       const server = await listen(app);
-      const url = `http://127.0.0.1:${server.address().port}/api/audio-hls/retry_book/0/index.m3u8?session=retry-session&owner=retry-owner`;
+      let url = `http://127.0.0.1:${server.address().port}/api/audio-hls/retry_book/0/index.m3u8?session=retry-session&owner=retry-owner`;
       const load = async () => { const res = await fetch(url); await res.text(); return res.status; };
       try {
         for (let index = 0; index < 4; index++) assert.strictEqual(await load(), 425);
@@ -719,8 +719,15 @@ function zeroCrossingRate(pcm) {
         await first.runPromise;
         first.error = new Error('simulated late encoder failure');
         options.runwayReady = false;
-        assert.strictEqual(await load(), 425);
+        // A ready EVENT playlist that failed cannot be rebuilt from its
+        // original offset under the same URL: it answers 410 and the client
+        // reloads from the listener's real position under a new session.
+        assert.strictEqual(await load(), 410);
         assert.strictEqual(first.evicted, true);
+        assert.strictEqual(await load(), 410, 'a later poll must not rebuild the failed playlist');
+        assert.strictEqual(options.runwayStatusChecks.length, 5, 'a failed playlist is not re-admitted');
+        url = url.replace('session=retry-session', 'session=retry-session-rebuilt');
+        assert.strictEqual(await load(), 425);
         options.runwayReady = true;
         assert.strictEqual(await load(), 200);
         const second = [...app.locals.hlsAudioStreamer.sessionsById.values()][0];
@@ -730,6 +737,213 @@ function zeroCrossingRate(pcm) {
         options.runwayReady = false;
         assert.strictEqual(await load(), 425, 'evicted sessions must also recheck admission');
         assert.strictEqual(options.transportRequests.length, 2);
+      } finally {
+        await app.locals.hlsAudioStreamer.dispose();
+        await new Promise(resolve => server.close(resolve));
+      }
+    });
+
+    await test('a ready HLS session that fails mid-stream answers 410 instead of rebuilding its EVENT playlist', async () => {
+      const tonePath = path.join(dir, 'hls-mid-stream-failure.mp3');
+      await createTone(tonePath, 5, 440);
+      const fail = deferred();
+      let failures = 1;
+      const source = {
+        bookId: 'failure_book',
+        chapterIndex: 0,
+        format: 'mp3',
+        async *iterateInputs() {
+          yield { path: tonePath, chapterIndex: 0, lastInChapter: false };
+          if (failures-- > 0) {
+            await fail.promise;
+            throw new Error('simulated narration failure mid-stream');
+          }
+        }
+      };
+      const options = {
+        hlsRootDir: path.join(dir, 'hls-mid-stream-failure'), hlsSegmentSeconds: 1,
+        hlsOptions: { maintenanceIntervalMs: 0 },
+        transportRequests: []
+      };
+      const app = routeHarness(source, options);
+      const server = await listen(app);
+      const base = `http://127.0.0.1:${server.address().port}/api/audio-hls/failure_book/0/index.m3u8`;
+      const original = `${base}?session=failure-session&owner=failure-owner`;
+      const rebuilt = `${base}?session=failure-session-rebuilt&owner=failure-owner&offsetSeconds=3`;
+      const load = async url => { const res = await fetch(url); await res.text(); return res.status; };
+      try {
+        assert.strictEqual(await load(original), 200);
+        const first = [...app.locals.hlsAudioStreamer.sessionsById.values()][0];
+        assert.strictEqual(first.ready, true);
+        fail.resolve();
+        await first.runPromise;
+        assert(first.error, 'the encoder input must record its mid-stream failure');
+        assert.strictEqual(await load(original), 410);
+        assert.strictEqual(first.evicted, true);
+        assert.strictEqual(await load(original), 410, 'the next poll must not rebuild from the original offset');
+        assert.strictEqual(options.transportRequests.length, 1, 'no second encoder starts under the failed URL');
+        // The client's recovery reloads at the listener's position.
+        assert.strictEqual(await load(rebuilt), 200);
+        assert.strictEqual(options.transportRequests.length, 2);
+        // Once the owner has moved on, the old tuple is a fresh load again.
+        assert.strictEqual(await load(original), 200);
+        assert.strictEqual(options.transportRequests.length, 3);
+      } finally {
+        fail.resolve();
+        await app.locals.hlsAudioStreamer.dispose();
+        await new Promise(resolve => server.close(resolve));
+      }
+    });
+
+    await test('HLS holds its encoder a bounded lead past the last segment the listener fetched', async () => {
+      const tonePath = path.join(dir, 'hls-bounded-lead.mp3');
+      await createTone(tonePath, 40, 440);
+      const source = {
+        bookId: 'lead_book',
+        chapterIndex: 0,
+        format: 'mp3',
+        // No wall-clock pacing: only the listener's progress may hold the feed.
+        outputPacing: { burstAudioSeconds: 100000, realtimeMultiplier: 100000 },
+        async *iterateInputs() {
+          yield { path: tonePath, chapterIndex: 0, lastInChapter: true };
+        }
+      };
+      let clock = 1_000;
+      const app = routeHarness(source, {
+        hlsRootDir: path.join(dir, 'hls-bounded-lead'), hlsSegmentSeconds: 1,
+        hlsOptions: { maxLeadSeconds: 6, maintenanceIntervalMs: 0, maxStorageBytes: 0, now: () => clock }
+      });
+      const server = await listen(app);
+      const origin = `http://127.0.0.1:${server.address().port}`;
+      const playlistUrl = `${origin}/api/audio-hls/lead_book/0/index.m3u8?session=lead-session&owner=lead-owner`;
+      const segments = playlist => playlist.split('\n').filter(line => line.startsWith('/api/audio-hls-segment/'));
+      try {
+        const first = await fetch(playlistUrl);
+        assert.strictEqual(first.status, 200);
+        await first.text();
+        const session = [...app.locals.hlsAudioStreamer.sessionsById.values()][0];
+        await new Promise(resolve => setTimeout(resolve, 1500));
+        let playlist = await (await fetch(playlistUrl)).text();
+        assert(!playlist.includes('#EXT-X-ENDLIST'), 'a paused listener must not let the encoder run to the end');
+        const held = segments(playlist);
+        assert(held.length <= 10, `encoder ran ${held.length} segments ahead of a listener that fetched none`);
+        assert.strictEqual(session.running, true, 'a held encoder is still a live session');
+
+        // A long pause must not evict the held stream or trip its deadlines.
+        clock += 24 * 60 * 60 * 1000;
+        await app.locals.hlsAudioStreamer.maintain();
+        assert.strictEqual(session.evicted, false, 'holding must not make a session evictable');
+
+        // Fetching segments releases the feed again, still bounded.
+        const segment = await fetch(`${origin}${held[held.length - 1]}`);
+        assert.strictEqual(segment.status, 200);
+        await segment.arrayBuffer();
+        await waitUntil(async () => {
+          playlist = await (await fetch(playlistUrl)).text();
+          return segments(playlist).length > held.length;
+        }, 'fetching a segment did not release the held encoder', 5000);
+        assert(!playlist.includes('#EXT-X-ENDLIST'));
+        assert(segments(playlist).length <= held.length + 10);
+      } finally {
+        await app.locals.hlsAudioStreamer.dispose();
+        await new Promise(resolve => server.close(resolve));
+      }
+    });
+
+    await test('a full server reclaims only a held HLS encoder whose listener has been away past the lease', async () => {
+      const tonePath = path.join(dir, 'hls-held-capacity.mp3');
+      await createTone(tonePath, 40, 440);
+      const source = {
+        bookId: 'held_book',
+        chapterIndex: 0,
+        format: 'mp3',
+        outputPacing: { burstAudioSeconds: 100000, realtimeMultiplier: 100000 },
+        async *iterateInputs() {
+          yield { path: tonePath, chapterIndex: 0, lastInChapter: true };
+        }
+      };
+      let clock = 1_000;
+      const app = routeHarness(source, {
+        hlsRootDir: path.join(dir, 'hls-held-capacity'), hlsSegmentSeconds: 1,
+        identifyUser: req => ({ id: req.headers['x-test-user'] }),
+        hlsOptions: {
+          maxLeadSeconds: 6, maxActiveSessions: 1, maintenanceIntervalMs: 0,
+          maxStorageBytes: 0, storageAccessLeaseMs: 60_000, now: () => clock
+        }
+      });
+      const server = await listen(app);
+      const base = `http://127.0.0.1:${server.address().port}/api/audio-hls/held_book/0/index.m3u8`;
+      const load = async (user) => {
+        const res = await fetch(`${base}?session=${user}-session&owner=${user}-owner`, {
+          headers: { 'x-test-user': user }
+        });
+        await res.text();
+        return res.status;
+      };
+      try {
+        assert.strictEqual(await load('paused'), 200);
+        const held = [...app.locals.hlsAudioStreamer.sessionsById.values()][0];
+        await waitUntil(() => held.holding, 'the paused listener\'s encoder never reached its lead limit', 5000);
+        assert.strictEqual(await load('other'), 503, 'a recently active listener keeps its slot');
+        assert.strictEqual(held.evicted, false);
+        clock += 120_000;
+        assert.strictEqual(await load('other'), 503, 'the reclaimed slot frees once the encoder stops');
+        assert.strictEqual(held.evicted, true);
+        await held.backendCompletion;
+        assert.strictEqual(await load('other'), 200);
+        // The reclaimed listener comes back: its player must rebuild from its
+        // real position, not reload a fresh encode from the original offset.
+        assert.strictEqual(await load('paused'), 410);
+      } finally {
+        await app.locals.hlsAudioStreamer.dispose();
+        await new Promise(resolve => server.close(resolve));
+      }
+    });
+
+    await test('a ready HLS session evicted for the account cap answers 410 to its old player', async () => {
+      const tonePath = path.join(dir, 'hls-account-evicted.mp3');
+      await createTone(tonePath, 40, 440);
+      const source = {
+        bookId: 'evicted_book',
+        chapterIndex: 0,
+        format: 'mp3',
+        outputPacing: { burstAudioSeconds: 100000, realtimeMultiplier: 100000 },
+        async *iterateInputs() {
+          yield { path: tonePath, chapterIndex: 0, lastInChapter: true };
+        }
+      };
+      const options = {
+        hlsRootDir: path.join(dir, 'hls-account-evicted'), hlsSegmentSeconds: 1,
+        // Two signed-in devices of one account: distinct owners, one account cap.
+        identifyUser: req => ({ id: 'one-account', sessionToken: req.headers['x-test-device'] }),
+        hlsOptions: {
+          maxLeadSeconds: 6, maxActiveSessionsPerAccount: 1, maintenanceIntervalMs: 0, maxStorageBytes: 0
+        },
+        transportRequests: []
+      };
+      const app = routeHarness(source, options);
+      const server = await listen(app);
+      const base = `http://127.0.0.1:${server.address().port}/api/audio-hls/evicted_book/0/index.m3u8`;
+      const load = async device => {
+        const res = await fetch(`${base}?session=${device}-session&owner=${device}-owner`, {
+          headers: { 'x-test-device': device }
+        });
+        await res.text();
+        return res.status;
+      };
+      try {
+        assert.strictEqual(await load('phone'), 200);
+        const phone = [...app.locals.hlsAudioStreamer.sessionsById.values()][0];
+        assert.strictEqual(phone.ready, true);
+        // A second device of the same account takes the only slot.
+        assert.strictEqual(await load('tablet'), 503);
+        assert.strictEqual(phone.evicted, true);
+        await phone.backendCompletion;
+        assert.strictEqual(await load('tablet'), 200);
+        const encoders = options.transportRequests.length;
+        // The phone's player polls its live playlist again.
+        assert.strictEqual(await load('phone'), 410, 'an evicted live playlist must not be rebuilt from its original offset');
+        assert.strictEqual(options.transportRequests.length, encoders, 'no encode starts under the evicted URL');
       } finally {
         await app.locals.hlsAudioStreamer.dispose();
         await new Promise(resolve => server.close(resolve));

@@ -177,6 +177,93 @@ async function main() {
       } finally { await context.close(); }
     });
 
+    await test(browserName, 'restores every title that shares a re-verified artifact', async () => {
+      const { page, context } = await pageForTest();
+      try {
+        const result = await page.evaluate(async ({ descriptor, artifact }) => {
+          globalThis.__clock = 1_000;
+          const store = XandrioOfflineStore.createStore({ now: () => globalThis.__clock });
+          const token = await store.acquireLease('writer');
+          const fenceA = await store.captureFence(token, 'scope', 'book-a');
+          const fenceB = await store.captureFence(token, 'scope', 'book-b');
+          await store.putChapter('scope', 'book-a', 'r1', descriptor, fenceA);
+          await store.putChapter('scope', 'book-b', 'r1', descriptor, fenceB);
+          const write = async fence => {
+            const writeId = await store.putPendingBlock('scope', artifact, 0, new Uint8Array([1, 2, 3, 4]), fence);
+            await store.markBlockVerified('scope', artifact, 0, writeId, fence);
+            await store.markChapterReady('scope', artifact, fence);
+          };
+          const states = async () => {
+            const rows = await store.open().then(db => new Promise((resolve, reject) => {
+              const request = db.transaction(['chapters']).objectStore('chapters').getAll();
+              request.onsuccess = () => resolve(request.result);
+              request.onerror = () => reject(request.error);
+            }));
+            return Object.fromEntries(rows.map(row => [row.bookId, row.state]));
+          };
+          await write(fenceA);
+          const afterFirst = await states();
+          // A second title's write over the verified block keeps both ready.
+          await store.putPendingBlock('scope', artifact, 0, new Uint8Array([1, 2, 3, 4]), fenceB);
+          const afterRewrite = await states();
+          // A corrupt-block delete demotes both; re-verifying restores both.
+          await store.deleteBlock('scope', artifact, 0, fenceA);
+          const afterDelete = await states();
+          await write(fenceA);
+          return { afterFirst, afterRewrite, afterDelete, afterReverify: await states() };
+        }, { descriptor: descriptor(artifactA), artifact: artifactA });
+        assert.deepStrictEqual(result, {
+          afterFirst: { 'book-a': 'ready', 'book-b': 'ready' },
+          afterRewrite: { 'book-a': 'ready', 'book-b': 'ready' },
+          afterDelete: { 'book-a': 'pending', 'book-b': 'pending' },
+          afterReverify: { 'book-a': 'ready', 'book-b': 'ready' }
+        });
+      } finally { await context.close(); }
+    });
+
+    await test(browserName, 'marks fence failures with exact error codes', async () => {
+      const { page, context } = await pageForTest();
+      try {
+        const result = await page.evaluate(async () => {
+          globalThis.__clock = 1_000;
+          const store = XandrioOfflineStore.createStore({ now: () => globalThis.__clock });
+          const codeOf = async action => {
+            try { await action(); return 'none'; } catch (error) { return error.code || 'uncoded'; }
+          };
+          const token = await store.acquireLease('writer');
+          const fence = await store.captureFence(token, 'scope', 'book');
+          await store.saveTitle('scope', { bookId: 'book', revision: 'r1' }, fence);
+          const staleRevision = await codeOf(() => store.saveTitle(
+            'scope', { bookId: 'book', revision: 'r0' }, fence, { requireActive: true }
+          ));
+          const activeRevision = await codeOf(() => store.saveTitle(
+            'scope', { bookId: 'book', revision: 'r1' }, fence, { requireActive: true }
+          ));
+          await store.fenceScopes('scope', 'other');
+          const accountSwitch = await codeOf(() => store.saveTitle('scope', { bookId: 'book', revision: 'r1' }, fence));
+          const current = await store.captureFence(token, 'scope', 'book');
+          await store.deleteTitle('scope', 'book');
+          const deleteFence = await codeOf(() => store.saveTitle('scope', { bookId: 'book', revision: 'r1' }, current));
+          const afterDelete = await store.captureFence(token, 'scope', 'book');
+          const deleted = await codeOf(() => store.saveTitle('scope', { bookId: 'book', revision: 'r1' }, afterDelete));
+          globalThis.__clock += 15_001;
+          await store.acquireLease('other-tab');
+          const leaseLost = await codeOf(() => store.saveTitle('scope', { bookId: 'book', revision: 'r1' }, afterDelete));
+          const captureLost = await codeOf(() => store.captureFence(token, 'scope', 'book'));
+          return { staleRevision, activeRevision, accountSwitch, deleteFence, deleted, leaseLost, captureLost };
+        });
+        assert.deepStrictEqual(result, {
+          staleRevision: 'OFFLINE_TITLE_STALE',
+          activeRevision: 'none',
+          accountSwitch: 'OFFLINE_FENCE_STALE',
+          deleteFence: 'OFFLINE_FENCE_STALE',
+          deleted: 'OFFLINE_TITLE_DELETED',
+          leaseLost: 'OFFLINE_LEASE_LOST',
+          captureLost: 'OFFLINE_LEASE_LOST'
+        });
+      } finally { await context.close(); }
+    });
+
     await test(browserName, 'enumerates block metadata without opening stored values', async () => {
       const { page, context } = await pageForTest();
       try {

@@ -94,7 +94,7 @@ function deletionHarness(options = {}) {
     abortBookDeletion: options.trackDeletionLog
       ? async token => operations.push(`tombstone:abort:${token}`)
       : undefined,
-    rememberDeletedBookId: bookId => operations.push(`remember:${bookId}`),
+    rememberDeletedBookId: options.rememberDeletedBookId || (bookId => operations.push(`remember:${bookId}`)),
     cancelBookJobs: async bookId => {
       operations.push(`cancel:${bookId}`);
       await options.cancelBookJobs?.(bookId, operations);
@@ -108,7 +108,7 @@ function deletionHarness(options = {}) {
       operations.push(`cleanup:${bookId}:${book.title}`);
       return artifactCleanup;
     },
-    scheduleArtifactSweeps: bookId => operations.push(`sweep:${bookId}`),
+    scheduleArtifactSweeps: options.scheduleArtifactSweeps || (bookId => operations.push(`sweep:${bookId}`)),
     removeBookPositions: (positions, bookId) => {
       for (const user of Object.values(positions)) delete user.books?.[bookId];
     },
@@ -540,6 +540,50 @@ function metadataHarness(options = {}) {
       await new Promise(resolve => setImmediate(resolve));
       assert.deepStrictEqual(completed, index === timers.length - 1 ? ['book_1'] : []);
     }
+  });
+
+  await test('a first deletion\'s last sweep does not retire the guard of a later deletion of the same id', async () => {
+    // Delete, re-import and delete again inside the 30 s sweep window. The
+    // guard map mirrors server.js: one token per deletion, a re-import clears.
+    const timers = [];
+    const guards = new Map();
+    const cleaner = createBookArtifactCleaner({
+      cacheDir: '/cache',
+      fs: { readdir: async () => [], rm: async () => {} },
+      invalidateChapterCache: () => {},
+      isBookDeleted: bookId => guards.has(bookId),
+      withSweepLock: (_bookId, task) => task(),
+      onSweepsComplete: (bookId, token) => {
+        if (token && guards.get(bookId) === token) guards.delete(bookId);
+      },
+      setTimer: (callback, delay) => timers.push({ callback, delay }),
+      log: { log() {}, error() {} }
+    });
+    const deleteOnce = () => {
+      const { service } = deletionHarness({
+        rememberDeletedBookId: bookId => {
+          const token = { bookId };
+          guards.set(bookId, token);
+          return token;
+        },
+        scheduleArtifactSweeps: cleaner.scheduleSweeps
+      });
+      return service.deleteBook({ bookId: 'book_1', actor: { role: 'admin' } });
+    };
+    const runTimers = async batch => {
+      for (const timer of batch) timer.callback();
+      for (let i = 0; i < 5; i += 1) await new Promise(resolve => setImmediate(resolve));
+    };
+
+    await deleteOnce();
+    const first = timers.splice(0);
+    guards.delete('book_1'); // the re-import retires the first guard
+    await deleteOnce();
+    const second = timers.splice(0);
+    await runTimers(first);
+    assert(guards.has('book_1'), 'the second deletion keeps its guard after the first deletion\'s sweeps settle');
+    await runTimers(second);
+    assert(!guards.has('book_1'), 'the second deletion retires its own guard once its sweeps settle');
   });
 
   await test('metadata refresh preserves precedence and clears stale structure positions', async () => {

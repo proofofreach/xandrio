@@ -27,6 +27,21 @@
     [artifactKey(scope, artifactId), Number.MAX_SAFE_INTEGER, '\uffff', Number.MAX_SAFE_INTEGER]
   );
 
+  // Fence failures carry a code so callers classify them exactly: a lost
+  // lease is resumable, a delete or account switch is not.
+  const FENCE_ERRORS = Object.freeze({
+    LEASE_LOST: 'OFFLINE_LEASE_LOST',
+    FENCE_STALE: 'OFFLINE_FENCE_STALE',
+    TITLE_DELETED: 'OFFLINE_TITLE_DELETED',
+    TITLE_STALE: 'OFFLINE_TITLE_STALE'
+  });
+
+  function fenceError(code, message) {
+    const error = new Error(message);
+    error.code = code;
+    return error;
+  }
+
   function requestResult(request) {
     return new Promise((resolve, reject) => {
       request.onsuccess = () => resolve(request.result);
@@ -202,14 +217,14 @@
         !leaseValue || leaseValue.ownerId !== fence.ownerId ||
         Number(leaseValue.epoch) !== Number(fence.leaseEpoch) ||
         Number(leaseValue.expiresAt) <= now()
-      ) throw new Error('Offline storage fence is stale');
+      ) throw fenceError(FENCE_ERRORS.LEASE_LOST, 'Offline storage fence is stale');
       const current = await epochs(stores.control, fence.scope, fence.bookId, true);
       if (
         current.scopeEpoch !== Number(fence.scopeEpoch) ||
         current.titleEpoch !== Number(fence.titleEpoch)
-      ) throw new Error('Offline storage fence is stale');
+      ) throw fenceError(FENCE_ERRORS.FENCE_STALE, 'Offline storage fence is stale');
       if (!allowTombstone && await requestResult(stores.control.get(tombstoneKey(scope, bookId)))) {
-        throw new Error('Offline title was deleted');
+        throw fenceError(FENCE_ERRORS.TITLE_DELETED, 'Offline title was deleted');
       }
       return current;
     }
@@ -279,13 +294,21 @@
         });
       },
 
-      async saveTitle(scope, entry, fence) {
+      async saveTitle(scope, entry, fence, { requireActive = false } = {}) {
         const bookId = String(entry?.bookId || entry?.id || '');
         const revision = String(entry?.revision || 'legacy');
         if (!bookId) throw new Error('Offline title requires a bookId');
         return transaction(['titles', 'control'], 'readwrite', async stores => {
           await requireFence(stores, fence, scope, bookId);
           const key = titleKey(scope, bookId, revision);
+          if (requireActive) {
+            // An edit of a visible title must target the revision that is
+            // still active; another tab may have replaced or recreated it.
+            const current = await requestResult(stores.control.get(activeKey(scope, bookId)));
+            if (current?.value?.titleKey !== key) {
+              throw fenceError(FENCE_ERRORS.TITLE_STALE, 'Offline title revision is no longer active');
+            }
+          }
           await requestResult(stores.titles.put({
             key, scope: String(scope), bookId, revision, legacy: Boolean(entry?.legacy),
             entry: clone({ ...entry, bookId, revision }), tombstone: false
@@ -394,6 +417,10 @@
           if (blockIndex >= chapter.blockHashes.length || data.byteLength !== expectedSize) {
             throw new Error('Offline block size does not match its descriptor');
           }
+          // Blocks are content-addressed. A verified block already holds these
+          // bytes, so rewriting it would only demote every title that uses it.
+          const existing = await requestResult(stores.blocks.get(blockKey(scope, artifactId, index)));
+          if (existing?.state === 'verified') return existing.writeId;
           await requestResult(stores.blocks.put({
             key: blockKey(scope, artifactId, index), scope: String(scope), artifactId,
             scopeArtifact: artifactKey(scope, artifactId), index: blockIndex,
@@ -473,7 +500,14 @@
               throw new Error('Offline chapter has unverified blocks');
             }
           }
-          for (const row of owned) {
+          // Block writes and deletes demote every row of the artifact, across
+          // titles, so verified bytes restore every row that describes them.
+          const hashes = JSON.stringify(descriptor.blockHashes);
+          const rows = await chaptersForArtifact(stores.chapters, scope, artifactId);
+          for (const row of rows) {
+            if (row.value.state === 'ready') continue;
+            if (Number(row.value.size) !== Number(descriptor.size) ||
+                JSON.stringify(row.value.blockHashes) !== hashes) continue;
             row.value.state = 'ready';
             await requestResult(stores.chapters.put(row.value));
           }
@@ -531,7 +565,7 @@
           if (
             !token || !lease || lease.ownerId !== token.ownerId || Number(lease.epoch) !== Number(token.epoch) ||
             Number(lease.expiresAt) <= now()
-          ) throw new Error('Offline lease is not current');
+          ) throw fenceError(FENCE_ERRORS.LEASE_LOST, 'Offline lease is not current');
           const current = await epochs(stores.control, scope, bookId, true);
           return { ownerId: token.ownerId, leaseEpoch: lease.epoch, scope: String(scope), bookId: String(bookId), ...current };
         });
@@ -819,7 +853,7 @@
     });
   }
 
-  const api = { createStore, createAudioResponse };
+  const api = { createStore, createAudioResponse, FENCE_ERRORS };
   global.XandrioOfflineStore = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })(globalThis);
