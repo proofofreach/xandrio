@@ -101,6 +101,15 @@ def health():
         "voiceDir": str(VOICE_DIR),
         "voices": _available_voices(),
         "formats": ["wav", "mp3"],
+        # Effective sampling defaults; lib/chatterbox-tuning.js mirrors them.
+        "generation": {
+            "temperature": DEFAULT_TEMPERATURE,
+            "topP": DEFAULT_TOP_P,
+            "topK": DEFAULT_TOP_K,
+            "repetitionPenalty": DEFAULT_REPETITION_PENALTY,
+            "exaggeration": DEFAULT_EXAGGERATION,
+            "cfgWeight": DEFAULT_CFG_WEIGHT,
+        },
     }
 
 

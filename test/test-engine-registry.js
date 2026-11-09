@@ -189,5 +189,130 @@ test('recorded Chatterbox variants reject implementation, reference, and unavail
   }).compatible, false);
 });
 
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const { getKokoroVariantKey } = require('../lib/kokoro-tuning');
+const { getChatterboxVoiceTuningIdentity, SAMPLING_DEFAULTS } = require('../lib/chatterbox-tuning');
+const { narrationRenderRecipe } = require('../lib/narration-render-recipe');
+
+function withEnv(overrides, fn) {
+  const previous = {};
+  for (const [name, value] of Object.entries(overrides)) {
+    previous[name] = process.env[name];
+    if (value === undefined) delete process.env[name];
+    else process.env[name] = value;
+  }
+  try {
+    return fn();
+  } finally {
+    for (const [name, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
+}
+
+const IDENTITY_ENV = {
+  CHATTERBOX_TEMPERATURE: undefined, CHATTERBOX_TOP_P: undefined, CHATTERBOX_EXAGGERATION: undefined,
+  CHATTERBOX_CFG_WEIGHT: undefined, CHATTERBOX_REPETITION_PENALTY: undefined, CHATTERBOX_MIN_P: undefined,
+  CHATTERBOX_MASTERING_GAIN_DB: undefined, KOKORO_REPO_ID: undefined, KOKORO_MASTERING_GAIN_DB: undefined,
+  EDGE_MASTERING_GAIN_DB: undefined, PARAGRAPH_PAUSE_MS: undefined,
+  // Profile and chunk settings also shape the key; an operator .env must not
+  // leak into the default-configuration assertions.
+  KOKORO_PROFILE: undefined, KOKORO_CHUNK_SIZE: undefined,
+  CHATTERBOX_PROFILE: undefined, CHATTERBOX_CHUNK_SIZE: undefined, CHATTERBOX_MLX_MODEL: undefined,
+  CHATTERBOX_ENGINE: undefined
+};
+const edgeKey = () => createEngineAdapterRegistry({ defaultChunkSize: 4000 })
+  .resolve('en-US-AndrewMultilingualNeural').variantKey('en-US-AndrewMultilingualNeural');
+
+test('default configuration keeps every historical variant key byte-for-byte', () => withEnv(IDENTITY_ENV, () => {
+  // These are the key shapes the production cache was built with. Any new
+  // identity component may only appear for a non-default value.
+  assert.strictEqual(getKokoroVariantKey('kokoro:am_michael'),
+    'kokoro:am_michael:profilequality:chunk440:fmtwav:outmp3:prep11:audio7:br160k:pause350');
+  assert.strictEqual(getChatterboxVariantKey('chatterbox:brick-scott', { platform: 'darwin', engine: '' }),
+    'chatterbox:brick-scott:modeloriginal8bit:profilebalanced:chunk280:fmtwav:outmp3:refbrick-scott-20260707:prep11:audio7:br160k:pause350');
+  assert.strictEqual(edgeKey(), 'en-US-AndrewMultilingualNeural:chunk4000:outmp3:prep11:audio7:br160k:splitramp1');
+}));
+
+test('restating a default in the environment leaves variant keys unchanged', () => withEnv(IDENTITY_ENV, () => {
+  const kokoro = getKokoroVariantKey('kokoro:am_michael');
+  const mlx = getChatterboxVariantKey('chatterbox:brick-scott', { platform: 'darwin', engine: 'mlx' });
+  const edge = edgeKey();
+  withEnv({
+    KOKORO_REPO_ID: 'hexgrad/Kokoro-82M', KOKORO_MASTERING_GAIN_DB: '9.5',
+    CHATTERBOX_TEMPERATURE: String(SAMPLING_DEFAULTS.mlx.temperature), CHATTERBOX_TOP_P: '0.95',
+    CHATTERBOX_EXAGGERATION: '0.5', CHATTERBOX_CFG_WEIGHT: '0.5', CHATTERBOX_MASTERING_GAIN_DB: '2.5',
+    EDGE_MASTERING_GAIN_DB: '3', PARAGRAPH_PAUSE_MS: '350'
+  }, () => {
+    assert.strictEqual(getKokoroVariantKey('kokoro:am_michael'), kokoro);
+    assert.strictEqual(getChatterboxVariantKey('chatterbox:brick-scott', { platform: 'darwin', engine: 'mlx' }), mlx);
+    assert.strictEqual(edgeKey(), edge);
+  });
+}));
+
+test('non-default audio-changing settings scope the variant key', () => withEnv(IDENTITY_ENV, () => {
+  const kokoro = getKokoroVariantKey('kokoro:am_michael');
+  withEnv({ KOKORO_REPO_ID: 'someone/Kokoro-fork' }, () => {
+    const forked = getKokoroVariantKey('kokoro:am_michael');
+    assert.notStrictEqual(forked, kokoro);
+    assert(/:repo[a-f0-9]{10}$/.test(forked), `repo override is hashed into the key: ${forked}`);
+  });
+  withEnv({ KOKORO_MASTERING_GAIN_DB: '6' }, () => {
+    assert.strictEqual(getKokoroVariantKey('kokoro:am_michael'), `${kokoro}:gain6`);
+  });
+
+  // Sampling defaults differ per implementation: 0.76 is Turbo's default but
+  // an override for MLX, so only the MLX key changes.
+  withEnv({ CHATTERBOX_TEMPERATURE: '0.76' }, () => {
+    const mlx = getChatterboxVariantKey('chatterbox:brick-scott', { platform: 'darwin', engine: 'mlx' });
+    const turbo = getChatterboxVariantKey('chatterbox:brick-scott', { platform: 'linux', engine: 'pytorch' });
+    assert(mlx.endsWith(':temp0p76'), mlx);
+    assert(!/:temp/.test(turbo), turbo);
+  });
+  withEnv({ CHATTERBOX_TOP_P: '0.8', CHATTERBOX_EXAGGERATION: '0.9', CHATTERBOX_CFG_WEIGHT: '0.1', CHATTERBOX_MASTERING_GAIN_DB: '-1.5' }, () => {
+    const mlx = getChatterboxVariantKey('chatterbox:brick-scott', { platform: 'darwin', engine: 'mlx' });
+    assert(mlx.endsWith(':topp0p8:exag0p9:cfg0p1:gainm1p5'), mlx);
+  });
+
+  const edge = edgeKey();
+  withEnv({ PARAGRAPH_PAUSE_MS: '500' }, () => assert.strictEqual(edgeKey(), `${edge}:pause500`));
+  withEnv({ EDGE_MASTERING_GAIN_DB: '0' }, () => assert.strictEqual(edgeKey(), `${edge}:gain0`));
+}));
+
+test('per-voice sidecar tuning yields a stable identity that rides on the recipe, not the fingerprint', () => {
+  const voiceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'xandrio-voice-tuning-'));
+  try {
+    const sidecar = path.join(voiceDir, 'custom.json');
+    assert.strictEqual(getChatterboxVoiceTuningIdentity('chatterbox:custom', { voiceDir, now: 0 }), null, 'no sidecar: no identity');
+    fs.writeFileSync(sidecar, JSON.stringify({ temperature: 0.6, top_p: 0.92, seed: 31, comment: 'ignored' }));
+    const first = getChatterboxVoiceTuningIdentity('chatterbox:custom', { voiceDir, now: 10_000 });
+    assert(/^[a-f0-9]{16}$/.test(first), `identity is a short hash: ${first}`);
+    assert.strictEqual(getChatterboxVoiceTuningIdentity('chatterbox:custom', { voiceDir, now: 10_000 }), first, 'cached identity is stable');
+    fs.writeFileSync(sidecar, JSON.stringify({ temperature: 0.6, top_p: 0.92, seed: 31, comment: 'edited but ignored' }));
+    assert.strictEqual(getChatterboxVoiceTuningIdentity('chatterbox:custom', { voiceDir, now: 20_000 }), first,
+      'keys the server ignores do not change the identity');
+    fs.writeFileSync(sidecar, JSON.stringify({ temperature: 0.7, top_p: 0.92, seed: 31 }));
+    const changed = getChatterboxVoiceTuningIdentity('chatterbox:custom', { voiceDir, now: 30_000 });
+    assert.notStrictEqual(changed, first, 'an accepted-key change changes the identity');
+    fs.writeFileSync(sidecar, '{not json');
+    assert.strictEqual(getChatterboxVoiceTuningIdentity('chatterbox:custom', { voiceDir, now: 40_000 }), null, 'an unreadable sidecar has no identity');
+    assert.strictEqual(getChatterboxVoiceTuningIdentity('chatterbox:../custom', { voiceDir, now: 50_000 }), null, 'path characters never escape the voice directory');
+
+    const adapter = createEngineAdapterRegistry({ defaultChunkSize: 4000 }).resolve('chatterbox:custom');
+    assert.strictEqual(typeof adapter.tuningIdentity, 'function', 'Chatterbox exposes the sidecar identity');
+    const base = { adapter: { ...adapter, variantKey: () => 'chatterbox:custom:fixed' }, text: 'A narration long enough to count as speakable.', outputPath: '/tmp/chunk.mp3', voice: 'chatterbox:custom' };
+    const without = narrationRenderRecipe({ ...base, adapter: { ...base.adapter, tuningIdentity: () => null } });
+    const with_ = narrationRenderRecipe({ ...base, adapter: { ...base.adapter, tuningIdentity: () => 'abcdef0123456789' } });
+    assert.strictEqual(without.tuning, null);
+    assert.strictEqual(with_.tuning, 'abcdef0123456789');
+    assert.strictEqual(with_.fingerprint, without.fingerprint, 'the sidecar never changes the fingerprint existing markers were written with');
+  } finally {
+    fs.rmSync(voiceDir, { recursive: true, force: true });
+  }
+});
+
 console.log(`engine-registry tests: ${passed} passed, ${failed} failed`);
 if (failed) process.exitCode = 1;

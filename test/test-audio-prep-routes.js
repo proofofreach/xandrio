@@ -53,6 +53,27 @@ function createRoutes(overrides = {}) {
 }
 
 (async () => {
+  await test('narration reads require the book in the caller library unless the caller is an admin', async () => {
+    const routes = createRoutes({
+      getBookNarration: () => ({ voiceId: 'voice' }),
+      setBookNarration: async () => ({})
+    });
+    const handler = routes.get('GET /api/narration/:bookId');
+    const run = async user => {
+      const res = {
+        statusCode: 200, body: null,
+        status(code) { this.statusCode = code; return this; },
+        json(value) { this.body = value; return this; }
+      };
+      await handler({ params: { bookId: 'hiddenFailure' }, user }, res);
+      return res.statusCode;
+    };
+    assert.strictEqual(await run({ role: 'admin' }), 200);
+    for (const user of [undefined, {}, { id: 'reader' }, { id: 'reader', role: 'editor' }, { id: 'reader', role: 'member' }]) {
+      assert.strictEqual(await run(user), 403, `user ${JSON.stringify(user)} must not be treated as privileged`);
+    }
+  });
+
   await test('queue status exposes only the current user’s failed warmup with a retry chapter', async () => {
     const handler = createRoutes().get('GET /api/queue/status');
     let body;

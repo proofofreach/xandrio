@@ -38,7 +38,24 @@ async function fetchBookmarks(bookId) {
   }
 }
 
+// The server flags a bookmark `stale` when the chapter list changed after it
+// was saved and the rebuild could not place it. Its chapter index and time
+// now name different text, so it is listed for the reader to see or delete,
+// never offered as a jump target.
+function renderStaleBookmarkRow(bm) {
+  return `
+    <div class="bookmark-row bookmark-row-stale">
+      <div class="bookmark-row-main">
+        <div class="bookmark-row-title">Saved before the chapter list changed</div>
+        <div class="bookmark-row-meta">${escapeHTML(relativeTime(bm.createdAt))}</div>
+      </div>
+      <button type="button" class="bookmark-delete-btn" data-bookmark-delete="${safeAttr(bm.id)}" aria-label="Delete bookmark">${ICON_TRASH}</button>
+    </div>
+  `;
+}
+
 function renderBookmarkRow(bm) {
+  if (bm.stale) return renderStaleBookmarkRow(bm);
   const chapterLabel = deps.getChapterTitle ? deps.getChapterTitle(bm.chapterIndex) : `Chapter ${bm.chapterIndex + 1}`;
   return `
     <div class="bookmark-row" data-bookmark-jump="${safeAttr(bm.id)}" role="button" tabindex="0">
@@ -93,7 +110,7 @@ export async function renderBookmarksSection() {
 
 async function jumpToBookmark(bookmarkId) {
   const bm = bookmarksCache.find(b => b.id === bookmarkId);
-  if (!bm || !deps) return;
+  if (!bm || bm.stale || !deps) return;
 
   if (bm.chapterIndex !== deps.getCurrentChapter?.()) {
     await deps.selectChapter(bm.chapterIndex, {

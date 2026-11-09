@@ -259,8 +259,8 @@ function metadataHarness(options = {}) {
       openLibraryWorkKey: identity.openLibraryWorkKey
     }),
     canonicalWorkKey: (title, author) => `${title}:${author}`,
-    invalidateBookAudio: async (bookId, chapterCount) => {
-      operations.push(`invalidate-audio:${bookId}:${chapterCount}`);
+    invalidateBookAudio: async (bookId, chapterCount, chapterIndexes) => {
+      operations.push(`invalidate-audio:${bookId}:${chapterCount}${chapterIndexes ? `:${chapterIndexes.join(',')}` : ''}`);
       if (audioFailuresRemaining > 0) {
         audioFailuresRemaining--;
         throw new Error('audio busy');
@@ -295,7 +295,10 @@ function metadataHarness(options = {}) {
     log: { warn: message => operations.push(`warn:${message}`) }
   });
 
-  return { service, files, operations };
+  return {
+    service, files, operations,
+    setPositionFailures: count => { positionFailuresRemaining = count; }
+  };
 }
 
 (async () => {
@@ -316,6 +319,81 @@ function metadataHarness(options = {}) {
     assert.deepStrictEqual(result, { status: DELETE_BOOK_RESULT.FORBIDDEN });
     assert(harness.files.books.book_1);
     assert(!harness.operations.some(operation => operation.startsWith('cleanup:')));
+  });
+
+  await test('an unknown or missing role is not privileged to delete another user\'s book', async () => {
+    for (const actor of [undefined, {}, { id: 'different-user' }, { id: 'different-user', role: 'editor' }]) {
+      const harness = deletionHarness();
+      const result = await harness.service.deleteBook({ bookId: 'book_1', actor });
+      assert.deepStrictEqual(result, { status: DELETE_BOOK_RESULT.FORBIDDEN }, `actor ${JSON.stringify(actor)}`);
+      assert(harness.files.books.book_1, 'book must survive');
+    }
+    const owner = deletionHarness();
+    const owned = await owner.service.deleteBook({ bookId: 'book_1', actor: { id: 'owner', role: 'guest' } });
+    assert.strictEqual(owned.status, DELETE_BOOK_RESULT.DELETED, 'the owner may still delete their own book');
+  });
+
+  await test('a failing library-state store does not stop the other stores from being cleaned', async () => {
+    const harness = deletionHarness({ failFile: 'bookmarks' });
+    const result = await harness.service.deleteBook({ bookId: 'book_1', actor: { role: 'admin' } });
+    assert.strictEqual(result.status, DELETE_BOOK_RESULT.DELETED);
+    assert.deepStrictEqual(result.libraryStateErrors, [{ store: 'bookmarks', error: 'disk full' }]);
+    assert.strictEqual(harness.files.positions.owner.books.book_1, undefined, 'positions were cleaned before the failure');
+    assert.deepStrictEqual(harness.files.shelves, { owner: [], other: [] }, 'shelves were still cleaned after the failure');
+    assert.deepStrictEqual(harness.files.listeningQueues.users.owner.bookIds, [], 'queues were still cleaned after the failure');
+    assert(harness.operations.includes('update:shelves:saved') && harness.operations.includes('update:listeningQueues:saved'));
+  });
+
+  await test('startup reconcile drops library-state entries for books absent from a non-empty catalog', async () => {
+    const files = {
+      books: { kept: { id: 'kept' } },
+      positions: { users: { alice: { kept: { chapterIndex: 1 }, gone: { chapterIndex: 2 } }, bob: { gone: {} } } },
+      bookmarks: { users: { alice: { gone: [{ id: 'm' }] } } },
+      shelves: { users: { alice: { books: { kept: { addedAt: 1 }, gone: { addedAt: 2 } } } } },
+      listeningQueues: { users: { alice: { bookIds: ['gone', 'kept'], bookSettings: { gone: { speed: 2 } } } } }
+    };
+    const skipSave = Symbol('skip');
+    const saved = [];
+    const updateJSON = async (file, mutator) => {
+      const working = clone(files[file]);
+      const result = await mutator(working);
+      if (result !== skipSave) { files[file] = working; saved.push(file); }
+      return result;
+    };
+    const { createUserLibraryState } = require('../lib/user-library-state');
+    const shelves = require('../lib/shelves');
+    const listeningQueue = require('../lib/listening-queue');
+    const { removeBookBookmarks } = require('../lib/routes/bookmarks-routes');
+    const state = createUserLibraryState();
+    const service = createBookDeletionService({
+      booksFile: 'books', positionsFile: 'positions', bookmarksFile: 'bookmarks', shelvesFile: 'shelves',
+      listeningQueueFile: 'listeningQueues', updateJSON, skipSave,
+      rememberDeletedBookId: () => null, cancelBookJobs: async () => 0, stopPremiumPrep: async () => {},
+      cleanupBookArtifacts: async () => ({ deleted: [], failed: [] }), scheduleArtifactSweeps: () => {},
+      removeBookPositions: (positions, bookId) => state.removeBookPositions(positions, bookId),
+      removeBookBookmarks,
+      removeBookFromAllShelves: shelves.removeBookFromAllShelves,
+      removeBookFromAllQueues: listeningQueue.removeBookFromAllQueues,
+      log: { warn() {}, log() {}, error() {} }
+    });
+
+    const result = await service.reconcileLibraryState({ loadBooks: async () => files.books });
+    assert.deepStrictEqual(result.removed, { positions: 1, bookmarks: 1, shelves: 1, listeningQueues: 1 });
+    assert.deepStrictEqual(Object.keys(files.positions.users.alice), ['kept']);
+    assert.deepStrictEqual(files.positions.users.bob, {});
+    assert.deepStrictEqual(files.bookmarks.users.alice, {});
+    assert.deepStrictEqual(Object.keys(files.shelves.users.alice.books), ['kept']);
+    assert.deepStrictEqual(files.listeningQueues.users.alice.bookIds, ['kept']);
+    assert.deepStrictEqual(files.listeningQueues.users.alice.bookSettings, {});
+
+    saved.length = 0;
+    assert.deepStrictEqual(await service.reconcileLibraryState({ loadBooks: async () => files.books }), { removed: {} });
+    assert.deepStrictEqual(saved, [], 'a clean library writes nothing');
+
+    files.positions.users.alice.gone = {};
+    assert.strictEqual((await service.reconcileLibraryState({ loadBooks: async () => ({}) })).skipped, 'empty-catalog');
+    assert.strictEqual((await service.reconcileLibraryState({ loadBooks: async () => { throw new Error('missing'); } })).skipped, 'catalog-unavailable');
+    assert(files.positions.users.alice.gone, 'an empty or unavailable catalog never sweeps');
   });
 
   await test('successful deletion removes all references and preserves response fields', async () => {
@@ -431,24 +509,18 @@ function metadataHarness(options = {}) {
     assert(harness.operations.includes('tombstone:abort:deletion-token'));
   });
 
-  await test('downstream deletion-store failures stop at a deterministic boundary', async () => {
-    for (const [failedFile, expectedSaved, expectedUntouched] of [
-      ['positions', [], ['bookmarks', 'shelves']],
-      ['bookmarks', ['positions'], ['shelves']],
-      ['shelves', ['positions', 'bookmarks'], []]
-    ]) {
+  await test('a downstream deletion-store failure is reported and never blocks the remaining stores', async () => {
+    const all = ['positions', 'bookmarks', 'shelves', 'listeningQueues'];
+    for (const failedFile of all) {
       const harness = deletionHarness({ failFile: failedFile });
-      await assert.rejects(
-        harness.service.deleteBook({ bookId: 'book_1', actor: { role: 'admin' } }),
-        /disk full/
-      );
+      const result = await harness.service.deleteBook({ bookId: 'book_1', actor: { role: 'admin' } });
+      assert.strictEqual(result.status, DELETE_BOOK_RESULT.DELETED);
+      assert.deepStrictEqual(result.libraryStateErrors, [{ store: failedFile, error: 'disk full' }]);
       assert.strictEqual(harness.files.books.book_1, undefined);
       assert(harness.operations.includes('cleanup:book_1:Example'));
-      for (const file of expectedSaved) {
-        assert(harness.operations.includes(`update:${file}:saved`));
-      }
-      for (const file of expectedUntouched) {
-        assert(!harness.operations.some(operation => operation.startsWith(`update:${file}:`)));
+      for (const file of all) {
+        assert(harness.operations.includes(`update:${file}:begin`), `${file} is attempted even after ${failedFile} failed`);
+        if (file !== failedFile) assert(harness.operations.includes(`update:${file}:saved`), `${file} is saved`);
       }
     }
   });
@@ -810,6 +882,101 @@ function metadataHarness(options = {}) {
     assert(harness.operations.includes('invalidate-audio:book_1:7'));
     assert(harness.operations.includes('remove-positions:book_1'));
     assert.strictEqual(harness.files.positions.owner.books.book_1, undefined);
+  });
+
+  function driftHarness(extra = {}) {
+    const structureKey = require('../lib/chapter-structure').chapterStructureKey;
+    const opening = 'The opening paragraph stays where it was.';
+    const moved = 'This paragraph moves to the next chapter.';
+    const middle = 'The middle chapter keeps its own text.';
+    const closing = 'The closing chapter is untouched.';
+    const shape = texts => texts.map((text, index) => ({
+      title: `Chapter ${index + 1}`, type: 'content', sourceHref: `ch${index + 1}.xhtml`, text, estimatedDuration: 60
+    }));
+    const previous = shape([`${opening} ${moved}`, middle, closing]);
+    const next = shape([opening, `${moved} ${middle}`, closing]);
+    assert.strictEqual(structureKey(previous), structureKey(next), 'the drift keeps the structure key');
+    const key = structureKey(previous);
+    const h = metadataHarness({
+      structureKey, chapterStructureKey: key, chapterCount: 3,
+      chapterDurations: [70, 50, 40], audioGenerationState: 'ready', ...extra
+    });
+    // A reader inside the moved paragraph, and a bookmark on it.
+    const insideMoved = opening.length + 1 + 5;
+    h.files.positions = { users: { owner: { book_1: {
+      chapterIndex: 0, timestamp: 50, characterOffset: insideMoved, chunkIndex: 3, chapterStructureKey: key
+    } } } };
+    h.files.bookmarks = { users: { owner: { book_1: [
+      { id: 'bm_moved', chapterIndex: 0, timestamp: 50, characterOffset: insideMoved, chapterStructureKey: key },
+      { id: 'bm_closing', chapterIndex: 2, timestamp: 10, characterOffset: 4, chapterStructureKey: key }
+    ] } } };
+    return { ...h, previous, next, key };
+  }
+
+  await test('boundary drift under an unchanged structure key remaps positions and bookmarks', async () => {
+    const h = driftHarness();
+    const baseline = await h.service.reconcileChapterStructure('book_1', h.previous);
+    assert.strictEqual(baseline.status, STRUCTURE_RECONCILE_RESULT.UNCHANGED);
+    assert.strictEqual(h.files.books.book_1.chapterTextIdentity.structureKey, h.key, 'the text identity is recorded going forward');
+    assert.strictEqual(h.files.positions.users.owner.book_1.chapterIndex, 0, 'recording a baseline moves nothing');
+
+    const operationsBefore = h.operations.length;
+    assert.strictEqual((await h.service.reconcileChapterStructure('book_1', h.previous)).status,
+      STRUCTURE_RECONCILE_RESULT.UNCHANGED);
+    assert(!h.operations.slice(operationsBefore).some(op => op.startsWith('update:books')),
+      'a matching identity takes the read-only fast path');
+
+    const result = await h.service.reconcileChapterStructure('book_1', h.next);
+    assert.strictEqual(result.status, STRUCTURE_RECONCILE_RESULT.REMAPPED);
+    const position = h.files.positions.users.owner.book_1;
+    assert.strictEqual(position.chapterIndex, 1, 'the reader follows the moved paragraph');
+    assert.strictEqual(position.characterOffset, 5);
+    assert.strictEqual(position.chunkIndex, undefined, 'chunk coordinates of moved text are dropped');
+    assert.strictEqual(position.chapterStructureKey, h.key);
+    const [movedBookmark, closingBookmark] = h.files.bookmarks.users.owner.book_1;
+    assert.strictEqual(movedBookmark.chapterIndex, 1);
+    assert.strictEqual(movedBookmark.characterOffset, 5);
+    assert.strictEqual(closingBookmark.chapterIndex, 2, 'a bookmark in an unchanged chapter stays put');
+    assert.strictEqual(closingBookmark.timestamp, 10, 'an unchanged chapter keeps its exact time');
+    assert(h.operations.includes('invalidate-audio:book_1:3:0,1'), 'only chapters whose text moved lose audio');
+    assert.deepStrictEqual(h.files.books.book_1.chapterDurations, [null, null, 40]);
+    assert.strictEqual(h.files.books.book_1.chapterCount, 3);
+    assert(!h.files.books.book_1.metadataRefreshReconciliation);
+    assert(!h.operations.includes('remove-positions:book_1'));
+  });
+
+  await test('an interrupted drift remap is replayed without moving a record twice', async () => {
+    const h = driftHarness();
+    await h.service.reconcileChapterStructure('book_1', h.previous);
+    h.setPositionFailures(1);
+    await assert.rejects(h.service.reconcileChapterStructure('book_1', h.next), /permission denied/);
+    const pending = JSON.parse(JSON.stringify(h.files.books.book_1.metadataRefreshReconciliation.positions));
+    assert.strictEqual(pending.type, 'remap');
+    await h.service.reconcileChapterStructure('book_1', h.next);
+    assert.strictEqual(h.files.positions.users.owner.book_1.chapterIndex, 1);
+    assert.strictEqual(h.files.positions.users.owner.book_1.characterOffset, 5);
+
+    // A crash after the stores were written but before the marker cleared.
+    h.files.books.book_1.metadataRefreshReconciliation = { positions: pending };
+    await h.service.reconcileChapterStructure('book_1', h.next);
+    assert.strictEqual(h.files.positions.users.owner.book_1.chapterIndex, 1, 'a replay does not remap again');
+    assert.strictEqual(h.files.positions.users.owner.book_1.characterOffset, 5);
+    assert.strictEqual(h.files.bookmarks.users.owner.book_1[0].characterOffset, 5);
+  });
+
+  await test('changed narration under an unchanged key records a new identity without moving the reader', async () => {
+    const h = driftHarness();
+    await h.service.reconcileChapterStructure('book_1', h.previous);
+    const edited = h.previous.map((chapter, index) => index === 1 ? { ...chapter, text: 'A corrected middle chapter.' } : chapter);
+    const result = await h.service.reconcileChapterStructure('book_1', edited);
+    assert.strictEqual(result.status, STRUCTURE_RECONCILE_RESULT.UNCHANGED);
+    assert.strictEqual(h.files.positions.users.owner.book_1.chapterIndex, 0);
+    assert.strictEqual(h.files.positions.users.owner.book_1.chunkIndex, 3);
+    assert(!h.operations.some(op => op.startsWith('invalidate-audio:')));
+    const operationsBefore = h.operations.length;
+    await h.service.reconcileChapterStructure('book_1', edited);
+    assert(!h.operations.slice(operationsBefore).some(op => op.startsWith('update:books')),
+      'the new identity is the baseline from now on');
   });
 
   await test('a book with no recorded structure is stamped rather than reset', async () => {

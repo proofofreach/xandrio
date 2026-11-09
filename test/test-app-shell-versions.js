@@ -191,27 +191,32 @@ assert(
   ),
   'a compatible older worker does not suppress registration of the shipped worker build'
 );
+// Installed clients refetch the precached shell only when CACHE_VERSION
+// changes. The recorded fingerprint pairs the current CACHE_VERSION with the
+// exact bytes it shipped, so any shell file edited since the last bump fails
+// here on a clean tree and in a shallow clone, not only in an uncommitted diff.
 {
-  const { execSync } = require('child_process');
-  const git = (command) => {
-    try {
-      return execSync(command, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
-    } catch {
-      return '';
-    }
-  };
-  const changed = git('git diff --name-only HEAD -- public/').split('\n').filter(Boolean);
-  const versionedPaths = new Set([...assetVersions.keys()].map(entry => `public${entry}`));
-  const unversionedShellChanged = changed.filter(file =>
-    file.startsWith('public/js/') && !versionedPaths.has(file)
-  );
-  const cacheVersionBumped = git('git diff HEAD -- public/sw.js')
-    .split('\n')
-    .some(line => /^[+-]const CACHE_VERSION/.test(line));
+  const {
+    computeAppShellFingerprint,
+    readRecordedFingerprint
+  } = require('../scripts/lib/app-shell-fingerprint');
+  const cacheVersion = swSource.match(/const CACHE_VERSION = '([^']+)';/)?.[1];
+  const recorded = readRecordedFingerprint(path.join(__dirname, '..', 'scripts'));
+  const current = computeAppShellFingerprint(publicDir);
+  const changedShellFiles = Object.keys({ ...current.files, ...(recorded?.files || {}) })
+    .filter(file => current.files[file] !== recorded?.files?.[file])
+    .sort();
   assert(
-    unversionedShellChanged.length === 0 || cacheVersionBumped,
-    'an edited unversioned shell module comes with a CACHE_VERSION bump' +
-      (unversionedShellChanged.length ? ` (${unversionedShellChanged.join(', ')})` : '')
+    recorded?.cacheVersion === cacheVersion,
+    `the recorded app shell fingerprint belongs to CACHE_VERSION ${cacheVersion} ` +
+      `(recorded: ${recorded?.cacheVersion || 'none'}; run node scripts/bump-version.mjs)`
+  );
+  assert(
+    recorded?.sha256 === current.sha256,
+    'every precached shell file is unchanged since the last CACHE_VERSION bump' +
+      (changedShellFiles.length
+        ? ` (changed: ${changedShellFiles.join(', ')}; run node scripts/bump-version.mjs [asset...])`
+        : '')
   );
 }
 

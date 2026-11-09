@@ -1,7 +1,7 @@
 importScripts('/js/offline-range.js');
 importScripts('/js/offline-store.js');
 
-const CACHE_VERSION = 'xandrio-v226';
+const CACHE_VERSION = 'xandrio-v230';
 const OFFLINE_ROUTE_CONTRACT_VERSION = 2;
 const OFFLINE_AUDIO_CACHE = 'xandrio-offline-audio';
 const OFFLINE_TITLE_CACHE = 'xandrio-offline-titles';
@@ -10,9 +10,10 @@ const OFFLINE_BLOCK_STORE = self.XandrioOfflineStore?.createStore?.() || null;
 // Versioned shell assets are kept in lockstep with index.html by
 // scripts/bump-version.mjs. Bump CACHE_VERSION whenever any APP_SHELL entry
 // changes, including the un-versioned js/ modules below, which only
-// invalidate via CACHE_VERSION.
+// invalidate via CACHE_VERSION. The script records the shell's content
+// fingerprint, and test/test-app-shell-versions.js fails until it is rerun.
 const ASSET_VERSIONS = {
-  '/style-v3.css': 125,
+  '/style-v3.css': 128,
   '/composition.css': 10,
   '/library-composition.css': 9,
   '/shell.css': 5,
@@ -22,7 +23,7 @@ const ASSET_VERSIONS = {
   '/find.css': 3,
   '/js/ios-focus-zoom.js': 2,
   '/js/lifecycle.js': 2,
-  '/app.js': 175
+  '/app.js': 176
 };
 const versionedAsset = (path) => `${path}?v=${ASSET_VERSIONS[path]}`;
 const APP_SHELL = [
@@ -46,6 +47,7 @@ const APP_SHELL = [
   '/js/api.js',
   '/js/client-settings.js',
   '/js/playback-session.js',
+  '/js/playback-checkpoints.mjs',
   '/js/smart-rewind.mjs',
   '/js/playback-health.mjs',
   '/js/page-exit-monitor.mjs',
@@ -53,6 +55,7 @@ const APP_SHELL = [
   '/js/auto-sleep-schedule.mjs',
   '/js/single-file-chapter-player.js',
   '/js/sw-update.mjs',
+  '/js/client-staleness.mjs',
   '/js/util/format.js',
   '/js/util/time-left.mjs',
   '/js/util/library-status.mjs',

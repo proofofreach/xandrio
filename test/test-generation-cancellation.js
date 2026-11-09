@@ -225,7 +225,8 @@ const lookahead = claim => claim.origin === 'playback-lookahead' && claim.priori
       loadJSON: async () => ({ book: { path: '/book' } }),
       BOOKS_FILE: 'books.json',
       getChaptersCached: async () => [{ text: 'chapter' }],
-      fs: { access: async () => { throw new Error('missing'); } },
+      // The stitched-file check stats for a nonempty regular file.
+      fs: { stat: async () => { throw Object.assign(new Error('missing'), { code: 'ENOENT' }); } },
       recordMeasuredChapterDuration: async () => {},
       manifestNeedsResume: () => true,
       chapterAudioPrepareJobs: new Map(),

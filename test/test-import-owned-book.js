@@ -60,12 +60,13 @@ function liveFiles(record) {
   const server = http.createServer(app);
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const base = `http://127.0.0.1:${server.address().port}`;
-  const startImport = hash => fetch(`${base}/api/download`, {
+  // Gutenberg ids are `pg-<gutenbergId>`; the download route refuses any other.
+  const startImport = gutenbergId => fetch(`${base}/api/download`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      hash, filename: 'owned.epub', title: 'Owned Book', source: 'gutenberg',
-      gutenbergId: '1', downloadUrl: 'https://www.gutenberg.org/ebooks/1.epub'
+      hash: `pg-${gutenbergId}`, filename: 'owned.epub', title: 'Owned Book', source: 'gutenberg',
+      gutenbergId, downloadUrl: `https://www.gutenberg.org/ebooks/${gutenbergId}.epub`
     })
   }).then(async response => ({ status: response.status, body: await response.json() }));
   const waitForJob = async jobId => {
@@ -80,7 +81,7 @@ function liveFiles(record) {
 
   try {
     nextDownload = await createSyntheticImportEpub(fs.mkdtempSync(path.join(testRoot, 'fixture-')));
-    const first = await startImport('owned-book');
+    const first = await startImport('1');
     const firstStatus = await waitForJob(first.body.jobId);
     test(firstStatus?.status === 'complete',
       `the first import completes (${firstStatus?.status}: ${firstStatus?.error?.error || ''})`);
@@ -88,10 +89,10 @@ function liveFiles(record) {
     // Fields set after import that a wholesale refresh would erase.
     const booksFile = path.join(process.env.DATA_DIR, 'books.json');
     const books = readBooks();
-    books['owned-book'].coverSource = 'manual';
-    books['owned-book'].studyGuideCategory = 'fiction';
+    books['pg-1'].coverSource = 'manual';
+    books['pg-1'].studyGuideCategory = 'fiction';
     fs.writeFileSync(booksFile, JSON.stringify(books));
-    const before = readBooks()['owned-book'];
+    const before = readBooks()['pg-1'];
     const filesBefore = new Map(liveFiles(before).map(file => [file, fs.readFileSync(file)]));
     test(filesBefore.size > 0, 'the imported book has files on disk');
 
@@ -101,23 +102,23 @@ function liveFiles(record) {
     fs.writeFileSync(invalid, 'not an EPUB archive');
     nextDownload = invalid;
     const downloadsBefore = downloads;
-    const second = await startImport('owned-book');
+    const second = await startImport('1');
     const secondStatus = await waitForJob(second.body.jobId);
-    test(secondStatus?.error?.existingBookId === 'owned-book',
+    test(secondStatus?.error?.existingBookId === 'pg-1',
       `the re-import reports the existing book (${secondStatus?.status}: ${JSON.stringify(secondStatus?.error)})`);
     test(downloads === downloadsBefore, 'the re-import does not download the book again');
     for (const [file, content] of filesBefore) {
       test(fs.existsSync(file) && fs.readFileSync(file).equals(content),
         `the live file ${path.basename(file)} is unchanged`);
     }
-    test(JSON.stringify(readBooks()['owned-book']) === JSON.stringify(before),
+    test(JSON.stringify(readBooks()['pg-1']) === JSON.stringify(before),
       'the library record is unchanged (addedAt, cover source and guide category kept)');
 
     console.log('\n--- Identical download requests sent together ---');
     let openGate;
     downloadGate = new Promise(resolve => { openGate = resolve; });
     nextDownload = invalid;
-    const pair = await Promise.all([startImport('double-book'), startImport('double-book')]);
+    const pair = await Promise.all([startImport('2'), startImport('2')]);
     test(pair.every(result => result.status === 202) && pair[0].body.jobId === pair[1].body.jobId,
       `both requests share one import job (${pair.map(result => result.body.jobId).join(', ')})`);
     openGate();

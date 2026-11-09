@@ -167,6 +167,66 @@ async function test(name, fn) {
     assert.strictEqual(worker.getActiveSplitPolicy(), RAMP_SPLIT_POLICY);
   });
 
+  // A symbol run glued to prose, as converted tables and ornaments leave it.
+  function symbolHeavyChapter(fillerWords, symbolChars) {
+    const filler = 'walked home slowly through the cold rain that evening and then sat down by the fire to rest for a while before supper'
+      .split(' ').slice(0, fillerWords).join(' ');
+    const symbols = '§ ¶ † ‡ * • ~ = + # @ % & | ^ < > { } [ ] '.repeat(40).slice(0, symbolChars);
+    const names = ['Alpha', 'Bravo', 'Charlie', 'Delta', 'Echo', 'Foxtrot'];
+    const sentences = names.map(name => `${name} ${filler}.`);
+    return { names, text: [...sentences.slice(0, 3), symbols, ...sentences.slice(3)].join(' ') };
+  }
+
+  const PLAN_BOUNDS = [[LEGACY_SPLIT_POLICY, 280, 280], [RAMP_SPLIT_POLICY, 280, 280], [HYBRID_SPLIT_POLICY, 280, 900]];
+
+  await test('narrates every speakable sentence when symbol runs are coalesced away', () => {
+    const { planSplitChunks } = require('../lib/chunk-planner');
+    for (const fillerWords of [7, 10, 20]) {
+      for (const symbolChars of [200, 263, 357, 431]) {
+        const { names, text } = symbolHeavyChapter(fillerWords, symbolChars);
+        for (const [policy, maxChars] of PLAN_BOUNDS) {
+          const spoken = planSplitChunks(text, maxChars, policy).map(chunk => chunk.text).join(' ');
+          const missing = names.filter(name => !spoken.includes(`${name} walked`));
+          assert.deepStrictEqual(missing, [], `${policy} at ${maxChars}, ${fillerWords} words, ${symbolChars} symbols`);
+        }
+      }
+    }
+  });
+
+  await test('never plans a chunk above the policy bound or without speakable text', () => {
+    const { planSplitChunks } = require('../lib/chunk-planner');
+    const { isSpeakableText } = require('../lib/tts-text');
+    const texts = [
+      ...[7, 10, 20].flatMap(words => [200, 357, 431].map(chars => symbolHeavyChapter(words, chars).text)),
+      // A heading that opens a full chunk cannot be merged into it whole.
+      `Prologue\n\n${'The rain kept falling over the quiet harbour town. '.repeat(5).trim()}`
+    ];
+    for (const text of texts) {
+      for (const [policy, maxChars, bound] of PLAN_BOUNDS) {
+        for (const chunk of planSplitChunks(text, maxChars, policy)) {
+          assert(chunk.text.length <= bound, `${policy} planned ${chunk.text.length} > ${bound}`);
+          assert(isSpeakableText(chunk.text), `${policy} planned an unspeakable chunk: ${chunk.text.slice(0, 60)}`);
+        }
+      }
+    }
+  });
+
+  await test('keeps a short section number that precedes a full chunk', () => {
+    const { planSplitChunks } = require('../lib/chunk-planner');
+    // One sentence just under the bound, so "5." cannot join it whole.
+    const sentence = `That this chaos is hard to conceive, ${'and the mind turns over every form it knows, '.repeat(9)}until it rests.`;
+    for (const text of [`5.\n\n${sentence}`, `The first part ends here, quietly and briefly.\n\n5.\n\n${sentence}`]) {
+      for (const [policy, maxChars, bound] of PLAN_BOUNDS) {
+        const chunks = planSplitChunks(text, sentence.length + 1, policy);
+        const limit = Math.max(bound, sentence.length + 1);
+        assert(chunks.every(chunk => chunk.text.length <= limit), `${policy}: ${chunks.map(chunk => chunk.text.length)} > ${limit}`);
+        const spoken = chunks.map(chunk => chunk.text).join(' ').replace(/\s+/g, ' ');
+        assert(spoken.includes('5. That this chaos') || /5\.$/.test(chunks[0].text), `${policy} keeps the section number: ${spoken.slice(0, 80)}`);
+        assert(spoken.includes('until it rests.'), `${policy} keeps the whole sentence`);
+      }
+    }
+  });
+
   console.log(`tts-split-policy tests: ${passed} passed, ${failed} failed`);
   if (failed) process.exitCode = 1;
 })();

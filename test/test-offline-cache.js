@@ -408,6 +408,10 @@ function installBrowser({
     )
     .replace("import { escapeHTML, formatDuration, relativeTime } from '../util/format.js';", "const escapeHTML = value => String(value); const relativeTime = () => ''; const formatDuration = () => '';")
     .replace("import { readJSON, writeJSON } from '../util/storage.js';", "const readJSON = (key, fallback = null) => { try { const value = localStorage.getItem(key); return value == null ? fallback : JSON.parse(value); } catch { return fallback; } }; const writeJSON = (key, value) => { try { localStorage.setItem(key, JSON.stringify(value)); return true; } catch { return false; } };")
+    .replace(
+      "import { removePlaybackCheckpoint } from '../playback-checkpoints.mjs';",
+      `import { removePlaybackCheckpoint } from '${require('url').pathToFileURL(path.join(__dirname, '..', 'public', 'js', 'playback-checkpoints.mjs')).href}';`
+    )
     .replace("import { showToast, showUndoToast } from '../ui/toast.js';", "const showToast = (...args) => globalThis.__offlineToasts.push(args); const showUndoToast = () => {};")
     .replace("import { confirmSheet } from '../ui/confirm.js';", "const confirmSheet = (...args) => globalThis.__offlineConfirmSheet(...args);")
     .replace(

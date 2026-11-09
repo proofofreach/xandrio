@@ -2,15 +2,21 @@
 // Bump every versioned shell asset, or the explicit asset paths, in lockstep.
 // Usage: node scripts/bump-version.mjs [asset...]
 // Unversioned modules invalidate through the worker cache and controller pin.
+// Every run also records the precached shell's content fingerprint, which
+// test/test-app-shell-versions.js checks against the current files.
 
 import { readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, basename } from 'node:path';
+import { createRequire } from 'node:module';
 
-const root = join(dirname(fileURLToPath(import.meta.url)), '..');
+const scriptsDir = dirname(fileURLToPath(import.meta.url));
+const root = join(scriptsDir, '..');
+const { computeAppShellFingerprint, writeRecordedFingerprint } = createRequire(import.meta.url)('./lib/app-shell-fingerprint.js');
 const indexPath = join(root, 'public', 'index.html');
 const swPath = join(root, 'public', 'sw.js');
 const offlinePath = join(root, 'public', 'js', 'features', 'offline.js');
+const apiPath = join(root, 'public', 'js', 'api.js');
 const escapeRE = value => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 function fail(message) {
@@ -21,6 +27,7 @@ function fail(message) {
 let indexHtml = readFileSync(indexPath, 'utf8');
 let sw = readFileSync(swPath, 'utf8');
 let offline = readFileSync(offlinePath, 'utf8');
+let api = readFileSync(apiPath, 'utf8');
 const mapBlocks = [...sw.matchAll(/const ASSET_VERSIONS = \{([\s\S]*?)\};/g)];
 if (mapBlocks.length !== 1) fail('Expected one ASSET_VERSIONS map in sw.js');
 const entries = [...mapBlocks[0][1].matchAll(/['"]([^'"]+)['"]:\s*(\d+)/g)];
@@ -51,6 +58,15 @@ const pinMatches = [...offline.matchAll(/export const EXPECTED_OFFLINE_SW_VERSIO
 if (cacheMatches.length !== 1 || pinMatches.length !== 1 || cacheMatches[0][1] !== pinMatches[0][1]) {
   fail('Worker cache version and offline controller pin do not match');
 }
+const clientBuildMatches = [...api.matchAll(/export const CLIENT_BUILD = '([^']+)';/g)];
+if (clientBuildMatches.length !== 1 || clientBuildMatches[0][1] !== cacheMatches[0][1]) {
+  fail('Worker cache version and api.js CLIENT_BUILD do not match');
+}
+try {
+  computeAppShellFingerprint(join(root, 'public'));
+} catch (error) {
+  fail(`Cannot fingerprint the app shell: ${error.message}`);
+}
 
 const args = process.argv.slice(2);
 const targets = args.length ? new Set() : new Set(versions.keys());
@@ -71,7 +87,10 @@ for (const path of targets) {
 const cacheVersion = `xandrio-v${Number(cacheMatches[0][2]) + 1}`;
 sw = sw.replace(/const CACHE_VERSION = 'xandrio-v\d+';/, `const CACHE_VERSION = '${cacheVersion}';`);
 offline = offline.replace(/export const EXPECTED_OFFLINE_SW_VERSION = '[^']+';/, `export const EXPECTED_OFFLINE_SW_VERSION = '${cacheVersion}';`);
+api = api.replace(/export const CLIENT_BUILD = '[^']+';/, `export const CLIENT_BUILD = '${cacheVersion}';`);
 writeFileSync(indexPath, indexHtml);
 writeFileSync(swPath, sw);
 writeFileSync(offlinePath, offline);
-console.log(`CACHE_VERSION -> ${cacheVersion}. Shell assets and controller pin updated in lockstep.`);
+writeFileSync(apiPath, api);
+writeRecordedFingerprint(scriptsDir, cacheVersion, computeAppShellFingerprint(join(root, 'public')));
+console.log(`CACHE_VERSION -> ${cacheVersion}. Shell assets, controller pin and client build updated in lockstep.`);

@@ -197,6 +197,57 @@ async function check(name, callback) {
     assert.match(source, /write_receipt "rolled-back" true/);
   });
 
+  await check('release directories must link the shared data and cache, never a nested data/data', () => {
+    const scriptPath = resolve(__dirname, '..', 'scripts', 'deploy-prod.sh');
+    const source = readFileSync(scriptPath, 'utf8');
+    assert.match(source, /assert_shared_link "\$RELEASE_DIR\/data" "\$REPO_ROOT\/data" data/);
+    assert.match(source, /assert_shared_link "\$RELEASE_DIR\/cache" "\$REPO_ROOT\/cache" cache/);
+    assert.ok(source.indexOf('assert_shared_link "$RELEASE_DIR/data"') < source.indexOf('switch_current "$RELEASE_DIR"'),
+      'the link is asserted before the live symlink switches');
+    // Exercise the function itself against a fixture tree.
+    const functionSource = source.slice(source.indexOf('assert_shared_link() {'), source.indexOf('release_format_version() {'));
+    const root = mkdtempSync(resolve(tmpdir(), 'xandrio-deploy-link-'));
+    try {
+      const run = (setup) => spawnSync('bash', ['-c', `set -euo pipefail\n${functionSource}\n${setup}`], { encoding: 'utf8', cwd: root });
+      const good = run('mkdir -p shared/data release && ln -s "$PWD/shared/data" release/data && assert_shared_link "$PWD/release/data" "$PWD/shared/data" data');
+      assert.equal(good.status, 0, good.stderr);
+      const realDir = run('mkdir -p shared2/data release2/data && assert_shared_link "$PWD/release2/data" "$PWD/shared2/data" data');
+      assert.notEqual(realDir.status, 0);
+      assert.match(realDir.stderr, /must be a symlink/);
+      const nested = run('mkdir -p shared3/data release3/data && ln -s "$PWD/shared3/data" release3/data && assert_shared_link "$PWD/release3/data" "$PWD/shared3/data" data');
+      assert.notEqual(nested.status, 0, 'ln into an existing directory creates data/data and must be refused');
+      const wrong = run('mkdir -p shared4/data other4 release4 && ln -s "$PWD/other4" release4/data && assert_shared_link "$PWD/release4/data" "$PWD/shared4/data" data');
+      assert.notEqual(wrong.status, 0);
+      assert.match(wrong.stderr, /expected the shared data directory/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  await check('automatic rollback is refused once the new release raised the data format version', () => {
+    const scriptPath = resolve(__dirname, '..', 'scripts', 'deploy-prod.sh');
+    const source = readFileSync(scriptPath, 'utf8');
+    assert.match(source, /write_receipt "rollback-refused" false/);
+    assert.match(source, /data\/format-version/);
+    const fnStart = source.indexOf('release_format_version() {');
+    const fnEnd = source.indexOf('if [ ! -f "$RELEASE_DIR/.xandrio-ready" ]');
+    const functions = source.slice(fnStart, fnEnd);
+    const root = mkdtempSync(resolve(tmpdir(), 'xandrio-deploy-format-'));
+    try {
+      // Paths reach the shell as positional arguments, never inside the script.
+      const run = (setup, ...args) => spawnSync('bash', ['-c', `set -euo pipefail\nREPO_ROOT="$PWD"\n${functions}\n${setup}`, 'deploy-test', ...args], { encoding: 'utf8', cwd: root });
+      const legacy = run('mkdir -p old && release_format_version "$PWD/old"');
+      assert.equal(legacy.stdout.trim(), '1', 'a release without the module supports version 1');
+      const current = run('release_format_version "$1"', resolve(__dirname, '..'));
+      assert.equal(current.stdout.trim(), String(require('../lib/data-format-version').DATA_FORMAT_VERSION));
+      assert.equal(run('data_format_version').stdout.trim(), '0', 'no file reads as version 0');
+      assert.equal(run('mkdir -p data && printf "3\\n" > data/format-version && data_format_version').stdout.trim(), '3');
+      assert.equal(run('mkdir -p data && printf "junk" > data/format-version && data_format_version').stdout.trim(), '0');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   await check('production receipt reads the active release without root-owned Git access', () => {
     const source = readFileSync(resolve(
       __dirname,

@@ -34,6 +34,7 @@ certs/
 !moss-nano/voices.json
 !moss-nano/calibration.json
 !scripts/audio-calibration-fixtures.json
+!scripts/app-shell-fingerprint.json
 !docs/fixtures/iphone-playback-result-template.json
 !ops/gauntlet/*.json
 

@@ -3,24 +3,28 @@ const fs = require('fs/promises');
 const os = require('os');
 const path = require('path');
 const { createChapterAudioReconciler } = require('../lib/chapter-audio-reconcile');
+const { NarrationArtifactCache, VERIFIED_MARKER_VERSION } = require('../lib/narration-artifact-cache');
 
 (async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'xandrio-audio-reconcile-'));
   try {
     const files = {
       movedChunk: 'book_ch0_chunk0.mp3',
-      movedMarker: 'book_ch0_chunk0.mp3.narration-artifact.json',
       movedHash: 'book_ch0.texthash',
       movedOffline: 'book_offline_0123456789abcdef_ch0.mp3',
       staleTarget: 'book_ch1_chunk0.mp3',
       unchanged: 'book_ch2_chunk0.mp3'
     };
-    await Promise.all(Object.entries(files).map(([label, name]) => fs.writeFile(
-      path.join(dir, name),
-      label === 'movedMarker'
-        ? JSON.stringify({ version: 1, fingerprint: 'a'.repeat(64) })
-        : label
-    )));
+    await Promise.all(Object.entries(files).map(([label, name]) => fs.writeFile(path.join(dir, name), label)));
+    // The marker is what the real producer writes after a verified render, not
+    // a hand-made one: reuse must accept the current marker version.
+    const producer = new NarrationArtifactCache(dir);
+    await producer.publishVerified({
+      bookId: 'book', chapterIndex: 0, fingerprint: 'a'.repeat(64), outputPath: path.join(dir, files.movedChunk)
+    });
+    const movedMarker = JSON.parse(await fs.readFile(path.join(dir, `${files.movedChunk}.narration-artifact.json`), 'utf8'));
+    assert.strictEqual(movedMarker.version, VERIFIED_MARKER_VERSION);
+    assert.strictEqual(movedMarker.provenance, 'verified');
 
     const quiesced = [];
     const invalidated = [];
@@ -68,7 +72,25 @@ const { createChapterAudioReconciler } = require('../lib/chapter-audio-reconcile
     assert.deepStrictEqual(indexed, [['book', 1]]);
     assert.strictEqual(await fs.readFile(path.join(dir, 'book_ch1_chunk0.mp3'), 'utf8'), 'movedChunk');
     assert.deepStrictEqual(JSON.parse(await fs.readFile(path.join(dir, 'book_ch1_chunk0.mp3.narration-artifact.json'), 'utf8')),
-      { version: 1, fingerprint: 'a'.repeat(64) });
+      movedMarker, 'the verified marker moves with its chunk');
+    // A marker whose byte count no longer matches its file is not reusable.
+    await fs.writeFile(path.join(dir, 'book_ch3_chunk0.mp3'), 'tampered-after-marking');
+    await fs.writeFile(path.join(dir, 'book_ch3_chunk0.mp3.narration-artifact.json'), JSON.stringify(movedMarker));
+    const tampered = await reconciler.reconcile({
+      bookId: 'book',
+      transition: {
+        safe: true,
+        previousRanges: [{ index: 3 }, { index: 4 }],
+        nextRanges: [{ index: 3 }, { index: 4 }],
+        reusableAudio: { 3: 1 }
+      },
+      nextChapters: [{ text: 'changed' }, { text: 'moved' }, { text: 'same' }, { text: 'x' }, { text: 'y' }],
+      language: 'en'
+    });
+    assert.deepStrictEqual(tampered.moved, [{ from: 3, to: 1 }]);
+    assert.strictEqual(await fs.readFile(path.join(dir, 'book_ch1_chunk0.mp3'), 'utf8'), 'movedChunk',
+      'a marker that does not verify against its file authorizes no reuse');
+    await assert.rejects(fs.access(path.join(dir, 'book_ch3_chunk0.mp3')), { code: 'ENOENT' });
     assert.strictEqual(await fs.readFile(path.join(dir, 'book_ch1.texthash'), 'utf8'), 'current-hash');
     await assert.rejects(fs.access(path.join(dir, 'book_offline_0123456789abcdef_ch1.mp3')), { code: 'ENOENT' });
     assert.strictEqual(await fs.readFile(path.join(dir, files.unchanged), 'utf8'), 'unchanged');

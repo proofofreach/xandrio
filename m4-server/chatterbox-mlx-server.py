@@ -115,7 +115,39 @@ def health():
         "voiceDir": str(VOICE_DIR),
         "voices": _available_voices(),
         "formats": ["wav", "mp3"],
+        # Audio-changing identity the Node side cannot see when this server
+        # runs on another host: effective sampling defaults and a hash of each
+        # voice's tuning sidecar. lib/chatterbox-tuning.js mirrors the defaults.
+        "generation": _generation_identity(),
     }
+
+
+def _generation_identity() -> dict:
+    return {
+        "temperature": DEFAULT_TEMPERATURE,
+        "topP": DEFAULT_TOP_P,
+        "repetitionPenalty": DEFAULT_REPETITION_PENALTY,
+        "exaggeration": DEFAULT_EXAGGERATION,
+        "cfgWeight": DEFAULT_CFG_WEIGHT,
+        "voiceTuning": _voice_tuning_identities(),
+    }
+
+
+def _voice_tuning_identities() -> dict:
+    """sha1 of each voice's accepted sidecar settings, keyed by voice."""
+    import hashlib
+
+    identities = {}
+    for voice in _available_voices():
+        try:
+            tuning = _voice_tuning(voice)
+        except FileNotFoundError:
+            continue
+        if not tuning:
+            continue
+        payload = json.dumps(tuning, sort_keys=True, separators=(",", ":"))
+        identities[voice] = hashlib.sha1(payload.encode("utf-8")).hexdigest()[:16]
+    return identities
 
 
 def _get_model():
