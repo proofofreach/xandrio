@@ -447,6 +447,7 @@ Severity: H = data loss, wrong position or wasted compute for everyone; M = narr
 | 87 | deletion | One failed library-state step left the others behind | L | — | fixed `d75969d` |
 | 88 | runtime | Node, ffmpeg and ffprobe were never checked; trust-proxy misconfiguration was silent | L | — | fixed `4c775d9`, `4cee8b4` |
 | 89 | client | Device-local checkpoints were shared across accounts; stale clients could not be detected | M | — | fixed `fc7ba5d`, `5a71248` |
+| 90 | import | pdf-parse never ran: it shared a thread with the pdfjs 6 outline reader and failed its pdfjs 5 version check. Each parse now has its own worker, so the pdf-parse candidate competes again and can change the chapters of new PDF imports (owner approved, was O-I6) | M | — | fixed |
 
 ### Open
 
@@ -457,7 +458,6 @@ Severity: H = data loss, wrong position or wasted compute for everyone; M = narr
 | O-I3 | `chapterTextIdentity` is recorded on a book's first open after `449d573`. A boundary shift that ships in the same deploy is not detected. |
 | O-I4 | A write under an unknown old structure key is still clamped into range, not rejected. A forged key with a huge index lands on the last chapter. |
 | O-I5 | The book egress proxy re-resolves hostnames, so the SSRF guard assumes a trusted proxy (documented in `29ad960`). |
-| O-I6 | pdf-parse has never run in production: after the outline reader loads pdfjs 6, pdf-parse fails its pdfjs 5 version check. `ea6d095` keeps that order so PDF output stays identical. Fixing it (a separate worker for each parser) can change the chosen candidate, and so the chapters, of some PDFs. Owner decision. |
 | O-S3 | Media elements send no `If-Range` (confirmed in Chromium; Safari not verified). A playing element can still splice a same-length rewrite of a fixed-path chapter. A different length is rejected. A full fix needs an artifact-pinned URL (a 302 to `?artifact=`, plus 412 on a mismatch) or a new path for each rewrite. Do not ship either without an iOS device test. Low risk: it needs a rewrite of the same length during one playback. |
 
 ### Rejected (guard found; do not re-investigate)
