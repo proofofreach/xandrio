@@ -724,6 +724,36 @@ function recipe(adapter, overrides = {}) {
     }
   });
 
+  await test('markers record the voice tuning identity and compare it only when present', async () => {
+    const { NarrationArtifactCache } = require('../lib/narration-artifact-cache');
+    const cacheDir = await fs.mkdtemp(path.join(os.tmpdir(), 'xandrio-artifact-tuning-'));
+    try {
+      const cache = new NarrationArtifactCache(cacheDir);
+      const outputPath = path.join(cacheDir, 'book_ch0_chunk0.mp3');
+      await fs.writeFile(outputPath, Buffer.alloc(2048, 7));
+      const base = { bookId: 'book', chapterIndex: 0, fingerprint: 'd'.repeat(64), outputPath };
+
+      // A marker written before tuning identities existed stays valid for a
+      // request that now carries one (existing caches are grandfathered).
+      await cache.publishVerified(base);
+      const legacyMarker = JSON.parse(await fs.readFile(`${outputPath}.narration-artifact.json`, 'utf8'));
+      assert.strictEqual(legacyMarker.tuning, undefined, 'no tuning on the request: none recorded');
+      assert.strictEqual((await cache.inspect({ ...base, tuning: 'sidecar-v1' })).provenance, 'verified');
+
+      // A new marker records the identity and must then match it exactly.
+      await cache.publishVerified({ ...base, tuning: 'sidecar-v1' });
+      const marker = JSON.parse(await fs.readFile(`${outputPath}.narration-artifact.json`, 'utf8'));
+      assert.strictEqual(marker.tuning, 'sidecar-v1');
+      assert.strictEqual((await cache.inspect({ ...base, tuning: 'sidecar-v1' })).provenance, 'verified');
+      assert.strictEqual((await cache.inspect({ ...base, tuning: 'sidecar-v2' })).provenance, 'invalid', 'an edited sidecar invalidates the chunk');
+      assert.strictEqual((await cache.inspect(base)).provenance, 'invalid', 'a removed sidecar invalidates the chunk');
+      assert.strictEqual(await cache.isIndexed({ ...base, tuning: 'sidecar-v1' }), true);
+      assert.strictEqual(await cache.isIndexed({ ...base, tuning: 'sidecar-v2' }), false);
+    } finally {
+      await fs.rm(cacheDir, { recursive: true, force: true });
+    }
+  });
+
   console.log(`narration-artifact-cache tests: ${passed} passed, ${failed} failed`);
   if (failed > 0) process.exitCode = 1;
 })();

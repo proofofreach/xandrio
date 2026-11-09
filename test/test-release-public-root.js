@@ -120,7 +120,7 @@ exit 0
 
   check('allows only generated structure fingerprints in the synthetic import corpus', () => {
     const config = readFileSync(gitleaksConfig, 'utf8');
-    assert.equal((config.match(/\[\[allowlists\]\]/g) || []).length, 3);
+    assert.equal((config.match(/\[\[allowlists\]\]/g) || []).length, 4);
     const expectedAllowlist = String.raw`[[allowlists]]
 description = "Synthetic chapter structure fingerprints are not credentials"
 targetRules = ["generic-api-key"]
@@ -130,6 +130,15 @@ regexes = ['''^\s*structureKey:\s*'v1-[0-9a-f]{20}',?\s*$''']
 paths = ['''^test/fixtures/import-corpus\.js$''']`;
     assert.match(config, new RegExp(expectedAllowlist.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
     assert.doesNotMatch(expectedAllowlist, /apiKey|token|secret/i);
+    // App shell fingerprints are per-file SHA-256 digests keyed by path.
+    const fingerprintAllowlist = String.raw`[[allowlists]]
+description = "App shell content fingerprints (SHA-256 per precached file) are not credentials"
+targetRules = ["generic-api-key"]
+condition = "AND"
+regexTarget = "line"
+regexes = ['''^\s*"/[A-Za-z0-9._/-]+": "[0-9a-f]{64}",?\s*$''']
+paths = ['''(^|/)app-shell-fingerprint\.json$''']`;
+    assert.match(config, new RegExp(fingerprintAllowlist.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   });
 } finally {
   rmSync(fixture, { recursive: true, force: true });

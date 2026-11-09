@@ -152,6 +152,13 @@ section('2. canonical sync profile state');
   assertEqual(state.userIdFromRequest({ headers: { 'x-xandrio-user-id': 'bad/user' }, query: {}, body: {} }), 'default', 'Rejects unsafe sync user identifiers');
   assertEqual(state.userIdFromRequest({ user: { id: 'usr_account' }, headers: { 'x-xandrio-user-id': 'usr_alice' }, query: {}, body: {} }), 'usr_account', 'An authenticated account overrides self-asserted headers');
   assertEqual(state.userIdFromRequest({ user: { id: null, lan: true }, headers: { 'x-xandrio-user-id': 'usr_alice' }, query: {}, body: {} }), 'usr_alice', 'Trusted-LAN callers keep header-based sync identity');
+  let failedClosed = null;
+  try {
+    state.userIdFromRequest({ user: { id: 'bad/account' }, headers: {}, query: {}, body: {} });
+  } catch (error) {
+    failedClosed = error;
+  }
+  assertEqual(failedClosed?.statusCode, 403, 'An authenticated id outside the sync charset fails closed instead of becoming "default"');
   assertEqual(profile.deviceId, 'dev_phone', 'Includes the active device in public profile state');
   assertEqual(profile.devices[0].name, 'Alice Phone', 'Normalizes display names before publishing devices');
 })();
@@ -266,6 +273,34 @@ section('6. device registration bounds and identity');
   assert(state.deviceIdFromRequest(reqD) !== state.deviceIdFromRequest(reqA), 'An authenticated account identity takes priority over the address');
   assert(/^[A-Za-z0-9_-]{1,64}$/.test(state.deviceIdFromRequest(reqA)), 'The fallback device id is still a valid sync id');
   assertEqual(state.deviceIdFromRequest({ headers: { 'x-xandrio-device-id': 'dev_client' }, query: {}, body: {} }), 'dev_client', 'A client-supplied device id still wins');
+})();
+
+section('7. positions are ordered only within one chapter structure');
+
+(() => {
+  const NOW = 1_735_689_600_000;
+  // remapBookPositions leaves a record it cannot map under the old key.
+  const positions = {
+    users: {
+      alice: {
+        bookA: { chapterIndex: 9, timestamp: 400, chapterStructureKey: 'old-key', updatedAtMs: NOW - 1_000, finished: true }
+      }
+    }
+  };
+  const forward = state.recordPosition(positions, {
+    userId: 'alice', bookId: 'bookA', chapterIndex: 1, timestamp: 5,
+    chapterStructureKey: 'new-key', updatedAtMs: NOW - 5_000
+  });
+  assertEqual(forward.ignored, undefined, 'A superseded-structure record does not block a current write');
+  assertEqual(positions.users.alice.bookA.chapterIndex, 1, 'The current-structure write replaces the stale record');
+  assertEqual(positions.users.alice.bookA.chapterStructureKey, 'new-key', 'The stored record carries the current key');
+  assertEqual(positions.users.alice.bookA.finished, true, 'Finishing the book survives the structure change');
+
+  const backward = state.recordPosition(positions, {
+    userId: 'alice', bookId: 'bookA', chapterIndex: 0, timestamp: 1,
+    chapterStructureKey: 'new-key', updatedAtMs: NOW
+  });
+  assertEqual(backward.ignored, true, 'Forward-only ordering still holds within the current structure');
 })();
 
 console.log(`\n${'═'.repeat(50)}`);

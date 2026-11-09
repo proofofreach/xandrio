@@ -124,6 +124,39 @@ async function run() {
     assert.strictEqual(getMasteringBitrate({ TTS_MP3_BITRATE: 'lossless' }), '160k');
   });
 
+  await test('the live MP3 transport encodes at a valid MPEG-2 LSF rate, so its frame grid holds', async () => {
+    const { getMasteringBitrate } = require('../lib/audio-quality');
+    const quality = require('../lib/audio-quality');
+    const warnings = [];
+    const log = { warn: message => warnings.push(message) };
+    assert.strictEqual(typeof quality.getTransportMp3Bitrate, 'function');
+    // The default is already valid and must not move.
+    assert.strictEqual(quality.getTransportMp3Bitrate({}, log), '160k');
+    assert.strictEqual(quality.getTransportMp3Bitrate({ TTS_MP3_BITRATE: '144k' }, log), '144k');
+    assert.deepStrictEqual(warnings, []);
+    assert.strictEqual(quality.getTransportMp3Bitrate({ TTS_MP3_BITRATE: '100k' }, log), '96k');
+    assert.strictEqual(quality.getTransportMp3Bitrate({ TTS_MP3_BITRATE: '120k' }, log), '112k', 'a tie rounds down, as LAME does');
+    assert.strictEqual(quality.getTransportMp3Bitrate({ TTS_MP3_BITRATE: '100k' }, log), '96k');
+    assert.strictEqual(warnings.length, 2, 'each misconfigured rate is reported once');
+    assert.match(warnings[0], /100k is not a valid MPEG-2 LSF rate/);
+    // Stored audio and its variant keys keep the configured string.
+    assert.strictEqual(getMasteringBitrate({ TTS_MP3_BITRATE: '100k' }), '100k');
+
+    // The byte-to-time math and the encoder agree on the snapped rate.
+    const stream = require('../lib/chapter-audio-stream');
+    const previous = process.env.TTS_MP3_BITRATE;
+    process.env.TTS_MP3_BITRATE = '100k';
+    try {
+      assert.strictEqual(stream.mp3FrameBytes(), 288, '72 * 96000 / 24000');
+      const plan = stream.planResumeFromRange(`bytes=${10 + 288 * 50 + 7}-`, 'mp3', 10);
+      assert.deepStrictEqual(plan, { firstByte: 10 + 288 * 50, seconds: 288 * 50 / 12000 });
+    } finally {
+      if (previous === undefined) delete process.env.TTS_MP3_BITRATE;
+      else process.env.TTS_MP3_BITRATE = previous;
+    }
+    assert.strictEqual(stream.mp3FrameBytes(), 480, 'the default frame is unchanged');
+  });
+
   await test('checked-in calibration manifest matches every default engine gain', async () => {
     const { DEFAULT_ENGINE_GAIN_DB } = require('../lib/audio-quality');
     const manifest = JSON.parse(await fs.readFile(path.join(__dirname, '..', 'scripts', 'audio-calibration-fixtures.json'), 'utf8'));

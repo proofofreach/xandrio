@@ -293,7 +293,35 @@ def health():
         "formats": ["wav", "mp3"],
         "language": "en",
         "conditioningCache": True,
+        # Effective sampling defaults plus per-voice sidecar hashes; see
+        # lib/chatterbox-tuning.js SAMPLING_DEFAULTS for the Node mirror.
+        "generation": {
+            "temperature": DEFAULT_TEMPERATURE,
+            "topP": DEFAULT_TOP_P,
+            "repetitionPenalty": DEFAULT_REPETITION_PENALTY,
+            "minP": DEFAULT_MIN_P,
+            "exaggeration": DEFAULT_EXAGGERATION,
+            "cfgWeight": DEFAULT_CFG_WEIGHT,
+            "voiceTuning": _voice_tuning_identities(),
+        },
     }
+
+
+def _voice_tuning_identities() -> dict:
+    """sha1 of each voice's accepted sidecar settings, keyed by voice."""
+    import hashlib
+
+    identities = {}
+    for voice in _available_voices():
+        try:
+            tuning = _voice_tuning(voice)
+        except FileNotFoundError:
+            continue
+        if not tuning:
+            continue
+        payload = json.dumps(tuning, sort_keys=True, separators=(",", ":"))
+        identities[voice] = hashlib.sha1(payload.encode("utf-8")).hexdigest()[:16]
+    return identities
 
 
 @app.post("/tts")

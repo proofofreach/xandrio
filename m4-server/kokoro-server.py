@@ -125,7 +125,10 @@ class TTSRequest(BaseModel):
 def health():
     return {
         "ok": True,
-        "model": "hexgrad/Kokoro-82M",
+        # The effective repository, not a literal: KOKORO_REPO_ID changes the
+        # audio, and lib/kokoro-tuning.js scopes the cache by it.
+        "model": REPO_ID,
+        "repoId": REPO_ID,
         "loadedLanguages": sorted(pipelines.keys()),
         "preloadLanguages": PRELOAD_LANGS,
         "preloadVoices": PRELOAD_VOICES,

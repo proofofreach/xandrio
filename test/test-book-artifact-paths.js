@@ -26,6 +26,29 @@ async function test(name, callback) {
 }
 
 (async () => {
+  await test('owns chapter-rebuild transaction files and the legacy chapter cache, by exact suffix', () => {
+    for (const name of [
+      'abc.xbook.json.rebuild-journal.json',
+      'abc.xbook.json.rebuild-backup.json',
+      'abc.xbook.json.rebuild-candidate.json',
+      'abc.xbook.json.rebuild-candidate.json.lock.sqlite',
+      'abc.xbook.json.rebuild-journal.json.lock',
+      'abc.xbook.json.rebuild-journal.json.quarantined-1700000000000',
+      'abc.chapters.json',
+      'abc.chapters.json.rebuild-backup.json'
+    ]) {
+      assert.equal(isManagedArtifactName('abc', name), true, name);
+    }
+    for (const name of [
+      'abc_2.xbook.json.rebuild-journal.json',
+      'abc.xbook.json.rebuild-journal.json.bak',
+      'abc.xbook.json.rebuild-other.json',
+      'abc.chapters.json.extra'
+    ]) {
+      assert.equal(isManagedArtifactName('abc', name), false, name);
+    }
+  });
+
   await test('recovers a book whose release-specific cache symlink was pruned', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xandrio-artifacts-'));
     try {

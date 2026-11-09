@@ -6,9 +6,11 @@ const os = require('os');
 const path = require('path');
 const realJsonStore = require('../lib/json-store');
 const {
+  LAST_ADMIN_ERROR_CODE,
   normalizeUsername,
   hashPassword,
   verifyPassword,
+  validateAccountsStore,
   createAccountsStore
 } = require('../lib/accounts');
 const {
@@ -264,15 +266,81 @@ test('__proto__/constructor ids never resolve to a prototype-chain object', asyn
   assert.strictEqual(await accounts.setDisabled('__proto__', true), false);
   assert.strictEqual(Object.prototype.hasOwnProperty.call(Object.prototype, 'disabled'), false);
 
-  // (c) creating an account with id '__proto__' must not re-parent the map
-  // via the accessor (store.accounts has no prototype, so there is no
-  // accessor to trigger) -- it must genuinely create and persist that
-  // account like any other id, not silently report success without storing.
-  const created = await accounts.createAccount({ username: 'proto-user', password: 'password123', id: '__proto__' });
-  assert.strictEqual(created.id, '__proto__');
-  const stored = await accounts.findById('__proto__');
-  assert.strictEqual(stored?.username, 'proto-user');
+  // (c) a prototype key can never become an account id: it would be rejected
+  // by every user-scoped store's sanitizeSyncId and collapse onto the shared
+  // 'default' profile. Refuse it up front and leave Object.prototype clean.
+  await assert.rejects(
+    accounts.createAccount({ username: 'proto-user', password: 'password123', id: '__proto__' }),
+    /Account id must be/
+  );
+  assert.strictEqual(await accounts.findById('__proto__'), null);
   assert.strictEqual(Object.prototype.hasOwnProperty.call(Object.prototype, 'username'), false, 'Object.prototype must stay clean');
+});
+
+test('account ids must satisfy the sync-id charset and usernames must be unique', async () => {
+  const { accounts } = makeAccounts();
+  for (const id of ['usr/evil', 'with space', '', 'x'.repeat(65), 'constructor', 'usr.dot']) {
+    await assert.rejects(
+      accounts.createAccount({ username: 'reader', password: 'password123', id }),
+      /Account id must be/,
+      `id ${JSON.stringify(id)} must be refused`
+    );
+  }
+  const created = await accounts.createAccount({ username: 'reader', password: 'password123', id: 'usr_Legacy-01' });
+  assert.strictEqual(created.id, 'usr_Legacy-01');
+
+  const record = async username => ({
+    id: username, username, role: 'member', disabled: false,
+    createdAt: '2026-01-01T00:00:00.000Z', password: await hashPassword('password123')
+  });
+  const valid = { accounts: { alpha: await record('alpha'), beta: await record('beta') } };
+  assert.strictEqual(validateAccountsStore(valid), true);
+  const duplicate = { accounts: { alpha: await record('alpha'), other: { ...(await record('other')), username: 'alpha' } } };
+  assert.match(String(validateAccountsStore(duplicate)), /duplicates username alpha/);
+  const badId = { accounts: { 'usr/evil': { ...(await record('evil')), id: 'usr/evil' } } };
+  assert.match(String(validateAccountsStore(badId)), /invalid id/);
+  const protoId = { accounts: JSON.parse(JSON.stringify({ ['__proto__']: { ...(await record('legacyname')), id: '__proto__' } })) };
+  assert.match(String(validateAccountsStore(protoId)), /invalid id/);
+});
+
+test('the store itself refuses to disable the last enabled admin', async () => {
+  const { accounts } = makeAccounts();
+  const admin = await accounts.createAccount({ username: 'admin', password: 'password123', role: 'admin' });
+  const second = await accounts.createAccount({ username: 'second', password: 'password123', role: 'admin' });
+  const member = await accounts.createAccount({ username: 'member', password: 'password123' });
+
+  // Two admins: disabling one is fine, the second is now the last.
+  assert.strictEqual(await accounts.setDisabled(second.id, true), true);
+  await assert.rejects(accounts.setDisabled(admin.id, true), error => error.code === LAST_ADMIN_ERROR_CODE);
+  assert.strictEqual((await accounts.findById(admin.id)).disabled, false, 'the refused update must not be written');
+  // Members and already-disabled admins are never the last enabled admin.
+  assert.strictEqual(await accounts.setDisabled(member.id, true), true);
+  assert.strictEqual(await accounts.setDisabled(second.id, true), true);
+  // Re-enabling is always allowed, and --force (CLI) can still lock out.
+  assert.strictEqual(await accounts.setDisabled(second.id, false), true);
+  assert.strictEqual(await accounts.setDisabled(admin.id, true), true);
+  await assert.rejects(accounts.setDisabled(second.id, true), error => error.code === LAST_ADMIN_ERROR_CODE);
+  assert.strictEqual(await accounts.setDisabled(second.id, true, { force: true }), true);
+});
+
+test('concurrent disables cannot remove every admin', async () => {
+  // The route used to count enabled admins with list() *before* calling
+  // setDisabled, so two requests racing each saw two admins and both went
+  // through. With the guard inside the update, exactly one succeeds.
+  // The real store serializes updates per file; the in-memory stub does not.
+  const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'accounts-last-admin-'));
+  const accounts = createAccountsStore({ filePath: path.join(dir, 'accounts.json'), jsonStore: realJsonStore });
+  const a = await accounts.createAccount({ username: 'admin-a', password: 'password123', role: 'admin' });
+  const b = await accounts.createAccount({ username: 'admin-b', password: 'password123', role: 'admin' });
+  const results = await Promise.allSettled([accounts.setDisabled(a.id, true), accounts.setDisabled(b.id, true)]);
+  const fulfilled = results.filter(result => result.status === 'fulfilled');
+  const rejected = results.filter(result => result.status === 'rejected');
+  assert.strictEqual(fulfilled.length, 1);
+  assert.strictEqual(rejected.length, 1);
+  assert.strictEqual(rejected[0].reason.code, LAST_ADMIN_ERROR_CODE);
+  const enabledAdmins = (await accounts.list()).filter(account => account.role === 'admin' && !account.disabled);
+  assert.strictEqual(enabledAdmins.length, 1);
+  await fsp.rm(dir, { recursive: true, force: true });
 });
 
 test('a legitimate account literally named "__proto__" still behaves normally', async () => {
@@ -465,6 +533,26 @@ async function runMiddleware(middleware, { method = 'GET', path = '/api/library'
   await middleware(req, res, () => { nextCalled = true; });
   return { req, res, nextCalled };
 }
+
+test('trusted-LAN mode can be disabled so an empty accounts store fails closed', async () => {
+  const { accounts } = makeAccounts();
+  const req = { headers: {}, method: 'GET', path: '/api/library', originalUrl: '/api/library', url: '/api/library' };
+  assert.strictEqual(await resolveRequestUser(req, { token: '', accounts, sessionStore: null, allowTrustedLan: false }), null,
+    'no accounts, no token, trusted LAN disallowed: nobody is an admin');
+  assert.strictEqual((await resolveRequestUser(req, { token: '', accounts, sessionStore: null })).lan, true,
+    'the default stays permissive for private-network installs');
+  const middleware = createAuthMiddleware({ token: '', accounts, sessionStore: null, allowTrustedLan: false });
+  const res = response();
+  let passed = false;
+  await middleware(req, res, () => { passed = true; });
+  assert.strictEqual(passed, false);
+  assert.strictEqual(res.statusCode, 401);
+  const routes = createAuthRoutes({ token: '', accounts, sessionStore: null, allowTrustedLan: false });
+  const status = response();
+  await routes.status(req, status);
+  assert.strictEqual(status.body.authenticationRequired, true, 'the client is told to show the login gate');
+  assert.strictEqual(status.body.authenticated, false);
+});
 
 test('zero accounts and no token resolves a trusted-LAN admin', async () => {
   const { jsonStore } = makeAccounts();

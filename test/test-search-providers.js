@@ -4,6 +4,10 @@
  * Run: node test/test-search-providers.js
  */
 
+const crypto = require('crypto');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 const { createSearchProviderRegistry } = require('../lib/search-providers');
 
 let passed = 0;
@@ -183,7 +187,10 @@ async function testDownloadRoutingAndLimitErrors() {
   const registry = createSearchProviderRegistry({
     annas: {
       search: async () => [],
-      download: async (hash, destPath) => calls.push(['annas', hash, destPath])
+      download: async (hash, destPath) => {
+        calls.push(['annas', hash, destPath]);
+        fs.writeFileSync(destPath, 'anna fixture');
+      }
     },
     zlibrary: {
       hasStoredSession: () => true,
@@ -203,7 +210,9 @@ async function testDownloadRoutingAndLimitErrors() {
     }
   });
 
-  await registry.download({ source: 'annas', hash: 'a1' }, '/tmp/a.epub');
+  const annasPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'xandrio-providers-')), 'a.epub');
+  const annasMd5 = crypto.createHash('md5').update('anna fixture').digest('hex');
+  await registry.download({ source: 'annas', hash: annasMd5 }, annasPath);
   await registry.download({ source: 'gutenberg', gutenbergId: '123', downloadUrl: 'https://example.test/book.epub' }, '/tmp/g.epub');
   await registry.download({ source: 'internetarchive', iaIdentifier: 'abc', iaFile: 'abc.epub' }, '/tmp/ia.epub');
   assertEqual(calls[0][0], 'annas', 'download routes Anna source');
@@ -215,6 +224,90 @@ async function testDownloadRoutingAndLimitErrors() {
   assertEqual(calls[3][0], 'zlibrary', 'download routes Z-Library source');
   assertEqual(calls[3][1], zlibraryResult, 'Z-Library download receives the opaque result');
   assertEqual(calls[3][2], '/tmp/z.epub', 'Z-Library download receives the destination path');
+}
+
+async function rejection(promise) {
+  try {
+    await promise;
+    return null;
+  } catch (error) {
+    return error;
+  }
+}
+
+// The download hash becomes the book id. Each provider must bind it to the
+// fields the download actually fetches by, or one user could file any file
+// under a popular book's id and block that id for everyone.
+async function testDownloadBindsBookIdToProviderIdentity() {
+  const calls = [];
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'xandrio-provider-ids-'));
+  const registry = createSearchProviderRegistry({
+    annas: {
+      search: async () => [],
+      download: async (hash, destPath) => {
+        calls.push(['annas', hash]);
+        fs.writeFileSync(destPath, 'served bytes');
+      }
+    },
+    gutenberg: {
+      isEnabled: () => true,
+      search: async () => [],
+      getCachedSearch: async () => [],
+      downloadBook: async id => calls.push(['gutenberg', id])
+    },
+    internetArchive: {
+      search: async () => [],
+      bookId: require('../lib/search-providers/internet-archive').bookId,
+      download: async result => calls.push(['internetarchive', result.iaIdentifier])
+    }
+  });
+  const popularMd5 = 'a'.repeat(32);
+  try {
+    const servedMd5 = crypto.createHash('md5').update('served bytes').digest('hex');
+    const annasPath = path.join(tempDir, 'ok.epub');
+    await registry.download({ source: 'annas', hash: servedMd5.toUpperCase() }, annasPath);
+    assert(fs.existsSync(annasPath), "an Anna's download whose bytes hash to its id is kept");
+
+    const mismatchPath = path.join(tempDir, 'mismatch.epub');
+    const mismatch = await rejection(registry.download({ source: 'annas', hash: popularMd5 }, mismatchPath));
+    assertEqual(mismatch?.code, 'BOOK_ID_MISMATCH', "an Anna's download whose bytes hash elsewhere is refused");
+    assert(!fs.existsSync(mismatchPath), "a refused Anna's download is removed");
+    assertEqual((await rejection(registry.download({ source: 'annas', hash: 'pg-1342' }, path.join(tempDir, 'x'))))?.code,
+      'BOOK_ID_MISMATCH', "an Anna's id that is not an md5 is refused before download");
+
+    const gutenbergUrl = 'https://www.gutenberg.org/ebooks/1342.epub3.images';
+    await registry.download({ source: 'gutenberg', hash: 'pg-1342', gutenbergId: '1342', downloadUrl: gutenbergUrl }, path.join(tempDir, 'g'));
+    await registry.download({ source: 'gutenberg', hash: 'pg-71001', gutenbergId: '71001',
+      downloadUrl: 'https://gutendex.com/files/71001/pg71001-images.epub' }, path.join(tempDir, 'g2'));
+    await registry.download({ source: 'gutenberg', hash: 'pg-84', gutenbergId: '84',
+      downloadUrl: 'https://www.gutenberg.org/cache/epub/84/pg84-images-3.epub' }, path.join(tempDir, 'g3'));
+    assertEqual(calls.filter(call => call[0] === 'gutenberg').length, 3, 'Gutenberg ids derived from the book number download');
+    for (const [label, result] of [
+      ['a Gutenberg download claiming an md5 id', { hash: popularMd5, gutenbergId: '1342', downloadUrl: gutenbergUrl }],
+      ['a Gutenberg id for another book number', { hash: 'pg-11', gutenbergId: '1342', downloadUrl: gutenbergUrl }],
+      ['a Gutenberg URL for another book number', { hash: 'pg-11', gutenbergId: '11', downloadUrl: gutenbergUrl }]
+    ]) {
+      assertEqual((await rejection(registry.download({ source: 'gutenberg', ...result }, path.join(tempDir, 'g'))))?.code,
+        'BOOK_ID_MISMATCH', `${label} is refused`);
+    }
+
+    await registry.download({ source: 'internetarchive', hash: 'ia-moby_dick', iaIdentifier: 'moby_dick', iaFile: 'm.epub',
+      downloadUrl: 'https://archive.org/download/moby_dick/m.epub' }, path.join(tempDir, 'ia'));
+    assertEqual(calls.at(-1)?.[1], 'moby_dick', 'an Internet Archive id derived from the item downloads');
+    for (const [label, result] of [
+      ['an Internet Archive download claiming an md5 id', { hash: popularMd5, iaIdentifier: 'moby_dick', iaFile: 'm.epub' }],
+      ['an Internet Archive URL for a different item', { hash: 'ia-moby_dick', iaIdentifier: 'moby_dick',
+        downloadUrl: 'https://archive.org/download/other_item/o.epub' }]
+    ]) {
+      assertEqual((await rejection(registry.download({ source: 'internetarchive', ...result }, path.join(tempDir, 'ia'))))?.code,
+        'BOOK_ID_MISMATCH', `${label} is refused`);
+    }
+    // Only the md5 check needs the bytes; every other refusal precedes the download.
+    assertEqual(calls.map(call => call[0]).join(','), 'annas,annas,gutenberg,gutenberg,gutenberg,internetarchive',
+      'no derived-id refusal reaches a provider download');
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
 }
 
 async function testZlibraryFailurePreservesOtherResultsAndIsSafe() {
@@ -287,6 +380,7 @@ async function testZlibraryStatusDelegatesToClient() {
   await testZlibraryAnonymousSearchDoesNotRequireStoredSession();
   await testZlibraryReceivesSelectedLanguageBeforeResultLimit();
   await testDownloadRoutingAndLimitErrors();
+  await testDownloadBindsBookIdToProviderIdentity();
   await testZlibraryFailurePreservesOtherResultsAndIsSafe();
   await testNonZlibraryFailuresDoNotExposeRawProviderErrors();
   await testZlibraryStatusDelegatesToClient();

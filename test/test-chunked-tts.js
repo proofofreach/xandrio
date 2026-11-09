@@ -1082,6 +1082,203 @@ trackAsyncTest('Cache eviction reconciliation', (async () => {
   console.error(`  ❌ Cache eviction reconciliation — ${error.stack || error.message}`);
 }));
 
+// ─── Probed chunk durations ───────────────────────────────────────────────────
+
+section('Probed chunk durations');
+
+trackAsyncTest('Probed chunk durations', (async () => {
+  const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'xandrio-chunk-duration-'));
+  try {
+    const queue = new MockQueue();
+    const tts = new ChunkedTTS(dir, queue, { chunkSize: 60 });
+    tts._fileExists = async () => false;
+    const text = [
+      'First paragraph with enough words to fill a chunk on its own.',
+      'Second paragraph with enough words to fill another chunk.'
+    ].join('\n\n');
+    const manifest = await tts.generateChapter('durations', 0, text, 'en', 'download');
+    assert(manifest.totalChunks >= 2, 'chapter splits into several chunks');
+    const [first, second] = manifest.chunks;
+    // 160 kbit/s MP3 bytes: the size estimate says exactly 1.0 s per 20000 bytes.
+    for (const chunk of [first, second]) await fsp.writeFile(tts.chunkPath('durations', 0, chunk.index), Buffer.alloc(20000, 1));
+
+    queue.emit('complete', { jobId: first.jobId, outputPath: tts.chunkPath('durations', 0, 0), durationSeconds: 7.25 });
+    assertEqual(first.status, STATUS.READY, 'chunk completes from the queue event');
+    assertEqual(first.duration, 7.25, 'the probed duration from generation is recorded on the chunk');
+    assertEqual(await tts._cachedChunkDurationSeconds({ ...first, bookId: 'durations', chapterIndex: 0 }), 7.25,
+      'seek planning uses the probed duration instead of the file-size estimate');
+
+    queue.emit('complete', { jobId: second.jobId, outputPath: tts.chunkPath('durations', 0, 1), reused: true, durationSeconds: null });
+    assertEqual(second.duration, null, 'a reused chunk without a probe keeps no duration');
+    assertEqual(await tts._cachedChunkDurationSeconds({ ...second, bookId: 'durations', chapterIndex: 0 }), 1,
+      'a chunk without a probed duration falls back to the file-size estimate');
+  } finally {
+    await fsp.rm(dir, { recursive: true, force: true });
+  }
+})());
+
+// ─── Chapter text hash sidecar ────────────────────────────────────────────────
+
+section('Chapter text hash sidecar');
+
+trackAsyncTest('Chapter text hash sidecar', (async () => {
+  const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'xandrio-texthash-'));
+  try {
+    const text = 'A sentence long enough to be narrated. Another one follows it here.';
+
+    // A hash that cannot be written fails the build instead of leaving audio
+    // that the next build would grandfather as valid.
+    const blocker = path.join(dir, 'not-a-directory');
+    await fsp.writeFile(blocker, 'file');
+    const unwritable = new ChunkedTTS(path.join(blocker, 'cache'), new MockQueue());
+    unwritable._fileExists = async () => false;
+    let error = null;
+    try { await unwritable.generateChapter('hash-fail', 0, text); } catch (caught) { error = caught; }
+    assert(error && /ENOTDIR|ENOENT/.test(error.code || error.message), 'an unwritable text hash fails the manifest build');
+    assertEqual(unwritable.getChapterManifest('hash-fail', 0), null, 'no manifest is published without its text hash');
+
+    // Stale audio that cannot be deleted blocks the new hash: a surviving
+    // stale chunk under a fresh hash would be served as current for ever.
+    const stale = new ChunkedTTS(dir, new MockQueue());
+    stale._fileExists = async () => false;
+    const hashPath = stale._chapterHashPath('stale', 0);
+    await fsp.writeFile(hashPath, 'deadbeef0000');
+    await fsp.mkdir(stale.chunkPath('stale', 0, 0)); // a directory where a chunk should be cannot be removed as a file
+    error = null;
+    try { await stale.generateChapter('stale', 0, text); } catch (caught) { error = caught; }
+    assert(error && error.code !== 'ENOENT', 'a stale chunk that cannot be removed fails the build');
+    assertEqual((await fsp.readFile(hashPath, 'utf8')).trim(), 'deadbeef0000', 'the new hash is not recorded over surviving stale audio');
+    await fsp.rmdir(stale.chunkPath('stale', 0, 0));
+
+    // The normal build records the hash atomically and succeeds.
+    const fresh = new ChunkedTTS(dir, new MockQueue());
+    fresh._fileExists = async () => false;
+    await fresh.generateChapter('fresh', 0, text);
+    assert(/^[a-f0-9]{12}$/.test((await fsp.readFile(fresh._chapterHashPath('fresh', 0), 'utf8')).trim()), 'a successful build records the text hash');
+    assert(!(await fsp.readdir(dir)).some(name => name.includes('.texthash.') && name.endsWith('.tmp')), 'no temp sidecar is left behind');
+
+    // Missing hash + chunks on disk: a chunk carrying a verified marker must
+    // prove its text through the marker fingerprint; a bare legacy chunk is
+    // still grandfathered.
+    const queue = new TTSQueue({ cacheDir: dir, timeout: 1000 });
+    const proven = new ChunkedTTS(dir, queue, { chunkSize: 60, variantKeyProvider: () => 'kokoro:am_michael', voiceProvider: () => 'kokoro:am_michael' });
+    const chunks = await proven.planChunks(text, 60);
+    assert(chunks.length >= 2, 'the fixture spans at least two chunks');
+    const markedPath = proven.chunkPath('unproven', 0, 0);
+    const legacyPath = proven.chunkPath('unproven', 0, 1);
+    await fsp.writeFile(markedPath, Buffer.alloc(30000, 1));
+    await fsp.writeFile(legacyPath, Buffer.alloc(30000, 1));
+    await fsp.writeFile(`${markedPath}.narration-artifact.json`, JSON.stringify({
+      version: 2, provenance: 'verified', fingerprint: 'f'.repeat(64), bytes: 30000, contentHash: `sha256-${'0'.repeat(64)}`
+    }));
+    const manifest = await proven.generateChapter('unproven', 0, text, 'en', 'download', { voice: 'kokoro:am_michael' });
+    assertEqual(manifest.chunks[0].status, STATUS.QUEUED, 'a chunk whose verified marker names other text is not adopted');
+    assertEqual(await fsp.access(markedPath).then(() => true, () => false), false, 'the disproved chunk is removed');
+    assertEqual(manifest.chunks[1].status, STATUS.READY, 'an unmarked legacy chunk stays grandfathered');
+  } finally {
+    await fsp.rm(dir, { recursive: true, force: true });
+  }
+})());
+
+// ─── Chunk invalidation removes stitched chapter audio ────────────────────────
+
+section('Chunk invalidation removes stitched chapter audio');
+
+trackAsyncTest('Chunk invalidation removes stitched chapter audio', (async () => {
+  const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'xandrio-invalidate-stitched-'));
+  try {
+    const tts = new ChunkedTTS(dir, new MockQueue());
+    const stitched = [
+      tts.chapterPath('book', 4),
+      tts.cleanChapterPath('book', 4),
+      tts._concatListPath('book', 4),
+      tts._concatListPath('book', 4, { clean: true })
+    ];
+    const other = tts.chapterPath('book', 5);
+    await Promise.all([...stitched, other, tts.chunkPath('book', 4, 0)].map(file => fsp.writeFile(file, 'audio')));
+    await tts.invalidateCachedChunk('book', 4, 0);
+    for (const file of stitched) {
+      assertEqual(await fsp.access(file).then(() => true, () => false), false, `${path.basename(file)} is removed with the chunk`);
+    }
+    assertEqual(await fsp.access(other).then(() => true, () => false), true, 'another chapter keeps its stitched audio');
+    await tts.invalidateCachedChunk('book', 4, 0);
+    assert(true, 'invalidating an already-removed chunk is idempotent');
+  } finally {
+    await fsp.rm(dir, { recursive: true, force: true });
+  }
+})());
+
+// ─── Journal recovery hygiene ─────────────────────────────────────────────────
+
+section('Journal recovery hygiene');
+
+trackAsyncTest('Journal recovery hygiene', (async () => {
+  const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'xandrio-journal-hygiene-'));
+  try {
+    const journal = new GenerationJournal(path.join(dir, 'generation-journal.json'));
+    const text = 'Enough narration text to be worth recovering after a restart of the server.';
+    for (const [bookId, chapterIndex] of [['kept', 0], ['deleted', 0], ['kept', 9]]) {
+      await journal.putChapter({ bookId, chapterIndex, variantKey: 'v1', text, voice: 'kokoro:af_heart' });
+    }
+    const queue = new MockQueue();
+    const tts = new ChunkedTTS(dir, queue, { chunkSize: 45, variantKeyProvider: () => 'v1', generationJournal: journal });
+    tts._fileExists = async () => false;
+    tts.cancelBook('deleted');
+    await tts.waitForIdle('deleted');
+    await journal.putChapter({ bookId: 'deleted', chapterIndex: 0, variantKey: 'v1', text, voice: 'kokoro:af_heart' });
+    const chapterCounts = { kept: 3 };
+    const report = await tts.resumePendingChapters({
+      isChapterCurrent: async (bookId, chapterIndex) => chapterIndex < (chapterCounts[bookId] || 0)
+    });
+    assertEqual(report.resumed.map(item => `${item.entry.bookId}:${item.entry.chapterIndex}`).join(','), 'kept:0',
+      'only a chapter of a present book is resumed');
+    assertDeep(report.purged.map(entry => `${entry.bookId}:${entry.chapterIndex}`).sort(), ['deleted:0', 'kept:9'],
+      'entries for an absent book and an out-of-range chapter are purged');
+    assertEqual((await journal.listChapters()).length, 1, 'purged entries leave the journal');
+    assertEqual(tts._deletedBooks.has('deleted'), true, 'recovery does not clear the deletion tombstone of an absent book');
+
+    // The deletion path awaits journal removal through waitForIdle.
+    let release;
+    const slowJournal = {
+      removeChaptersForBook: () => new Promise(resolve => { release = resolve; }),
+      putChapter: async () => {}, removeChapter: async () => {}, listChapters: async () => []
+    };
+    const slow = new ChunkedTTS(dir, new MockQueue(), { generationJournal: slowJournal });
+    slow.cancelBook('slow');
+    let idle = false;
+    const idlePromise = slow.waitForIdle('slow').then(() => { idle = true; });
+    await new Promise(resolve => setTimeout(resolve, 10));
+    assertEqual(idle, false, 'waitForIdle waits for the journal to forget the book');
+    release();
+    await idlePromise;
+    assertEqual(idle, true, 'waitForIdle resolves once the journal removal settles');
+
+    // A failed removal is reported, and logged when nobody listens.
+    const failingJournal = { ...slowJournal, removeChaptersForBook: async () => { throw new Error('disk full'); } };
+    const listened = new ChunkedTTS(dir, new MockQueue(), { generationJournal: failingJournal });
+    const errors = [];
+    listened.on('journal:error', event => errors.push(event));
+    listened.cancelBook('failing');
+    await listened.waitForIdle('failing');
+    assertEqual(errors.length, 1, 'a failed journal removal emits journal:error');
+    assertEqual(errors[0].bookId, 'failing', 'the event names the book');
+    const unlistened = new ChunkedTTS(dir, new MockQueue(), { generationJournal: failingJournal });
+    const warnings = [];
+    const originalWarn = console.warn;
+    console.warn = (...args) => warnings.push(args.join(' '));
+    try {
+      unlistened.cancelBook('silent');
+      await unlistened.waitForIdle('silent');
+    } finally {
+      console.warn = originalWarn;
+    }
+    assert(warnings.some(line => line.includes('Generation journal error for silent') && line.includes('disk full')),
+      'an unobserved journal:error is logged');
+  } finally {
+    await fsp.rm(dir, { recursive: true, force: true });
+  }
+})());
+
 // ─── Summary ─────────────────────────────────────────────────────────────────
 
 void (async () => {

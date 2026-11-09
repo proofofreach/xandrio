@@ -93,7 +93,7 @@ Production release plan:
   live symlink:   $CURRENT_LINK
   service:        $SERVICE
   readiness:      http://127.0.0.1:$PORT/ready and $ORIGIN/ready
-  rollback:       automatic symlink restore and service restart
+  rollback:       automatic symlink restore and service restart (refused if the data format version was raised)
   retention:      $KEEP_RELEASES releases
 PLAN
   exit 0
@@ -120,6 +120,50 @@ if ! repo git -C "$REPO_ROOT" merge-base --is-ancestor "$REVISION" origin/main; 
   exit 1
 fi
 
+# Shared state must stay outside release directories. A release whose data/ is
+# a real directory (or a link to the wrong place) would start an empty library,
+# and `ln -s` into an existing directory silently creates data/data instead of
+# the link, so the link is asserted after preparation and before every switch.
+assert_shared_link() {
+  local link="$1" target="$2" name="$3"
+  if [ ! -d "$target" ]; then
+    echo "error: shared $name directory $target does not exist." >&2
+    exit 1
+  fi
+  if [ ! -L "$link" ]; then
+    echo "error: $link must be a symlink to the shared $name directory $target." >&2
+    exit 1
+  fi
+  if [ "$(readlink -f "$link")" != "$(readlink -f "$target")" ]; then
+    echo "error: $link points at $(readlink -f "$link"); expected the shared $name directory $target." >&2
+    exit 1
+  fi
+  if [ -L "$link/$name" ] && [ "$(readlink -f "$link/$name")" = "$(readlink -f "$target")" ]; then
+    echo "error: $link/$name is a nested self-link; ln created it inside an existing directory." >&2
+    exit 1
+  fi
+}
+
+# DATA_DIR/format-version is written by the server (lib/data-format-version.js).
+# A release's supported version is the constant in its own code; releases
+# that predate the file support version 1.
+release_format_version() {
+  local release="$1"
+  local version=""
+  if [ -f "$release/lib/data-format-version.js" ]; then
+    version="$(node -p "require('$release/lib/data-format-version.js').DATA_FORMAT_VERSION" 2>/dev/null || true)"
+  fi
+  if [[ "$version" =~ ^[0-9]+$ ]]; then echo "$version"; else echo 1; fi
+}
+
+data_format_version() {
+  local version=""
+  if [ -f "$REPO_ROOT/data/format-version" ]; then
+    version="$(tr -d '[:space:]' < "$REPO_ROOT/data/format-version" 2>/dev/null || true)"
+  fi
+  if [[ "$version" =~ ^[0-9]+$ ]]; then echo "$version"; else echo 0; fi
+}
+
 if [ ! -f "$RELEASE_DIR/.xandrio-ready" ]; then
   if [ -e "$RELEASE_DIR" ]; then
     repo git -C "$REPO_ROOT" worktree remove --force "$RELEASE_DIR"
@@ -136,6 +180,8 @@ if [ ! -f "$RELEASE_DIR/.xandrio-ready" ]; then
   chown "$REPO_OWNER:$REPO_GROUP" \
     "$RELEASE_DIR/.xandrio-revision" "$RELEASE_DIR/.xandrio-ready"
 fi
+assert_shared_link "$RELEASE_DIR/data" "$REPO_ROOT/data" data
+assert_shared_link "$RELEASE_DIR/cache" "$REPO_ROOT/cache" cache
 
 PREVIOUS_TARGET=""
 if [ -L "$CURRENT_LINK" ]; then
@@ -197,6 +243,26 @@ write_receipt() {
 }
 
 rollback() {
+  # The failed release may already have raised the data format; the previous
+  # code would then read newer-shaped stores as corrupt or overwrite them.
+  # Rolling back automatically is refused in that case; the operator decides.
+  local data_version previous_supported
+  data_version="$(data_format_version)"
+  previous_supported="$(release_format_version "$PREVIOUS_TARGET")"
+  if [ "$data_version" -gt "$previous_supported" ]; then
+    write_receipt "rollback-refused" false
+    cat >&2 <<REFUSED
+error: automatic rollback refused. $REVISION raised $REPO_ROOT/data/format-version to $data_version,
+but the previous release $PREVIOUS_REVISION supports format version $previous_supported.
+Manual steps:
+  1. Inspect the service: journalctl -u $SERVICE -n 200
+  2. Either fix forward: deploy a revision that supports format $data_version,
+  3. or restore the data: stop $SERVICE, restore $REPO_ROOT/data from the backup taken
+     before this deployment (including format-version), then
+     ln -sfn "$PREVIOUS_TARGET" "$CURRENT_LINK" and systemctl restart $SERVICE.
+REFUSED
+    return
+  fi
   echo "Deployment failed; restoring $PREVIOUS_TARGET..."
   switch_current "$PREVIOUS_TARGET"
   $SUDO systemctl restart "$SERVICE" || true

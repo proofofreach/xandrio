@@ -795,6 +795,43 @@ function zeroCrossingRate(pcm) {
       }
     });
 
+    await test('a chapter rebuild ends the book\'s live HLS sessions with 410 and spares other books', async () => {
+      const tonePath = path.join(dir, 'hls-rebuild-eviction.mp3');
+      await createTone(tonePath, 3, 440);
+      const source = {
+        chapterIndex: 0,
+        format: 'mp3',
+        async *iterateInputs(signal) {
+          yield { path: tonePath, chapterIndex: 0, lastInChapter: false };
+          // Still narrating: the session stays live until it is evicted.
+          await new Promise(resolve => signal.addEventListener('abort', resolve, { once: true }));
+        }
+      };
+      const app = routeHarness(source, {
+        hlsRootDir: path.join(dir, 'hls-rebuild-eviction'), hlsSegmentSeconds: 1,
+        hlsOptions: { maintenanceIntervalMs: 0 }
+      });
+      const server = await listen(app);
+      const origin = `http://127.0.0.1:${server.address().port}/api/audio-hls`;
+      const rebuilt = `${origin}/rebuilt_book/0/index.m3u8?session=rebuilt-session&owner=rebuilt-owner`;
+      const kept = `${origin}/kept_book/0/index.m3u8?session=kept-session&owner=kept-owner`;
+      const load = async url => { const res = await fetch(url); await res.text(); return res.status; };
+      const streamer = app.locals.hlsAudioStreamer;
+      try {
+        assert.strictEqual(await load(rebuilt), 200);
+        assert.strictEqual(await load(kept), 200);
+        assert.deepStrictEqual([...streamer.sessionsById.values()].map(session => session.bookId).sort(),
+          ['kept_book', 'rebuilt_book']);
+        assert.strictEqual(await streamer.evictBook('rebuilt_book'), 1);
+        assert.strictEqual(await load(rebuilt), 410, 'the old player reloads at its own position');
+        assert.strictEqual(await load(kept), 200);
+        assert.deepStrictEqual([...streamer.sessionsById.values()].map(session => session.bookId), ['kept_book']);
+      } finally {
+        await streamer.dispose();
+        await new Promise(resolve => server.close(resolve));
+      }
+    });
+
     await test('HLS holds its encoder a bounded lead past the last segment the listener fetched', async () => {
       const tonePath = path.join(dir, 'hls-bounded-lead.mp3');
       await createTone(tonePath, 40, 440);

@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const { createAudioCacheBudget, TOP_LEVEL_AUDIO } = require('../lib/audio-cache-budget');
+const { createAudioCacheBudget, createAudioUseRecorder, TOP_LEVEL_AUDIO } = require('../lib/audio-cache-budget');
 const jsonStore = require('../lib/json-store');
 
 let passed = 0;
@@ -261,6 +261,75 @@ const quiet = { log() {}, warn() {} };
       assert.ok(fs.existsSync(path.join(cacheDir, 'kept_ch0_chunk0.mp3')));
       assert.ok(!fs.existsSync(path.join(cacheDir, 'gone_ch0_chunk0.mp3')));
     } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  await test('the usage map is capped, evicting the least recently used entry first', async () => {
+    const { root, cacheDir } = fixture();
+    try {
+      const usageFile = path.join(root, 'audio-cache-usage.json');
+      let clock = NOW;
+      const budget = createAudioCacheBudget({
+        cacheDir, usageFile, jsonStore, maxUsageEntries: 3, fsp: fakeFs(50 * GIB), now: () => ++clock, log: quiet
+      });
+      for (const bookId of ['a', 'b', 'c']) budget.recordUse(bookId, 0);
+      budget.recordUse('a', 0); // a is now the most recent
+      budget.recordUse('d', 0); // evicts b, the oldest
+      budget.touchUse('never-recorded', 0);
+      await budget.flushUsage();
+      const stored = JSON.parse(fs.readFileSync(usageFile, 'utf8'));
+      assert.deepEqual(Object.keys(stored.chapters).sort(), ['a\u00000', 'c\u00000', 'd\u00000']);
+      // A restarted process above the free-space floor never scans. Its save
+      // must merge the stored history, keeping the newest entries over the cap.
+      const reloaded = createAudioCacheBudget({
+        cacheDir, usageFile, jsonStore, maxUsageEntries: 2, fsp: fakeFs(50 * GIB), now: () => ++clock, log: quiet
+      });
+      await reloaded.sweep();
+      reloaded.recordUse('e', 0);
+      await reloaded.flushUsage();
+      assert.deepEqual(Object.keys(JSON.parse(fs.readFileSync(usageFile, 'utf8')).chapters).sort(), ['d\u00000', 'e\u00000']);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  await test('chapter use is recorded only after a route resolves the chapter', async () => {
+    const express = require('express');
+    const { root, cacheDir } = fixture();
+    const usageFile = path.join(root, 'audio-cache-usage.json');
+    const budget = createAudioCacheBudget({ cacheDir, usageFile, jsonStore, fsp: fakeFs(50 * GIB), now: () => NOW, log: quiet });
+    const app = express();
+    app.use(createAudioUseRecorder(budget, { isSafeBookId: id => /^[a-z_]+$/.test(id) }));
+    app.get('/api/audio/:bookId/:chapterIndex', (req, res) => {
+      if (req.params.bookId !== 'real_book' || req.params.chapterIndex !== '1') return res.status(404).json({});
+      res.json({ ok: true });
+    });
+    app.get('/api/audio-hls/:bookId/:chapterIndex/index.m3u8', (_req, res) => res.status(425).json({}));
+    const server = await new Promise(resolve => {
+      const listening = app.listen(0, '127.0.0.1', () => resolve(listening));
+    });
+    try {
+      const origin = `http://127.0.0.1:${server.address().port}`;
+      const statuses = [];
+      for (const route of [
+        '/api/audio-zz/random_junk/7', // matches the pattern, but is no route
+        '/api/audio/missing_book/1', // a route, but no such book
+        '/api/audio/real_book/999', // a real book, but no such chapter
+        '/api/audio/real_book/1',
+        '/api/audio-hls/preparing_book/2/index.m3u8'
+      ]) {
+        const response = await fetch(`${origin}${route}`);
+        await response.text();
+        statuses.push(response.status);
+      }
+      assert.deepEqual(statuses, [404, 404, 404, 200, 425]);
+      await new Promise(resolve => setTimeout(resolve, 20));
+      await budget.flushUsage();
+      const stored = JSON.parse(fs.readFileSync(usageFile, 'utf8'));
+      assert.deepEqual(Object.keys(stored.chapters).sort(), ['preparing_book\u00002', 'real_book\u00001']);
+    } finally {
+      await new Promise(resolve => server.close(resolve));
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
