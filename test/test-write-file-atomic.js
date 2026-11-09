@@ -34,7 +34,29 @@ const { writeFileAtomic } = require('../lib/write-file-atomic');
     assert(checkedStagedFile);
     assert.strictEqual(await fs.readFile(target, 'utf8'), '{"ok":true}');
     assert.deepStrictEqual((await fs.readdir(dir)).filter(name => name.endsWith('.tmp')), []);
-    console.log('4 passed, 0 failed');
+
+    // The rename is only durable once the parent directory is fsynced.
+    const originalOpen = fs.open;
+    const events = [];
+    fs.open = async (filePath, flags, ...rest) => {
+      const handle = await originalOpen(filePath, flags, ...rest);
+      if (path.resolve(filePath) === dir) {
+        const originalSync = handle.sync.bind(handle);
+        handle.sync = async () => { events.push('dir-sync'); return originalSync(); };
+      }
+      return handle;
+    };
+    const originalRenameForSync = fs.rename;
+    fs.rename = async (...args) => { events.push('rename'); return originalRenameForSync(...args); };
+    try {
+      await writeFileAtomic(target, '{"durable":true}');
+    } finally {
+      fs.open = originalOpen;
+      fs.rename = originalRenameForSync;
+    }
+    assert.deepStrictEqual(events, ['rename', 'dir-sync'], 'fsyncs the parent directory after the rename');
+    assert.strictEqual(await fs.readFile(target, 'utf8'), '{"durable":true}');
+    console.log('5 passed, 0 failed');
   } finally {
     await fs.rm(dir, { recursive: true, force: true });
   }

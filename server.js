@@ -59,7 +59,7 @@ const { playbackChunkPriority } = require('./lib/playback-runway');
 const GenerationScheduler = require('./lib/generation-scheduler');
 const GenerationJournal = require('./lib/generation-journal');
 const { createPronunciationService, createCacheInvalidator, effectiveRules } = require('./lib/pronunciation-repair');
-const { createAudioCacheBudget } = require('./lib/audio-cache-budget');
+const { createAudioCacheBudget, createAudioUseRecorder } = require('./lib/audio-cache-budget');
 const { createOfflineReadyPackages, sourceTextRevision } = require('./lib/offline-ready-packages');
 const { registerOfflineRecoveryRoutes } = require('./lib/routes/offline-recovery-routes');
 const { registerPronunciationRoutes } = require('./lib/routes/pronunciation-routes');
@@ -130,15 +130,20 @@ const shelves = require('./lib/shelves');
 const { writeFileAtomic } = require('./lib/write-file-atomic');
 const { parseVoiceProviders, filterVoicesByProvider } = require('./lib/voice-catalog');
 const { registerAccountRoutes } = require('./lib/routes/accounts-routes');
-const { createRateLimitMiddleware, positiveInteger } = require('./lib/rate-limit');
+const { createRateLimitMiddleware, positiveInteger, proxyTrustWarning } = require('./lib/rate-limit');
 const { createCsrfMiddleware } = require('./lib/csrf');
 const { createHostGuard } = require('./lib/host-guard');
 const { createGracefulShutdown } = require('./lib/graceful-shutdown');
 const {
   normalizeCanonicalOrigin,
-  registerDeploymentRoute
+  registerDeploymentRoute,
+  createClientBuildGate
 } = require('./lib/deployment-origin');
 const { createReadinessProbe } = require('./lib/readiness');
+const { acquireInstanceLock } = require('./lib/instance-lock');
+const { ensureDataFormatVersion } = require('./lib/data-format-version');
+const { createRuntimeDependencyCheck } = require('./lib/runtime-dependencies');
+const { removeAbandonedJsonStoreTemps } = require('./lib/abandoned-temp-files');
 const {
   ConcurrencyGate,
   createConcurrencyLimitMiddleware,
@@ -311,6 +316,10 @@ const corsOptions = {
 
 // Validate authority before body parsing, authentication or any route.
 const canonicalOrigin = normalizeCanonicalOrigin(process.env.XANDRIO_CANONICAL_ORIGIN);
+{
+  const warning = proxyTrustWarning({ canonicalOrigin, host: HOST, trustProxy });
+  if (warning) console.warn(warning);
+}
 // Middleware
 app.use(securityHeaders);
 app.use(hostRateLimit({ windowMs: 60_000, limit: 6000, standardHeaders: 'draft-7', legacyHeaders: false }), createHostGuard({ canonicalOrigin, bindHost: HOST }));
@@ -322,13 +331,24 @@ registerDeploymentRoute(app, {
   appBuild: require('node:fs').readFileSync(require('node:path').join(__dirname, 'public/js/features/offline.js'), 'utf8')
     .match(/export const EXPECTED_OFFLINE_SW_VERSION = '([^']+)'/)[1]
 });
+// After /api/deployment, so a stale client can always learn the current build.
+app.use(createClientBuildGate());
 
 // Set XANDRIO_TOKEN for private-instance mode. Without it, this is the
 // documented trusted-LAN mode: all API routes are reachable by anyone who can
 // reach the server.
+//
+// A production deployment (NODE_ENV=production, or an HTTPS canonical origin)
+// never gets trusted-LAN mode by default: with no accounts and no token every
+// caller would be an admin, and that is exactly what a wrong or empty DATA_DIR
+// looks like after a bad deploy. XANDRIO_ALLOW_TRUSTED_LAN=1 opts back in.
 const XANDRIO_TOKEN = process.env.XANDRIO_TOKEN || '';
-if (!XANDRIO_TOKEN) {
+const PRODUCTION_DEPLOYMENT = process.env.NODE_ENV === 'production' || canonicalOrigin.startsWith('https://');
+const TRUSTED_LAN_ALLOWED = process.env.XANDRIO_ALLOW_TRUSTED_LAN === '1' || !PRODUCTION_DEPLOYMENT;
+if (!XANDRIO_TOKEN && TRUSTED_LAN_ALLOWED) {
   console.warn('XANDRIO_TOKEN is not set — trusted-LAN mode is active. Anyone who can reach this server can access the library, audio, and settings.');
+} else if (!XANDRIO_TOKEN) {
+  console.warn('XANDRIO_TOKEN is not set and trusted-LAN mode is disabled for production deployments; the server requires accounts (set XANDRIO_ALLOW_TRUSTED_LAN=1 to opt in).');
 }
 const RATE_LIMIT_WINDOW = positiveInteger(process.env.RATE_LIMIT_WINDOW, 60_000);
 const RATE_LIMIT_MAX = positiveInteger(process.env.RATE_LIMIT_MAX, 60);
@@ -366,7 +386,8 @@ const authRoutes = createAuthRoutes({
   token: XANDRIO_TOKEN,
   sessionTtlMs: SESSION_TTL_MS,
   accounts: accountsStore,
-  sessionStore: accountSessionStore
+  sessionStore: accountSessionStore,
+  allowTrustedLan: TRUSTED_LAN_ALLOWED
 });
 // Runs ahead of the rate limiter and the auth gate so a forged cross-site
 // request is refused before it can consume a rate-limit slot or a session.
@@ -379,7 +400,13 @@ app.use(requestConcurrencyLimiter);
 app.post('/api/auth/login', authRoutes.login);
 app.post('/api/auth/logout', authRoutes.logout);
 app.get('/api/auth/status', authRoutes.status);
-app.use(createAuthMiddleware({ token: XANDRIO_TOKEN, accounts: accountsStore, sessionStore: accountSessionStore, sessionTtlMs: SESSION_TTL_MS }));
+app.use(createAuthMiddleware({
+  token: XANDRIO_TOKEN,
+  accounts: accountsStore,
+  sessionStore: accountSessionStore,
+  sessionTtlMs: SESSION_TTL_MS,
+  allowTrustedLan: TRUSTED_LAN_ALLOWED
+}));
 app.post('/api/auth/change-password', authRoutes.changePassword);
 app.get('/api/auth/sessions', authRoutes.listSessions);
 app.post('/api/auth/sessions/revoke', authRoutes.revokeSession);
@@ -988,6 +1015,7 @@ const opds = createOpdsProvider({
   downloadTimeoutMs: process.env.OPDS_DOWNLOAD_TIMEOUT_MS
 });
 const searchProviders = createSearchProviderRegistry({
+  downloadDir: CACHE_DIR,
   annas: {
     search: searchAnnasProvider,
     download: downloadFromAnnasDirect
@@ -1219,7 +1247,9 @@ async function getFileIdentity(filePath) {
   const stat = await fs.stat(filePath);
   const identity = {
     mtimeMs: stat.mtimeMs,
-    size: stat.size
+    size: stat.size,
+    ino: stat.ino,
+    ctimeMs: stat.ctimeMs
   };
   fileIdentityCache.set(filePath, {
     identity,
@@ -1891,14 +1921,8 @@ const audioCacheBudget = createAudioCacheBudget({
   jsonStore,
   workers: () => [chunkedTTS, instantChunkedTTS, bookGuideNarrationTTS, ...premiumVariantTtsWorkers.values()]
 });
-// Every route that serves or prepares one chapter's audio names it as
-// /api/<audio route>/:bookId/:chapterIndex.
-const AUDIO_USE_PATH = /^\/api\/(?:audio(?:-[a-z]+)?|chunks|offline\/audio|voice-cache)\/([^/]+)\/(\d+)(?:\/|$)/;
-app.use((req, _res, next) => {
-  const match = req.path.match(AUDIO_USE_PATH);
-  if (match && requestGuardIsSafeBookId(match[1])) audioCacheBudget.recordUse(match[1], Number(match[2]));
-  next();
-});
+// Every route that serves or prepares one chapter's audio records its use.
+app.use(createAudioUseRecorder(audioCacheBudget, { isSafeBookId: requestGuardIsSafeBookId }));
 
 // Imports write sources, artifacts and covers. Reclaim audio cache space first
 // and refuse a new import only when the disk stays below the hard floor.
@@ -2194,7 +2218,8 @@ function progressForImportJob(job) {
   return (step, detail = '') => {
     if (job.cancellationRequested) throw Object.assign(new Error('Import cancelled'), { code: 'IMPORT_CANCELLED' });
     const label = IMPORT_STEPS[step - 1] || IMPORT_STEPS[0];
-    emitImportJob(job, 'progress', { step, label, detail });
+    // Importers often report the step name itself; showing it twice adds noise.
+    emitImportJob(job, 'progress', { step, label, detail: detail === label ? '' : detail });
   };
 }
 
@@ -2290,12 +2315,17 @@ async function ensureChapterAudioPrepared(bookId, chapterIndex, options = {}) {
     if (!chapter) throw new Error('Chapter not found');
 
     const outputPath = clean ? tts.cleanChapterPath(bookId, chapterIndex) : tts.chapterPath(bookId, chapterIndex);
-    try {
-      await fs.access(outputPath);
+    // A stitched file is trusted as-is: chunk invalidation and text-hash
+    // changes remove it (ChunkedTTS._deleteStitchedChapterAudio), so its
+    // presence means its chunks are still current. Only a nonempty regular
+    // file counts; an interrupted writer cannot leave one here because the
+    // stitcher publishes by rename, but a zero-byte leftover must not be served.
+    const existing = await fs.stat(outputPath).catch(() => null);
+    if (existing?.isFile() && existing.size > 0) {
       recordMeasuredChapterDuration({ bookId, chapterIndex, outputPath })
         .catch(err => console.warn(`Existing chapter duration probe failed for ${bookId}:${chapterIndex}: ${err.message}`));
       return outputPath;
-    } catch {}
+    }
 
     const bookLanguage = book.language || 'en';
     const firstChunkPriority = uniformPriority ? priority : 'immediate';
@@ -3890,6 +3920,12 @@ app.get('/health', (req, res) => {
   });
 });
 
+// Node version against package.json engines, plus ffmpeg/ffprobe. Probed once
+// at startup; /ready reports the cached verdict.
+const runtimeDependencies = createRuntimeDependencyCheck({
+  engines: require('./package.json').engines
+});
+
 const readinessProbe = createReadinessProbe({
   dataDir: DATA_DIR,
   cacheDir: CACHE_DIR,
@@ -3899,7 +3935,11 @@ const readinessProbe = createReadinessProbe({
     SESSIONS_FILE,
     SHELVES_FILE,
     POSITIONS_FILE
-  ]
+  ],
+  // In production a DATA_DIR in which no critical store was ever initialized
+  // is a wrong or empty directory, not a library.
+  requireInitialized: PRODUCTION_DEPLOYMENT,
+  dependencies: () => runtimeDependencies.check()
 });
 
 // Readiness is stricter than liveness: deployment succeeds only when the
@@ -4608,15 +4648,24 @@ chapterRebuildService = createChapterRebuildService({
     bookmarks: BOOKMARKS_FILE,
     transitions: CHAPTER_TRANSITIONS_FILE
   },
+  cacheDir: CACHE_DIR,
   xbookStore,
   bookDocument,
   locks: bookMutationLocks,
   loadJSON,
   saveJSON,
+  // Routes books.json writes through the critical store (validation, bounded
+  // backups, fail-closed on a missing initialized file) instead of the
+  // module's raw jsonStore.update default.
+  updateJSON,
   afterCommit: async ({ bookId, plan }) => {
     chunkedTTS.cancelBook(bookId);
     instantChunkedTTS.cancelBook(bookId);
+    // Live streams and their timelines were prepared under the old chapter
+    // numbering; their listeners reload at their own position (410).
+    playbackOrchestrator.evictBookTimelines(bookId);
     await Promise.all([
+      hlsAudioStreamer.evictBook(bookId),
       premiumPrep.stopBook(bookId),
       playbackPrefetch.removeBook(bookId),
       offlinePreparationCoordinator.cancel(bookId, { remove: true }),
@@ -4715,7 +4764,8 @@ registerPlaybackRoutes(app, {
   canPrioritizeForegroundBook: async (req, bookId) => {
     const books = await loadJSON(BOOKS_FILE, {});
     if (!books[bookId]) return false;
-    if (req.user?.role !== 'member') return true;
+    // Positive admin test; any other (or missing) role must hold the book.
+    if (req.user?.role === 'admin') return true;
     const userId = positionUserId(req);
     const [shelvesStore, positionsStore] = await Promise.all([
       loadJSON(SHELVES_FILE, {}),
@@ -5283,6 +5333,7 @@ function createConfiguredServer() {
 }
 
 let runningServer = null;
+let instanceLock = null;
 
 if (require.main === module) {
   // Start server
@@ -5295,6 +5346,32 @@ if (require.main === module) {
       startupPhases.push(`${name} ${now - startupMark}ms`);
       startupMark = now;
     };
+    // Before anything that reads or sweeps DATA_DIR: one server per data
+    // directory. A restart waits briefly for the previous process to exit.
+    instanceLock = await acquireInstanceLock({
+      dataDir: DATA_DIR,
+      waitMs: positiveInteger(process.env.XANDRIO_INSTANCE_LOCK_WAIT_MS, 20_000)
+    });
+    const formatVersion = await ensureDataFormatVersion({ dataDir: DATA_DIR });
+    if (formatVersion.created) console.log(`Initialized ${DATA_DIR}/format-version at ${formatVersion.version}`);
+    if (formatVersion.upgradedFrom) console.log(`Raised data format version ${formatVersion.upgradedFrom} -> ${formatVersion.version}`);
+    const sweptDataTemps = await removeAbandonedJsonStoreTemps(DATA_DIR).catch(error => {
+      console.warn(`Data temp-file sweep failed: ${error.message}`);
+      return 0;
+    });
+    if (sweptDataTemps) console.log(`Removed ${sweptDataTemps} temp file(s) left by dead writers in ${DATA_DIR}`);
+    const runtime = await runtimeDependencies.check();
+    if (runtime.node.tooOld) {
+      throw new Error(`${runtime.node.detail}; install a supported Node.js release`);
+    }
+    if (!runtime.ok) console.error(`Runtime dependencies missing (/ready will report not-ready): ${runtime.failures.join('; ')}`);
+    if (!XANDRIO_TOKEN && !TRUSTED_LAN_ALLOWED && (await accountsStore.count()) === 0) {
+      throw new Error(
+        `No accounts in ${ACCOUNTS_FILE} and XANDRIO_TOKEN is unset, but trusted-LAN mode is disabled for production deployments. ` +
+        'Check DATA_DIR, create an admin with scripts/manage-accounts.js, set XANDRIO_TOKEN, or set XANDRIO_ALLOW_TRUSTED_LAN=1.'
+      );
+    }
+    startupPhase('instance lock');
     await updateJSON(BOOKS_FILE, books => (
       removeLegacyImportReviewState(books) ? undefined : jsonStore.SKIP_SAVE
     ));
@@ -5331,7 +5408,22 @@ if (require.main === module) {
     if (recoveredRebuilds.length) {
       console.log(`Recovered ${recoveredRebuilds.length} interrupted chapter rebuild(s)`);
     }
+    const orphanedRebuilds = await chapterRebuildService.sweepOrphanedRebuildArtifacts().catch(error => {
+      console.warn(`Orphaned rebuild file sweep failed: ${error.message}`);
+      return { removed: 0 };
+    });
+    if (orphanedRebuilds.removed) {
+      console.log(`Removed ${orphanedRebuilds.removed} rebuild file(s) of deleted books`);
+    }
     startupPhase('chapter rebuilds');
+    const libraryStateRepair = await bookDeletionService.reconcileLibraryState({
+      loadBooks: () => booksStore.load()
+    });
+    const repairedEntries = Object.values(libraryStateRepair.removed).reduce((sum, count) => sum + count, 0);
+    if (repairedEntries) {
+      console.log(`Dropped ${repairedEntries} library-state entr${repairedEntries === 1 ? 'y' : 'ies'} for deleted books`);
+    }
+    startupPhase('library state');
     const recoveredGuides = await bookGuideService.restore();
     if (recoveredGuides.resumed) {
       console.log(`Recovered ${recoveredGuides.resumed} interrupted book guide job(s)`);
@@ -5372,16 +5464,37 @@ if (require.main === module) {
     startupPhase('generation journal');
     await premiumPrep.restore().catch(err => console.warn(`Premium prep recovery failed: ${err.message}`));
     startupPhase('premium prep');
+    // Journal entries can outlive their book (deleted while generation was
+    // pending) or their chapter (re-segmented import). Replaying one would
+    // clear the deletion tombstone and render audio for a title the library
+    // no longer has, so recovery checks the catalog first and purges strays.
+    const recoveryBooks = await loadJSON(BOOKS_FILE, {});
+    const recoveryChapterCounts = new Map();
+    const isRecoveredChapterCurrent = async (bookId, chapterIndex) => {
+      const book = recoveryBooks[bookId];
+      if (!book?.path) return false;
+      if (!recoveryChapterCounts.has(bookId)) {
+        recoveryChapterCounts.set(bookId, getChaptersCached(book.path)
+          .then(chapters => chapters.length)
+          .catch(() => (Number.isInteger(book.chapterCount) && book.chapterCount > 0 ? book.chapterCount : 0)));
+      }
+      return chapterIndex < await recoveryChapterCounts.get(bookId);
+    };
     const ordinaryRecovery = await Promise.all([
-      chunkedTTS.resumePendingChapters({ recoverAllVariants: true, fixedWorkers: true })
+      chunkedTTS.resumePendingChapters({
+        recoverAllVariants: true,
+        fixedWorkers: true,
+        isChapterCurrent: isRecoveredChapterCurrent
+      })
     ]).catch(err => {
       console.warn(`Chapter generation recovery failed: ${err.message}`);
       return [];
     });
     const resumedChapters = ordinaryRecovery.reduce((count, report) => count + (report.resumed?.length || 0), 0);
     const failedChapters = ordinaryRecovery.reduce((count, report) => count + (report.failed?.length || 0), 0);
-    if (resumedChapters || failedChapters) {
-      console.log(`Chapter generation recovery: ${resumedChapters} resumed, ${failedChapters} failed`);
+    const purgedChapters = ordinaryRecovery.reduce((count, report) => count + (report.purged?.length || 0), 0);
+    if (resumedChapters || failedChapters || purgedChapters) {
+      console.log(`Chapter generation recovery: ${resumedChapters} resumed, ${failedChapters} failed, ${purgedChapters} purged`);
     }
     startupPhase('generation recovery');
     const offlineRecovery = await replayOfflinePreparations({
@@ -5452,8 +5565,11 @@ const shutdownController = createGracefulShutdown({
         new Promise(resolve => setTimeout(resolve, 2000))
       ]);
     } catch {}
+    // Last: a successor waiting on the instance lock may now start.
+    await instanceLock?.release().catch(() => {});
   }
 });
+process.on('exit', () => instanceLock?.releaseSync());
 
 function shutdown(code) {
   return shutdownController.shutdown(code);

@@ -4,7 +4,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
-const { removeAbandonedPartFiles } = require('../lib/abandoned-temp-files');
+const { removeAbandonedJsonStoreTemps, removeAbandonedPartFiles } = require('../lib/abandoned-temp-files');
 
 let passed = 0;
 let failed = 0;
@@ -88,6 +88,40 @@ function deadPid() {
       assert.equal(await removeAbandonedPartFiles(root), 1);
       assert.equal(fs.existsSync(stale), false);
       assert.equal(fs.existsSync(current), true);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  await test('sweeps json-store temporaries of dead writers from the data root only', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xandrio-abandoned-json-'));
+    try {
+      const dead = deadPid();
+      const live = process.ppid;
+      const abandoned = [
+        `books.json.${dead}.0a1b2c3d.7.tmp`,            // current json-store staging name
+        `positions.json.${dead}.12.tmp`,                 // pre-random-component staging name
+        `accounts.json.lock.${dead}.0011223344556677.tmp` // process-lock candidate
+      ];
+      const kept = [
+        `books.json.${live}.0a1b2c3d.7.tmp`,
+        `books.json.${live}.12.tmp`,
+        'books.json',
+        'books.json.lock',
+        'books.json.lock.sqlite',
+        'books.json.initialized',
+        'books.json.corrupt-abcdef12',
+        `notes.${dead}.tmp`
+      ];
+      for (const name of [...abandoned, ...kept]) fs.writeFileSync(path.join(root, name), 'x');
+      fs.mkdirSync(path.join(root, 'runtime'));
+      fs.writeFileSync(path.join(root, 'runtime', `state.json.${dead}.0a1b2c3d.1.tmp`), 'x');
+
+      assert.equal(await removeAbandonedJsonStoreTemps(root), abandoned.length);
+      const remaining = fs.readdirSync(root).sort();
+      assert.deepEqual(remaining, [...kept, 'runtime'].sort());
+      assert.deepEqual(fs.readdirSync(path.join(root, 'runtime')), [`state.json.${dead}.0a1b2c3d.1.tmp`],
+        'subdirectories are left alone');
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }

@@ -1,5 +1,5 @@
 const assert = require('assert');
-const { buildChapterTransition } = require('../lib/chapter-reprocess');
+const { buildChapterTransition, chapterTextIdentity, textIdentityTransition } = require('../lib/chapter-reprocess');
 const { mapStateWriteToCurrent } = require('../lib/chapter-transition-state');
 
 function chapter(text, duration = 100) {
@@ -99,4 +99,56 @@ const transitions = {
     'duplicate narration hashes are not treated as uniquely reusable audio');
 }
 
-console.log('6 passed, 0 failed');
+{
+  // A position past the book outranks all real forward-only progress, on
+  // every write path that stores the supplied coordinates.
+  const bounded = { chapterStructureKey: 'new-key', chapterCount: 3, chapterDurations: [600, 900], totalDuration: 2400 };
+  const write = (state, suppliedStructureKey = 'new-key', book = bounded, extraTransitions = transitions) =>
+    mapStateWriteToCurrent({ bookId: 'book', suppliedStructureKey, book, transitions: extraTransitions, state });
+  assert.strictEqual(write({ chapterIndex: 3, timestamp: 0 }).invalid, 'chapter');
+  assert.strictEqual(write({ chapterIndex: 999, timestamp: 0 }).invalid, 'chapter');
+  assert.strictEqual(write({ chapterIndex: 2, timestamp: 10 }).invalid, undefined);
+  assert.strictEqual(write({ chapterIndex: 0, timestamp: 600000 }).invalid, 'timestamp',
+    'milliseconds sent as seconds are rejected against the measured chapter duration');
+  assert.strictEqual(write({ chapterIndex: 0, timestamp: 1200 }).invalid, undefined,
+    'a slower narrator than the measured one still fits the slack');
+  assert.strictEqual(write({ chapterIndex: 2, timestamp: 4900 }).invalid, 'timestamp',
+    'an unmeasured chapter is bounded by the whole book');
+  assert.strictEqual(write({ chapterIndex: 0, timestamp: 90000 }, 'new-key', { chapterStructureKey: 'new-key' }).invalid,
+    'timestamp', 'a book without durations still has a sane cap');
+  assert.strictEqual(write({ chapterIndex: 400, timestamp: 0 }, 'new-key', { chapterStructureKey: 'new-key' }).invalid,
+    undefined, 'a legacy record without a chapter count is not bounded by a guess');
+  assert.strictEqual(write({ chapterIndex: 3, timestamp: 0 }, '', { chapterCount: 3 }).invalid, 'chapter',
+    'a book without a structure key is bounded too');
+
+  const relabeled = { chapterStructureKey: 'new-key', chapterCount: 3, totalDuration: 2400 };
+  const metadataOnly = { book: { previousStructureKey: 'old-key', nextStructureKey: 'new-key', transition: { safe: true, metadataOnly: true } } };
+  assert.strictEqual(write({ chapterIndex: 7, timestamp: 0 }, 'old-key', relabeled, metadataOnly).invalid, 'chapter',
+    'a metadata-only relabel passes coordinates through, so they are bounded too');
+
+  const unchanged = buildChapterTransition([chapter(first), chapter(second)], [chapter(first), chapter(second)]);
+  const sameText = { book: { previousStructureKey: 'old-key', nextStructureKey: 'new-key', transition: unchanged } };
+  assert.strictEqual(write({ chapterIndex: 1, timestamp: 1e9 }, 'old-key', { chapterStructureKey: 'new-key', chapterCount: 2, totalDuration: 200 }, sameText).invalid,
+    'timestamp', 'an unchanged-identity remap keeps the supplied timestamp, so it is bounded after mapping');
+}
+
+{
+  // After a same-key re-cut the previous text is gone; the recorded identity
+  // must yield the transition the text itself would have.
+  const third = 'Third section. '.repeat(40);
+  const before = [chapter(`${first} ${third}`, 150), chapter(second, 100)];
+  const after = [chapter(first, 100), chapter(`${third} ${second}`, 150)];
+  const fromText = buildChapterTransition(before, after);
+  const fromIdentity = textIdentityTransition(chapterTextIdentity(before, 'k'), chapterTextIdentity(after, 'k'));
+  assert.strictEqual(fromIdentity.safe, true);
+  const coordinates = ranges => ranges.map(({ index, start, end, length, duration }) => ({ index, start, end, length, duration }));
+  assert.deepStrictEqual(coordinates(fromIdentity.previousRanges), coordinates(fromText.previousRanges));
+  assert.deepStrictEqual(coordinates(fromIdentity.nextRanges), coordinates(fromText.nextRanges));
+  assert.deepStrictEqual(fromIdentity.indexMap, fromText.indexMap);
+  assert.deepStrictEqual(fromIdentity.reusableAudio, fromText.reusableAudio);
+  assert.strictEqual(textIdentityTransition(chapterTextIdentity(before, 'k'),
+    chapterTextIdentity([chapter('Other text.'), chapter(second)], 'k')).safe, false,
+    'changed narration cannot be remapped from identities');
+}
+
+console.log('8 passed, 0 failed');

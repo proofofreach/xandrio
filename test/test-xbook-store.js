@@ -31,7 +31,7 @@ function createStore(cacheDir) {
     cacheDir,
     getFileIdentity: async filePath => {
       const stat = await fs.stat(filePath);
-      return { mtimeMs: stat.mtimeMs, size: stat.size };
+      return { mtimeMs: stat.mtimeMs, size: stat.size, ino: stat.ino, ctimeMs: stat.ctimeMs };
     },
     invalidateFileIdentity() {},
     extractBookMetadata: async () => ({ title: 'Test book' }),
@@ -114,6 +114,40 @@ function createStore(cacheDir) {
     const finalArtifact = JSON.parse(await fs.readFile(atomicPath, 'utf8'));
     assert(finalArtifact.id === atomicId && finalArtifact.metadata.title === 'Test book',
       'atomically replaces the artifact after the complete temporary file is ready');
+
+    // Memory cache identity: a same-size, same-mtime replacement must not keep
+    // serving stale content, and the shared cached object must be immutable.
+    const cachedId = 'cached-book';
+    const cachedPath = store.getXBookPath(cachedId);
+    const first = { _xbookVersion: 1, id: cachedId, chapters: [{ title: 'AAAA', type: 'chapter', text: 'one' }] };
+    const second = { _xbookVersion: 1, id: cachedId, chapters: [{ title: 'BBBB', type: 'chapter', text: 'one' }] };
+    assert(JSON.stringify(first).length === JSON.stringify(second).length, 'fixture artifacts must be equal length');
+    await fs.writeFile(cachedPath, JSON.stringify(first));
+    const firstStat = await fs.stat(cachedPath);
+    const loadedFirst = await store.readXBookArtifact(cachedPath);
+    assert(loadedFirst.chapters[0].title === 'AAAA', 'reads the first artifact');
+    assert(Object.isFrozen(loadedFirst) && Object.isFrozen(loadedFirst.chapters) && Object.isFrozen(loadedFirst.chapters[0]),
+      'cached artifacts are frozen so no caller can mutate the shared copy');
+    assert(await store.readXBookArtifact(cachedPath) === loadedFirst, 'an unchanged file is served from memory');
+    // Pin mtime and size so only the inode and ctime can distinguish the files.
+    const pinnedStore = createXBookStore({
+      cacheDir,
+      getFileIdentity: async filePath => {
+        const stat = await fs.stat(filePath);
+        return { mtimeMs: firstStat.mtimeMs, size: firstStat.size, ino: stat.ino, ctimeMs: stat.ctimeMs };
+      },
+      invalidateFileIdentity() {},
+      extractBookMetadata: async () => ({}),
+      extractBookChapters: async () => [],
+      extractMobiCover: async () => false,
+      getBookFormatFromName: () => 'pdf'
+    });
+    assert((await pinnedStore.readXBookArtifact(cachedPath)).chapters[0].title === 'AAAA', 'pinned store reads the first artifact');
+    await fs.writeFile(`${cachedPath}.replace`, JSON.stringify(second));
+    await fs.rename(`${cachedPath}.replace`, cachedPath);
+    const loadedSecond = await pinnedStore.readXBookArtifact(cachedPath);
+    assert(loadedSecond.chapters[0].title === 'BBBB',
+      'a replaced artifact with identical mtime and size is re-read (inode/ctime are part of the cache key)');
   } finally {
     await fs.rm(cacheDir, { recursive: true, force: true });
   }

@@ -41,6 +41,24 @@ async function main() {
     assert.deepStrictEqual(data, { fresh: true });
   });
 
+  await test('atomic-write temporaries carry a random component, not just pid and counter', async () => {
+    const target = file('tmp-name.json');
+    const seen = [];
+    const originalOpen = fsp.open;
+    fsp.open = async (filePath, ...rest) => {
+      if (String(filePath).startsWith(`${target}.`)) seen.push(path.basename(filePath));
+      return originalOpen(filePath, ...rest);
+    };
+    try {
+      await jsonStore.save(target, { n: 1 });
+    } finally {
+      fsp.open = originalOpen;
+    }
+    const temp = seen.find(name => name.endsWith('.tmp') && !name.includes('.lock.'));
+    assert(temp, `expected a .tmp staging file, saw ${seen}`);
+    assert.match(temp, new RegExp(`^tmp-name\\.json\\.${process.pid}\\.[a-f0-9]{8}\\.\\d+\\.tmp$`));
+  });
+
   await test('save then load round-trips', async () => {
     await jsonStore.save(file('a.json'), { x: 1, nested: { y: [1, 2] } });
     const data = await jsonStore.load(file('a.json'));

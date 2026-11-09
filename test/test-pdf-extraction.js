@@ -333,6 +333,27 @@ async function runFixtureTests() {
       'recovers the author from the title page');
   });
 
+  // pdfjs and pdf-parse used to parse the untrusted file on the server's own
+  // thread with no deadline or memory bound. They now run in a worker that
+  // is killed at either limit, and extraction continues with pdftotext.
+  await withTempPdf('bounded-parse.pdf', [
+    ['Bound Header', 'Page 1 of 2', '', 'Chapter One', ...repeatedLines('Readable prose for the bounded parser check.', 12)],
+    ['Bound Header', 'Page 2 of 2', '', ...repeatedLines('More readable prose keeps the text dense.', 12)]
+  ], async pdfPath => {
+    const realFs = require('fs').promises;
+    const timedOut = await __test.runPdfExtractionCandidates(pdfPath, 'Bound', realFs, {}, undefined, { timeoutMs: 1 });
+    const timedOutParse = timedOut.candidates.find(candidate => candidate.name === 'pdf-parse-normalized');
+    assert(/timed out after 1ms/.test(timedOutParse?.error || ''), 'a pdf-parse pass past the deadline is stopped');
+    assert(timedOut.sourceDocument.outline === undefined, 'an outline read past the deadline yields no outline');
+    assert(timedOut.selected?.ok, 'extraction continues with the remaining candidates after a stopped parse');
+
+    const capped = await __test.runPdfExtractionCandidates(pdfPath, 'Bound', realFs, {}, undefined, { memoryMb: 8 });
+    const cappedParse = capped.candidates.find(candidate => candidate.name === 'pdf-parse-normalized');
+    assert(cappedParse && !cappedParse.ok && /reaching memory limit/.test(cappedParse.error || ''),
+      'a pdf-parse pass over the heap cap is stopped');
+    assert(capped.selected?.ok, 'extraction continues after a parse is stopped at the heap cap');
+  });
+
   await withTempPdf('readable.pdf', [
     ['Reader Header', 'Page 1 of 6', '', 'Chapter One', ...repeatedLines('This is readable book prose for extraction and narration.', 12)],
     ['Reader Header', 'Page 2 of 6', '', ...repeatedLines('More readable book prose follows in natural order.', 12)],

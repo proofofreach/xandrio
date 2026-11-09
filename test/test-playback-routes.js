@@ -2,7 +2,7 @@ const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
 const { app } = require('../server');
-const { hlsOwnerKey, registerPlaybackRoutes } = require('../lib/routes/playback-routes');
+const { hlsOwnerKey, timelineOwnerKey, registerPlaybackRoutes } = require('../lib/routes/playback-routes');
 
 let passed = 0;
 let failed = 0;
@@ -70,6 +70,47 @@ async function test(name, fn) {
       await route.handlers.at(-1)({ params: { bookId: 'book-one' } }, res);
       assert.strictEqual(res.statusCode, 404);
       assert.strictEqual(prioritized, 0);
+    });
+
+    await test('offline preparation and window requests use the same library gate as foreground priority', async () => {
+      const routes = [];
+      const fakeApp = {};
+      for (const method of ['get', 'post', 'put', 'delete']) {
+        fakeApp[method] = (routePath, ...handlers) => routes.push({ method, path: routePath, handlers });
+      }
+      let prioritized = 0;
+      let requested = 0;
+      let windows = 0;
+      registerPlaybackRoutes(fakeApp, {
+        playbackOrchestrator: {},
+        ttsForTier: () => ({}),
+        generationJournal: {},
+        offlinePreparationCoordinator: { request: async () => { requested += 1; return {}; } },
+        offlineWindowPreparation: { request: async () => { windows += 1; return {}; } },
+        chapterAudioStreamer: {},
+        hlsAudioStreamer: {},
+        serveAudioFile() {},
+        sendServerError(res, error) { res.status(500).json({ error: error.message }); },
+        fs: {},
+        getBookChapters: async () => ({ book: {}, chapters: [] }),
+        getOfflineChapterAudio: async () => ({}),
+        canPrioritizeForegroundBook: async () => false,
+        prioritizeForegroundBook: () => { prioritized += 1; return {}; }
+      });
+      for (const routePath of ['/api/offline/preparation/:bookId', '/api/offline/preparation/:bookId/window']) {
+        const route = routes.find(item => item.method === 'post' && item.path === routePath);
+        const res = {
+          statusCode: 200,
+          body: null,
+          status(code) { this.statusCode = code; return this; },
+          json(body) { this.body = body; return this; }
+        };
+        await route.handlers.at(-1)({ params: { bookId: 'book-one' }, body: {}, user: { id: 'usr_x', role: 'member' } }, res);
+        assert.strictEqual(res.statusCode, 404, `${routePath} must refuse a book outside the caller library`);
+      }
+      assert.strictEqual(prioritized, 0);
+      assert.strictEqual(requested, 0);
+      assert.strictEqual(windows, 0);
     });
 
     await test('first-load readiness polls do not consume the generation budget', async () => {
@@ -220,6 +261,137 @@ async function test(name, fn) {
         hlsOwnerKey({ user: { id: 'account-one', sessionToken: 'other-session-token' }, ip: '127.0.0.1' }, 'owner-a')
       );
     });
+    // A routes-only app over a stub orchestrator, with an optional signed-in user.
+    const isolatedRoutes = async (orchestrator, { user = null, files = fs.promises, journal = null } = {}) => {
+      const express = require('express');
+      const { createChapterAudioStreamer } = require('../lib/chapter-audio-stream');
+      const isolatedApp = express();
+      isolatedApp.use(express.json());
+      if (user) isolatedApp.use((req, _res, next) => { req.user = user; next(); });
+      registerPlaybackRoutes(isolatedApp, {
+        playbackOrchestrator: orchestrator,
+        ttsForTier: () => ({ variantKeyProvider: () => 'default-variant' }),
+        generationJournal: journal || { listQuarantinedChapters: async () => [] },
+        chapterAudioStreamer: createChapterAudioStreamer({ serveAudioFile: async (_req, res) => res.end() }),
+        hlsAudioStreamer: {},
+        serveAudioFile: async (_req, res) => res.status(200).end('audio'),
+        sendServerError(res, error) { res.status(500).json({ error: error.message }); },
+        fs: files,
+        getBookChapters: async () => ({ chapters: [{ text: 'Chapter zero with narration text.' }] })
+      });
+      const instance = await new Promise(resolve => {
+        const listening = isolatedApp.listen(0, '127.0.0.1', () => resolve(listening));
+      });
+      return { origin: `http://127.0.0.1:${instance.address().port}`, close: () => new Promise(resolve => instance.close(resolve)) };
+    };
+
+    await test('continuous timelines are read in the requesting owner\'s scope', async () => {
+      assert.strictEqual(timelineOwnerKey({ user: { id: 'account-one' }, ip: '10.0.0.1' }), 'account:account-one');
+      assert.strictEqual(timelineOwnerKey({ ip: '10.0.0.1' }), 'legacy', 'the poll carries no device owner in legacy modes');
+      assert.strictEqual(
+        timelineOwnerKey({ user: { id: 'account-one', sessionToken: 'opaque-session-token' } }),
+        hlsOwnerKey({ user: { id: 'account-one', sessionToken: 'opaque-session-token' } }, 'ignored')
+      );
+      const reads = [];
+      const prepares = [];
+      const routes = await isolatedRoutes({
+        continuousTimeline: (...args) => { reads.push(args); return { durations: [] }; },
+        chapterAudioStatus: async () => ({ ready: true }),
+        prepareContinuousAudioStream: async options => {
+          prepares.push(options);
+          throw Object.assign(new Error('stop'), { statusCode: 404 });
+        }
+      }, { user: { id: 'account-one' } });
+      try {
+        assert.strictEqual((await fetch(`${routes.origin}/api/audio-timeline/session-123456`)).status, 200);
+        assert.deepStrictEqual(reads, [['session-123456', 'account:account-one']]);
+        await (await fetch(`${routes.origin}/api/audio-continuous/book_one/0?session=session-123456`)).text();
+        assert.strictEqual(prepares[0].ownerKey, 'account:account-one', 'the stream registers in the same scope');
+      } finally {
+        await routes.close();
+      }
+    });
+
+    await test('a stream whose book or narration plan changed answers 410, not 500', async () => {
+      for (const code of ['CHAPTER_STRUCTURE_CHANGED', 'CHUNK_PLAN_CHANGED']) {
+        const routes = await isolatedRoutes({
+          chapterAudioStatus: async () => ({ ready: true }),
+          prepareContinuousAudioStream: async () => { throw Object.assign(new Error('changed'), { statusCode: 410, code }); },
+          prepareAudioStream: async () => { throw Object.assign(new Error('changed'), { statusCode: 410, code }); }
+        });
+        try {
+          for (const route of ['audio-continuous', 'audio-stream']) {
+            const response = await fetch(`${routes.origin}/api/${route}/book_one/0`);
+            assert.strictEqual(response.status, 410, `${route} ${code}`);
+            assert.strictEqual((await response.json()).code, code);
+          }
+        } finally {
+          await routes.close();
+        }
+      }
+    });
+
+    await test('chunk status reports quarantine for the pinned narrator it describes', async () => {
+      const resolutions = [];
+      const routes = await isolatedRoutes({
+        chunkStatus: async () => ({ totalChunks: 1, readyChunks: 0, errorChunks: 1, status: 'error' }),
+        resolveTier: async (_bookId, _chapterIndex, requested) => {
+          resolutions.push(requested);
+          const voiceId = typeof requested === 'object' ? requested.voiceId : null;
+          return { tier: 'active', tts: { variantKeyProvider: () => voiceId ? `variant-${voiceId}` : 'default-variant' } };
+        }
+      }, {
+        journal: {
+          listQuarantinedChapters: async () => [{ bookId: 'book_one', chapterIndex: 0, variantKey: 'variant-narrator', attempts: 3 }]
+        }
+      });
+      try {
+        const response = await fetch(`${routes.origin}/api/chunks/book_one/0/status?tier=premium&voiceId=narrator`);
+        assert.strictEqual(response.status, 200);
+        assert.deepStrictEqual(resolutions.at(-1), { tier: 'premium', voiceId: 'narrator' });
+        assert.strictEqual((await response.json()).recovery.quarantined, true);
+      } finally {
+        await routes.close();
+      }
+    });
+
+    await test('an empty chunk file is invalidated in its manifest and re-queued, not just deleted', async () => {
+      const tmp = fs.mkdtempSync(path.join(require('os').tmpdir(), 'xandrio-empty-chunk-'));
+      const chunkPath = path.join(tmp, 'chunk.mp3');
+      fs.writeFileSync(chunkPath, '');
+      const calls = [];
+      const routes = await isolatedRoutes({
+        chunkAccess: async () => ({
+          servedTier: 'premium',
+          voiceId: 'narrator',
+          path: chunkPath,
+          status: 'ready',
+          tts: { invalidateCachedChunk: async (...args) => { calls.push(['invalidate', ...args]); fs.rmSync(chunkPath, { force: true }); } }
+        }),
+        prioritizeChunk: async options => { calls.push(['prioritize', options]); return { success: true }; }
+      });
+      try {
+        const response = await fetch(`${routes.origin}/api/chunks/book_one/2/5`);
+        assert.strictEqual(response.status, 202);
+        assert.deepStrictEqual(calls[0], ['invalidate', 'book_one', 2, 5]);
+        assert.strictEqual(calls[1]?.[0], 'prioritize', 'the regeneration the response promises is requested');
+        assert.deepStrictEqual(calls[1][1], {
+          bookId: 'book_one', chapterIndex: 2, chunkIndex: 5, requestedTier: { tier: 'premium', voiceId: 'narrator' }
+        });
+      } finally {
+        await routes.close();
+        fs.rmSync(tmp, { recursive: true, force: true });
+      }
+    });
+
+    await test('a chapter rebuild retires the book\'s live streams and timelines', () => {
+      const serverSource = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+      const hook = serverSource.slice(serverSource.indexOf('chapterRebuildService = createChapterRebuildService('));
+      const afterCommit = hook.slice(hook.indexOf('afterCommit:'), hook.indexOf('onPostCommitError:'));
+      assert.match(afterCommit, /playbackOrchestrator\.evictBookTimelines\(bookId\)/);
+      assert.match(afterCommit, /hlsAudioStreamer\.evictBook\(bookId\)/);
+    });
+
     // One deadline contract. The client owns abandonment; cancellation is
     // disconnect-driven (servePlaylist aborts on req 'aborted'/res 'close').
     // The server deadline exists only to stop a socket that never closes from

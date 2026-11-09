@@ -5,6 +5,11 @@
 // at the top; module evaluation order guarantees this runs first).
 
 export const API_BASE = window.location.origin;
+// The shell build this code shipped in. scripts/bump-version.mjs keeps it in
+// lockstep with sw.js CACHE_VERSION. The server compares it with its minimum
+// supported build (lib/deployment-origin.js) and answers 409 CLIENT_STALE when
+// this copy is too old to talk to it.
+export const CLIENT_BUILD = 'xandrio-v230';
 
 // ---- Access token (XANDRIO_TOKEN) ----
 // The token is exchanged once for a server-signed, HttpOnly session cookie.
@@ -146,10 +151,20 @@ export function resetUnauthorizedSignal() {
   unauthorizedSignaled = false;
 }
 
+// The server refused this build. One event per page: the handler updates the
+// worker and reloads, or asks first while audio plays.
+let clientStaleSignaled = false;
+function handleClientStale() {
+  if (clientStaleSignaled) return;
+  clientStaleSignaled = true;
+  document.dispatchEvent(new CustomEvent('xandrio:clientstale'));
+}
+
 const __originalFetch = window.fetch.bind(window);
 window.fetch = async (input, init) => {
   const response = await __originalFetch(input, init);
   if (response.status === 401) handleUnauthorized();
+  if (response.status === 409 && response.headers?.get?.('X-Xandrio-Client-Stale') === '1') handleClientStale();
   return response;
 };
 
@@ -189,11 +204,17 @@ export async function loginWithToken(token) {
 }
 
 export async function logout() {
+  const signedOutScope = getOfflineStorageScopeId();
   try {
     await __originalFetch(`${API_BASE}/api/auth/logout`, { method: 'POST', credentials: 'same-origin' });
   } finally {
     setCurrentUser(null, { clearRememberedOfflineScope: true });
     await waitForOfflineScopeTransition();
+    // After the scope fence, so no writer of the old account can recreate
+    // its device-local state. Listeners clear what that account left here.
+    globalThis.dispatchEvent?.(new CustomEvent('xandrio:signedout', {
+      detail: { scope: signedOutScope }
+    }));
   }
 }
 
@@ -276,6 +297,7 @@ export function getCurrentDeviceName() {
 
 export function syncHeaders(extra = {}) {
   const headers = {
+    'X-Xandrio-Build': CLIENT_BUILD,
     'X-Xandrio-Device-Id': getCurrentDeviceId(),
     'X-Xandrio-Device-Name': getCurrentDeviceName(),
     ...extra

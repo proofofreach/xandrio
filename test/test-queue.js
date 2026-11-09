@@ -846,6 +846,8 @@ async function runTests() {
         arrayBuffer: async () => mp3.buffer.slice(mp3.byteOffset, mp3.byteOffset + mp3.byteLength)
       });
 
+      // Fake bytes are unprobeable; an unverifiable take is now rejected.
+      q._probeChunkDurationSeconds = async () => 1;
       let masteredFormat = null;
       q._convertAudioBufferToOutput = async (buffer, inputFormat, outputPath) => {
         masteredFormat = inputFormat;
@@ -876,6 +878,8 @@ async function runTests() {
         arrayBuffer: async () => wav.buffer.slice(wav.byteOffset, wav.byteOffset + wav.byteLength)
       });
 
+      // Fake bytes are unprobeable; an unverifiable take is now rejected.
+      q._probeChunkDurationSeconds = async () => 1;
       let converted = null;
       q._convertWavBufferToOutput = async (buffer, outputPath) => {
         converted = { sameBuffer: buffer.equals(wav), outputPath };
@@ -912,6 +916,8 @@ async function runTests() {
         };
       };
 
+      // Fake bytes are unprobeable; an unverifiable take is now rejected.
+      q._probeChunkDurationSeconds = async () => 1;
       q._convertAudioBufferToOutput = async (buffer, inputFormat, outputPath) => {
         assert.strictEqual(inputFormat, 'mp3');
         await fsp.writeFile(outputPath, buffer);
@@ -1121,6 +1127,8 @@ async function runTests() {
         };
       };
 
+      // Fake bytes are unprobeable; an unverifiable take is now rejected.
+      q._probeChunkDurationSeconds = async () => 1;
       let masteredFormat = null;
       q._convertAudioBufferToOutput = async (buffer, inputFormat, outputPath) => {
         masteredFormat = inputFormat;
@@ -1199,6 +1207,161 @@ async function runTests() {
     assert.strictEqual(filters[apadIdx + 1], 'aresample=24000', 'apad precedes resample');
   });
 
+  await test('maxExpectedChunkSeconds: conservative ceiling by weighted char count', async () => {
+    assert.strictEqual(TTSQueue.maxExpectedChunkSeconds('x'.repeat(270)), 54, '270 chars -> 54s ceiling (5 chars/s)');
+    assert.strictEqual(TTSQueue.maxExpectedChunkSeconds('Chapter 1'), 8, 'tiny heading clamps to 8s');
+    assert.strictEqual(TTSQueue.maxExpectedChunkSeconds('漢'.repeat(100)), 80, 'CJK characters weigh four Latin ones');
+    assert(TTSQueue.maxExpectedChunkSeconds('x'.repeat(280)) > TTSQueue.minExpectedChunkSeconds('x'.repeat(280)) * 5,
+      'ceiling leaves wide headroom above the floor');
+  });
+
+  await test('trailing padding is not counted as speech by the truncation check', async () => {
+    // A final chunk carries CHAPTER_PAUSE_MS (5000 ms). 225 chars have a 5.0 s
+    // floor, so a take with no speech at all used to pass on padding alone.
+    const text = 'x'.repeat(225);
+    const padEndMs = 5000;
+    for (const [label, run] of [
+      ['HTTP', async (q, out) => {
+        q._generateHttpTTSOnce = async (_engine, _text, outputPath) => { await fsp.writeFile(outputPath, Buffer.from('fake')); };
+        return q._generateHttpTTS({ label: 'Test engine' }, text, out, {}, padEndMs);
+      }],
+      ['Edge', async (q, out) => {
+        q._generateEdgeTTSOnce = async ({ outputPath }) => { await fsp.writeFile(outputPath, Buffer.from('fake')); };
+        return q._generateEdgeTTS({ text, outputPath: out, language: 'en', voice: 'en-US-AndrewMultilingualNeural', padEndMs });
+      }]
+    ]) {
+      const q = new TTSQueue({ timeout: 1000 });
+      const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'xandrio-pad-'));
+      const out = path.join(tmpDir, 'sample.mp3');
+      try {
+        q._probeChunkDurationSeconds = async () => 5.0;
+        await assert.rejects(() => run(q, out), /truncated audio \(0\.0s for 225 chars\)/, `${label}: padding-only take is truncated`);
+        assert.strictEqual(fs.existsSync(out), false, `${label}: rejected take is removed`);
+        // Padding plus real speech still passes.
+        q._probeChunkDurationSeconds = async () => 5.0 + 9;
+        const rendered = await run(q, out);
+        assert.strictEqual(rendered.durationSeconds, 14, `${label}: accepted take reports its probed duration`);
+      } finally {
+        await fsp.rm(tmpDir, { recursive: true, force: true });
+      }
+    }
+  });
+
+  await test('overlong (looping) takes are rejected through the retry path', async () => {
+    const text = 'x'.repeat(270); // ceiling: 54s
+    for (const [label, run, countCalls] of [
+      ['HTTP', async (q, out) => q._generateHttpTTS({ label: 'Test engine' }, text, out), q => q._httpCalls],
+      ['Edge', async (q, out) => q._generateEdgeTTS({ text, outputPath: out, language: 'en', voice: 'en-US-AndrewMultilingualNeural' }), q => q._edgeCalls]
+    ]) {
+      const q = new TTSQueue({ timeout: 1000 });
+      q._httpCalls = 0;
+      q._edgeCalls = 0;
+      q._generateHttpTTSOnce = async (_engine, _text, outputPath) => { q._httpCalls++; await fsp.writeFile(outputPath, Buffer.from('fake')); };
+      q._generateEdgeTTSOnce = async ({ outputPath }) => { q._edgeCalls++; await fsp.writeFile(outputPath, Buffer.from('fake')); };
+      const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'xandrio-overlong-'));
+      const out = path.join(tmpDir, 'sample.mp3');
+      try {
+        q._probeChunkDurationSeconds = async () => 200;
+        await assert.rejects(() => run(q, out), /overlong audio \(200\.0s for 270 chars\)/, `${label}: persistent babble rejects`);
+        assert.strictEqual(countCalls(q), 2, `${label}: exactly one retry`);
+        assert.strictEqual(fs.existsSync(out), false, `${label}: babbling take is removed`);
+
+        const durations = [200, 18];
+        q._probeChunkDurationSeconds = async () => durations.shift();
+        const rendered = await run(q, out);
+        assert.strictEqual(countCalls(q), 4, `${label}: one overlong take triggers regeneration`);
+        assert.strictEqual(rendered.durationSeconds, 18, `${label}: recovered take keeps its duration`);
+      } finally {
+        await fsp.rm(tmpDir, { recursive: true, force: true });
+      }
+    }
+  });
+
+  await test('Edge unverifiable takes retry once, then fail without an accepted file', async () => {
+    const q = new TTSQueue({ timeout: 1000 });
+    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'xandrio-edge-unverified-'));
+    const out = path.join(tmpDir, 'sample.mp3');
+    let generateCalls = 0;
+    q._generateEdgeTTSOnce = async ({ outputPath }) => { generateCalls++; await fsp.writeFile(outputPath, Buffer.from('fake')); };
+    q._probeChunkDurationSeconds = async () => null;
+    try {
+      await assert.rejects(
+        () => q._generateEdgeTTS({ text: 'x'.repeat(100), outputPath: out, language: 'en', voice: 'en-US-AndrewMultilingualNeural' }),
+        /duration could not be verified/
+      );
+      assert.strictEqual(generateCalls, 2, 'exactly one retry');
+      assert.strictEqual(fs.existsSync(out), false, 'unverifiable Edge file is removed');
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  await test('complete event carries the probed duration of a generated chunk', async () => {
+    const q = new TTSQueue({ timeout: 1000 });
+    q._generateTTS = async () => ({ durationSeconds: 12.5 });
+    const events = [];
+    q.on('complete', evt => events.push(evt));
+    const jobId = await q.enqueue({ text: 'a long enough chunk of narration text', outputPath: null });
+    await q.waitFor(jobId);
+    assert.strictEqual(events.length, 1);
+    assert.strictEqual(events[0].durationSeconds, 12.5, 'generated chunk reports its decoded duration');
+
+    // A reused output has no fresh probe; the manifest keeps its estimate.
+    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'xandrio-reuse-duration-'));
+    const out = path.join(tmpDir, 'chunk.mp3');
+    try {
+      await fsp.writeFile(out, Buffer.alloc(4000, 1));
+      const reused = new TTSQueue({ timeout: 1000 });
+      reused._generateTTS = async () => { throw new Error('must not generate'); };
+      const reusedEvents = [];
+      reused.on('complete', evt => reusedEvents.push(evt));
+      const reusedId = await reused.enqueue({ text: 'a long enough chunk of narration text', outputPath: out, reuseExistingOutput: true });
+      await reused.waitFor(reusedId);
+      assert.strictEqual(reusedEvents[0].reused, true);
+      assert.strictEqual(reusedEvents[0].durationSeconds, null, 'reused output reports no duration');
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  await test('a failed verified-marker publish retries, then fails the job and removes the output', async () => {
+    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'xandrio-publish-fail-'));
+    const out = path.join(tmpDir, 'book_ch0_chunk0.mp3');
+    const activity = { bookId: 'book', chapterIndex: 0, chunkIndex: 0, variantKey: 'kokoro:am_michael' };
+    const makeQueue = publishVerified => {
+      let publishes = 0;
+      const q = new TTSQueue({
+        timeout: 1000,
+        cacheDir: tmpDir,
+        artifactCache: {
+          reuseExisting: async () => false,
+          resolve: async () => false,
+          publishVerified: async (...args) => { publishes++; return publishVerified(publishes, ...args); }
+        }
+      });
+      q._generateTTS = async (_text, outputPath) => { await fsp.writeFile(outputPath, Buffer.alloc(4000, 1)); };
+      return { q, publishes: () => publishes };
+    };
+    try {
+      // Persistent failure: the job fails (for every engine, not only Nano)
+      // rather than completing with an unmarked chunk on disk.
+      const failing = makeQueue(() => false);
+      const failingId = await failing.q.enqueue({ text: 'a long enough chunk of narration text', outputPath: out, activity, reuseExistingOutput: true, voice: 'kokoro:am_michael' });
+      await assert.rejects(() => failing.q.waitFor(failingId), /publish failed/);
+      assert.strictEqual(failing.publishes(), 3, 'publication is retried before giving up');
+      assert.strictEqual(fs.existsSync(out), false, 'unmarked output is removed so the chunk regenerates');
+
+      // Transient failure: the retry succeeds and the job completes.
+      const flaky = makeQueue(attempt => { if (attempt === 1) throw new Error('EIO'); return true; });
+      const flakyId = await flaky.q.enqueue({ text: 'a long enough chunk of narration text', outputPath: out, activity, reuseExistingOutput: true, voice: 'kokoro:am_michael' });
+      assert.strictEqual(await flaky.q.waitFor(flakyId), out);
+      assert.strictEqual(flaky.publishes(), 2, 'one retry recovered the publish');
+      assert.strictEqual(fs.existsSync(out), true, 'published output is kept');
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   await test('padEndMs threads from enqueue through to the engine call', async () => {
     const q = new TTSQueue({ timeout: 1000 });
     let seenPad = null;
@@ -1249,11 +1412,17 @@ async function runTests() {
       assert.strictEqual(generateCalls, 2, 'short first attempt triggers regeneration');
       assert.strictEqual(fs.existsSync(out), true, 'recovered file kept');
 
-      // Unprobeable duration is accepted (no ffprobe evidence != truncation)
+      // Unprobeable duration is not evidence of good audio: it spends the
+      // same bounded retry budget, then fails without a VERIFIED marker.
       generateCalls = 0;
       q._probeChunkDurationSeconds = async () => null;
-      await q._generateHttpTTS({ label: 'Test engine' }, text, out);
-      assert.strictEqual(generateCalls, 1, 'null probe accepted without retry');
+      await assert.rejects(
+        () => q._generateHttpTTS({ label: 'Test engine' }, text, out),
+        /duration could not be verified/,
+        'unverifiable take rejects after the retry budget'
+      );
+      assert.strictEqual(generateCalls, 2, 'unverifiable take retries once');
+      assert.strictEqual(fs.existsSync(out), false, 'unverifiable file is removed');
     } finally {
       await fsp.rm(tmpDir, { recursive: true, force: true });
     }
@@ -1608,7 +1777,7 @@ async function runTests() {
     const queue = new TTSQueue({ maxConcurrent: 1, cacheDir: dir });
     const probes = [];
     queue._generateEdgeTTSOnce = async () => { await fsp.writeFile(outputPath, Buffer.alloc(4000, 1)); };
-    queue._probeChunkDurationSeconds = async file => { probes.push(['duration', file]); return 30; };
+    queue._probeChunkDurationSeconds = async file => { probes.push(['duration', file]); return 3; };
     queue._probeStaticNoiseProfile = async file => {
       probes.push(['noise', file]);
       return { staticNoise: false, meanSpectralFlatness: 0.1, frameCount: 10 };

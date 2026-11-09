@@ -90,6 +90,35 @@ assertEqual(parsed[0].format, 'EPUB', 'sets EPUB format');
 assert(parsed[0].downloadUrl.startsWith('https://standardebooks.org/ebooks/'), 'resolves relative acquisition URL');
 assert(__test.matchesQuery(parsed[0], 'joyce dubliners'), 'matches title and author query words');
 
+// The id was the sanitized entry id cut at 110 characters, so two long ids
+// sharing a prefix (two translations of one long-titled work) became one
+// book. Ids that fit keep exactly their old form.
+const { isSafeBookId } = require('../lib/request-guards');
+const longBase = `https://standardebooks.org/ebooks/${'leo-tolstoy/'.repeat(4)}war-and-peace-${'x'.repeat(40)}`;
+const twinFeed = ['louise-and-aylmer-maude', 'constance-garnett'].map(translator =>
+  `<entry><id>${longBase}/${translator}</id><title>War and Peace</title>` +
+  `<link rel="http://opds-spec.org/acquisition/open-access" type="application/epub+zip" href="/w/${translator}.epub"/></entry>`).join('');
+const twins = __test.parseOpdsFeed(`<feed>${twinFeed}</feed>`, { source: 'standardebooks', feedUrl: 'https://standardebooks.org/feeds/opds' });
+assert(twins.length === 2 && twins[0].hash !== twins[1].hash, 'long OPDS ids sharing a prefix get distinct book ids');
+assert(twins.every(twin => isSafeBookId(twin.hash)), 'hashed OPDS ids stay valid book ids');
+assertEqual(parsed[0].hash, 'standardebooks-https_standardebooks_org_ebooks_james-joyce_dubliners',
+  'an OPDS id that fits keeps its existing book id');
+const longSource = __test.parseOpdsFeed(feed, { source: `catalog-${'x'.repeat(90)}`, feedUrl: 'https://standardebooks.org/feeds/opds' })[0];
+assert(isSafeBookId(longSource.hash), 'a long provider id cannot push an OPDS book id past 128 characters');
+
+// The entry regex rescanned to the end of the feed from every unclosed
+// <entry, quadratic over the 4 MB feed bound.
+{
+  const hostile = '<entry>'.repeat(570_000);
+  assert(hostile.length >= 3_990_000, 'the hostile feed is the size of the feed bound');
+  const started = process.hrtime.bigint();
+  const blocks = __test.entryBlocks(hostile);
+  const elapsedMs = Number(process.hrtime.bigint() - started) / 1e6;
+  assert(blocks.length === 0 && elapsedMs < 500, `unclosed entries scan linearly (${elapsedMs.toFixed(0)}ms)`);
+  assertDeepEqual(__test.entryBlocks('<entry>a</entry><ENTRY id="2">b</Entry><entryx>c</entry><entry>open'),
+    ['<entry>a</entry>', '<ENTRY id="2">b</Entry>'], 'entry blocks match the previous regex');
+}
+
 const standard = createStandardEbooksProvider({ username: '', password: '' });
 assertEqual(standard.configured(), false, 'the patrons-only Standard Ebooks feed is unconfigured without credentials');
 const configured = createStandardEbooksProvider({ username: 'reader@example.test', password: '' });
@@ -158,6 +187,15 @@ async function securityTests() {
       ['https://catalog.example/feed.xml', 'Basic cmVhZGVyOnNlY3JldA=='],
       ['https://cdn.example/book.epub', undefined]
     ], 'does not send feed credentials to a feed-controlled acquisition origin');
+
+    // The hash becomes the book id; a published entry fixes it.
+    const cdnEntry = __test.parseOpdsFeed(cdnFeed, { source: 'credentialed-download', feedUrl: 'https://catalog.example/feed.xml' })[0];
+    await credentialedFeed.download({ downloadUrl: cdnEntry.downloadUrl, hash: cdnEntry.hash }, path.join(tempDir, 'id.epub'));
+    await assertRejects(
+      credentialedFeed.download({ downloadUrl: cdnEntry.downloadUrl, hash: 'a'.repeat(32) }, path.join(tempDir, 'squat.epub')),
+      /does not match its book identifier/,
+      'refuses a published download filed under another book id'
+    );
 
     // The client supplies downloadUrl on POST /api/download, so naming this
     // provider must not turn the server into a fetcher for arbitrary hosts.

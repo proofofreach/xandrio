@@ -940,6 +940,159 @@ function harness(overrides = {}) {
     await iterator.return();
   });
 
+  const threeChapterBook = () => [
+    { title: 'One', type: 'chapter', text: 'Chapter one has enough narration to speak aloud.' },
+    { title: 'Two', type: 'chapter', text: 'Chapter two has enough narration to speak aloud.' },
+    { title: 'Three', type: 'chapter', text: 'Chapter three has enough narration to speak aloud.' }
+  ];
+  const pcmPerSecond = () => {
+    const { MASTERING_POLICY } = require('../lib/audio-quality');
+    return MASTERING_POLICY.sampleRate * MASTERING_POLICY.channels * 2;
+  };
+
+  await test('a continuous stream fails when its book is renumbered under it, and a rebuild evicts its timelines', async () => {
+    const chapters = threeChapterBook();
+    const { orchestrator } = harness({ chapters, audioReady: true });
+    const source = await orchestrator.prepareContinuousAudioStream({ bookId: 'book', chapterIndex: 0, sessionId: 'renumbered' });
+    const iterator = source.iterateInputs();
+    assert.strictEqual((await iterator.next()).value.chapterIndex, 0);
+    // A rebuild inserts a chapter: index 1 is now different text, and the
+    // end index and timeline were computed for the old numbering.
+    chapters.splice(1, 0, { title: 'Interlude', type: 'chapter', text: 'An interlude that was not in the book before.' });
+    await assert.rejects(iterator.next(), error => error.statusCode === 410 && error.code === 'CHAPTER_STRUCTURE_CHANGED');
+
+    // A chapter the stream would reach no longer exists.
+    const shrinking = threeChapterBook();
+    const shrunk = harness({ chapters: shrinking, audioReady: true });
+    const short = (await shrunk.orchestrator.prepareContinuousAudioStream({ bookId: 'book', chapterIndex: 1 })).iterateInputs();
+    await short.next();
+    shrinking.pop();
+    await assert.rejects(short.next(), error => error.code === 'CHAPTER_STRUCTURE_CHANGED');
+
+    await orchestrator.prepareContinuousAudioStream({ bookId: 'other', chapterIndex: 0, sessionId: 'other-book' });
+    assert.strictEqual(orchestrator.evictBookTimelines('book'), 1);
+    assert.strictEqual(orchestrator.continuousTimeline('renumbered'), null);
+    assert.notStrictEqual(orchestrator.continuousTimeline('other-book'), null, 'other books keep their timelines');
+  });
+
+  await test('a stream paused ahead of its listener rejects its next chunk after a re-chunk, but not after a resumed generation', async () => {
+    const plan = (totalChunks, textLength) => ({
+      totalChunks, textLength,
+      chunks: Array.from({ length: totalChunks }, (_value, index) => ({ index, status: 'ready' }))
+    });
+    const open = async () => {
+      const { orchestrator, tts } = harness({ chapters: threeChapterBook(), ready: false });
+      const state = { manifest: plan(2, 80), textEpoch: 0 };
+      tts.getChapterManifest = () => state.manifest;
+      tts._chapterTextEpoch = () => state.textEpoch;
+      const source = await orchestrator.prepareContinuousAudioStream({
+        bookId: 'book', chapterIndex: 0, endChapterIndex: 0, requestedTier: 'instant'
+      });
+      const iterator = source.iterateInputs();
+      assert.strictEqual((await iterator.next()).value.path, '/cache/book-0-0.mp3');
+      return { state, iterator };
+    };
+
+    // The iterator is suspended at its yield (an HLS lead pause): no wait is
+    // pending, so no cancellation event can reach it. A pronunciation repair
+    // re-plans the chapter, and another listener regenerates it.
+    const repaired = await open();
+    repaired.state.textEpoch = 1;
+    repaired.state.manifest = plan(3, 95);
+    await assert.rejects(repaired.iterator.next(), error => error.statusCode === 410 && error.code === 'CHUNK_PLAN_CHANGED');
+
+    // Same text epoch, different chunking (a chunk-size change).
+    const resized = await open();
+    resized.state.manifest = plan(3, 80);
+    await assert.rejects(resized.iterator.next(), error => error.code === 'CHUNK_PLAN_CHANGED');
+
+    // Resuming failed chunks installs a new manifest object for the same plan.
+    const resumed = await open();
+    resumed.state.manifest = plan(2, 80);
+    const next = await resumed.iterator.next();
+    assert.strictEqual(next.value.path, '/cache/book-0-1.mp3');
+    assert.strictEqual(next.value.lastInChapter, true);
+
+    // The single-chapter progressive source shares the same wait.
+    const { orchestrator, tts } = harness({ ready: false });
+    const state = { manifest: plan(2, 80) };
+    tts.getChapterManifest = () => state.manifest;
+    const progressive = await orchestrator.prepareAudioStream({ bookId: 'book', chapterIndex: 0, requestedTier: 'instant' });
+    assert.strictEqual(await progressive.waitForChunk(0), '/cache/book-0-0.mp3');
+    state.manifest = plan(4, 120);
+    await assert.rejects(progressive.waitForChunk(1), error => error.code === 'CHUNK_PLAN_CHANGED');
+  });
+
+  await test('carried durations and resumes are tied to narration, chapter structure and text epoch', async () => {
+    const refused = error => error.statusCode === 410 && error.code === 'CONTINUOUS_RESUME_UNAVAILABLE';
+    const setup = () => {
+      const chapters = threeChapterBook();
+      const context = harness({ chapters, ready: false, audioReady: true });
+      let epoch = 0;
+      context.tts._chapterTextEpoch = () => epoch;
+      const open = (sessionId, extra = {}) => context.orchestrator.prepareContinuousAudioStream({
+        bookId: 'book', chapterIndex: 0, sessionId, requestedTier: 'instant', ...extra
+      });
+      const measure = async sessionId => (await open(sessionId)).onInputDecoded(
+        { chapterIndex: 0, lastInChapter: true }, 100 * pcmPerSecond()
+      );
+      return { ...context, chapters, open, measure, bumpEpoch: () => { epoch += 1; } };
+    };
+
+    // Control: the same narration, structure and text resume and carry.
+    const same = setup();
+    await same.measure('same');
+    assert.strictEqual((await same.open('same', { resumeSeconds: 30, requireResume: true })).resumeAccepted, true);
+    assert.strictEqual(same.orchestrator.continuousTimeline('same').durations[0], 100);
+
+    // A different narrator: the held bytes are another voice's audio.
+    const voice = setup();
+    await voice.measure('voice');
+    await assert.rejects(voice.open('voice', { requestedTier: 'premium', resumeSeconds: 30, requireResume: true }), refused);
+    await voice.open('voice', { requestedTier: 'premium' });
+    assert.strictEqual(voice.orchestrator.continuousTimeline('voice').durations[0], null,
+      'another voice\'s chapter length is not carried');
+
+    // A text change (pronunciation repair) re-narrates the chapter.
+    const text = setup();
+    await text.measure('text');
+    text.bumpEpoch();
+    await assert.rejects(text.open('text', { resumeSeconds: 30, requireResume: true }), refused);
+    await text.open('text');
+    assert.strictEqual(text.orchestrator.continuousTimeline('text').durations[0], null);
+
+    // A metadata refresh changed the chapter structure.
+    const structure = setup();
+    await structure.measure('structure');
+    structure.chapters[2].title = 'Three (revised)';
+    await assert.rejects(structure.open('structure', { resumeSeconds: 30, requireResume: true }), refused);
+    await structure.open('structure');
+    assert.strictEqual(structure.orchestrator.continuousTimeline('structure').durations[0], null);
+    assert.ok(structure.orchestrator.continuousTimeline('structure').chapterStructureKey);
+  });
+
+  await test('continuous timelines are scoped to the owner that created them', async () => {
+    const { orchestrator } = harness({ chapters: threeChapterBook(), audioReady: true });
+    const source = await orchestrator.prepareContinuousAudioStream({
+      bookId: 'book', chapterIndex: 0, sessionId: 'guessable', ownerKey: 'account:a', startOffsetSeconds: 12
+    });
+    source.onInputDecoded({ chapterIndex: 0, lastInChapter: true }, 100 * pcmPerSecond());
+    assert.strictEqual(orchestrator.continuousTimeline('guessable', 'account:a').durations[0], 100);
+    assert.strictEqual(orchestrator.continuousTimeline('guessable', 'account:b'), null,
+      'another owner cannot read it by session id');
+    assert.strictEqual(orchestrator.continuousTimeline('guessable'), null);
+
+    // Another owner reusing the id neither replaces it nor resumes from it.
+    await assert.rejects(orchestrator.prepareContinuousAudioStream({
+      bookId: 'book', chapterIndex: 0, sessionId: 'guessable', ownerKey: 'account:b', resumeSeconds: 30, requireResume: true
+    }), error => error.code === 'CONTINUOUS_RESUME_UNAVAILABLE');
+    await orchestrator.prepareContinuousAudioStream({
+      bookId: 'book', chapterIndex: 0, sessionId: 'guessable', ownerKey: 'account:b', startOffsetSeconds: 40
+    });
+    assert.strictEqual(orchestrator.continuousTimeline('guessable', 'account:a').startOffsetSeconds, 12);
+    assert.strictEqual(orchestrator.continuousTimeline('guessable', 'account:b').startOffsetSeconds, 40);
+  });
+
   console.log(`playback-orchestrator tests: ${passed} passed, ${failed} failed`);
   if (failed) process.exitCode = 1;
 })();

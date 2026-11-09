@@ -227,7 +227,59 @@ function readThenDrop(port, minBytes) {
     assert.strictEqual((plan.firstByte - headerBytes) % 480, 0, 'snapped to the frame grid after the header');
     assert(plan.firstByte <= 8197746 && 8197746 - plan.firstByte < 480);
     assert.strictEqual(plan.seconds, (plan.firstByte - headerBytes) / BYTES_PER_SECOND);
-    assert.strictEqual(planResumeFromRange(`bytes=${25 * 3600 * BYTES_PER_SECOND}-`, 'mp3', headerBytes), null, 'beyond the offset horizon');
+    // Past the horizon the reconnect is still a reconnect: a null plan would
+    // answer 200 and replay the stream from its start.
+    assert.deepStrictEqual(
+      planResumeFromRange(`bytes=${25 * 3600 * BYTES_PER_SECOND}-`, 'mp3', headerBytes),
+      { unavailable: true },
+      'beyond the offset horizon'
+    );
+  });
+
+  await test('a reconnect past the resume horizon gets 410 from the route, not a 200 replay', async () => {
+    const prepared = [];
+    const app = express();
+    registerPlaybackRoutes(app, {
+      playbackOrchestrator: {
+        resolveTier: async () => ({ servedTier: 'instant' }),
+        chapterAudioStatus: async () => ({ ready: true, servedTier: 'instant' }),
+        prepareContinuousAudioStream: async options => {
+          prepared.push(options);
+          return makeSource(fixture, { resumeAccepted: false });
+        }
+      },
+      ttsForTier: () => ({ variantKeyProvider: () => 'test' }),
+      generationJournal: { listQuarantinedChapters: async () => [] },
+      chapterAudioStreamer: createChapterAudioStreamer({ serveAudioFile }),
+      hlsAudioStreamer: createHlsAudioStreamer({ serveAudioFile, rootDir: dir }),
+      serveAudioFile,
+      sendServerError(res, _error, message) {
+        if (!res.headersSent) res.status(500).json({ error: message });
+        else res.destroy();
+      },
+      fs: fsp,
+      getBookChapters: async () => ({ chapters: [{ text: 'Chapter zero with narration text.' }] })
+    });
+    const server = await listen(app);
+    try {
+      const response = await new Promise((resolve, reject) => {
+        http.get({
+          host: '127.0.0.1',
+          port: server.address().port,
+          path: '/api/audio-continuous/book_resume/0',
+          headers: { Range: `bytes=${headerBytes + 25 * 3600 * BYTES_PER_SECOND}-` }
+        }, res => {
+          const chunks = [];
+          res.on('data', chunk => chunks.push(chunk));
+          res.on('end', () => resolve({ status: res.statusCode, body: Buffer.concat(chunks) }));
+        }).on('error', reject);
+      });
+      assert.strictEqual(response.status, 410);
+      assert.strictEqual(JSON.parse(response.body).code, 'CONTINUOUS_RESUME_UNAVAILABLE');
+      assert.strictEqual(prepared.length, 0, 'no stream is prepared for a reconnect that cannot resume');
+    } finally {
+      await close(server);
+    }
   });
 
   await test('no Range, bytes=0- and a bounded probe all get the unchanged 200 response', async () => {

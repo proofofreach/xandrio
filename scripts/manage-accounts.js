@@ -4,7 +4,7 @@
 // Usage:
 //   node scripts/manage-accounts.js add <username> [--admin] [--display-name "Name"] [--profile usr_xxx] [--absorb-default]
 //   node scripts/manage-accounts.js passwd <username>
-//   node scripts/manage-accounts.js disable <username>
+//   node scripts/manage-accounts.js disable <username> [--force]
 //   node scripts/manage-accounts.js enable <username>
 //   node scripts/manage-accounts.js list
 //
@@ -16,11 +16,13 @@
 // users.json so its positions/bookmarks/settings attach without migration.
 // --absorb-default merges the legacy shared "default" user's data into the
 // new account (existing account data wins on conflicts).
+// --force lets `disable` lock out the last enabled admin; recover with
+// `enable` from this CLI, which needs only filesystem access.
 
 const path = require('path');
 const readline = require('readline');
 const jsonStore = require('../lib/json-store');
-const { createAccountsStore, normalizeUsername } = require('../lib/accounts');
+const { createAccountsStore, normalizeUsername, LAST_ADMIN_ERROR_CODE } = require('../lib/accounts');
 const { createSessionStore } = require('../lib/auth');
 const { createUserLibraryState } = require('../lib/user-library-state');
 const shelves = require('../lib/shelves');
@@ -45,7 +47,7 @@ function usage(message) {
   console.error('Usage:');
   console.error('  manage-accounts.js add <username> [--admin] [--display-name "Name"] [--profile usr_xxx] [--absorb-default]');
   console.error('  manage-accounts.js passwd <username>');
-  console.error('  manage-accounts.js disable <username> | enable <username>');
+  console.error('  manage-accounts.js disable <username> [--force] | enable <username>');
   console.error('  manage-accounts.js list');
   process.exit(1);
 }
@@ -148,9 +150,14 @@ async function cmdPasswd(username) {
   console.log(`Password updated for "${account.username}"; all sessions revoked.`);
 }
 
-async function cmdSetDisabled(username, disabled) {
+async function cmdSetDisabled(username, disabled, flags = {}) {
   const account = await requireAccount(username);
-  await accounts.setDisabled(account.id, disabled);
+  try {
+    await accounts.setDisabled(account.id, disabled, { force: Boolean(flags.force) });
+  } catch (err) {
+    if (err.code !== LAST_ADMIN_ERROR_CODE) throw err;
+    usage(`"${account.username}" is the last enabled admin; pass --force to disable it anyway`);
+  }
   if (disabled) await sessions.destroyAllForUser(account.id);
   console.log(`Account "${account.username}" ${disabled ? 'disabled; all sessions revoked' : 'enabled'}.`);
 }
@@ -168,12 +175,13 @@ async function cmdList() {
 }
 
 function parseFlags(args) {
-  const flags = { admin: false, absorbDefault: false, profile: null, displayName: null };
+  const flags = { admin: false, absorbDefault: false, force: false, profile: null, displayName: null };
   const positional = [];
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === '--admin') flags.admin = true;
     else if (arg === '--absorb-default') flags.absorbDefault = true;
+    else if (arg === '--force') flags.force = true;
     else if (arg === '--profile') flags.profile = args[++i];
     else if (arg === '--display-name') flags.displayName = args[++i];
     else if (arg.startsWith('--')) usage(`Unknown flag: ${arg}`);
@@ -198,7 +206,7 @@ function parseFlags(args) {
       break;
     case 'disable':
       if (!username) usage('disable requires a username');
-      await cmdSetDisabled(username, true);
+      await cmdSetDisabled(username, true, flags);
       break;
     case 'enable':
       if (!username) usage('enable requires a username');

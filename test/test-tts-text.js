@@ -1,5 +1,7 @@
 const assert = require('node:assert/strict');
 const { prepareTtsText, splitOversizedText, planNarration } = require('../lib/tts-text');
+const { planNarrationForPolicy } = require('../lib/tts-split-policy');
+const { adaptNarrationForEngine, ENGINE_DEFINITIONS } = require('../lib/tts-engine-adapters');
 
 let passed = 0;
 let failed = 0;
@@ -196,6 +198,46 @@ test('narrates Roman chapter markers as cardinal numbers', () => {
     prepareTtsText('XIV: A Difficult Choice'),
     'fourteen: A Difficult Choice'
   );
+});
+
+test('reads a Roman marker only at the chapter start or as a whole heading block', () => {
+  const prose = 'He paused. I-I think so, he said. I: The first thing is that. V. The fifth one came. X-rays were taken.';
+  const text = `IV\n\n${prose}\n\nI—I froze in the doorway and could not move my feet at all for a long time, and the cold came in.\n\nII. THE RETURN\n\nIII\n\nV : Lucifer is fallen.`;
+  const expected = `four\n\n${prose}\n\nI—I froze in the doorway and could not move my feet at all for a long time, and the cold came in.\n\ntwo. THE Return\n\nthree\n\nV: Lucifer is fallen.`;
+  // Planning re-prepares each block, sentence and split part. None of them
+  // starts the document, so the planned chunks must keep the same words.
+  for (const [policy, maxChars] of [['legacy-v1', 40], ['legacy-v1', 4000], ['ramp-v1', 40], ['hybrid-v1', 4000], ['paragraph-v1', 40]]) {
+    const plan = planNarrationForPolicy(text, { policy, firstMaxChars: maxChars, maxChars });
+    const spoken = plan.chunks.map(chunk => chunk.text).join(' ').replace(/\s+/g, ' ');
+    assert.equal(spoken, expected.replace(/\s+/g, ' '), `${policy} at ${maxChars}`);
+  }
+  assert.equal(prepareTtsText(text), expected);
+  // A planned chunk is a fragment at the synthesis boundary too.
+  assert.equal(prepareTtsText('I—I froze.', { documentStart: false }), 'I—I froze.');
+});
+
+test('keeps procedural rule-set citations distinct from page citations', () => {
+  assert.equal(
+    prepareTtsText('Under Fed. R. Civ. P. 12(b)(6), Fed. R. Crim. P. 11, Fed.R.App.P. 4(a), Fed. R. Bankr. P. 7001, and Tex. R. Civ. P. 91a, see p. 12.'),
+    'Under Fed. R. Civ. P. twelve, paragraph B, subsection six, Fed. R. Crim. P. eleven, Fed. R. App. P. four, paragraph A, Fed. R. Bankr. P. seven thousand one, and Tex. R. Civ. P. ninety-one A, see page twelve.'
+  );
+});
+
+test('places each heading cue on the heading itself', () => {
+  for (const definition of ENGINE_DEFINITIONS) {
+    const cue = definition.narration.headingCue;
+    const segments = [
+      { kind: 'paragraph', text: 'As back in Chapter Two, the plan held.' },
+      { kind: 'heading', text: 'Chapter Two' },
+      { kind: 'paragraph', text: 'The night was long.' }
+    ];
+    const text = segments.map(segment => segment.text).join('\n\n');
+    assert.equal(
+      adaptNarrationForEngine(definition.id, text, { segments, pauseIntent: 'sentence' }).text,
+      `As back in Chapter Two, the plan held.\n\nChapter Two${cue}\n\nThe night was long.`,
+      definition.id
+    );
+  }
 });
 
 test('does not reinterpret unmarked identifiers or ambiguous numeric forms', () => {

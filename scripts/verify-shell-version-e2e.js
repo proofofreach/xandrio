@@ -8,7 +8,7 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { createHash } = require('node:crypto');
 const root = path.resolve(__dirname, '..');
-const paths = ['public/index.html', 'public/sw.js', 'public/js/features/offline.js'];
+const paths = ['public/index.html', 'public/sw.js', 'public/js/features/offline.js', 'public/js/api.js'];
 const baseline = process.argv.includes('--baseline');
 const output = path.join(root, 'output/ui-rewrite-fixes', `shell-version-${baseline ? 'before' : 'after'}.json`);
 const versions = sw => Object.fromEntries([...sw.match(/const ASSET_VERSIONS = \{([\s\S]*?)\};/)[1].matchAll(/['"]([^'"]+)['"]:\s*(\d+)/g)].map(([, asset, value]) => [asset, Number(value)]));
@@ -27,16 +27,20 @@ const digest = text => createHash('sha256').update(text).digest('hex');
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'xandrio-shell-version-'));
     try {
       const files = { ...original }; mutate?.(files);
+      // The whole shell is copied because the helper fingerprints every precached file.
+      await fs.cp(path.join(root, 'public'), path.join(dir, 'public'), { recursive: true });
       for (const [file, text] of Object.entries(files)) { await fs.mkdir(path.dirname(path.join(dir, file)), { recursive: true }); await fs.writeFile(path.join(dir, file), text); }
-      await fs.mkdir(path.join(dir, 'scripts')); await fs.writeFile(path.join(dir, 'scripts/bump-version.mjs'), helper);
+      await fs.mkdir(path.join(dir, 'scripts/lib'), { recursive: true }); await fs.writeFile(path.join(dir, 'scripts/bump-version.mjs'), helper);
+      await fs.copyFile(path.join(root, 'scripts/lib/app-shell-fingerprint.js'), path.join(dir, 'scripts/lib/app-shell-fingerprint.js'));
       const run = spawnSync(process.execPath, ['scripts/bump-version.mjs', ...args], { cwd: dir, encoding: 'utf8', timeout: 5000 });
       const after = Object.fromEntries(await Promise.all(paths.map(async file => [file, await fs.readFile(path.join(dir, file), 'utf8')])));
+      const fingerprint = await fs.readFile(path.join(dir, 'scripts/app-shell-fingerprint.json'), 'utf8').then(JSON.parse, () => null);
       try {
-        verify({ files, after, run }); report.checks.push({ name, passed: true, stdout: run.stdout, stderr: run.stderr, beforeHashes: Object.fromEntries(paths.map(file => [file, digest(files[file])])), afterHashes: Object.fromEntries(paths.map(file => [file, digest(after[file])])) }); console.log(`PASS ${name}`);
+        verify({ files, after, run, dir, fingerprint }); report.checks.push({ name, passed: true, stdout: run.stdout, stderr: run.stderr, beforeHashes: Object.fromEntries(paths.map(file => [file, digest(files[file])])), afterHashes: Object.fromEntries(paths.map(file => [file, digest(after[file])])) }); console.log(`PASS ${name}`);
       } catch (error) { report.checks.push({ name, passed: false, error: error.message, stdout: run.stdout, stderr: run.stderr }); console.log(`FAIL ${name}: ${error.message}`); }
     } finally { await fs.rm(dir, { recursive: true, force: true }); }
   }
-  function successful({ after, run }, targets) {
+  function successful({ after, run, dir, fingerprint }, targets) {
     assert.equal(run.status, 0, run.stderr);
     const next = versions(after['public/sw.js']);
     assert.equal(Object.keys(next).length, Object.keys(initial).length);
@@ -48,7 +52,12 @@ const digest = text => createHash('sha256').update(text).digest('hex');
     const old = original['public/sw.js'].match(/const CACHE_VERSION = 'xandrio-v(\d+)';/);
     assert.equal(Number(cache[2]), Number(old[1]) + 1);
     assert(after['public/js/features/offline.js'].includes(`EXPECTED_OFFLINE_SW_VERSION = '${cache[1]}'`));
+    assert(after['public/js/api.js'].includes(`CLIENT_BUILD = '${cache[1]}'`), 'client build follows CACHE_VERSION');
+    const { computeAppShellFingerprint } = require('./lib/app-shell-fingerprint');
+    assert.equal(fingerprint?.cacheVersion, cache[1], 'fingerprint records the new CACHE_VERSION');
+    assert.equal(fingerprint?.sha256, computeAppShellFingerprint(path.join(dir, 'public')).sha256, 'fingerprint matches the bumped shell');
   }
+  function rejectWithoutFingerprint(result) { rejectWithoutWrites(result); assert.equal(result.fingerprint, null, 'failed validation recorded a fingerprint'); }
   function rejectWithoutWrites({ files, after, run }) { assert.notEqual(run.status, 0, 'expected refusal'); assert.deepEqual(after, files, 'failed validation changed files'); }
   await check('default bumps every versioned shell asset', [], null, result => successful(result, new Set(Object.keys(initial))));
   await check('explicit new stylesheet bumps only that asset', ['player.css'], null, result => successful(result, new Set(['/player.css'])));
@@ -57,6 +66,8 @@ const digest = text => createHash('sha256').update(text).digest('hex');
   await check('map mismatch rejects without writes', [], files => { files['public/sw.js'] = files['public/sw.js'].replace(/('\/player.css':\s*)\d+/, '$1999999'); }, rejectWithoutWrites);
   await check('missing shell entry rejects without writes', ['app.js'], files => { files['public/sw.js'] = files['public/sw.js'].replace("  versionedAsset('/player.css'),\n", ''); }, rejectWithoutWrites);
   await check('controller pin mismatch rejects without writes', [], files => { files['public/js/features/offline.js'] = files['public/js/features/offline.js'].replace(/EXPECTED_OFFLINE_SW_VERSION = '[^']+'/, "EXPECTED_OFFLINE_SW_VERSION = 'xandrio-v0'"); }, rejectWithoutWrites);
+  await check('client build mismatch rejects without writes', [], files => { files['public/js/api.js'] = files['public/js/api.js'].replace(/CLIENT_BUILD = '[^']+'/, "CLIENT_BUILD = 'xandrio-v0'"); }, rejectWithoutWrites);
+  await check('missing shell file rejects without writes', [], files => { files['public/sw.js'] = files['public/sw.js'].replace("  '/js/router.js',\n", "  '/js/router.js',\n  '/js/missing-shell-module.js',\n"); }, rejectWithoutFingerprint);
   report.passed = report.checks.every(check => check.passed);
   await fs.mkdir(path.dirname(output), { recursive: true }); await fs.writeFile(output, JSON.stringify(report, null, 2));
   console.log(`Shell version CLI: ${report.checks.filter(check => check.passed).length}/${report.checks.length} passed; ${output}`);
