@@ -341,6 +341,14 @@ async function runFixtureTests() {
     ['Bound Header', 'Page 2 of 2', '', ...repeatedLines('More readable prose keeps the text dense.', 12)]
   ], async pdfPath => {
     const realFs = require('fs').promises;
+    // pdfjs 6 (the outline reader) breaks a later pdf-parse (pdfjs 5) in the
+    // same thread, so each parse runs in its own worker and both succeed.
+    const unbounded = await __test.runPdfExtractionCandidates(pdfPath, 'Bound', realFs, {}, undefined);
+    const unboundedParse = unbounded.candidates.find(candidate => candidate.name === 'pdf-parse-normalized');
+    assert(unboundedParse?.ok, `pdf-parse runs after the outline read (${unboundedParse?.error || 'missing'})`);
+    assert(/Readable prose for the bounded parser check/.test(
+      unboundedParse.sourcePages.map(page => page.text).join('\n')), 'pdf-parse returns the page text');
+
     const timedOut = await __test.runPdfExtractionCandidates(pdfPath, 'Bound', realFs, {}, undefined, { timeoutMs: 1 });
     const timedOutParse = timedOut.candidates.find(candidate => candidate.name === 'pdf-parse-normalized');
     assert(/timed out after 1ms/.test(timedOutParse?.error || ''), 'a pdf-parse pass past the deadline is stopped');
