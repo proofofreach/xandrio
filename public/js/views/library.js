@@ -1,4 +1,5 @@
-import { apiGet, apiSend, getCurrentUser } from '../api.js';
+import { apiGet, apiSend, canClaimLegacyOfflineStorage, getCurrentUser, getOfflineStorageScopeId } from '../api.js';
+import { readPlaybackCheckpoint } from '../playback-checkpoints.mjs';
 import { escapeHTML, safeAttr, relativeTime, coverImageHTML, cssEscape, formatTime } from '../util/format.js';
 import { bookTimeLeft, chapterDurationsFor, effectiveSpeed, formatDuration, formatSpeed, sameSpeed } from '../util/time-left.mjs';
 import { deviceState, narrationState, primaryState, statusLineVariants, gridTimeVariants } from '../util/library-status.mjs';
@@ -700,7 +701,9 @@ export async function loadLibrary() {
         data = { books: offlineBooks, shelf: [] };
         positions = Object.fromEntries(offlineBooks.map(book => [
           book.id,
-          readJSON(`xandrio_playback_checkpoint:${book.id}`, null)
+          readPlaybackCheckpoint(getOfflineStorageScopeId(), book.id, {
+            claimLegacy: canClaimLegacyOfflineStorage()
+          })
         ]));
       } else {
         libraryContentState = 'error';

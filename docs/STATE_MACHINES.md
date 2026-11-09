@@ -353,7 +353,7 @@ Only a rebuild of the same book counts as busy; other lock holders are waited fo
 
 ## 6. Ledger: reachable invalid states
 
-Severity: H = data loss, wrong position or wasted compute for everyone; M = narrow window or behind a flag; L = leak or cosmetic. Every fixed item has a regression test that failed before its fix. Rows 1–28 come from the first audit pass (#56–#62). Rows 29–46 are the candidates from #63, confirmed and fixed in the second pass.
+Severity: H = data loss, wrong position or wasted compute for everyone; M = narrow window or behind a flag; L = leak or cosmetic. Every fixed item has a regression test that failed before its fix. Rows 1–28 come from the first audit pass (#56–#62). Rows 29–46 are the candidates from #63, confirmed and fixed in the second pass. Rows 47–89 come from the third pass (2026-11-08), which looked for invariants the code relied on but did not enforce. Those rows have no issue number. The commit is the reference.
 
 | # | Area | Invalid state or transition | Sev | Issue | Status |
 |---|---|---|---|---|---|
@@ -404,11 +404,60 @@ Severity: H = data loss, wrong position or wasted compute for everyone; M = narr
 | 44 | deletion | An old deletion-feed entry deletes a re-imported book's new offline copy. `listSince` now drops a deletion superseded by a later `addedAt` | M | #63 | fixed `804f4a9` |
 | 45 | import | A crash mid-import leaves `cache/<id>.*` with no record. PID-tagged import claims (`lib/import-claims.js`) are now swept at start. A path is deleted only if its claim owner is dead, `books.json` is readable, and no record refers to it | L | #63 | fixed `ac25e46` |
 | 46 | streaming | Fixed-path chapter audio (`/api/audio`, `/api/audio-ios`, the stream fallback) had no validator, so an `If-Range` resume across a rewrite could splice encodes. A strong ETag and Last-Modified are now sent, and `If-Range` is honoured | L | #63 | partly fixed `f4429ea`; see O-S3 |
+| 47 | dedupe | A title test divided by the smaller token set, and the work key dropped subtitles, so "Dune Messiah" was refused as a duplicate of "Dune" | H | — | fixed `c23d017` |
+| 48 | narration | The Roman chapter-marker rule ran again on each sentence, so "I—I froze" was read as "one—I froze" | H | — | fixed `9868278` |
+| 49 | narration | An unspeakable block merged into a chunk, then the speakable filter dropped the merged chunk, prose included | H | — | fixed `dcd93ca` |
+| 50 | generation | The truncation check counted end padding as speech (all engines except Nano), and had no upper bound | H | — | fixed `4fbe7d6` |
+| 51 | client | The `CACHE_VERSION` guard read only `git diff HEAD`, so it passed on every clean tree; `9917423` never reached installed apps. The guard now checks a content fingerprint of `APP_SHELL` | H | — | fixed `3738c2c` |
+| 52 | narration | Coalescing could exceed the split policy's length limit (595 chars at 280) | L | — | fixed `2ff9fc8` |
+| 53 | narration | The heading cue replaced the first mention of the heading text, not the heading | L | — | fixed `e99315c` |
+| 54 | narration | The page-cite rule read "Fed. R. Civ. P. 12" as a page | L | — | fixed `2678e9a` |
+| 55 | generation | An unprobeable take was accepted and marked verified; a failed marker publish left an unmarked chunk | L | — | fixed `4fbe7d6` |
+| 56 | generation | Chunk durations came from file size (+~94 ms per chunk), so seeks drifted against the stitched file | M | — | fixed `1c84c3c` |
+| 57 | cache | The variant key omitted sampling, gain, model and pause overrides. Defaults keep their keys byte for byte; the voice tuning sidecar is compared through the marker | M | — | fixed `6c2d4c8` |
+| 58 | cache | A failed `.texthash` write was swallowed; stitched chapter files outlived an invalidated chunk | M | — | fixed `880cc81` |
+| 59 | rebuild | Rebuild reuse accepted only v1 markers, while producers write v2 | M | — | fixed `eb99939` |
+| 60 | generation | Startup replayed journal entries for deleted books and out-of-range chapters | M | — | fixed `5dab756` |
+| 61 | sync | A position or bookmark outside the book (index ≥ `chapterCount`, timestamp in ms, `"1e300"`) was stored and froze forward-only progress | M | — | fixed `ab58bf6`, `55f93e2` |
+| 62 | sync | An unmappable position from an earlier chapter layout blocked every forward-only write | M | — | fixed `ebfaed5` |
+| 63 | bookmarks | Bookmarks from an earlier layout were served unfiltered; they are now flagged `stale` and not seekable | L | — | fixed `ed1e64f` |
+| 64 | structure | Text moving between chapters under the same structure key kept positions on the old text | M | — | fixed `449d573` |
+| 65 | streaming | A live stream continued across a rebuild, a re-chunk or a narrator change; it now ends with 410 and the client reloads | M | — | fixed `78466ca` |
+| 66 | streaming | Carried timeline durations were not tied to the narrator, structure or text epoch; timelines were keyed by session id alone | M | — | fixed `78466ca` |
+| 67 | streaming | A reconnect past the 24 h horizon got a 200 replay instead of 410 | M | — | fixed `4191db1` |
+| 68 | streaming | A non-LSF MP3 bitrate broke the frame math | L | — | fixed `0f64143` |
+| 69 | streaming | The 0-byte chunk guard deleted the file but kept the manifest entry; quarantine used the wrong tier | L | — | fixed `547c917` |
+| 70 | cache | Audio use was recorded for any `/api/audio-*` path before routing; a save also erased the stored history | M | — | fixed `35cdad6` |
+| 71 | import | The book id was the client's hash, with no tie to the bytes or the provider | M | — | fixed `c50eb52`, `b2bd22f` |
+| 72 | import | The EPUB size guard trusted declared sizes and passed ZIP64 | M | — | fixed `c76d429` |
+| 73 | import | pdf-parse and pdf.js ran in-process with no deadline or heap cap | M | — | fixed `ea6d095` |
+| 74 | extraction | Same-named spine files in different folders collided | M | — | fixed `1faea2b` |
+| 75 | extraction | Same-file TOC anchors out of document order were narrated twice, or dropped the file head | M | — | fixed `bc0448f` |
+| 76 | metadata | EPUB metadata strings had no length cap | M | — | fixed `e5e69de` |
+| 77 | metadata | Remote enrichment was used without a title or author match | M | — | fixed `8c16fe8` |
+| 78 | search | OPDS and IA ids collided after sanitizing, or exceeded 128 chars; the OPDS entry scan was quadratic | L | — | fixed `8d9ae58`, `12d2a20` |
+| 79 | accounts | The last-admin check ran outside the store update | L | — | fixed `6e33deb` |
+| 80 | accounts | Account ids were not validated as sync ids; an invalid id fell back to `default` | L | — | fixed `b87504a` |
+| 81 | auth | Owner checks used `role !== 'member'` (fails open); offline preparation skipped the member gate | L | — | fixed `f506713` |
+| 82 | runtime | No lock held one server per `DATA_DIR`; startup recovery could roll back a live rebuild | M | — | fixed `4c775d9`, `ccc32ce` |
+| 83 | runtime | An empty or wrong `DATA_DIR` in production gave everyone admin (trusted-LAN) and still passed `/ready` | H | — | fixed `a15e7f0`, `ccc32ce` |
+| 84 | deploy | Rollback ran an older release on newer data; there is now `DATA_DIR/format-version` | M | — | fixed `4c775d9`, `ccc32ce` |
+| 85 | rebuild | Rebuild journals and backups outlived their book and could replay onto a re-import; journal versions were never read | M | — | fixed `8139dd5` |
+| 86 | persistence | Rebuild bypassed the critical books store; temp names repeated across PIDs; no directory fsync; xbook cache keyed on mtime and size | L | — | fixed `9a5e5c9`, `8b72373`, `6f8ef6b` |
+| 87 | deletion | One failed library-state step left the others behind | L | — | fixed `d75969d` |
+| 88 | runtime | Node, ffmpeg and ffprobe were never checked; trust-proxy misconfiguration was silent | L | — | fixed `4c775d9`, `4cee8b4` |
+| 89 | client | Device-local checkpoints were shared across accounts; stale clients could not be detected | M | — | fixed `fc7ba5d`, `5a71248` |
 
 ### Open
 
 | ID | Item |
 |---|---|
+| O-I1 | Clients at v226 or older send no `X-Xandrio-Build`, so `MIN_CLIENT_BUILD` cannot reach them. It protects v227 and later only. |
+| O-I2 | When a TTS engine runs on another host, Node cannot read its sampling settings. A change there does not change the variant key. `/health` reports the effective values. |
+| O-I3 | `chapterTextIdentity` is recorded on a book's first open after `449d573`. A boundary shift that ships in the same deploy is not detected. |
+| O-I4 | A write under an unknown old structure key is still clamped into range, not rejected. A forged key with a huge index lands on the last chapter. |
+| O-I5 | The book egress proxy re-resolves hostnames, so the SSRF guard assumes a trusted proxy (documented in `29ad960`). |
+| O-I6 | pdf-parse has never run in production: after the outline reader loads pdfjs 6, pdf-parse fails its pdfjs 5 version check. `ea6d095` keeps that order so PDF output stays identical. Fixing it (a separate worker for each parser) can change the chosen candidate, and so the chapters, of some PDFs. Owner decision. |
 | O-S3 | Media elements send no `If-Range` (confirmed in Chromium; Safari not verified). A playing element can still splice a same-length rewrite of a fixed-path chapter. A different length is rejected. A full fix needs an artifact-pinned URL (a 302 to `?artifact=`, plus 412 on a mismatch) or a new path for each rewrite. Do not ship either without an iOS device test. Low risk: it needs a rewrite of the same length during one playback. |
 
 ### Rejected (guard found; do not re-investigate)

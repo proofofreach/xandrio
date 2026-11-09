@@ -16,12 +16,13 @@ async function test(name, callback) {
   }
 }
 
-function harness(rebuildResult) {
+function harness(rebuildResult, options = { user: { role: 'admin' } }) {
+  const { user } = options;
   const routes = new Map();
   const app = new Proxy({}, {
     get: (_target, method) => (path, ...handlers) => routes.set(`${String(method).toUpperCase()} ${path}`, handlers.at(-1))
   });
-  const books = { book_1: { id: 'book_1', path: '/cache/book_1.xbook.json' } };
+  const books = { book_1: { id: 'book_1', path: '/cache/book_1.xbook.json', addedBy: 'owner' } };
   registerLibraryBookRoutes(app, {
     booksFile: 'books.json',
     loadJSON: async () => structuredClone(books),
@@ -42,7 +43,7 @@ function harness(rebuildResult) {
       setHeader(name, value) { this.headers[name] = value; }
     };
     await routes.get('POST /api/book/:bookId/rebuild-chapters')(
-      { params: { bookId: 'book_1' }, query: {}, user: { role: 'admin' } }, res);
+      { params: { bookId: 'book_1' }, query: {}, user }, res);
     return res;
   };
 }
@@ -65,6 +66,15 @@ function harness(rebuildResult) {
     assert.equal(response.statusCode, 200);
     assert.equal(response.body.success, true);
     assert.equal(response.body.changed, false);
+  });
+
+  await test('only an admin or the owner may rebuild; unknown roles are not privileged', async () => {
+    for (const user of [undefined, {}, { id: 'someone-else' }, { id: 'someone-else', role: 'editor' }, { id: 'someone-else', role: 'member' }]) {
+      const response = await harness({ changed: true }, { user })();
+      assert.equal(response.statusCode, 403, `user ${JSON.stringify(user)} must be refused`);
+    }
+    assert.equal((await harness({ changed: true }, { user: { id: 'owner', role: 'member' } })()).statusCode, 200);
+    assert.equal((await harness({ changed: true }, { user: { id: null, role: 'admin', lan: true } })()).statusCode, 200);
   });
 
   console.log(`rebuild-chapters route tests: ${passed} passed, ${failed} failed`);

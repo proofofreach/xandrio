@@ -249,12 +249,23 @@ failed restart or readiness check automatically restores the previous symlink
 and service. Receipts are stored under `/opt/xandrio/deployments/`, and the
 last five releases are retained for rollback.
 
+Each release directory links `data/` and `cache/` to the shared directories;
+the deploy script asserts those links (and that `ln` did not create a nested
+`data/data`) before switching the live symlink. The server writes
+`data/format-version` on first start and refuses to start against a directory
+written by a newer release. If a failed release raised that version, the deploy
+script refuses the automatic rollback, writes a `rollback-refused` receipt, and
+prints the manual steps (fix forward, or restore the pre-deploy data backup and
+re-link the previous release) instead of letting older code read newer data.
+
 `scripts/deploy-prod.sh` is an internal exact-revision primitive rather than an
 operator shortcut. Its explicit form is
 `scripts/deploy-prod.sh --root /opt/xandrio --origin https://example.com <40-char-sha>`;
 `--dry-run` prints the immutable-release plan without changing production.
 
-To roll back, stop Xandrio, check out the previous signed tag or select the previous image digest, restore the matching native directories or named-volume archive, and start the service. Do not run two versions against the same writable storage. The release workflow tests candidate restart persistence on both OCI architectures and, when a prior `stable` image exists, starts the prior image, candidate, and prior image again against the same disposable volumes.
+To roll back, stop Xandrio, check out the previous signed tag or select the previous image digest, restore the matching native directories or named-volume archive, and start the service. Do not run two versions against the same writable storage: the server takes an exclusive lock at `data/runtime/server.lock` on startup, waits up to 20 seconds (`XANDRIO_INSTANCE_LOCK_WAIT_MS`) for a previous process to exit, and otherwise exits with the owner's PID. A lock left by a crashed process is detected and reclaimed automatically.
+
+Startup also checks the Node.js version against `package.json` `engines` (too old refuses to start; newer only warns) and probes `ffmpeg -version` and `ffprobe -version`. `/ready` returns 503 while either binary is missing, when a critical store that was once initialized has gone missing, and, on production deployments (`NODE_ENV=production` or an HTTPS canonical origin), while no critical store has ever been initialized in `DATA_DIR`. A fresh production install becomes ready after its first write, normally the first admin account created with `scripts/manage-accounts.js add <user> --admin`. Production deployments also refuse trusted-LAN mode (no token and no accounts) unless `XANDRIO_ALLOW_TRUSTED_LAN=1` is set. The release workflow tests candidate restart persistence on both OCI architectures and, when a prior `stable` image exists, starts the prior image, candidate, and prior image again against the same disposable volumes.
 
 Browser offline data is separate from the server backup and is local to that
 browser/PWA profile. Downloads are namespaced by account within a shared

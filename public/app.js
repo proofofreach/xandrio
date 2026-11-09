@@ -1,6 +1,7 @@
 // api.js must be first: importing it installs the 401 token interceptor
 // before anything else can fetch.
-import { API_BASE, apiGet, apiSend, fetchAuthStatus, getCurrentUserId, getCurrentDeviceId, getCurrentDeviceName, getOfflineStorageScopeId, serverNow } from './js/api.js';
+import { API_BASE, CLIENT_BUILD, apiGet, apiSend, canClaimLegacyOfflineStorage, fetchAuthStatus, getCurrentUserId, getCurrentDeviceId, getCurrentDeviceName, getOfflineStorageScopeId, serverNow } from './js/api.js';
+import { clearPlaybackCheckpoints, readPlaybackCheckpoint, writePlaybackCheckpoint } from './js/playback-checkpoints.mjs';
 import { initLogin, showLoginGate } from './js/views/login.js';
 import { initRouter, navigateTo, syncPlayerHash, clearSheetStack } from './js/router.js';
 import { formatDuration, escapeHTML, cleanDisplayText, isIOSLike, needsReliablePlayback, coverPlaceholderSrc } from './js/util/format.js';
@@ -32,6 +33,8 @@ import { isPlayableChapter, findPlayableChapterIndex, resolvePlayableChapterInde
 import { applyRewindForResume, createSmartRewindController } from './js/smart-rewind.mjs';
 import { initListeningQueue, loadListeningQueue, getListeningQueueBooks, addToListeningQueue, advanceListeningQueue, getBookPlaybackSettings, saveBookPlaybackSettings } from './js/features/listening-queue.js';
 import { initDeploymentGuard } from './js/deployment-origin.js';
+import { createClientStalenessMonitor } from './js/client-staleness.mjs';
+import { applyAppUpdate } from './js/sw-update.mjs';
 import { createPlaybackHealth, platformClass, sendPlaybackHealthReport } from './js/playback-health.mjs';
 import { startPageExitMonitor } from './js/page-exit-monitor.mjs';
 import { createPlayerStatus, describePlaybackFailure, isPlayerFailureState } from './js/player-status.mjs';
@@ -100,7 +103,6 @@ function retryPlayerFailure() {
 globalThis.document?.addEventListener?.('xandrio:playerretry', () => { void retryPlayerFailure(); });
 
 // API_BASE and sync identity now live in js/api.js
-const PLAYBACK_CHECKPOINT_PREFIX = 'xandrio_playback_checkpoint:';
 const PLAYBACK_EVENT_LEDGER_KEY = 'xandrio_playback_event_ledger';
 const PLAYBACK_EVENT_LEDGER_LIMIT = 80;
 const CHECKPOINT_SAVE_MIN_INTERVAL_MS = 1000;
@@ -1137,6 +1139,33 @@ function applyPlaybackSelection(selection) {
   if (selection.reliability) setPlaybackReliabilityState(...selection.reliability);
 }
 
+// A stale shell is moved forward without interrupting audio: a refused build
+// updates at once only while nothing plays, and a newer server build is
+// offered when the app returns to the foreground.
+function initClientStaleness() {
+  const runUpdate = () => {
+    checkpointPlayback();
+    return applyAppUpdate();
+  };
+  const monitor = createClientStalenessMonitor({
+    clientBuild: CLIENT_BUILD,
+    fetchDeployment: () => apiGet('/api/deployment', { timeoutMs: 3000, cache: 'no-store' }),
+    isPlaying: () => Boolean(chunkPlayer?.isPlaying),
+    applyUpdate: runUpdate,
+    promptUpdate: reason => showToast(
+      reason === 'stale'
+        ? 'Xandrio must update to keep working.'
+        : 'A new version of Xandrio is available.',
+      '',
+      { key: 'client-update', actionLabel: 'Update', onAction: () => void runUpdate(), duration: 15000 }
+    )
+  });
+  document.addEventListener('xandrio:clientstale', () => { void monitor.handleClientStale(); });
+  document.addEventListener('visibilitychange', () => {
+    void monitor.handleVisibilityChange(document.visibilityState);
+  });
+}
+
 // Initialize when DOM is ready
 document.addEventListener('DOMContentLoaded', async () => {
   initCoverImages();
@@ -1146,6 +1175,8 @@ document.addEventListener('DOMContentLoaded', async () => {
       if (updated.serviceWorkerAllowed) void registerServiceWorker();
     }
   });
+
+  initClientStaleness();
 
   // Sign-in gate. When a session later expires mid-playback (any 401), pause
   // so the local checkpoint survives, then the gate rises over the app.
@@ -2091,6 +2122,10 @@ function cancelPendingBookOpen() {
   openBookController?.abort();
   openBookController = null;
 }
+// A signed-out account's checkpoints must not survive for the next account.
+window.addEventListener('xandrio:signedout', event => {
+  clearPlaybackCheckpoints(event.detail?.scope);
+});
 window.addEventListener('xandrio:authscopechange', () => {
   cancelPendingBookOpen();
   openBookToken++;
@@ -3156,10 +3191,6 @@ function chooseFreshestPosition(localPosition, serverPosition) {
   return checkpointUpdatedAtMs(localPosition) >= checkpointUpdatedAtMs(serverPosition) ? localPosition : serverPosition;
 }
 
-function checkpointKey(bookId = currentBook?.id) {
-  return bookId ? `${PLAYBACK_CHECKPOINT_PREFIX}${bookId}` : null;
-}
-
 function buildPlaybackCheckpoint(options = {}) {
   const checkpoint = playbackSession.buildCheckpoint({
     ...options,
@@ -3173,22 +3204,22 @@ function checkpointPlayback(options = {}) {
   const now = Date.now();
   if (options.throttle && now - lastCheckpointSaveAt < CHECKPOINT_SAVE_MIN_INTERVAL_MS) return;
   const checkpoint = buildPlaybackCheckpoint(options);
-  const key = checkpointKey(checkpoint?.bookId);
-  if (!checkpoint || !key) return;
-  try {
-    writeJSON(key, checkpoint);
+  if (!checkpoint) return;
+  // Checkpoints are partitioned by account: another account's local progress
+  // must never win chooseFreshestPosition and be force-saved as this one's.
+  if (writePlaybackCheckpoint(getOfflineStorageScopeId(), checkpoint)) {
     lastCheckpointSaveAt = now;
-  } catch (err) {
-    console.warn('Failed to checkpoint playback:', err);
+  } else {
+    console.warn('Failed to checkpoint playback');
   }
 }
 
 function getLocalPlaybackCheckpoint(bookId) {
-  const key = checkpointKey(bookId);
-  if (!key) return null;
   try {
-    const parsed = readJSON(key, null);
-    if (!parsed || parsed.bookId !== bookId) return null;
+    const parsed = readPlaybackCheckpoint(getOfflineStorageScopeId(), bookId, {
+      claimLegacy: canClaimLegacyOfflineStorage()
+    });
+    if (!parsed) return null;
     if (!Number.isInteger(parsed.chapterIndex) || parsed.chapterIndex < 0) return null;
     if (Number.isInteger(parsed.chunk) && !Number.isInteger(parsed.chunkIndex)) parsed.chunkIndex = parsed.chunk;
     if (!Number.isFinite(parsed.chunkTime)) parsed.chunkTime = 0;

@@ -1,6 +1,7 @@
 import { API_BASE, apiSend, canClaimLegacyOfflineStorage, getOfflineStorageScopeId, syncHeaders } from '../api.js';
 import { escapeHTML, formatDuration, relativeTime } from '../util/format.js';
 import { readJSON, writeJSON } from '../util/storage.js';
+import { removePlaybackCheckpoint } from '../playback-checkpoints.mjs';
 import { showToast, showUndoToast } from '../ui/toast.js';
 import { confirmSheet } from '../ui/confirm.js';
 import { planRollingOfflineWindow } from './rolling-offline.mjs';
@@ -27,7 +28,7 @@ const OFFLINE_CONTRACT_MARKER = 'x-xandrio-offline-contract';
  * with OFFLINE_ROUTE_CONTRACT_VERSION instead of tying downloads to a build id.
  * This value MUST equal CACHE_VERSION in public/sw.js.
  */
-export const EXPECTED_OFFLINE_SW_VERSION = 'xandrio-v226';
+export const EXPECTED_OFFLINE_SW_VERSION = 'xandrio-v230';
 export const MINIMUM_OFFLINE_ROUTE_CONTRACT = 1;
 const BLOCK_OFFLINE_ROUTE_CONTRACT = 2;
 // A chapter is only ever invalidated after this many playback failures whose
@@ -85,6 +86,7 @@ let preparationPollTimer = null;
 const rollingCompletions = new Map();
 const legacyCacheMigrations = new Map();
 const deletionReconciliations = new Map();
+const PERMANENT_POSITION_REJECTIONS = new Set([400, 404, 422]);
 const pendingPositionFlushes = new Map();
 const pendingPositionFlushControllers = new Map();
 let certifiedOfflineController = null;
@@ -3659,7 +3661,7 @@ export async function removeOfflineBook(bookId, options = {}) {
     const titleEntries = await deleteMatchingCacheEntries(OFFLINE_TITLE_CACHE, '/api/cover', id);
     if (options.removePlaybackState) {
       localStorage.removeItem(`xandrio_book_meta:${id}`);
-      localStorage.removeItem(`xandrio_playback_checkpoint:${id}`);
+      removePlaybackCheckpoint(offlineScopeId(), id);
       removePendingPositionsForBook(id);
     }
     if (options.render !== false) renderOfflineState();
@@ -3679,7 +3681,7 @@ export async function removeOfflineBook(bookId, options = {}) {
   saveOfflineManifest(manifest);
   if (options.removePlaybackState) {
     localStorage.removeItem(`xandrio_book_meta:${id}`);
-    localStorage.removeItem(`xandrio_playback_checkpoint:${id}`);
+    removePlaybackCheckpoint(offlineScopeId(), id);
     removePendingPositionsForBook(id);
   }
   if (options.render !== false) renderOfflineState();
@@ -3764,8 +3766,16 @@ export function flushPendingPositions() {
         if (Array.isArray(current)) {
           writeJSON(key, current.filter(item => item?.__pendingQueueId !== __pendingQueueId));
         }
-      } catch {
-        // Failed and aborted requests remain durable for a later retry.
+      } catch (error) {
+        // Failed and aborted requests remain durable for a later retry. A
+        // position the server rejects as invalid, or for a book it no longer
+        // has, can never succeed, so it is dropped rather than retried forever.
+        if (PERMANENT_POSITION_REJECTIONS.has(error?.status)) {
+          const current = readJSON(key, []);
+          if (Array.isArray(current)) {
+            writeJSON(key, current.filter(item => item?.__pendingQueueId !== position.__pendingQueueId));
+          }
+        }
       }
     }
   })().finally(() => {

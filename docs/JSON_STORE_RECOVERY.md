@@ -58,3 +58,14 @@ npm run recover:json -- restore /data/books.json /data/books.json.backups/CANDID
 Start the application and verify the recovered library. The former current
 file remains in `/data/books.json.backups` for rollback. Backups contain
 application data and must be protected like the primary store.
+
+## Data format version
+
+`DATA_DIR/format-version` holds one integer (currently `1`), written by the
+server on first start (`lib/data-format-version.js`). A release that changes a
+store's on-disk shape bumps `DATA_FORMAT_VERSION`; the server raises the file in
+place when its code is newer and refuses to start when the file is newer than
+its code (`DATA_FORMAT_VERSION_TOO_NEW`). `scripts/deploy-prod.sh` reads the same
+file before an automatic rollback and refuses to roll back to a release that
+supports a lower version. Restore the file together with the stores it
+describes.

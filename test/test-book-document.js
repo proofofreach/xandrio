@@ -625,6 +625,30 @@ section('Format dispatch, metadata, and covers');
   assert(await primed.primeExtractedChapters('/library/primed.xbook.json', importedChapters) === false,
     'never primes an XBook artifact path');
 
+  // EPUB metadata comes from the attacker-written OPF and is persisted to
+  // books.json. It now carries the same per-field caps as Kindle metadata.
+  {
+    const JSZip = require('jszip');
+    const { BOOK_METADATA_MAX_CHARS } = require('../lib/kindle-extraction');
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'xandrio-epub-metadata-caps-'));
+    try {
+      const zip = new JSZip();
+      zip.file('mimetype', 'application/epub+zip', { compression: 'STORE' });
+      zip.file('META-INF/container.xml', '<?xml version="1.0"?><container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>');
+      zip.file('content.opf', `<?xml version="1.0"?><package version="2.0" xmlns="http://www.idpf.org/2007/opf"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>${'T'.repeat(5000)}</dc:title><dc:creator>${'A'.repeat(5000)}</dc:creator><dc:publisher>${'P'.repeat(5000)}</dc:publisher><dc:language>${'e'.repeat(500)}</dc:language><dc:description>${'D'.repeat(60000)}</dc:description></metadata><manifest><item id="c" href="c.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="c"/></spine></package>`);
+      zip.file('c.xhtml', '<html><body><p>Text.</p></body></html>');
+      const epubPath = path.join(directory, 'caps.epub');
+      await fs.writeFile(epubPath, await zip.generateAsync({ type: 'nodebuffer' }));
+      const capped = await createBookDocument({ log: { log() {}, error() {} } }).extractMetadata(epubPath);
+      for (const field of ['title', 'author', 'publisher', 'language', 'description']) {
+        assert(typeof capped[field] === 'string' && capped[field].length === BOOK_METADATA_MAX_CHARS[field],
+          `caps EPUB ${field} at ${BOOK_METADATA_MAX_CHARS[field]} characters`);
+      }
+    } finally {
+      await fs.rm(directory, { recursive: true, force: true });
+    }
+  }
+
   console.log(`\nBook Document tests: ${passed} passed, ${failed} failed`);
   if (failed) process.exit(1);
 })().catch(err => {

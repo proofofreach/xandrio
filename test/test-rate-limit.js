@@ -1,5 +1,5 @@
 const assert = require('assert');
-const { createRateLimitMiddleware, defaultGroups } = require('../lib/rate-limit');
+const { createRateLimitMiddleware, defaultGroups, proxyTrustWarning } = require('../lib/rate-limit');
 const { defaultConcurrencyGroups } = require('../lib/concurrency-limit');
 
 let passed = 0;
@@ -97,6 +97,16 @@ test('the rate-limit and concurrency-limit tts groups classify the same paths id
       `rate-limit and concurrency tts groups disagree on ${path}`
     );
   }
+});
+
+
+test('warns when an HTTPS origin is served from loopback without a trusted proxy', () => {
+  const warning = proxyTrustWarning({ canonicalOrigin: 'https://reader.example.com', host: '127.0.0.1', trustProxy: false });
+  assert(/XANDRIO_TRUST_PROXY/.test(warning) && /one rate-limit bucket/.test(warning));
+  assert.strictEqual(proxyTrustWarning({ canonicalOrigin: 'https://reader.example.com', host: '127.0.0.1', trustProxy: 1 }), null);
+  assert.strictEqual(proxyTrustWarning({ canonicalOrigin: 'https://reader.example.com', host: '0.0.0.0', trustProxy: false }), null);
+  assert.strictEqual(proxyTrustWarning({ canonicalOrigin: '', host: '127.0.0.1', trustProxy: false }), null);
+  assert.strictEqual(proxyTrustWarning({ canonicalOrigin: 'http://localhost:8181', host: '127.0.0.1', trustProxy: false }), null);
 });
 
 console.log(`\nrate-limit tests: ${passed} passed, ${failed} failed`);

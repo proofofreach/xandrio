@@ -104,6 +104,16 @@ all DNS answers and every redirect, pins the selected address in the connector,
 preserves the URL authority for TLS/Host, and bounds response bytes and duration.
 No proxy is introduced for this path.
 
+When `BOOK_PROXY_URL` is set, book-acquisition requests tunnel through that
+egress proxy instead. Xandrio still checks that every DNS answer for the host
+is public, but the CONNECT authority is the hostname, so the proxy resolves it
+again inside its own network. Xandrio's address pin does not hold on this path:
+a DNS answer that changes between the two resolutions reaches whatever the
+proxy's resolver returns. A literal-IP authority would close this gap, but the
+far-side CDNs reject or bot-wall such tunnels. The proxy is therefore trusted
+infrastructure: its network must not reach private services, and its resolver
+must be the operator's.
+
 
 ### Tool-free guide inference
 

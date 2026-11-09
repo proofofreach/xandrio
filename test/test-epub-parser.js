@@ -394,7 +394,103 @@ async function createPageScanFixture({ numbered = true, authoredToc = false, pag
   return { ...fixture, documents };
 }
 
+// Builds an EPUB from { 'OEBPS/path': content } with an NCX at ncxPath.
+async function writeEpubFixture(prefix, { spine, ncxPath = 'OEBPS/toc.ncx', navPoints, files }) {
+  const JSZip = require('jszip');
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
+  const zip = new JSZip();
+  zip.file('mimetype', 'application/epub+zip', { compression: 'STORE' });
+  zip.file('META-INF/container.xml', `<?xml version="1.0"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>`);
+  const relativeNcx = ncxPath.replace(/^OEBPS\//, '');
+  const manifest = spine.map((href, index) => `<item id="s${index}" href="${href}" media-type="application/xhtml+xml"/>`).join('');
+  zip.file('OEBPS/content.opf', `<?xml version="1.0" encoding="utf-8"?>
+<package version="2.0" xmlns="http://www.idpf.org/2007/opf"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>${prefix}</dc:title><dc:creator>Fixture Author</dc:creator><dc:language>en</dc:language></metadata><manifest>${manifest}<item id="ncx" href="${relativeNcx}" media-type="application/x-dtbncx+xml"/></manifest><spine toc="ncx">${spine.map((_, index) => `<itemref idref="s${index}"/>`).join('')}</spine></package>`);
+  zip.file(ncxPath, `<?xml version="1.0" encoding="UTF-8"?>
+<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/"><navMap>${navPoints.map(([title, src], index) =>
+    `<navPoint id="n${index}" playOrder="${index + 1}"><navLabel><text>${title}</text></navLabel><content src="${src}"/></navPoint>`).join('')}</navMap></ncx>`);
+  for (const [name, content] of Object.entries(files)) zip.file(name, content);
+  const epubPath = path.join(directory, 'fixture.epub');
+  await fs.writeFile(epubPath, await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' }));
+  return { directory, epubPath };
+}
+
+const fixtureProse = label => `${label} prose continues for narration. `.repeat(40);
+
 (async () => {
+  // Matching spine and TOC by file name made part1/ch01.xhtml and
+  // part2/ch01.xhtml one file: the second part's entries resolved to the
+  // first part's files, were dropped as duplicate targets, and the book fell
+  // back to spine order under the first part's titles.
+  const sameNameFixture = await writeEpubFixture('xandrio-epub-same-name-', {
+    spine: ['part1/ch01.xhtml', 'part1/ch02.xhtml', 'part2/ch01.xhtml', 'part2/ch02.xhtml'],
+    ncxPath: 'OEBPS/nav/toc.ncx',
+    navPoints: [
+      ['Arrival', '../part1/ch01.xhtml'],
+      ['Departure', '../part1/ch02.xhtml'],
+      ['Return', '../part2/ch01.xhtml'],
+      ['Farewell', '../part2/ch02.xhtml']
+    ],
+    files: Object.fromEntries([
+      ['part1/ch01.xhtml', 'Arrival'], ['part1/ch02.xhtml', 'Departure'],
+      ['part2/ch01.xhtml', 'Return'], ['part2/ch02.xhtml', 'Farewell']
+    ].map(([file, title]) => [`OEBPS/${file}`, `<html><body><p>${fixtureProse(title)}</p></body></html>`]))
+  });
+  try {
+    const chapters = await extractChapters(sameNameFixture.epubPath);
+    assert.deepEqual(chapters.map(ch => ch.title), ['Arrival', 'Departure', 'Return', 'Farewell'],
+      'same-named files in different directories resolve to their own TOC entries');
+    for (const chapter of chapters) {
+      assert.match(chapter.text, new RegExp(`^${chapter.title} prose`),
+        `${chapter.title} carries its own file's text`);
+    }
+    console.log('Same-name spine file regression: 5 passed, 0 failed');
+  } finally { await fs.rm(sameNameFixture.directory, { recursive: true, force: true }); }
+
+  // Same-file TOC anchors were trusted to be in document order and never
+  // checked for coverage: "#gamma" listed before "#beta" narrated beta and
+  // gamma twice, and a mid-file first anchor after a whole-file entry dropped
+  // the file's head.
+  const countOf = (chapters, phrase) => chapters.map(ch => ch.text).join(' ').split(phrase).length - 1;
+  const outOfOrderFixture = await writeEpubFixture('xandrio-epub-anchor-order-', {
+    spine: ['book.xhtml'],
+    navPoints: [['Alpha', 'book.xhtml#alpha'], ['Gamma', 'book.xhtml#gamma'], ['Beta', 'book.xhtml#beta']],
+    files: {
+      'OEBPS/book.xhtml': `<html><body><div id="alpha"><p>${fixtureProse('Alpha')}</p></div>` +
+        `<div id="beta"><p>${fixtureProse('Beta')}</p></div><div id="gamma"><p>${fixtureProse('Gamma')}</p></div></body></html>`
+    }
+  });
+  try {
+    const chapters = await extractChapters(outOfOrderFixture.epubPath);
+    assert.deepEqual(chapters.map(ch => ch.title), ['Alpha', 'Beta', 'Gamma'],
+      'same-file anchors listed out of order are narrated in document order');
+    for (const label of ['Alpha', 'Beta', 'Gamma']) {
+      assert.equal(countOf(chapters, `${label} prose continues`), 40, `${label} text is narrated exactly once`);
+    }
+  } finally { await fs.rm(outOfOrderFixture.directory, { recursive: true, force: true }); }
+
+  const headFixture = await writeEpubFixture('xandrio-epub-anchor-head-', {
+    spine: ['opening.xhtml', 'body.xhtml'],
+    navPoints: [['Opening', 'opening.xhtml'], ['Second', 'body.xhtml#second'], ['Third', 'body.xhtml#third'],
+      ['Fourth', 'body.xhtml#fourth']],
+    files: {
+      'OEBPS/opening.xhtml': `<html><body><p>${fixtureProse('Opening')}</p></body></html>`,
+      'OEBPS/body.xhtml': `<html><body><p>${fixtureProse('Carryover')}</p><div id="second"><p>${fixtureProse('Second')}</p></div>` +
+        `<div id="third"><p>${fixtureProse('Third')}</p></div><div id="fourth"><p>${fixtureProse('Fourth')}</p></div></body></html>`
+    }
+  });
+  try {
+    const chapters = await extractChapters(headFixture.epubPath);
+    assert.deepEqual(chapters.map(ch => ch.title), ['Opening', 'Second', 'Third', 'Fourth']);
+    assert.equal(countOf(chapters, 'Carryover prose continues'), 40,
+      'the file head before its first anchor is kept after a whole-file entry');
+    assert.match(chapters[1].text, /^Carryover prose[\s\S]*Second prose/, 'the head joins the first anchored entry');
+    for (const label of ['Opening', 'Second', 'Third', 'Fourth']) {
+      assert.equal(countOf(chapters, `${label} prose continues`), 40, `${label} text is narrated exactly once`);
+    }
+    console.log('Same-file anchor coverage regression: 12 passed, 0 failed');
+  } finally { await fs.rm(headFixture.directory, { recursive: true, force: true }); }
+
   const headingFixture = await createHeadingOnlyTocFixture();
   try {
     const chapters = await extractChapters(headingFixture.epubPath);

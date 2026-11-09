@@ -4992,6 +4992,10 @@ body.has-mini-player #settings-view {
   color: var(--text-secondary);
   margin-top: 2px;
 }
+/* A bookmark from an earlier chapter list is listed but is not a jump target. */
+.bookmark-row.bookmark-row-stale { cursor: default; }
+@media (hover: hover) { .bookmark-row.bookmark-row-stale:hover { background: transparent; } }
+.bookmark-row-stale .bookmark-row-title { color: var(--text-secondary); }
 .bookmark-delete-btn {
   width: 32px;
   height: 32px;
@@ -6278,6 +6282,11 @@ body.login-gate-open { overflow: hidden; }
 /* Import status stays available while the reader moves between views. */
 .import-activity { width: calc(100% - 32px); margin: 16px auto; max-width: 1200px; }
 .import-activity[hidden] { display: none; }
+/* The card sits above the views, so it clears the notch instead of the view
+   below it; otherwise its top slides under the status bar. */
+#import-activity:not([hidden]) { margin-top: max(16px, var(--safe-top)); }
+#import-activity:not([hidden]) ~ .view:not(#player-view) { padding-top: 16px; }
+#import-activity:not([hidden]) ~ #player-view .player-topbar { padding-top: 8px; }
 .import-activity-card { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 16px; margin-bottom: 8px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
 .import-activity-card > div:first-child { min-width: 0; }
 .import-activity-card strong { overflow-wrap: anywhere; }

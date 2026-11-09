@@ -49,7 +49,9 @@ const {
   normalizeAuthorForDisplay,
   resolveMetadataSeed,
   scoreOpenLibraryDoc,
-  resolveOpenLibraryIdentity
+  resolveOpenLibraryIdentity,
+  enrichMetadataFromOpenLibrary,
+  enrichMetadataFromGoogleBooks
 } = require('../lib/metadata-service');
 const {
   normalizePdfText,
@@ -1556,6 +1558,45 @@ section('16. Import validation');
     openLibraryWorkKey: '/works/OL123W'
   });
   assertEqual(olDuplicate.id, 'a', 'Duplicate detection prefers Open Library work key matches');
+
+  // Sequels share the first book's tokens. The smaller-set overlap scored
+  // "Dune" against "Dune Messiah" as 1.0, and the subtitle-free work key made
+  // every "Series: Volume" title one book, so a sequel import returned the
+  // first book instead.
+  const herbert = 'Frank Herbert';
+  for (const sequel of ['Dune Messiah', 'Children of Dune', 'God Emperor of Dune']) {
+    assertEqual(findDuplicateBook({ a: { id: 'a', title: 'Dune', author: herbert } },
+      { id: 'b', title: sequel, author: herbert }), null,
+    `Duplicate detection keeps "${sequel}" apart from "Dune"`);
+    assertEqual(findDuplicateBook({ a: { id: 'a', title: sequel, author: herbert } },
+      { id: 'b', title: 'Dune', author: herbert }), null,
+    `Duplicate detection keeps "Dune" apart from an existing "${sequel}"`);
+  }
+  const zahnHeir = 'Star Wars: Heir to the Empire';
+  const zahnForce = 'Star Wars: Dark Force Rising';
+  assertEqual(findDuplicateBook({
+    a: { id: 'a', title: zahnHeir, author: 'Timothy Zahn', workKey: canonicalWorkKey(zahnHeir, 'Timothy Zahn') }
+  }, { id: 'b', title: zahnForce, author: 'Timothy Zahn' }), null,
+  'A shared stored work key does not merge two subtitled books of one series');
+  for (const variant of ['DUNE', 'Dune.', 'Dune (Dune Chronicles, Book 1)', 'Dune: Deluxe Edition']) {
+    assertEqual(findDuplicateBook({ a: { id: 'a', title: 'Dune', author: herbert } },
+      { id: 'b', title: variant, author: 'Herbert, Frank' })?.id, 'a',
+    `Duplicate detection still matches "${variant}" to "Dune"`);
+    assertEqual(findDuplicateBook({ a: { id: 'a', title: variant, author: herbert } },
+      { id: 'b', title: 'Dune', author: herbert })?.id, 'a',
+    `Duplicate detection still matches "Dune" to an existing "${variant}"`);
+  }
+  assertEqual(findDuplicateBook({ a: { id: 'a', title: 'It', author: 'Stephen King' } },
+    { id: 'b', title: 'IT', author: 'Stephen King' })?.id, 'a',
+  'Duplicate detection matches short titles that have no comparable tokens');
+  assertEqual(findDuplicateBook({
+    a: { id: 'a', title: 'Dune', author: herbert, openLibraryWorkKey: '/works/OL893415W' }
+  }, { id: 'b', title: 'Dune', author: herbert, openLibraryWorkKey: '/works/OL15377230W' }), null,
+  'Different Open Library works are different books despite equal titles');
+  assertEqual(findDuplicateBook({
+    a: { id: 'a', title: 'Dune', author: herbert, openLibraryWorkKey: '/works/OL893415W' }
+  }, { id: 'b', title: 'Something Else', author: 'Unknown', openLibraryWorkKey: 'OL893415W' })?.id, 'a',
+  'Open Library work keys match with or without the /works/ prefix');
 })();
 
 // ─── 17. Open Library Identity ───────────────────────────────────────────────
@@ -1708,6 +1749,39 @@ pendingAsyncTests.push((async () => {
   assertEqual(resolved.openLibraryEditionKey, '/books/OL456M', 'Open Library resolver returns edition key');
   assertEqual(resolved.confidence.level, 'high', 'Open Library resolver returns confidence level');
   assertEqual(resolved.matchedFrom, 'raw', 'Open Library resolver reports raw title match source');
+
+  // Enrichment used Open Library's first hit and Google's best-scored hit
+  // even when they named another book, and the importer took that author
+  // outright when the embedded one was junk.
+  const jsonFetch = body => async () => ({ ok: true, async json() { return body; } });
+  const wrongOpenLibrary = await enrichMetadataFromOpenLibrary('Dune', 'Unknown', {
+    lookupImpl: publicLookup,
+    fetchImpl: jsonFetch({ docs: [{ title: 'Diet for a Small Planet', author_name: ['Frances Moore Lappé'], publisher: ['Ballantine'] }] })
+  });
+  assertEqual(wrongOpenLibrary.author, undefined, 'Open Library enrichment ignores a hit for a different title');
+  const laterOpenLibrary = await enrichMetadataFromOpenLibrary('Dune', 'Frank Herbert', {
+    lookupImpl: publicLookup,
+    fetchImpl: jsonFetch({ docs: [
+      { title: 'Dune Messiah Companion', author_name: ['Someone Else'] },
+      { title: 'Dune', author_name: ['Frank Herbert'], publisher: ['Chilton'] }
+    ] })
+  });
+  assertEqual(laterOpenLibrary.publisher, 'Chilton', 'Open Library enrichment takes the first hit that matches the book');
+  const wrongAuthorOpenLibrary = await enrichMetadataFromOpenLibrary('Dune', 'Frank Herbert', {
+    lookupImpl: publicLookup,
+    fetchImpl: jsonFetch({ docs: [{ title: 'Dune', author_name: ['Unrelated Writer'] }] })
+  });
+  assertEqual(wrongAuthorOpenLibrary.author, undefined, 'Open Library enrichment ignores a same-title hit by another author');
+  const wrongGoogle = await enrichMetadataFromGoogleBooks('Dune', 'calibre', {
+    lookupImpl: publicLookup,
+    fetchImpl: jsonFetch({ items: [{ volumeInfo: { title: 'The Complete Guide to Sourdough', authors: ['Baker'], description: 'Bread.' } }] })
+  });
+  assertEqual(wrongGoogle.description, undefined, 'Google Books enrichment ignores a best hit for a different title');
+  const rightGoogle = await enrichMetadataFromGoogleBooks('Dune', 'calibre', {
+    lookupImpl: publicLookup,
+    fetchImpl: jsonFetch({ items: [{ volumeInfo: { title: 'Dune', authors: ['Frank Herbert'], description: 'Arrakis.' } }] })
+  });
+  assertEqual(rightGoogle.author, 'Frank Herbert', 'Google Books enrichment fills a junk author from a matching title');
 
   const cleanedResolved = await resolveOpenLibraryIdentity({
     title: 'The Hobbit [retail]',
