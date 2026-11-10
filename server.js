@@ -58,7 +58,7 @@ const {
 const { playbackChunkPriority } = require('./lib/playback-runway');
 const GenerationScheduler = require('./lib/generation-scheduler');
 const GenerationJournal = require('./lib/generation-journal');
-const { createPronunciationService, createCacheInvalidator, effectiveRules } = require('./lib/pronunciation-repair');
+const { createPronunciationService, createCacheInvalidator, effectiveRules, referencedRuleBooks, removeBookRules } = require('./lib/pronunciation-repair');
 const { createAudioCacheBudget, createAudioUseRecorder } = require('./lib/audio-cache-budget');
 const { createOfflineReadyPackages, sourceTextRevision } = require('./lib/offline-ready-packages');
 const { registerOfflineRecoveryRoutes } = require('./lib/routes/offline-recovery-routes');
@@ -70,11 +70,13 @@ const { createBookMutationLocks } = require('./lib/book-mutation-lock');
 const { createChapterRebuildService } = require('./lib/chapter-rebuild');
 const { createChapterAudioReconciler } = require('./lib/chapter-audio-reconcile');
 const { mapStateWriteToCurrent } = require('./lib/chapter-transition-state');
+const { chapterLayoutKey } = require('./lib/chapter-reprocess');
 const { removeLegacyImportReviewState } = require('./lib/import-state-migration');
 const {
   DELETE_BOOK_RESULT,
   createBookArtifactCleaner,
-  createBookDeletionService
+  createBookDeletionService,
+  loadCatalogStrict
 } = require('./lib/book-deletion');
 const { createBookDeletionLog } = require('./lib/book-deletion-log');
 const {
@@ -90,7 +92,7 @@ const { createImportAudioWarmup } = require('./lib/import-audio-warmup');
 const { createUserLibraryState } = require('./lib/user-library-state');
 const { createSearchProviderRegistry } = require('./lib/search-providers');
 const { createSearchCoverService } = require('./lib/search-cover-service');
-const { buildCatalogSearchResponse } = require('./lib/catalog-search');
+const { buildCatalogSearchResponse, catalogSearchInputError } = require('./lib/catalog-search');
 const { searchCatalogQuery } = require('./lib/search-query');
 const { fallbackCompatibility } = require('./lib/search-work-resolution');
 const internetArchive = require('./lib/search-providers/internet-archive');
@@ -100,6 +102,8 @@ const { registerPreferencesRoutes } = require('./lib/routes/preferences-routes')
 const { registerDiagnosticsRoutes } = require('./lib/routes/diagnostics-routes');
 const { createOperatorDiagnostics } = require('./lib/operator-diagnostics');
 const { createPlaybackHealthStore, registerPlaybackHealthRoutes } = require('./lib/playback-health');
+const { createClientTelemetryStore, createServerTrail, registerClientTelemetryRoutes } = require('./lib/client-telemetry');
+const { createCoverDisplay } = require('./lib/cover-display');
 const { startEventLoopMonitor } = require('./lib/event-loop-monitor');
 const { registerBookmarksRoutes, removeBookBookmarks } = require('./lib/routes/bookmarks-routes');
 const { registerListeningQueueRoutes } = require('./lib/routes/listening-queue-routes');
@@ -120,11 +124,12 @@ const {
   reconcileBookArtifactPaths
 } = require('./lib/book-artifact-paths');
 const { createBooksStore } = require('./lib/books-store');
+const { registerUserDataStores } = require('./lib/user-data-stores');
 const { computeListeningStats } = require('./lib/listening-stats');
 const { removeBookFromAllQueues } = require('./lib/listening-queue');
 const { createAuthMiddleware, createAuthRoutes, createSessionStore, requireAdmin, DEFAULT_SESSION_TTL_MS } = require('./lib/auth');
 const { createAccountsStore } = require('./lib/accounts');
-const { createCalibreAccessStore } = require('./lib/calibre-integration');
+const { createCalibreAccessStore, accountCredentialsFrom } = require('./lib/calibre-integration');
 const { registerCalibreRoutes } = require('./lib/routes/calibre-routes');
 const shelves = require('./lib/shelves');
 const { writeFileAtomic } = require('./lib/write-file-atomic');
@@ -325,6 +330,9 @@ app.use(securityHeaders);
 app.use(hostRateLimit({ windowMs: 60_000, limit: 6000, standardHeaders: 'draft-7', legacyHeaders: false }), createHostGuard({ canonicalOrigin, bindHost: HOST }));
 app.use(cors(corsOptions));
 app.use(bodyParser.json());
+// Slow responses and event-loop stalls for the administrator telemetry view.
+const serverTrail = createServerTrail();
+app.use(serverTrail.middleware);
 registerDeploymentRoute(app, {
   canonicalOrigin,
   appVersion: require('./package.json').version,
@@ -371,22 +379,16 @@ const accountSessionStore = createSessionStore({ filePath: SESSIONS_FILE, jsonSt
 const calibreAccessStore = createCalibreAccessStore({
   filePath: path.join(DATA_DIR, 'calibre-connections.json'),
   jsonStore,
-  // Fail closed once accounts exist. The bare `!(...)?.disabled` form returns
-  // true for an unknown userId, so a Calibre connection whose account was
-  // deleted stayed valid forever -- invisible in the UI and impossible to
-  // revoke. In trusted-LAN and shared-token modes there are no accounts and
-  // every connection is legitimately active.
-  isUserActive: async userId => {
-    if ((await accountsStore.count()) === 0) return true;
-    const account = await accountsStore.findById(userId);
-    return Boolean(account) && !account.disabled;
-  }
+  // Fails closed for a deleted account, and refuses a token issued before the
+  // account's last password change (see accountCredentialsFrom).
+  accountCredentials: accountCredentialsFrom(accountsStore)
 });
 const authRoutes = createAuthRoutes({
   token: XANDRIO_TOKEN,
   sessionTtlMs: SESSION_TTL_MS,
   accounts: accountsStore,
   sessionStore: accountSessionStore,
+  calibreAccess: calibreAccessStore,
   allowTrustedLan: TRUSTED_LAN_ALLOWED
 });
 // Runs ahead of the rate limiter and the auth gate so a forged cross-site
@@ -411,7 +413,7 @@ app.post('/api/auth/change-password', authRoutes.changePassword);
 app.get('/api/auth/sessions', authRoutes.listSessions);
 app.post('/api/auth/sessions/revoke', authRoutes.revokeSession);
 app.post('/api/auth/sessions/revoke-others', authRoutes.revokeOtherSessions);
-registerAccountRoutes(app, { accounts: accountsStore, sessionStore: accountSessionStore, requireAdmin });
+registerAccountRoutes(app, { accounts: accountsStore, sessionStore: accountSessionStore, calibreAccess: calibreAccessStore, requireAdmin });
 
 app.get('/sw.js', (req, res, next) => {
   res.setHeader('Cache-Control', 'no-store');
@@ -460,6 +462,7 @@ const BOOKS_FILE = path.join(DATA_DIR, 'books.json');
 const booksStore = createBooksStore({ filePath: BOOKS_FILE, jsonStore, maxBackups: 5 });
 const POSITIONS_FILE = path.join(DATA_DIR, 'positions.json');
 const PLAYBACK_HEALTH_FILE = path.join(DATA_DIR, 'playback-health.json');
+const CLIENT_TELEMETRY_FILE = path.join(DATA_DIR, 'client-telemetry.json');
 const SETTINGS_FILE = path.join(DATA_DIR, 'settings.json');
 const ANNAS_AUTH_FILE = path.join(DATA_DIR, 'annas-auth.json');
 const USERS_FILE = path.join(DATA_DIR, 'users.json');
@@ -476,6 +479,30 @@ const BOOK_GUIDE_CONFIG_FILE = path.join(DATA_DIR, 'book-guide-config.json');
 const BOOK_GUIDE_CERTIFICATION_FILE = path.join(DATA_DIR, 'book-guide-certification.json');
 const BOOK_GUIDE_CREDENTIALS_FILE = path.join(DATA_DIR, 'book-guide-provider.json');
 const BOOK_GUIDE_ARTIFACT_DIR = path.join(CACHE_DIR, 'book-guides');
+// Irreplaceable stores fail closed: every jsonStore.load/save/update of these
+// paths — from this file or any module handed jsonStore — throws on a corrupt,
+// misshapen, or missing-after-init file instead of resetting it to defaults.
+const userDataStores = registerUserDataStores({
+  jsonStore,
+  files: {
+    positions: POSITIONS_FILE,
+    shelves: SHELVES_FILE,
+    bookmarks: BOOKMARKS_FILE,
+    listeningQueues: LISTENING_QUEUE_FILE,
+    users: USERS_FILE,
+    clientSettings: CLIENT_SETTINGS_FILE,
+    settings: SETTINGS_FILE,
+    pronunciations: PRONUNCIATIONS_FILE,
+    bookDeletions: BOOK_DELETIONS_FILE,
+    customVoices: CUSTOM_VOICES_FILE
+  }
+});
+// Existing installs predate the .initialized markers. A clean read backfills
+// one, so prime every store now: a file deleted later then fails closed even
+// if no request touched it first. Failures surface through /ready.
+Promise.all(userDataStores.map(store => store.load().catch(error => {
+  console.error(`User data store ${store.filePath} is unavailable: ${error.message}`);
+}))).catch(() => {});
 const searchCoverService = createSearchCoverService({
   cacheDir: path.join(CACHE_DIR, 'search-covers'),
   getDimensions: getJpegDimensions,
@@ -1109,6 +1136,13 @@ async function refreshSettingsSnapshots({
       snapshotRefreshErrorFiles.delete(filePath);
     } catch (err) {
       if (err.code === 'ENOENT') {
+        // A critical store that once held data and is now missing is damage,
+        // not an operator reset: keep serving the last good snapshot (writes
+        // and /ready fail closed through json-store) rather than defaults.
+        if (jsonStore.criticalStoreFor(filePath) && await jsonStore.hasMarker(filePath)) {
+          logSnapshotRefreshErrorOnce(filePath, err);
+          return;
+        }
         // An external delete is an operator action: reset to defaults instead
         // of serving a stale snapshot indefinitely. Identity cleared so a
         // recreated file is picked up on the next tick.
@@ -1286,9 +1320,20 @@ let mossNanoModelsUnavailable = false;
 function mossNanoKnownUninstalled() {
   return mossNanoModelsUnavailable || narrationRuntime.mossNanoStatusHint() === 'models-uninstalled';
 }
+// A book's narrator pin, or null when it names a voice that is no longer
+// registered (a deleted clone). Registered rather than available: a disabled
+// provider must not silently change a book's choice, but a voice that does not
+// exist cannot narrate, and a later clone that reuses its id is not the voice
+// the reader chose.
+function bookNarrationPin(settings, bookId) {
+  const saved = bookId ? settings.bookNarration?.[bookId] : null;
+  if (!saved?.voiceId) return null;
+  return registeredVoiceEntries().some(entry => entry.id === saved.voiceId) ? saved : null;
+}
+
 function getBookNarration(bookId) {
   const settings = readSettingsSync();
-  const saved = settings.bookNarration?.[bookId];
+  const saved = bookNarrationPin(settings, bookId);
   const voiceId = saved?.voiceId || getActiveVoice();
   const voice = registeredVoiceEntries().find(entry => entry.id === voiceId);
   return {
@@ -1302,7 +1347,8 @@ function getBookNarration(bookId) {
 function getActiveVoice(bookId) {
   const settings = readSettingsSync();
   // A book choice is intent. Disabled providers must not silently change it.
-  if (bookId && settings.bookNarration?.[bookId]?.voiceId) return settings.bookNarration[bookId].voiceId;
+  const pin = bookNarrationPin(settings, bookId);
+  if (pin) return pin.voiceId;
   const selected = settings.voice || DEFAULT_VOICE;
   if (!mossNano.isMossNanoVoice(selected)) return selected;
   const uninstalled = mossNanoKnownUninstalled();
@@ -2032,11 +2078,27 @@ function voiceForTier(tier, bookId) {
   return tier === 'instant' ? (getActiveInstantVoice(bookId) || getActiveVoice(bookId)) : getActiveVoice(bookId);
 }
 
+// The voices a playback request may pin with `voiceId`: the operator's
+// provider allowlist, as for every other voice selection, plus the book's own
+// narration and its instant pair. The book's saved voice stays in effect when
+// its provider is disabled, and routes pin the voice they already serve, so
+// that one is accepted even when the allowlist excludes it. Checking against
+// the full registry let `?voiceId=` generate audio with a disabled provider.
+function pinnableVoiceIds(bookVoiceId) {
+  const ids = new Set(availableVoiceEntries().map(voice => voice.id));
+  if (bookVoiceId) {
+    ids.add(bookVoiceId);
+    const instant = getInstantVoiceFor(bookVoiceId);
+    if (instant) ids.add(instant);
+  }
+  return ids;
+}
+
 async function resolveNarrationContext(bookId, chapterIndex, request = null) {
   const preference = getBookNarration(bookId);
   const pinnedVoice = typeof request === 'object' ? request?.voiceId : null;
   const requestedTier = typeof request === 'object' ? request?.tier : request;
-  if (pinnedVoice && !registeredVoiceEntries().some(v => v.id === pinnedVoice)) {
+  if (pinnedVoice && !pinnableVoiceIds(preference.voiceId).has(pinnedVoice)) {
     throw Object.assign(new Error('Invalid narrator'), { statusCode: 400 });
   }
   const requestedVoiceId = preference.voiceId;
@@ -3109,21 +3171,18 @@ async function ensureDirectories() {
 // Mutations should go through updateJSON so the read-modify-write cycle
 // holds the file's lock; loadJSON/saveJSON remain for reads and
 // whole-value replacement.
+// books.json and the user data stores are registered critical stores, so
+// json-store itself routes them through validation, backups, and fail-closed
+// reads; these wrappers add nothing per path.
 async function loadJSON(filePath, defaultValue = {}) {
-  if (path.resolve(filePath) === path.resolve(BOOKS_FILE)) return booksStore.load();
   return jsonStore.load(filePath, defaultValue);
 }
 
 async function saveJSON(filePath, data) {
-  if (path.resolve(filePath) === path.resolve(BOOKS_FILE)) {
-    await booksStore.save(data);
-    return;
-  }
   await jsonStore.save(filePath, data);
 }
 
 function updateJSON(filePath, mutator, defaultValue = {}) {
-  if (path.resolve(filePath) === path.resolve(BOOKS_FILE)) return booksStore.update(mutator);
   return jsonStore.update(filePath, mutator, defaultValue);
 }
 const downloadImportGate = new ConcurrencyGate(CONCURRENCY_LIMITS.download, { name: 'download' });
@@ -3217,9 +3276,10 @@ function resultWithSearchCover(result) {
 
 app.post('/api/search', async (req, res) => {
   try {
-    const { query, language, sources } = req.body;
-    if (!query) {
-      return res.status(400).json({ error: 'Query required' });
+    const { query, language, sources } = req.body || {};
+    const inputError = catalogSearchInputError({ query, language });
+    if (inputError) {
+      return res.status(400).json({ error: inputError });
     }
     if (sources !== undefined && !Array.isArray(sources)) {
       return res.status(400).json({ error: 'sources must be an array' });
@@ -3324,13 +3384,40 @@ function zlibraryDownloadPreflightResponse(status) {
   return zlibraryDownloadErrorResponse({ code });
 }
 
-async function acquireDownloadSource(input, destination, progress, {
-  download = searchProviders.download.bind(searchProviders)
+const DOWNLOAD_SOURCE_LABELS = Object.freeze({
+  annas: 'Anna\'s Archive',
+  zlibrary: 'Z-Library',
+  gutenberg: 'Project Gutenberg',
+  internetarchive: 'Internet Archive',
+  standardebooks: 'Standard Ebooks'
+});
+
+// The one place a download request's `source` is read. It returns the
+// registered provider id that will fetch the file, so the policy gate, the
+// fetch and the recorded provenance all name the same provider.
+function resolveDownloadSelectionSource(selection, {
+  resolve = searchProviders.resolveDownloadSource.bind(searchProviders)
 } = {}) {
-  const { hash, source, zlibId, gutenbergId, iaIdentifier, iaFile, downloadUrl } = input;
-  progress(1, `Source: ${source || 'annas'}`);
-  if (source === 'zlibrary' && zlibId) {
-    progress(2, 'Downloading from Z-Library');
+  try {
+    return resolve(selection || {});
+  } catch (error) {
+    if (error?.code !== 'INVALID_DOWNLOAD_SOURCE') throw error;
+    throw new BookImportError(error.message, {
+      statusCode: 400,
+      response: { error: error.message, code: error.code }
+    });
+  }
+}
+
+async function acquireDownloadSource(input, destination, progress, {
+  download = searchProviders.download.bind(searchProviders),
+  resolve
+} = {}) {
+  const source = resolveDownloadSelectionSource(input, resolve ? { resolve } : {});
+  const { hash, zlibId, gutenbergId, iaIdentifier, iaFile, downloadUrl } = input;
+  progress(1, `Source: ${source}`);
+  progress(2, `Downloading from ${DOWNLOAD_SOURCE_LABELS[source] || source}`);
+  if (source === 'zlibrary') {
     try {
       await download({ source, zlibId, hash }, destination);
       return destination;
@@ -3345,34 +3432,21 @@ async function acquireDownloadSource(input, destination, progress, {
       throw error;
     }
   }
-  if (source === 'gutenberg' && gutenbergId && downloadUrl) {
-    progress(2, 'Downloading from Project Gutenberg');
-    await download({ source, gutenbergId, downloadUrl, hash }, destination);
-    return destination;
+  if (source === 'annas') {
+    try {
+      await download({ source: 'annas', hash }, destination);
+      return destination;
+    } catch {
+      console.error('Anna\'s Archive download unavailable');
+      throw new Error('Download service unavailable');
+    }
   }
-  if (source === 'internetarchive' && (downloadUrl || (iaIdentifier && iaFile))) {
-    progress(2, 'Downloading from Internet Archive');
-    await download({ source, iaIdentifier, iaFile, downloadUrl, hash }, destination);
-    return destination;
-  }
-  if (source === 'standardebooks' && downloadUrl) {
-    progress(2, 'Downloading from Standard Ebooks');
-    await download({ source, downloadUrl, hash }, destination);
-    return destination;
-  }
-
-  try {
-    progress(2, 'Downloading from Anna\'s Archive');
-    await download({ source: 'annas', hash }, destination);
-    return destination;
-  } catch {
-    console.error('Anna\'s Archive download unavailable');
-    throw new Error('Download service unavailable');
-  }
+  await download({ source, gutenbergId, iaIdentifier, iaFile, downloadUrl, hash }, destination);
+  return destination;
 }
 
 function downloadImportCommand(body, { download = searchProviders.download.bind(searchProviders) } = {}) {
-  const { hash, filename, title, author, language, alternatives, source, gutenbergId, description, filePath } = body || {};
+  const { hash, filename, title, author, language, alternatives, gutenbergId, description, filePath } = body || {};
   if (!hash || !filename) {
     throw new BookImportError('Hash and filename required', {
       response: { error: 'Hash and filename required' }
@@ -3381,6 +3455,7 @@ function downloadImportCommand(body, { download = searchProviders.download.bind(
   if (!requestGuardIsSafeBookId(hash)) {
     throw new BookImportError('Invalid book identifier', { response: { error: 'Invalid book identifier' } });
   }
+  const resolvedSource = resolveDownloadSelectionSource(body);
   const safeFilename = sanitizeDownloadFilename(filename, title || hash, hash);
   const selected = { title, author, language };
   const expected = {
@@ -3410,7 +3485,16 @@ function downloadImportCommand(body, { download = searchProviders.download.bind(
         matchedFrom: 'search'
       }
     : undefined;
-  const alternativeCandidates = (Array.isArray(alternatives) ? alternatives : []).map((alternative, index) => {
+  // An alternative whose source is not a registered provider with its
+  // download fields is dropped rather than fetched from another provider.
+  const alternativeCandidates = (Array.isArray(alternatives) ? alternatives : []).flatMap(candidate => {
+    if (!candidate || typeof candidate !== 'object') return [];
+    try {
+      return [{ ...candidate, source: searchProviders.resolveDownloadSource(candidate) }];
+    } catch {
+      return [];
+    }
+  }).map((alternative, index) => {
     const format = SUPPORTED_BOOK_FORMATS.has(String(alternative.format || '').toLowerCase())
       ? String(alternative.format).toLowerCase()
       : 'epub';
@@ -3427,7 +3511,7 @@ function downloadImportCommand(body, { download = searchProviders.download.bind(
         author: alternative.author || author,
         language: alternative.language || language
       },
-      source: alternative.source || 'annas',
+      source: alternative.source,
       sourceFilePath: alternative.filePath,
       sourceProvenance: sourceProvenanceFromSelection(alternative),
       gutenbergId: alternative.gutenbergId,
@@ -3457,9 +3541,9 @@ function downloadImportCommand(body, { download = searchProviders.download.bind(
     originalName: safeFilename,
     selected,
     description,
-    downloadSource: source || 'annas',
+    downloadSource: resolvedSource,
     sourceFilePath: filePath,
-    sourceProvenance: sourceProvenanceFromSelection(body),
+    sourceProvenance: sourceProvenanceFromSelection({ ...body, source: resolvedSource }),
     gutenbergId,
     selectedIdentity,
     alternatives: alternativeCandidates,
@@ -3530,13 +3614,22 @@ async function importDownloadedBook(body, progress, { addedBy = null } = {}) {
 }
 
 // Imports land on the importer's personal shelf automatically.
+// Like every per-book write, this runs under the book lock and only for a
+// book the catalog holds, so it cannot race a deletion and leave a shelf entry
+// for a book that is gone. Callers inside an import already hold the lock.
 async function addBookToShelf(userId, bookId) {
   try {
-    await updateJSON(SHELVES_FILE, (data) => {
-      shelves.addToShelf(data, userId, bookId);
+    return await bookMutationLocks.withBookMutationLock(bookId, async () => {
+      const books = await loadJSON(BOOKS_FILE, {});
+      if (!books?.[bookId]) return false;
+      await updateJSON(SHELVES_FILE, (data) => {
+        shelves.addToShelf(data, userId, bookId);
+      });
+      return true;
     });
   } catch (err) {
     console.warn(`Failed to add ${bookId} to ${userId}'s shelf:`, err);
+    return false;
   }
 }
 
@@ -3588,8 +3681,15 @@ async function handleDownloadRequest(req, res) {
   }
 }
 app.post('/api/download', async (req, res) => {
+  let downloadSource;
+  try {
+    downloadSource = resolveDownloadSelectionSource(req.body);
+  } catch (error) {
+    if (!(error instanceof BookImportError)) throw error;
+    return res.status(error.statusCode).json(error.response);
+  }
   const operatorPolicy = operatorPolicyStatus(readSettingsSync());
-  const blockedSources = blockedSourceIds([req.body?.source || 'annas'], operatorPolicy);
+  const blockedSources = blockedSourceIds([downloadSource], operatorPolicy);
   if (blockedSources.length > 0) {
     return res.status(409).json({
       error: 'Acknowledge and enable unverified sources for this instance before using them.',
@@ -3600,9 +3700,10 @@ app.post('/api/download', async (req, res) => {
   }
   req.body = {
     ...(req.body || {}),
+    source: downloadSource,
     alternatives: filterEnabledAlternatives(req.body?.alternatives, operatorPolicy)
   };
-  if (req.body?.source === 'zlibrary') {
+  if (downloadSource === 'zlibrary') {
     try {
       const preflightError = zlibraryDownloadPreflightResponse(await zlibrary.getStatus());
       if (preflightError) return res.status(preflightError.statusCode).json(preflightError.body);
@@ -3632,7 +3733,7 @@ app.post('/api/download', async (req, res) => {
     ownerId: importUserId,
     requestHash: req.body?.hash || null,
     title: req.body?.title || req.body?.filename,
-    source: req.body?.source || 'annas'
+    source: downloadSource
   });
   const progress = progressForImportJob(job);
   progress(1, 'Queued import');
@@ -3876,6 +3977,11 @@ function publicBookRecord(book) {
   }
   pub.canRebuildChapters = Boolean(book.canRebuildChapters) || undefined;
   pub.hasCover = Boolean(book.coverPath);
+  // Device-held state (downloads, checkpoints, queued positions) records these
+  // and is refused once they no longer name the book's current chapters.
+  const layoutKey = chapterLayoutKey(book.chapterStructureKey, book.chapterTextIdentity);
+  if (layoutKey) pub.chapterLayoutKey = layoutKey;
+  if (book.textRemapId) pub.textRemapId = String(book.textRemapId);
   // Publish only attribution and rights metadata. The stored provenance also
   // contains the original upload filename and provider item id; neither is
   // needed by clients, and the item id can identify a Calibre book.
@@ -3930,11 +4036,10 @@ const readinessProbe = createReadinessProbe({
   dataDir: DATA_DIR,
   cacheDir: CACHE_DIR,
   criticalJsonFiles: [
-    BOOKS_FILE,
+    { filePath: BOOKS_FILE, validate: booksStore.validate },
     ACCOUNTS_FILE,
     SESSIONS_FILE,
-    SHELVES_FILE,
-    POSITIONS_FILE
+    ...userDataStores.map(store => ({ filePath: store.filePath, validate: store.validate }))
   ],
   // In production a DATA_DIR in which no critical store was ever initialized
   // is a wrong or empty directory, not a library.
@@ -3972,23 +4077,42 @@ const bookDeletionService = createBookDeletionService({
   beginBookDeletion: bookDeletionLog.begin,
   commitBookDeletion: bookDeletionLog.commit,
   abortBookDeletion: bookDeletionLog.abort,
+  isDeletionCommitted: async bookId => {
+    // Settle a deletion whose commit write failed before asking, so its
+    // retry is recognised too.
+    await bookDeletionLog.reconcile(await loadJSON(BOOKS_FILE, {}));
+    const { deletions } = await bookDeletionLog.listSince(0);
+    return deletions.some(item => item.bookId === bookId);
+  },
   rememberDeletedBookId,
+  // Every cancel runs even when another throws (a failing guide or offline
+  // cancel used to skip the TTS drain and every later cleanup step). The
+  // failures are rethrown together once all of them have settled.
   cancelBookJobs: async bookId => {
-    const cancelledJobs = chunkedTTS.cancelBook(bookId) + instantChunkedTTS.cancelBook(bookId);
-    await Promise.all([
-      playbackPrefetch.removeBook(bookId),
-      offlinePreparationCoordinator.cancel(bookId, { remove: true }),
-      bookGuideService.removeBook(bookId)
+    const failures = [];
+    const settle = async tasks => {
+      for (const result of await Promise.allSettled(tasks.map(task => Promise.resolve().then(task)))) {
+        if (result.status === 'rejected') failures.push(result.reason);
+      }
+    };
+    let cancelledJobs = 0;
+    await settle([() => { cancelledJobs += chunkedTTS.cancelBook(bookId); }]);
+    await settle([() => { cancelledJobs += instantChunkedTTS.cancelBook(bookId); }]);
+    await settle([
+      () => playbackPrefetch.removeBook(bookId),
+      () => offlinePreparationCoordinator.cancel(bookId, { remove: true }),
+      () => bookGuideService.removeBook(bookId)
     ]);
-    await offlineWindowPreparation.cancelBook(bookId);
-    await offlineAudioPackage.cancelBook(bookId);
-    await offlinePlaybackStitcher.cancelBook(bookId);
-    await Promise.all([
-      chunkedTTS.waitForIdle(bookId),
-      instantChunkedTTS.waitForIdle(bookId),
-      offlinePreparationCoordinator.waitForIdle(bookId),
-      offlineAudioPackage.waitForIdle(bookId)
+    await settle([() => offlineWindowPreparation.cancelBook(bookId)]);
+    await settle([() => offlineAudioPackage.cancelBook(bookId)]);
+    await settle([() => offlinePlaybackStitcher.cancelBook(bookId)]);
+    await settle([
+      () => chunkedTTS.waitForIdle(bookId),
+      () => instantChunkedTTS.waitForIdle(bookId),
+      () => offlinePreparationCoordinator.waitForIdle(bookId),
+      () => offlineAudioPackage.waitForIdle(bookId)
     ]);
+    if (failures.length) throw new AggregateError(failures, `Could not cancel every job for ${bookId}: ${failures.map(error => error?.message).join('; ')}`);
     return cancelledJobs;
   },
   stopPremiumPrep: bookId => premiumPrep.stopBook(bookId),
@@ -3997,8 +4121,53 @@ const bookDeletionService = createBookDeletionService({
   removeBookPositions: (positions, bookId) => removeBookPositions(positions, bookId),
   removeBookBookmarks,
   removeBookFromAllShelves: (shelvesStore, bookId) => shelves.removeBookFromAllShelves(shelvesStore, bookId),
-  removeBookFromAllQueues
+  removeBookFromAllQueues,
+  // Per-book state outside the listening stores. A re-import under the same
+  // deterministic id (Anna's md5, Calibre id) must not inherit any of it.
+  bookStateStores: [
+    {
+      store: 'bookNarration',
+      file: SETTINGS_FILE,
+      referenced: settings => new Set(Object.keys(settings?.bookNarration || {})),
+      remove: (settings, bookId) => { if (settings.bookNarration) delete settings.bookNarration[bookId]; },
+      onSaved: updateSettingsCache
+    },
+    {
+      store: 'pronunciations',
+      file: PRONUNCIATIONS_FILE,
+      referenced: referencedRuleBooks,
+      remove: removeBookRules
+    },
+    {
+      store: 'chapterTransitions',
+      file: CHAPTER_TRANSITIONS_FILE,
+      referenced: transitions => new Set(Object.keys(transitions || {})),
+      remove: (transitions, bookId) => { delete transitions[bookId]; }
+    }
+  ]
 });
+
+function loadReadableCatalog() {
+  return loadCatalogStrict({ access: fs.access, load: () => booksStore.load(), filePath: BOOKS_FILE });
+}
+
+// Removes files of committed deletions the catalog no longer holds: the
+// durable completion of a deletion a crash or failing step interrupted.
+async function sweepDeletedBookArtifacts() {
+  let books;
+  try {
+    books = await loadReadableCatalog();
+  } catch (error) {
+    console.warn(`Deleted-book artifact sweep skipped: catalog unavailable (${error.code || error.message})`);
+    return { skipped: 'catalog-unavailable', removed: 0, failed: [] };
+  }
+  await bookDeletionLog.reconcile(books);
+  const { deletions } = await bookDeletionLog.listSince(0);
+  return bookArtifactCleaner.sweepDeletedBooks({
+    loadBooks: loadReadableCatalog,
+    deletedBookIds: deletions.map(item => item.bookId)
+  });
+}
 
 // Device-local offline copies reconcile against this monotonic feed. Pending
 // transactions are resolved from the authoritative catalog before a cursor is
@@ -4695,6 +4864,7 @@ chapterRebuildService = createChapterRebuildService({
   }
 });
 registerLibraryBookRoutes(app, {
+  coverDisplay: createCoverDisplay({ cacheDir: CACHE_DIR }),
   booksFile: BOOKS_FILE,
   shelvesFile: SHELVES_FILE,
   loadJSON,
@@ -4819,6 +4989,7 @@ const {
   removeBookPositions,
   setBookPositionsStructureKey,
   migrateUserScopedStore,
+  migrateUserData,
   migratePositions,
   positionForBook,
   positionsForUser,
@@ -4879,8 +5050,14 @@ registerSyncPositionRoutes(app, {
   normalizeUsersStore,
   upsertDevice,
   publicSyncProfile,
-  migratePositions,
-  migrateUserScopedStore,
+  migrateUserData,
+  userDataFiles: {
+    positions: POSITIONS_FILE,
+    bookmarks: BOOKMARKS_FILE,
+    shelves: SHELVES_FILE,
+    listeningQueues: LISTENING_QUEUE_FILE,
+    clientSettings: CLIENT_SETTINGS_FILE
+  },
   recordPosition,
   positionForBook,
   positionsForUser,
@@ -4972,50 +5149,6 @@ async function retryImportedBookAudio(bookId) {
       console.error(`Import audio retry failed for ${bookId}:`, error);
     });
   });
-}
-
-// Helper: Get appropriate voice for language
-function getVoiceForLanguage(language, overrideVoice) {
-  const voices = {
-    'en': { voice: 'en-US-AndrewMultilingualNeural', lang: 'en-US' },
-    'de': { voice: 'de-DE-FlorianMultilingualNeural', lang: 'de-DE' },
-    'es': { voice: 'es-ES-AlvaroNeural', lang: 'es-ES' },
-    'fr': { voice: 'fr-FR-RemyMultilingualNeural', lang: 'fr-FR' },
-    'it': { voice: 'it-IT-GiuseppeMultilingualNeural', lang: 'it-IT' },
-    'pt': { voice: 'pt-BR-AntonioNeural', lang: 'pt-BR' },
-    'ru': { voice: 'ru-RU-DmitryNeural', lang: 'ru-RU' },
-    'zh': { voice: 'zh-CN-YunxiNeural', lang: 'zh-CN' },
-    'ja': { voice: 'ja-JP-KeitaNeural', lang: 'ja-JP' }
-  };
-  const base = voices[language] || voices['en'];
-  // For English, allow user override
-  if ((!language || language === 'en' || language === 'en-us') && overrideVoice && !overrideVoice.startsWith('kokoro:')) {
-    return { voice: overrideVoice, lang: 'en-US' };
-  }
-  return base;
-}
-
-// Helper: Generate audio using Edge TTS
-async function generateAudio(text, outputPath, language = 'en') {
-  const { EdgeTTS } = require('node-edge-tts');
-
-  // Load user's voice preference for English
-  let userVoice = null;
-  try {
-    const settings = JSON.parse(await fs.readFile(SETTINGS_FILE, 'utf-8'));
-    userVoice = settings.voice || null;
-  } catch {}
-
-  const voiceConfig = getVoiceForLanguage(language, userVoice);
-
-  const tts = new EdgeTTS({
-    voice: voiceConfig.voice,
-    lang: voiceConfig.lang,
-    outputFormat: 'audio-24khz-48kbitrate-mono-mp3',
-    timeout: 120000
-  });
-
-  await tts.ttsPromise(text, outputPath);
 }
 
 // Backfill totalDuration/chapterCount for books missing them (runs once on startup, non-blocking)
@@ -5230,6 +5363,11 @@ const preferencesRoutes = registerPreferencesRoutes(app, {
 
 const playbackHealthStore = createPlaybackHealthStore({ file: PLAYBACK_HEALTH_FILE, jsonStore });
 registerPlaybackHealthRoutes(app, { store: playbackHealthStore });
+registerClientTelemetryRoutes(app, {
+  store: createClientTelemetryStore({ file: CLIENT_TELEMETRY_FILE, jsonStore }),
+  trail: serverTrail,
+  requireAdmin
+});
 
 registerDiagnosticsRoutes(app, {
   requireAdmin,
@@ -5417,13 +5555,24 @@ if (require.main === module) {
     }
     startupPhase('chapter rebuilds');
     const libraryStateRepair = await bookDeletionService.reconcileLibraryState({
-      loadBooks: () => booksStore.load()
+      loadBooks: loadReadableCatalog
     });
     const repairedEntries = Object.values(libraryStateRepair.removed).reduce((sum, count) => sum + count, 0);
     if (repairedEntries) {
       console.log(`Dropped ${repairedEntries} library-state entr${repairedEntries === 1 ? 'y' : 'ies'} for deleted books`);
     }
     startupPhase('library state');
+    const deletedArtifactSweep = await sweepDeletedBookArtifacts().catch(error => {
+      console.error(`Deleted-book artifact sweep failed: ${error.message}`);
+      return { removed: 0, failed: [] };
+    });
+    if (deletedArtifactSweep.removed) {
+      console.log(`Removed ${deletedArtifactSweep.removed} file(s) left by interrupted book deletions`);
+    }
+    if (deletedArtifactSweep.failed?.length) {
+      console.warn(`Could not remove ${deletedArtifactSweep.failed.length} file(s) of deleted books:`, deletedArtifactSweep.failed);
+    }
+    startupPhase('deleted-book artifacts');
     const recoveredGuides = await bookGuideService.restore();
     if (recoveredGuides.resumed) {
       console.log(`Recovered ${recoveredGuides.resumed} interrupted book guide job(s)`);
@@ -5517,7 +5666,9 @@ if (require.main === module) {
       console.log(`Xandrio running at ${protocol}://${HOST}:${PORT}`);
       console.log(`[startup] ${Math.round(process.uptime() * 1000)}ms since process start: ${startupPhases.join(', ')}`);
       audioCacheBudget.start();
-      startEventLoopMonitor();
+      startEventLoopMonitor({ onStall: stall => serverTrail.noteStall(stall) });
+      serverTrail.sampleMemory();
+      setInterval(() => serverTrail.sampleMemory(), 60 * 1000).unref();
       // Non-blocking backfill
       backfillDurations()
         .catch(err => console.error('Backfill failed:', err.message))
@@ -5684,6 +5835,7 @@ app.post('/api/validate/:bookId', async (req, res) => {
 module.exports.app = app;
 module.exports.__test = {
   buildPdfPageGroups: pdfExtractionTestHooks.buildPdfPageGroups,
+  resolveNarrationContext,
   createPairingCode,
   hashPairingCode,
   normalizePairingCode,
@@ -5729,6 +5881,10 @@ module.exports.__test = {
   rememberDeletedBookId,
   retireDeletedBookId,
   deletedBookIds,
+  addBookToShelf,
+  getActiveVoice,
+  getBookNarration,
+  sweepDeletedBookArtifacts,
   concurrencyLimits: CONCURRENCY_LIMITS,
   getAnnasConfig,
   annasBrowserSearchPermitted,

@@ -391,9 +391,9 @@ function metadataHarness(options = {}) {
     assert.deepStrictEqual(saved, [], 'a clean library writes nothing');
 
     files.positions.users.alice.gone = {};
-    assert.strictEqual((await service.reconcileLibraryState({ loadBooks: async () => ({}) })).skipped, 'empty-catalog');
     assert.strictEqual((await service.reconcileLibraryState({ loadBooks: async () => { throw new Error('missing'); } })).skipped, 'catalog-unavailable');
-    assert(files.positions.users.alice.gone, 'an empty or unavailable catalog never sweeps');
+    assert.strictEqual((await service.reconcileLibraryState({ loadBooks: async () => null })).skipped, 'catalog-unavailable');
+    assert(files.positions.users.alice.gone, 'an unavailable catalog never sweeps');
   });
 
   await test('successful deletion removes all references and preserves response fields', async () => {
@@ -943,6 +943,29 @@ function metadataHarness(options = {}) {
     assert.strictEqual(h.files.books.book_1.chapterCount, 3);
     assert(!h.files.books.book_1.metadataRefreshReconciliation);
     assert(!h.operations.includes('remove-positions:book_1'));
+  });
+
+  await test('a drift remap publishes the identity that device-held positions and downloads are checked against', async () => {
+    const h = driftHarness();
+    const { chapterLayoutKey } = require('../lib/chapter-reprocess');
+    const { __test: serverTestHooks } = require('../server');
+    await h.service.reconcileChapterStructure('book_1', h.previous);
+    const before = await serverTestHooks.publicBookRecordWithCoverArtifact({ ...h.files.books.book_1, id: 'bad!id' });
+    assert.strictEqual(before.textRemapId, undefined, 'no remap has happened yet');
+    assert(before.chapterLayoutKey.startsWith(`${h.key}~`), 'the layout key names the structure and the text cut');
+
+    await h.service.reconcileChapterStructure('book_1', h.next);
+    const book = h.files.books.book_1;
+    const position = h.files.positions.users.owner.book_1;
+    assert(book.textRemapId, 'the book records the remap it applied');
+    assert.strictEqual(position.textRemapId, book.textRemapId, 'remapped records name the same remap');
+    assert.strictEqual(book.textRemap.fromId, '');
+    assert.strictEqual(book.textRemap.next.streamHash, book.chapterTextIdentity.streamHash);
+    const after = await serverTestHooks.publicBookRecordWithCoverArtifact({ ...book, id: 'bad!id' });
+    assert.strictEqual(after.textRemapId, book.textRemapId);
+    assert.strictEqual(after.textRemap, undefined, 'the stored identities stay private');
+    assert.notStrictEqual(after.chapterLayoutKey, before.chapterLayoutKey, 'moved text changes the layout key');
+    assert.strictEqual(after.chapterLayoutKey, chapterLayoutKey(h.key, book.chapterTextIdentity));
   });
 
   await test('an interrupted drift remap is replayed without moving a record twice', async () => {

@@ -157,6 +157,62 @@ async function stop(instance) {
         await stop(allowed);
       }
     });
+
+    await test('user data stores fail closed: legacy files load, corrupt or missing-after-init ones are never reset', async () => {
+      const userDataDir = path.join(root, 'user-data');
+      await fsp.mkdir(userDataDir);
+      await fsp.writeFile(path.join(userDataDir, 'format-version'), '1\n');
+      const file = name => path.join(userDataDir, name);
+      // An existing install from before the markers: legacy single-user
+      // positions, plus a guide journal with one malformed entry.
+      await fsp.writeFile(file('positions.json'), JSON.stringify({ 'book-1': { chapterIndex: 2, position: 41 } }));
+      await fsp.writeFile(file('shelves.json'), JSON.stringify({ users: { default: { books: { 'book-1': { addedAt: 1 } } } } }));
+      await fsp.writeFile(file('book-guide-jobs.json'), JSON.stringify({
+        version: 1,
+        jobs: { broken: { status: 'running' }, ok: { id: 'ok', bookId: 'book-1', status: 'failed' } }
+      }));
+
+      let port = await availablePort();
+      let instance = startServer({ dataDir: userDataDir, cacheDir, port });
+      try {
+        await waitForHealth(`http://127.0.0.1:${port}`, instance.output);
+        const ready = await fetch(`http://127.0.0.1:${port}/ready`);
+        assert.equal(ready.status, 200, await ready.text());
+        const positions = await fetch(`http://127.0.0.1:${port}/api/positions`, { headers: { authorization: 'Bearer startup-guard-token' } });
+        assert.equal(positions.status, 200, await positions.text());
+        const deadline = Date.now() + 5000;
+        while (!fs.existsSync(file('shelves.json.initialized')) && Date.now() < deadline) {
+          await new Promise(resolve => setTimeout(resolve, 25));
+        }
+        assert.ok(fs.existsSync(file('positions.json.initialized')), 'first clean read backfills the positions marker');
+        assert.ok(fs.existsSync(file('shelves.json.initialized')), 'startup primes markers for unread stores');
+      } finally {
+        await stop(instance);
+      }
+
+      const corrupt = '{"users": {"default": {"book-1": ';
+      await fsp.writeFile(file('positions.json'), corrupt);
+      await fsp.rm(file('shelves.json'));
+      port = await availablePort();
+      instance = startServer({ dataDir: userDataDir, cacheDir, port });
+      try {
+        await waitForHealth(`http://127.0.0.1:${port}`, instance.output);
+        const ready = await fetch(`http://127.0.0.1:${port}/ready`);
+        assert.equal(ready.status, 503, await ready.text());
+        const positions = await fetch(`http://127.0.0.1:${port}/api/positions`, { headers: { authorization: 'Bearer startup-guard-token' } });
+        assert.ok(positions.status >= 500, `corrupt positions must not read as empty (got ${positions.status})`);
+        const batch = await fetch(`http://127.0.0.1:${port}/api/positions/batch`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', authorization: 'Bearer startup-guard-token' },
+          body: JSON.stringify({ positions: { 'book-1': { chapterIndex: 0, position: 1 } } })
+        });
+        assert.ok(batch.status >= 400, `a write must not replace corrupt positions (got ${batch.status})`);
+        assert.equal(fs.readFileSync(file('positions.json'), 'utf8'), corrupt, 'corrupt bytes are left for recovery');
+        assert.equal(fs.existsSync(file('shelves.json')), false, 'a missing initialized store is not recreated empty');
+      } finally {
+        await stop(instance);
+      }
+    });
   } finally {
     await fsp.rm(root, { recursive: true, force: true });
   }

@@ -19,7 +19,17 @@ async function test(name, fn) {
 
 (async () => {
   const moduleUrl = pathToFileURL(path.join(__dirname, '..', 'public', 'js', 'chapter-navigation.mjs'));
-  const { navigateChapterSelection, shouldAllowBackwardReconciliation } = await import(moduleUrl.href);
+  const { navigateChapterSelection, positionMatchesChapterStructure, shouldAllowBackwardReconciliation } = await import(moduleUrl.href);
+
+  await test('a device checkpoint from before a same-key text remap does not match the remapped book', async () => {
+    const book = { chapterStructureKey: 'key-1', textRemapId: 'remap-1' };
+    assert.strictEqual(positionMatchesChapterStructure({ chapterStructureKey: 'key-1' }, book), false,
+      'a checkpoint saved before the remap names moved text');
+    assert.strictEqual(positionMatchesChapterStructure({ chapterStructureKey: 'key-1', textRemapId: 'remap-0' }, book), false);
+    assert.strictEqual(positionMatchesChapterStructure({ chapterStructureKey: 'key-1', textRemapId: 'remap-1' }, book), true);
+    assert.strictEqual(positionMatchesChapterStructure({ chapterStructureKey: 'key-1' }, { chapterStructureKey: 'key-1' }), true,
+      'a book with no remap keeps the structure-key rule');
+  });
 
   await test('backward chapter selection saves the selected chapter after loading it', async () => {
     let currentChapter = 33;

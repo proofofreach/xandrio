@@ -9,8 +9,23 @@ function enginePosition(engine) {
   return engine?.getPosition?.() || null;
 }
 
-export async function restorePlaybackPosition(engine, position) {
+// A stored position (it names a structure key) restores only into the layout
+// it was saved under: its chunk index and time point at text a rebuild or a
+// same-key remap may have moved. Live engine handoffs carry no key. Same rule
+// as positionMatchesChapterStructure in chapter-navigation.mjs; this module
+// stays import-free.
+function storedPositionFitsBook(position, book) {
+  if (!book || position.chapterStructureKey === undefined) return true;
+  const structureKey = String(book.chapterStructureKey || '');
+  if (!structureKey) return true;
+  if (String(position.chapterStructureKey || '') !== structureKey) return false;
+  const remapId = String(book.textRemapId || '');
+  return !remapId || String(position.textRemapId || '') === remapId;
+}
+
+export async function restorePlaybackPosition(engine, position, book = null) {
   if (!engine || !position) return;
+  if (!storedPositionFitsBook(position, book)) return;
   if (
     engine.supportsChunkPositionRestore === true
     && typeof engine.seekToChunk === 'function'
@@ -207,7 +222,7 @@ export function createPlaybackSession(options = {}) {
     );
     if (!isCurrent(id)) return { stale: true, snapshot: snapshot() };
 
-    if (handoffPosition) await restorePlaybackPosition(incoming, handoffPosition);
+    if (handoffPosition) await restorePlaybackPosition(incoming, handoffPosition, request.book);
     if (!isCurrent(id)) return { stale: true, snapshot: snapshot() };
     if (shouldResume) await incoming.play();
     if (!isCurrent(id)) return { stale: true, snapshot: snapshot() };

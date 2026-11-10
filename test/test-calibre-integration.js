@@ -109,8 +109,61 @@ function memoryJsonStore() {
     isUserActive: async userId => userId !== 'usr_disabled'
   });
   const disabledPairing = await disabledAccess.issuePairingCode({ userId: 'usr_disabled' });
-  const disabledConnection = await disabledAccess.claimPairingCode(disabledPairing.code);
-  assert.strictEqual(await disabledAccess.resolveToken(disabledConnection.token), null);
+  assert.strictEqual(await disabledAccess.claimPairingCode(disabledPairing.code), null,
+    'a disabled account cannot claim a pairing code');
+
+  // Calibre tokens are bound to the account's credential epoch. A password
+  // change or admin reset used to leave them valid.
+  const credentials = { usr_epoch: { active: true, credentialEpoch: 2, passwordChangedAt: '2026-08-01T00:00:00Z' } };
+  const epochJson = memoryJsonStore();
+  const epochAccess = createCalibreAccessStore({
+    filePath: 'epoch-calibre-access.json',
+    jsonStore: epochJson,
+    now: () => now,
+    accountCredentials: async userId => credentials[userId] || null
+  });
+  const epochPairing = await epochAccess.issuePairingCode({ userId: 'usr_epoch' });
+  const epochClaim = await epochAccess.claimPairingCode(epochPairing.code);
+  assert.strictEqual((await epochAccess.resolveToken(epochClaim.token))?.userId, 'usr_epoch');
+  const stalePairing = await epochAccess.issuePairingCode({ userId: 'usr_epoch' });
+  credentials.usr_epoch = { active: true, credentialEpoch: 3, passwordChangedAt: new Date(now).toISOString() };
+  assert.strictEqual(await epochAccess.resolveToken(epochClaim.token), null,
+    'a password change revokes Calibre tokens issued before it');
+  assert.strictEqual(await epochAccess.claimPairingCode(stalePairing.code), null,
+    'a password change kills pending pairing codes');
+  const freshPairing = await epochAccess.issuePairingCode({ userId: 'usr_epoch' });
+  const freshClaim = await epochAccess.claimPairingCode(freshPairing.code);
+  assert.strictEqual((await epochAccess.resolveToken(freshClaim.token))?.userId, 'usr_epoch',
+    'a token paired after the change works');
+  assert(!('credentialEpoch' in (await epochAccess.listConnections('usr_epoch'))[0]),
+    'the epoch is not exposed in the connection list');
+
+  // Connections stored before epoch binding carry no epoch. One created
+  // after the last password change stays valid and is stamped with the current
+  // epoch; one created before it is refused.
+  await epochJson.update('epoch-calibre-access.json', data => {
+    data.connections.cal_legacy_new = { id: 'cal_legacy_new', userId: 'usr_epoch', clientName: 'Calibre',
+      tokenHash: require('crypto').createHash('sha256').update('xcal_legacy_new').digest('hex'),
+      createdAt: new Date(now + 1).toISOString(), lastUsedAt: new Date(now + 1).toISOString() };
+    data.connections.cal_legacy_old = { id: 'cal_legacy_old', userId: 'usr_epoch', clientName: 'Calibre',
+      tokenHash: require('crypto').createHash('sha256').update('xcal_legacy_old').digest('hex'),
+      createdAt: '2026-07-01T00:00:00Z', lastUsedAt: '2026-07-01T00:00:00Z' };
+  });
+  assert.strictEqual(await epochAccess.resolveToken('xcal_legacy_old'), null,
+    'a legacy token created before the last password change is refused');
+  assert.strictEqual((await epochAccess.resolveToken('xcal_legacy_new'))?.id, 'cal_legacy_new',
+    'a legacy token created after the last password change stays valid');
+  credentials.usr_epoch = { active: true, credentialEpoch: 4, passwordChangedAt: new Date(now + 5).toISOString() };
+  assert.strictEqual(await epochAccess.resolveToken('xcal_legacy_new'), null,
+    'a stamped legacy token is revoked by the next password change');
+
+  // "Sign out other devices" removes every connection and pending code.
+  const revokePairing = await epochAccess.issuePairingCode({ userId: 'usr_epoch' });
+  const revokeClaim = await epochAccess.claimPairingCode(revokePairing.code);
+  const pendingCode = await epochAccess.issuePairingCode({ userId: 'usr_epoch' });
+  assert(await epochAccess.revokeAllForUser('usr_epoch') >= 1);
+  assert.strictEqual(await epochAccess.resolveToken(revokeClaim.token), null, 'revokeAllForUser revokes tokens');
+  assert.strictEqual(await epochAccess.claimPairingCode(pendingCode.code), null, 'revokeAllForUser kills pending codes');
 
   // Brute-force budget: a 6-digit code is only defensible with a strict
   // attempt limit, so wrong guesses must spend the live pairings.
@@ -152,7 +205,7 @@ function memoryJsonStore() {
   assert.match(validateCalibreAccessStore({ pairings: [], connections: {} }), /pairings/);
   assert.match(validateCalibreAccessStore({ pairings: {}, connections: { bad: { id: 'other' } } }), /connection/);
 
-  console.log('31 passed, 0 failed');
+  console.log('43 passed, 0 failed');
 })().catch(error => {
   console.error(error);
   process.exit(1);

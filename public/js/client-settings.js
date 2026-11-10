@@ -1,6 +1,6 @@
-import { apiGet, apiSend, getCurrentUserId } from './api.js';
+import { apiGet, apiSend, getCurrentUserId, getOfflineStorageScopeId, canClaimLegacyOfflineStorage } from './api.js';
 import { showToast } from './ui/toast.js';
-import { readJSON, writeJSON } from './util/storage.js';
+import { readAccountPreference, writeAccountPreference } from './account-preferences.mjs';
 
 const CLIENT_SETTINGS_KEY = 'xandrio_client_settings';
 const LOCAL_SCHEMA = 2;
@@ -19,21 +19,28 @@ const ALLOWED_PROGRESS_MODES = new Set(['elapsed', 'remaining']);
 const ALLOWED_ROW_DENSITIES = new Set(['compact', 'comfortable']);
 const ALLOWED_SEARCH_SOURCES = new Set(['standardebooks', 'gutenberg', 'annas', 'zlibrary', 'internetarchive', 'opds']);
 
-let settings = { ...DEFAULTS, ...readLocalSettings() };
+// The local copy belongs to one account (account-preferences.mjs). `settings`
+// is always the copy of `settingsScope`, so a write after an account change
+// cannot store one account's choices under another.
+let settingsScope = getOfflineStorageScopeId();
+let settings = withValues(DEFAULTS, readLocalSettings(settingsScope));
 let loadPromise = null;
 let loadGeneration = 0;
 let editRevision = 0;
 const editedAt = new Map();
 const pendingSaves = new Map();
 
+// Null for any setting means "reset to the default"; the server removes the
+// key from the profile (lib/routes/bookmarks-routes.js).
 function sanitize(source = {}) {
   const next = {};
+  for (const key of Object.keys(DEFAULTS)) {
+    if (source[key] === null) next[key] = null;
+  }
   if (ALLOWED_SKIP_INTERVALS.has(Number(source.skipIntervalSeconds))) {
     next.skipIntervalSeconds = Number(source.skipIntervalSeconds);
   }
-  if (source.defaultSpeed === null) {
-    next.defaultSpeed = null;
-  } else if (source.defaultSpeed !== undefined) {
+  if (source.defaultSpeed !== undefined && source.defaultSpeed !== null) {
     const speed = Number(source.defaultSpeed);
     if (Number.isFinite(speed) && speed >= 0.5 && speed <= 3) next.defaultSpeed = speed;
   }
@@ -61,11 +68,27 @@ function sanitize(source = {}) {
 // (no _v) held every default; their "elapsed" was the old default, not a
 // choice, so it is dropped. A choice saved to the profile still returns from
 // the server.
-function readLocalSettings() {
-  const stored = readJSON(CLIENT_SETTINGS_KEY, {}) || {};
+function readLocalSettings(scope) {
+  const stored = readAccountPreference(CLIENT_SETTINGS_KEY, scope, {
+    claimLegacy: canClaimLegacyOfflineStorage()
+  }) || {};
   const local = sanitize(stored);
   if (stored._v !== LOCAL_SCHEMA && local.progressDisplayMode === 'elapsed') delete local.progressDisplayMode;
   return local;
+}
+
+// Applies sanitized values, turning each reset into the default value.
+function withValues(base, sanitized) {
+  const next = { ...base };
+  for (const [key, value] of Object.entries(sanitized)) {
+    next[key] = value === null ? defaultValue(key) : value;
+  }
+  return next;
+}
+
+function defaultValue(key) {
+  const value = DEFAULTS[key];
+  return Array.isArray(value) ? value.slice() : value;
 }
 
 function writeLocalSettings() {
@@ -73,7 +96,7 @@ function writeLocalSettings() {
   for (const key of Object.keys(settings)) {
     if (JSON.stringify(settings[key]) !== JSON.stringify(DEFAULTS[key])) explicit[key] = settings[key];
   }
-  writeJSON(CLIENT_SETTINGS_KEY, explicit);
+  writeAccountPreference(CLIENT_SETTINGS_KEY, settingsScope, explicit);
 }
 
 function emitChange(key) {
@@ -89,17 +112,19 @@ export async function loadClientSettings(options = {}) {
   const startedAtRevision = editRevision;
   const userId = getCurrentUserId();
   loadPromise = (async () => {
-    settings = options.preferLocal === false ? { ...DEFAULTS } : { ...DEFAULTS, ...readLocalSettings() };
+    settingsScope = getOfflineStorageScopeId();
+    settings = options.preferLocal === false ? { ...DEFAULTS } : withValues(DEFAULTS, readLocalSettings(settingsScope));
     try {
       const data = await apiGet('/api/settings/client', { timeoutMs: 3000, ...options.requestOptions });
-      if (generation !== loadGeneration || userId !== getCurrentUserId()) return { ...settings };
+      if (generation !== loadGeneration || userId !== getCurrentUserId() ||
+          settingsScope !== getOfflineStorageScopeId()) return { ...settings };
       const remote = sanitize(data.settings || {});
       // Profile loading may finish after the listener has made a new choice.
       // Merge untouched preferences while preserving every newer local edit.
       for (const key of Object.keys(remote)) {
         if ((editedAt.get(key) || 0) > startedAtRevision) delete remote[key];
       }
-      settings = { ...settings, ...remote };
+      settings = withValues(settings, remote);
       writeLocalSettings();
       emitChange('*');
     } catch (err) {
@@ -109,6 +134,19 @@ export async function loadClientSettings(options = {}) {
   })();
   return loadPromise;
 }
+
+// A different account becomes active: show its own local choices at once and
+// discard a profile load that was started for the previous one.
+globalThis.addEventListener?.('xandrio:authscopechange', event => {
+  const toScope = event.detail?.toScope;
+  if (!toScope || toScope === settingsScope) return;
+  loadGeneration += 1;
+  loadPromise = null;
+  editedAt.clear();
+  settingsScope = toScope;
+  settings = withValues(DEFAULTS, readLocalSettings(settingsScope));
+  emitChange('*');
+});
 
 export function getClientSettings() {
   return { ...settings };
@@ -150,7 +188,7 @@ export function setClientSetting(key, value) {
   const sanitized = sanitize({ [key]: value });
   if (!(key in sanitized)) return;
   editedAt.set(key, ++editRevision);
-  settings = { ...settings, ...sanitized };
+  settings = withValues(settings, sanitized);
   writeLocalSettings();
   emitChange(key);
   const userId = getCurrentUserId();

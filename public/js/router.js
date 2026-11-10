@@ -14,15 +14,24 @@ let lastRenderedKey = null;
 let sheetStack = [];
 let ignorePops = 0;
 
+// A hand-edited or truncated link can hold an invalid escape such as %E0%A4%A.
+// decodeURIComponent throws on it; that would reject every route attempt.
+function decodeSegment(segment) {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return null;
+  }
+}
+
 function parseHash() {
   const hash = window.location.hash || '';
-  const playerMatch = hash.match(/^#\/player\/([^/?#]+)/);
-  if (playerMatch) {
-    return { view: 'player', bookId: decodeURIComponent(playerMatch[1]) };
-  }
-  const guideMatch = hash.match(/^#\/guide\/([^/?#]+)/);
-  if (guideMatch) {
-    return { view: 'guide', bookId: decodeURIComponent(guideMatch[1]) };
+  const bookMatch = hash.match(/^#\/(player|guide)\/([^/?#]+)/);
+  if (bookMatch) {
+    const bookId = decodeSegment(bookMatch[2]);
+    // A malformed book segment falls back to the library.
+    if (bookId === null) return { view: 'library', bookId: null, section: null, malformed: true };
+    return { view: bookMatch[1], bookId };
   }
   // Settings is a hub with one page per section: #/settings/voice, etc.
   const settingsMatch = hash.match(/^#\/settings(?:\/([a-z-]+))?(?:[?#]|$)/);
@@ -80,6 +89,11 @@ function runViewTransition(fromView, toView, apply) {
 
 async function route({ force = false } = {}) {
   const target = parseHash();
+  if (target.malformed) {
+    // Replace the unreadable address so reload and back do not repeat it.
+    window.history.replaceState(null, '', window.location.pathname + window.location.search + '#/library');
+    force = true;
+  }
   const key = routeKey(target);
   if (!force && key === lastRenderedKey) return;
   const previousView = keyToView(lastRenderedKey);

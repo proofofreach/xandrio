@@ -97,6 +97,32 @@ async function run() {
       assert(!raw.includes('source prose'));
       assert.strictEqual((await journal.get('book_1')).status, 'pending');
     });
+
+    await test('journal skips a malformed entry instead of refusing to list every job', async () => {
+      const file = path.join(temp, 'guide-jobs-malformed.json');
+      await fs.writeFile(file, JSON.stringify({
+        version: 1,
+        jobs: {
+          broken: { status: 'running' },
+          nulled: null,
+          job_ok: { id: 'job_ok', bookId: 'book_ok', status: 'running' }
+        }
+      }));
+      const warnings = [];
+      const damaged = createBookGuideJournal({
+        filePath: file,
+        jsonStore,
+        logger: { warn: message => warnings.push(message) }
+      });
+      assert.deepStrictEqual((await damaged.list()).map(job => job.id), ['job_ok']);
+      assert.strictEqual(warnings.length, 2);
+      // Updating the malformed entry neither throws nor resurrects it, and
+      // the next write drops it from the file.
+      assert.strictEqual(await damaged.update('broken', { status: 'failed' }), null);
+      const stored = JSON.parse(await fs.readFile(file, 'utf8'));
+      assert.deepStrictEqual(Object.keys(stored.jobs), ['job_ok']);
+      assert.strictEqual((await damaged.update('job_ok', { status: 'failed' })).status, 'failed');
+    });
   } finally {
     await fs.rm(temp, { recursive: true, force: true });
   }

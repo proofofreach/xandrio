@@ -2108,6 +2108,45 @@ pendingAsyncTests.push((async () => {
   );
 })());
 
+// A source without its provider fields, or a non-string source, used to be
+// fetched from Anna's Archive while the record said the requested source.
+pendingAsyncTests.push((async () => {
+  const md5 = 'b'.repeat(32);
+  for (const source of ['gutenberg', 1, 'upload']) {
+    let thrown;
+    try {
+      serverTestHooks.downloadImportCommand({ hash: md5, filename: 'x.epub', title: 'X', source });
+    } catch (error) {
+      thrown = error;
+    }
+    assertEqual(thrown?.statusCode, 400, `download import refuses source ${JSON.stringify(source)} without its fields`);
+    assertEqual(thrown?.response?.code, 'INVALID_DOWNLOAD_SOURCE', `refused source ${JSON.stringify(source)} reports a stable code`);
+    const providerCalls = [];
+    let acquireError;
+    try {
+      await serverTestHooks.acquireDownloadSource({ hash: md5, source }, '/tmp/unused.epub', () => {}, {
+        download: async selection => providerCalls.push(selection)
+      });
+    } catch (error) {
+      acquireError = error;
+    }
+    assertEqual(acquireError?.statusCode, 400, `acquisition refuses source ${JSON.stringify(source)} instead of falling back`);
+    assertEqual(providerCalls.length, 0, `acquisition for source ${JSON.stringify(source)} contacts no provider`);
+  }
+  const gutenbergCommand = serverTestHooks.downloadImportCommand({
+    hash: 'pg-1342', filename: 'p.epub', title: 'P', source: 'gutenberg', gutenbergId: '1342',
+    downloadUrl: 'https://www.gutenberg.org/ebooks/1342.epub3.images',
+    alternatives: [
+      { hash: md5, format: 'epub', title: 'P', source: 'upload' },
+      { hash: md5, format: 'epub', title: 'P', source: 'gutenberg' },
+      { hash: md5, format: 'epub', title: 'P' }
+    ]
+  });
+  assertEqual(gutenbergCommand.downloadSource, 'gutenberg', 'a complete Gutenberg download records Gutenberg');
+  assertEqual(gutenbergCommand.alternatives.map(alternative => alternative.source).join(','), 'annas',
+    'alternatives with an unknown or incomplete source are dropped, not fetched from Anna\'s Archive');
+})());
+
 pendingAsyncTests.push((async () => {
   const failure = new Error('alternative provider rejected download');
   let attemptedDestination;

@@ -9,7 +9,7 @@ export const API_BASE = window.location.origin;
 // lockstep with sw.js CACHE_VERSION. The server compares it with its minimum
 // supported build (lib/deployment-origin.js) and answers 409 CLIENT_STALE when
 // this copy is too old to talk to it.
-export const CLIENT_BUILD = 'xandrio-v230';
+export const CLIENT_BUILD = 'xandrio-v236';
 
 // ---- Access token (XANDRIO_TOKEN) ----
 // The token is exchanged once for a server-signed, HttpOnly session cookie.

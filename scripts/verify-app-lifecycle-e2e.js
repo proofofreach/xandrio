@@ -232,7 +232,7 @@ function tone(frequency) {
     });
     await check('sleep timer completion cannot pause a newly selected book', async page => {
       finite = true;
-      await page.addInitScript(() => { localStorage.setItem('xandrio_sleep_timer_mode', 'chapter'); localStorage.setItem('xandrio_sleep_timer_chapter_target', JSON.stringify({ bookId: 'a', chapterIndex: 0 })); });
+      await page.addInitScript(() => { localStorage.setItem('xandrio_sleep_timer_mode', 'chapter'); localStorage.setItem('xandrio_sleep_timer_chapter_target', JSON.stringify({ bookId: 'a', chapterIndex: 0, armedAt: Date.now() })); });
       const save = gate('save:a'); await open(page); await ready(page, 'a'); await finish(page); await hit(save);
       await page.evaluate(() => { location.hash = '#/player/b'; }); await ready(page, 'b');
       await page.locator('#play-pause-btn').click();

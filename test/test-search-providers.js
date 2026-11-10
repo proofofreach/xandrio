@@ -226,6 +226,42 @@ async function testDownloadRoutingAndLimitErrors() {
   assertEqual(calls[3][2], '/tmp/z.epub', 'Z-Library download receives the destination path');
 }
 
+// A download used to fall back to Anna's Archive for an unknown source or a
+// source without its download fields, while the record kept the requested
+// source. The registry now refuses those selections outright.
+async function testDownloadRefusesUnknownOrIncompleteSources() {
+  const calls = [];
+  const registry = createSearchProviderRegistry({
+    annas: {
+      search: async () => [],
+      download: async hash => calls.push(['annas', hash])
+    },
+    gutenberg: {
+      isEnabled: () => true,
+      search: async () => [],
+      getCachedSearch: async () => [],
+      downloadBook: async id => calls.push(['gutenberg', id])
+    }
+  });
+  const md5 = 'a'.repeat(32);
+  for (const selection of [
+    { source: 'gutenberg', hash: md5 },
+    { source: 1, hash: md5 },
+    { source: 'upload', hash: md5 },
+    { source: 'calibre', hash: md5 },
+    { source: 'zlibrary', zlibId: 'z1', hash: md5 },
+    { source: ['annas'], hash: md5 }
+  ]) {
+    const error = await rejection(registry.download(selection, '/tmp/never.epub'));
+    assertEqual(error?.code, 'INVALID_DOWNLOAD_SOURCE', `download refuses ${JSON.stringify(selection.source)} without its provider fields`);
+    assertEqual(error?.statusCode, 400, `refused ${JSON.stringify(selection.source)} download is a client error`);
+  }
+  assertEqual(calls.length, 0, 'a refused download contacts no provider, Anna\'s Archive included');
+  assertEqual(registry.resolveDownloadSource({ hash: md5 }), 'annas', 'an absent source still defaults to Anna\'s Archive');
+  assertEqual(registry.resolveDownloadSource({ source: 'gutenberg', gutenbergId: '1', downloadUrl: 'https://x.test/ebooks/1.epub' }),
+    'gutenberg', 'a complete Gutenberg selection resolves to Gutenberg');
+}
+
 async function rejection(promise) {
   try {
     await promise;
@@ -387,6 +423,7 @@ async function testZlibraryStatusDelegatesToClient() {
   await testZlibraryReceivesSelectedLanguageBeforeResultLimit();
   await testDownloadRoutingAndLimitErrors();
   await testDownloadBindsBookIdToProviderIdentity();
+  await testDownloadRefusesUnknownOrIncompleteSources();
   await testZlibraryFailurePreservesOtherResultsAndIsSafe();
   await testNonZlibraryFailuresDoNotExposeRawProviderErrors();
   await testZlibraryStatusDelegatesToClient();

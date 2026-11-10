@@ -29,6 +29,9 @@ async function test(name, run) {
 function apiHarness(fetchImpl) {
   const values = new Map();
   const context = {
+    // Administrator telemetry (js/admin-telemetry.mjs) is a no-op here.
+    telemetryMark() {},
+    telemetryNow: () => 0,
     window: { location: { origin: 'https://books.test' }, fetch: fetchImpl },
     document: { cookie: '', dispatchEvent() {} },
     localStorage: {
@@ -64,6 +67,9 @@ function workerHarness({ waiting = false, activate = true, getRegistration = nul
   };
   const session = new Map();
   const context = {
+    // Administrator telemetry (js/admin-telemetry.mjs) is a no-op here.
+    telemetryMark() {},
+    telemetryNow: () => 0,
     navigator: { serviceWorker: {
       controller: oldWorker,
       getRegistration: getRegistration || (() => Promise.resolve(registration)),
@@ -93,7 +99,7 @@ function workerHarness({ waiting = false, activate = true, getRegistration = nul
   };
   vm.createContext(context);
   vm.runInContext([
-    'waitForWorkerState', 'isExpectedOfflineWorker', 'requestWaitingWorkerActivation',
+    'waitForWorkerState', 'workerScriptLabel', 'isExpectedOfflineWorker', 'requestWaitingWorkerActivation',
     'settleBeforeDeadline', 'prepareServiceWorkerForRouting'
   ].map(body).join('\n') + '\nthis.prepare = prepareServiceWorkerForRouting;', context);
   return { events, context, prepare: context.prepare };
@@ -154,7 +160,10 @@ function workerHarness({ waiting = false, activate = true, getRegistration = nul
   await test('deployment deadline uses only an earlier verified canonical origin', async () => {
     const response = deferred();
     const values = new Map([['xandrio_deployment_origin', JSON.stringify({ canonicalOrigin: 'https://canonical.test' })]]);
-    const context = { URL, AbortController, setTimeout, clearTimeout };
+    const context = {
+      // Administrator telemetry (js/admin-telemetry.mjs) is a no-op here.
+      telemetryMark() {},
+      telemetryNow: () => 0, URL, AbortController, setTimeout, clearTimeout };
     vm.createContext(context);
     vm.runInContext(read('public/js/deployment-origin.js').replace(/export /g, '') + '\nthis.init = initDeploymentGuard;', context);
     const result = await context.init({
@@ -203,6 +212,9 @@ function workerHarness({ waiting = false, activate = true, getRegistration = nul
     const load = deferred();
     let seeks = 0;
     const context = {
+      // Administrator telemetry (js/admin-telemetry.mjs) is a no-op here.
+      telemetryMark() {},
+      telemetryNow: () => 0,
       currentBook: { id: 'book' }, openBookToken: 1, loadChapterToken: 0,
       playableChapterAt: index => index, currentChapter: 0,
       chunkPlayer: {}, loadChapter() { context.loadChapterToken++; return load.promise; },
@@ -221,6 +233,9 @@ function workerHarness({ waiting = false, activate = true, getRegistration = nul
     const load = deferred();
     let seeks = 0;
     const context = {
+      // Administrator telemetry (js/admin-telemetry.mjs) is a no-op here.
+      telemetryMark() {},
+      telemetryNow: () => 0,
       currentBook: { id: 'book' }, openBookToken: 1, loadChapterToken: 0,
       playableChapterAt: index => index, currentChapter: 0,
       chunkPlayer: {}, loadChapter() { context.loadChapterToken++; return load.promise; },
@@ -239,6 +254,9 @@ function workerHarness({ waiting = false, activate = true, getRegistration = nul
     let now = 0;
     let writes = 0;
     const context = {
+      // Administrator telemetry (js/admin-telemetry.mjs) is a no-op here.
+      telemetryMark() {},
+      telemetryNow: () => 0,
       performance: { now: () => now },
       playbackAttemptSequence: 0, activePlaybackAttempt: null,
       openBookToken: 1, currentBook: { id: 'outgoing' }, currentChapter: 0,
@@ -280,6 +298,9 @@ function workerHarness({ waiting = false, activate = true, getRegistration = nul
 
   await test('a superseded attempt and an old ready source cannot complete the new attempt', async () => {
     const context = {
+      // Administrator telemetry (js/admin-telemetry.mjs) is a no-op here.
+      telemetryMark() {},
+      telemetryNow: () => 0,
       performance: { now: () => 0 }, playbackAttemptSequence: 0,
       activePlaybackAttempt: null, openBookToken: 1,
       currentBook: { id: 'same-book' }, currentChapter: 0,
@@ -309,6 +330,9 @@ function workerHarness({ waiting = false, activate = true, getRegistration = nul
     let userId = 'user-a';
     const calls = [];
     const context = {
+      // Administrator telemetry (js/admin-telemetry.mjs) is a no-op here.
+      telemetryMark() {},
+      telemetryNow: () => 0,
       getCurrentUserId: () => userId,
       apiGet: async (url, options) => {
         calls.push({ url, options });
@@ -341,6 +365,9 @@ function workerHarness({ waiting = false, activate = true, getRegistration = nul
     let userId = 'user-a';
     let resolveSettings;
     const context = {
+      // Administrator telemetry (js/admin-telemetry.mjs) is a no-op here.
+      telemetryMark() {},
+      telemetryNow: () => 0,
       getCurrentUserId: () => userId,
       apiGet: async url => {
         if (url === '/api/listening-queue') return {

@@ -67,7 +67,9 @@ function getJson(base, pathname, headers = {}) {
     const queued = createImportJob({ requestHash: 'same-book', source: 'gutenberg' });
     const repeated = await Promise.all([1, 2].map(() => fetch(`${base}/api/download`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ hash: 'same-book', filename: 'same.epub', source: 'gutenberg' })
+      // A Gutenberg download must carry its provider fields, or it is refused.
+      body: JSON.stringify({ hash: 'same-book', filename: 'same.epub', source: 'gutenberg',
+        gutenbergId: '1342', downloadUrl: 'https://www.gutenberg.org/ebooks/1342.epub3.images' })
     }).then(response => response.json())));
     check(repeated.every(result => result.jobId === queued.id), 'repeated requests reuse the active job');
     const deniedCancel = await fetch(`${base}/api/download/${privateJob.id}/cancel`, { method: 'POST' });

@@ -13,15 +13,15 @@
   <link rel="manifest" href="/manifest.webmanifest">
   <title>Xandrio - Audiobook Library</title>
   <!-- ?v= values must match ASSET_VERSIONS in sw.js (single source of truth) -->
-  <link rel="stylesheet" href="style-v3.css?v=128">
-  <link rel="stylesheet" href="composition.css?v=10">
-  <link rel="stylesheet" href="library-composition.css?v=9">
-  <link rel="stylesheet" href="shell.css?v=5">
-  <link rel="stylesheet" href="sheets.css?v=3">
-  <link rel="stylesheet" href="settings.css?v=3">
-  <link rel="stylesheet" href="player.css?v=3">
-  <link rel="stylesheet" href="find.css?v=3">
-  <script src="/js/ios-focus-zoom.js?v=2" defer></script>
+  <link rel="stylesheet" href="style-v3.css?v=132">
+  <link rel="stylesheet" href="composition.css?v=14">
+  <link rel="stylesheet" href="library-composition.css?v=13">
+  <link rel="stylesheet" href="shell.css?v=9">
+  <link rel="stylesheet" href="sheets.css?v=7">
+  <link rel="stylesheet" href="settings.css?v=7">
+  <link rel="stylesheet" href="player.css?v=7">
+  <link rel="stylesheet" href="find.css?v=7">
+  <script src="/js/ios-focus-zoom.js?v=6" defer></script>
   <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=2">
 </head>
 <body>
@@ -1064,6 +1064,20 @@
             </div>
             <div id="operator-diagnostics-summary" class="operator-diagnostics-summary" aria-live="polite"></div>
             <div id="operator-diagnostics-issues" class="operator-diagnostics-issues"></div>
+            <div class="settings-card" id="device-telemetry-card">
+              <div class="settings-row">
+                <div class="settings-label">
+                  <span class="settings-label-text">Device telemetry</span>
+                  <span id="device-telemetry-updated" class="settings-label-hint">Recent app sessions on administrator devices</span>
+                </div>
+              </div>
+              <div id="device-telemetry-list" class="operator-diagnostics-summary" aria-live="polite"></div>
+              <div class="settings-actions">
+                <button id="device-telemetry-copy" class="btn-primary btn-sm" type="button" disabled>Copy full telemetry</button>
+              </div>
+              <p id="device-telemetry-error" class="settings-error" role="alert" style="display:none"></p>
+              <p class="settings-hint">Administrator devices record boot timings, slow loads, stalls, image memory, offline audio work and errors, including book IDs. Sessions that the system closed are uploaded on the next launch.</p>
+            </div>
             <p class="settings-hint operator-diagnostics-note">Reports contain counts and component states only. They exclude credentials, account details, book data, custom voice names, and filesystem paths.</p>
           </section>
 
@@ -1705,7 +1719,7 @@
     </section>
   </div>
 
-  <script src="/js/lifecycle.js?v=2"></script>
-  <script type="module" src="app.js?v=176"></script>
+  <script src="/js/lifecycle.js?v=6"></script>
+  <script type="module" src="app.js?v=182"></script>
 </body>
 </html>

@@ -25,7 +25,8 @@ async function main() {
   await test('validates the bounded window before scheduling work', async () => {
     const f = fixture();
     for (const indexes of [null, [1, 2, 3, 4, 5], [-1], [7], [1.5], ['1']]) {
-      await assert.rejects(f.coordinator.request('book', indexes, 'device'), TypeError);
+      await assert.rejects(f.coordinator.request('book', indexes, 'device'),
+        error => error instanceof TypeError && error.statusCode === 400);
     }
     assert.equal(f.calls.length, 0);
   });

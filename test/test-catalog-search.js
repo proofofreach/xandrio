@@ -5,7 +5,7 @@
  * Run: node test/test-catalog-search.js
  */
 
-const { buildCatalogSearchResponse, __test } = require('../lib/catalog-search');
+const { buildCatalogSearchResponse, catalogSearchInputError, __test } = require('../lib/catalog-search');
 const { resolveOpenLibraryIdentity } = require('../lib/metadata-service');
 const hemingwayCrossSourceResults = require('./fixtures/hemingway-cross-source-results.json');
 
@@ -429,6 +429,21 @@ assert(__test.normalizeTitle('Dubliners (Modern Classics) [Annotated]: A Study')
   'normalizeTitle still strips parentheticals, brackets and subtitles from a real title');
 assert(__test.normalizeTitle('x'.repeat(400)).length <= __test.MAX_NORMALIZED_TITLE_CHARS,
   'normalizeTitle bounds its input length');
+
+// A non-string language or query used to reach toUpperCase()/toLowerCase()
+// and fail /api/search as a 500.
+assert(catalogSearchInputError({ query: 'dune', language: { en: 1 } }) === 'language must be a string',
+  'a non-string language is a client error');
+assert(catalogSearchInputError({ query: ['dune'] }) === 'Query required', 'a non-string query is a client error');
+assert(catalogSearchInputError({ query: 'dune', language: 'en' }) === null &&
+  catalogSearchInputError({ query: 'dune' }) === null, 'a string query with an optional string language is accepted');
+let languageError;
+try {
+  await buildCatalogSearchResponse({ query: 'dune', results: [], language: ['en'], sourceStatus: {} });
+} catch (error) {
+  languageError = error;
+}
+assert(languageError?.statusCode === 400, 'buildCatalogSearchResponse refuses a non-string language with a 400');
 
 console.log('All catalog search tests passed! ✅');
 }

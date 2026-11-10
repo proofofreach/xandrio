@@ -236,7 +236,7 @@ async function main() {
     const phantomQueue = await request(server, {
       method: 'PUT', path: '/api/listening-queue',
       headers: { Authorization: 'Bearer security-test-token', 'Content-Type': 'application/json' },
-      body: JSON.stringify({ queue: { bookIds: ['constructor', 'book1'] } })
+      body: JSON.stringify({ queue: { bookIds: ['constructor', 'book1'], revision: 0 } })
     });
     test('listening queue excludes inherited book properties', () => {
       assert.strictEqual(phantomQueue.status, 200);

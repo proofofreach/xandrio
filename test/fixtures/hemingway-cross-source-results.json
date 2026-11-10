@@ -2,6 +2,7 @@
   {
     "hash": "zlib-delphi-epub",
     "source": "zlibrary",
+    "zlibId": "9001",
     "title": "Delphi Complete Works of Ernest Hemingway",
     "author": "Ernest Hemingway",
     "format": "EPUB",
@@ -54,6 +55,7 @@
   {
     "hash": "zlib-complete-mobi",
     "source": "zlibrary",
+    "zlibId": "9002",
     "title": "Complete Works of Ernest Hemingway",
     "author": "Ernest Hemingway",
     "format": "MOBI",
@@ -67,6 +69,7 @@
   {
     "hash": "zlib-parenthetical-epub",
     "source": "zlibrary",
+    "zlibId": "9003",
     "title": "Complete Works of Ernest Hemingway (Delphi Classics)",
     "author": "Ernest Hemingway",
     "format": "EPUB",
@@ -80,6 +83,7 @@
   {
     "hash": "zlib-sun-volume-2",
     "source": "zlibrary",
+    "zlibId": "9004",
     "title": "The Sun Also Rises (The Complete Works of Ernest Hemingway, Volume 2 of 21)",
     "author": "Ernest Hemingway [Hemingway, Ernest]",
     "format": "EPUB",

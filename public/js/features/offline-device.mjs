@@ -184,7 +184,10 @@ export function createOfflineDeviceCoordinator({
   onActivity = () => {},
   metadataTimeoutMs = DESCRIPTOR_TIMEOUT_MS,
   metadataMaxBytes = METADATA_MAX_BYTES,
-  now = Date.now
+  now = Date.now,
+  // Stamps that leave this device (download times compared with server
+  // deletion times) use the server clock. Leases and timers keep `now`.
+  stampNow = now
 } = {}) {
   const createStore = globalThis.XandrioOfflineStore?.createStore;
   const store = createStore ? createStore({ indexedDB }) : null;
@@ -665,7 +668,7 @@ export function createOfflineDeviceCoordinator({
       state: job.mode === 'full' ? 'ready' : 'partial',
       autoResume: false,
       retryAt: null,
-      downloadedAt: new Date(now()).toISOString(),
+      downloadedAt: new Date(stampNow()).toISOString(),
       probeRetryable: false,
       storageBackend: 'idb'
     };

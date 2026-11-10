@@ -1,6 +1,7 @@
 const express = require('express');
 const http = require('http');
 const {
+  blockedSourceIds,
   decorateSourceDescriptors,
   filterEnabledAlternatives,
   operatorPolicyStatus,
@@ -58,6 +59,9 @@ async function request(base, method, pathname, body) {
     { source: 'annas', hash: 'a' },
     { source: 'gutenberg', hash: 'g' }
   ], blank).map(item => item.hash), ['g'], 'automatic fallback cannot bypass the instance source policy');
+
+  assertEqual(blockedSourceIds([1, 'gutenberg', null], blank), ['1', 'null'],
+    'a non-string source is reported as blocked, not dropped past the gate');
 
   let settings = {};
   let cacheUpdate;

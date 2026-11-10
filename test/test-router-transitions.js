@@ -36,5 +36,50 @@ test('settings routes include a section and keep the view key stable', () => {
   assert.ok(router.includes("view === 'settings' && param"), 'navigateTo can open a settings page');
 });
 
-console.log(`\n${passed} passed, ${failed} failed`);
-process.exit(failed ? 1 : 0);
+// A malformed escape in a book link must not throw out of the router.
+async function malformedDeepLinks() {
+  const { loadClientModule } = require('./fixtures/client-module-loader');
+  for (const hash of ['#/player/%E0%A4%A', '#/guide/%']) {
+    const listeners = new Map();
+    const rejections = [];
+    const onRejection = error => rejections.push(error);
+    process.on('unhandledRejection', onRejection);
+    const location = { hash, pathname: '/', search: '' };
+    global.window = {
+      location,
+      history: { replaceState(_state, _title, url) { location.hash = url.slice(url.indexOf('#')); }, pushState() {}, back() {} },
+      addEventListener(type, listener) { listeners.set(type, listener); },
+      matchMedia: () => ({ matches: true })
+    };
+    global.document = { documentElement: { dataset: {} } };
+    const shown = [];
+    const opened = [];
+    const router = await loadClientModule('js/router.js');
+    try {
+      router.initRouter({
+        isBookOpen: () => false,
+        openBook: async bookId => { opened.push(bookId); },
+        showView: view => shown.push(view)
+      });
+      await new Promise(resolve => setImmediate(resolve));
+      listeners.get('hashchange')();
+      await new Promise(resolve => setImmediate(resolve));
+    } finally {
+      process.off('unhandledRejection', onRejection);
+    }
+    test(`a malformed link (${hash}) falls back to the library`, () => {
+      assert.deepStrictEqual(rejections, []);
+      assert.deepStrictEqual(opened, []);
+      assert.strictEqual(shown[0], 'library');
+      assert.strictEqual(location.hash, '#/library');
+    });
+  }
+}
+
+malformedDeepLinks().catch(error => {
+  failed += 1;
+  console.log(`  ✗ malformed deep links: ${error.stack || error.message}`);
+}).finally(() => {
+  console.log(`\n${passed} passed, ${failed} failed`);
+  process.exit(failed ? 1 : 0);
+});
