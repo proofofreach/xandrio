@@ -1,7 +1,7 @@
 importScripts('/js/offline-range.js');
 importScripts('/js/offline-store.js');
 
-const CACHE_VERSION = 'xandrio-v230';
+const CACHE_VERSION = 'xandrio-v236';
 const OFFLINE_ROUTE_CONTRACT_VERSION = 2;
 const OFFLINE_AUDIO_CACHE = 'xandrio-offline-audio';
 const OFFLINE_TITLE_CACHE = 'xandrio-offline-titles';
@@ -13,17 +13,17 @@ const OFFLINE_BLOCK_STORE = self.XandrioOfflineStore?.createStore?.() || null;
 // invalidate via CACHE_VERSION. The script records the shell's content
 // fingerprint, and test/test-app-shell-versions.js fails until it is rerun.
 const ASSET_VERSIONS = {
-  '/style-v3.css': 128,
-  '/composition.css': 10,
-  '/library-composition.css': 9,
-  '/shell.css': 5,
-  '/sheets.css': 3,
-  '/settings.css': 3,
-  '/player.css': 3,
-  '/find.css': 3,
-  '/js/ios-focus-zoom.js': 2,
-  '/js/lifecycle.js': 2,
-  '/app.js': 176
+  '/style-v3.css': 132,
+  '/composition.css': 14,
+  '/library-composition.css': 13,
+  '/shell.css': 9,
+  '/sheets.css': 7,
+  '/settings.css': 7,
+  '/player.css': 7,
+  '/find.css': 7,
+  '/js/ios-focus-zoom.js': 6,
+  '/js/lifecycle.js': 6,
+  '/app.js': 182
 };
 const versionedAsset = (path) => `${path}?v=${ASSET_VERSIONS[path]}`;
 const APP_SHELL = [
@@ -48,15 +48,18 @@ const APP_SHELL = [
   '/js/client-settings.js',
   '/js/playback-session.js',
   '/js/playback-checkpoints.mjs',
+  '/js/account-preferences.mjs',
   '/js/smart-rewind.mjs',
   '/js/playback-health.mjs',
   '/js/page-exit-monitor.mjs',
+  '/js/admin-telemetry.mjs',
   '/js/player-status.mjs',
   '/js/auto-sleep-schedule.mjs',
   '/js/single-file-chapter-player.js',
   '/js/sw-update.mjs',
   '/js/client-staleness.mjs',
   '/js/util/format.js',
+  '/js/util/sha256-stream.mjs',
   '/js/util/time-left.mjs',
   '/js/util/library-status.mjs',
   '/js/ui/toast.js',
@@ -326,7 +329,11 @@ async function lookupCachedAudio(request) {
   const range = request.headers.get('Range');
   if (!range) return cached;
 
-  const streamed = await self.XandrioOfflineRange.createRangeResponse(cached.clone(), range);
+  // No clone: a clone tees the body, and the branch nobody reads would buffer
+  // every byte the range read skips through, up to the whole chapter. The
+  // range helper returns null before touching the body when it cannot serve
+  // the entry, so the legacy path below still has an unread body.
+  const streamed = await self.XandrioOfflineRange.createRangeResponse(cached, range);
   if (streamed) return streamed;
 
   // Legacy entries can lack Content-Length. Keep them playable until a
@@ -391,7 +398,9 @@ self.addEventListener('fetch', event => {
     // belongs to the app, which owns the visible status that goes with it.
     event.respondWith(cachedAudioResponse(request));
   } else if (isOfflineTitleRequest(request)) {
-    event.respondWith(fetch(request, { cache: 'no-store' }).catch(() => cachedTitleResponse(request)));
+    // The server marks covers `no-cache` with an ETag, so the HTTP cache
+    // revalidates (a 304, no body) instead of downloading every cover again.
+    event.respondWith(fetch(request).catch(() => cachedTitleResponse(request)));
   } else if (isAppShell(request)) {
     event.respondWith(appShellResponse(request));
   }

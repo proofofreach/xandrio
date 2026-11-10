@@ -24,7 +24,7 @@ const readline = require('readline');
 const jsonStore = require('../lib/json-store');
 const { createAccountsStore, normalizeUsername, LAST_ADMIN_ERROR_CODE } = require('../lib/accounts');
 const { createSessionStore } = require('../lib/auth');
-const { createUserLibraryState } = require('../lib/user-library-state');
+const { createUserLibraryState, USER_DATA_STORES } = require('../lib/user-library-state');
 const shelves = require('../lib/shelves');
 
 const DATA_DIR = path.resolve(process.env.DATA_DIR || path.join(__dirname, '..', 'data'));
@@ -35,6 +35,7 @@ const POSITIONS_FILE = path.join(DATA_DIR, 'positions.json');
 const BOOKMARKS_FILE = path.join(DATA_DIR, 'bookmarks.json');
 const CLIENT_SETTINGS_FILE = path.join(DATA_DIR, 'client-settings.json');
 const SHELVES_FILE = path.join(DATA_DIR, 'shelves.json');
+const LISTENING_QUEUE_FILE = path.join(DATA_DIR, 'listening-queues.json');
 
 const MIN_PASSWORD_LENGTH = 8;
 
@@ -93,12 +94,16 @@ async function requireAccount(username) {
 
 async function absorbDefaultInto(userId) {
   const from = userLibraryState.DEFAULT_USER_ID;
-  await jsonStore.update(POSITIONS_FILE, (data) => {
-    userLibraryState.migratePositions(data, from, userId);
-  });
-  for (const file of [BOOKMARKS_FILE, CLIENT_SETTINGS_FILE, SHELVES_FILE]) {
-    await jsonStore.update(file, (data) => {
-      userLibraryState.migrateUserScopedStore(data, from, userId);
+  const files = {
+    positions: POSITIONS_FILE,
+    bookmarks: BOOKMARKS_FILE,
+    shelves: SHELVES_FILE,
+    listeningQueues: LISTENING_QUEUE_FILE,
+    clientSettings: CLIENT_SETTINGS_FILE
+  };
+  for (const store of USER_DATA_STORES) {
+    await jsonStore.update(files[store], (data) => {
+      userLibraryState.migrateUserData(store, data, from, userId);
     });
   }
   console.log(`Merged "${from}" user data into ${userId} (existing account data preserved on conflicts).`);

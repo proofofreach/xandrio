@@ -108,7 +108,7 @@ function element() {
           return () => el?.removeEventListener('keydown', listener);
         };`);
     const moduleUrl = `data:text/javascript;base64,${Buffer.from(source).toString('base64')}`;
-    const { clearSleepTimer, initSleepTimer, restoreSleepTimer, checkAutomaticSleepTimer, expireSleepTimer } = await import(moduleUrl);
+    const { clearSleepTimer, initSleepTimer, restoreSleepTimer, checkAutomaticSleepTimer, expireSleepTimer, followSleepTimerChapter, isSleepTimerChapterTarget } = await import(moduleUrl);
 
     await test('re-init replaces sleep timer view listeners', () => {
       initSleepTimer({ getCurrentBook: () => null, getCurrentChapter: () => 0, getChunkPlayer: () => null, updatePlaybackUI() {}, savePosition() {} });
@@ -156,6 +156,67 @@ function element() {
       });
       assert.strictEqual(values.has('xandrio_sleep_timer_chapter_target'), false);
       clearSleepTimer();
+    });
+
+    await test('an end-of-chapter timer follows a move to another chapter', async () => {
+      const changes = [];
+      let chapter = 2;
+      initSleepTimer({
+        getCurrentBook: () => ({ id: 'book-a' }),
+        getCurrentChapter: () => chapter,
+        getChunkPlayer: () => null,
+        updatePlaybackUI() {},
+        savePosition() {},
+        onChapterTargetChange(target, detail) { changes.push({ target, reason: detail.reason }); }
+      });
+      chapterOption.emit('click');
+      chapter = 5;
+      followSleepTimerChapter('book-a', 5);
+      await Promise.resolve();
+      assert.deepStrictEqual(changes.at(-1), { target: { bookId: 'book-a', chapterIndex: 5 }, reason: 'retargeted' });
+      assert.strictEqual(isSleepTimerChapterTarget('book-a', 5), true);
+      assert.strictEqual(isSleepTimerChapterTarget('book-a', 2), false);
+      assert.strictEqual(JSON.parse(values.get('xandrio_sleep_timer_chapter_target')).chapterIndex, 5);
+      followSleepTimerChapter('book-b', 7);
+      assert.strictEqual(isSleepTimerChapterTarget('book-a', 5), true, 'another book does not move the timer');
+      restoreSleepTimer();
+      assert.strictEqual(isSleepTimerChapterTarget('book-a', 5), true, 'the moved timer restores on its chapter');
+      clearSleepTimer();
+    });
+
+    await test('a saved end-of-chapter timer for another chapter or an old session is dropped', () => {
+      const countdown = elements.get('timer-countdown');
+      const restoreWith = (target, chapter) => {
+        initSleepTimer({ getCurrentBook: () => ({ id: 'book-a' }), getCurrentChapter: () => chapter, getChunkPlayer: () => null, updatePlaybackUI() {}, savePosition() {} });
+        values.set('xandrio_sleep_timer_mode', 'chapter');
+        values.set('xandrio_sleep_timer_chapter_target', JSON.stringify(target));
+        restoreSleepTimer();
+      };
+      for (const [label, target, chapter] of [
+        ['another chapter', { bookId: 'book-a', chapterIndex: 2, armedAt: Date.now() }, 3],
+        ['an old session', { bookId: 'book-a', chapterIndex: 2, armedAt: Date.now() - 13 * 60 * 60 * 1000 }, 2],
+        ['an unstamped record', { bookId: 'book-a', chapterIndex: 2 }, 2]
+      ]) {
+        restoreWith(target, chapter);
+        assert.strictEqual(isSleepTimerChapterTarget('book-a', 2), false, label);
+        assert.strictEqual(isSleepTimerChapterTarget('book-a', 3), false, label);
+        assert.strictEqual(values.has('xandrio_sleep_timer_chapter_target'), false, label);
+        assert.strictEqual(values.has('xandrio_sleep_timer_mode'), false, label);
+        assert.notStrictEqual(countdown.textContent, 'End of chapter', label);
+      }
+      restoreWith({ bookId: 'book-a', chapterIndex: 2, armedAt: Date.now() - 60_000 }, 2);
+      assert.strictEqual(isSleepTimerChapterTarget('book-a', 2), true, 'a current timer restores');
+      assert.strictEqual(countdown.textContent, 'End of chapter');
+      clearSleepTimer();
+    });
+
+    await test('every chapter load moves the timer before the engine reads its limit', () => {
+      const app = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
+      const load = app.slice(app.indexOf('async function loadChapterWithIntent('));
+      const setBook = load.indexOf('playbackSession.setBook(currentBook, {\n    chapterIndex: index,');
+      const follow = load.indexOf('followSleepTimerChapter(currentBook?.id, index);');
+      assert(setBook >= 0 && follow > setBook, 'loadChapterWithIntent follows the selection');
+      assert(follow < load.indexOf('localChapterSource('), 'before the source is chosen and loaded');
     });
 
     await test('restoring twice leaves exactly one countdown and expiry', () => {
@@ -229,7 +290,7 @@ function element() {
         const duration = elements.get('auto-sleep-duration');
         duration.value = 'chapter'; duration.emit('change');
         assert.equal(values.get('xandrio_sleep_timer_mode'), 'chapter');
-        assert.deepEqual(JSON.parse(values.get('xandrio_sleep_timer_chapter_target')), { bookId: 'night-book', chapterIndex: 2 });
+        assert.deepEqual(JSON.parse(values.get('xandrio_sleep_timer_chapter_target')), { bookId: 'night-book', chapterIndex: 2, armedAt: clock });
         expireSleepTimer('chapter');
         assert.equal(pauses, 1, 'expiry uses the app pause that cancels recovery');
         checkAutomaticSleepTimer();

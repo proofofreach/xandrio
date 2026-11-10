@@ -1,10 +1,12 @@
-import { API_BASE, apiSend, canClaimLegacyOfflineStorage, getOfflineStorageScopeId, syncHeaders } from '../api.js';
+import { API_BASE, apiSend, canClaimLegacyOfflineStorage, getOfflineStorageScopeId, serverNow, syncHeaders } from '../api.js';
 import { escapeHTML, formatDuration, relativeTime } from '../util/format.js';
 import { readJSON, writeJSON } from '../util/storage.js';
 import { removePlaybackCheckpoint } from '../playback-checkpoints.mjs';
 import { showToast, showUndoToast } from '../ui/toast.js';
 import { confirmSheet } from '../ui/confirm.js';
 import { planRollingOfflineWindow } from './rolling-offline.mjs';
+import { createSha256 } from '../util/sha256-stream.mjs';
+import { telemetryMark } from '../admin-telemetry.mjs';
 
 export const OFFLINE_AUDIO_CACHE = 'xandrio-offline-audio';
 export const OFFLINE_TITLE_CACHE = 'xandrio-offline-titles';
@@ -12,6 +14,8 @@ const OFFLINE_BOOKS_KEY = 'xandrio_offline_books';
 const OFFLINE_DELETION_CURSOR_KEY = 'xandrio_offline_deletion_cursor';
 const OFFLINE_LEGACY_CACHE_OWNER_KEY = 'xandrio_offline_legacy_cache_owner';
 const PENDING_POSITIONS_KEY = 'xandrio_pending_positions';
+// The chapter layout the server last reported for each book, per account.
+const OFFLINE_LAYOUTS_KEY = 'xandrio_offline_layouts';
 const OFFLINE_SCOPE_PARAM = 'xandrio-offline-scope';
 const OFFLINE_CONTENT_HASH_HEADER = 'X-Xandrio-Content-SHA256';
 const OFFLINE_BODY_VERIFICATION_VERSION = 1;
@@ -28,7 +32,7 @@ const OFFLINE_CONTRACT_MARKER = 'x-xandrio-offline-contract';
  * with OFFLINE_ROUTE_CONTRACT_VERSION instead of tying downloads to a build id.
  * This value MUST equal CACHE_VERSION in public/sw.js.
  */
-export const EXPECTED_OFFLINE_SW_VERSION = 'xandrio-v230';
+export const EXPECTED_OFFLINE_SW_VERSION = 'xandrio-v236';
 export const MINIMUM_OFFLINE_ROUTE_CONTRACT = 1;
 const BLOCK_OFFLINE_ROUTE_CONTRACT = 2;
 // A chapter is only ever invalidated after this many playback failures whose
@@ -73,6 +77,12 @@ export function shouldUseOfflineBookFallback(error, online = navigator.onLine) {
 let deps = {};
 let downloadAbort = null;
 let manifestAudit = null;
+// True only while an audit reads stored audio, not while one waits to start.
+let manifestAuditRunning = false;
+// A full audit reads stored chapter bodies. Starting it while the page boots
+// competes with the library, covers and the restored player for memory and the
+// main thread, so it waits until the launch has settled.
+const MANIFEST_AUDIT_SETTLE_MS = 20000;
 let rollingAbort = null;
 let rollingRequestKey = '';
 let activeDownloadBookId = '';
@@ -112,6 +122,8 @@ async function loadOfflineDevice() {
   offlineDeviceLoading = import('./offline-device.mjs').then(({ createOfflineDeviceCoordinator }) => {
     offlineDevice = createOfflineDeviceCoordinator({
       getScope: offlineScopeId,
+      // Download stamps are compared with server deletion times.
+      stampNow: serverNow,
       getRequestHeaders: syncHeaders,
       getWorkerState: offlineWorkerControllerState,
       onSnapshot: publishDeviceSnapshot,
@@ -224,7 +236,7 @@ export function offlineDownloadsSupported() {
 // that holds whole chapters in memory. Read by the page-exit monitor.
 export function offlineWorkInProgress() {
   return Boolean(
-    activeDownloadCompletion || manifestAudit ||
+    activeDownloadCompletion || manifestAuditRunning ||
     rollingCompletions.size > 0 || legacyCacheMigrations.size > 0
   );
 }
@@ -346,8 +358,22 @@ function refreshOfflineAvailability() {
   }
 }
 
-export async function prepareOfflineStorage({ waitForAudio = false } = {}) {
+// The latest storage preparation per scope. Deletion reconciliation waits
+// for it: block-backed downloads are invisible until the device snapshot is
+// hydrated, and a deletion decided without them would be lost.
+const offlineStoragePreparations = new Map();
+// Scopes whose device snapshot could not be read. Their block-backed titles
+// cannot play either, so deletion sync does not wait for them.
+const deviceHydrationFailures = new Set();
+
+export function prepareOfflineStorage(options = {}) {
   const scope = offlineScopeId();
+  const preparation = prepareOfflineStorageForScope(scope, options);
+  offlineStoragePreparations.set(scope, preparation);
+  return preparation;
+}
+
+async function prepareOfflineStorageForScope(scope, { waitForAudio = false } = {}) {
   const manifest = readLegacyOfflineManifest(scope);
   if (
     'caches' in window &&
@@ -368,7 +394,9 @@ export async function prepareOfflineStorage({ waitForAudio = false } = {}) {
   // for legacy CacheStorage downloads only.
   await certifyOfflineWorkerController({ timeoutMs: 1500 }).catch(() => offlineWorkerControllerState());
   const device = await loadOfflineDevice();
+  deviceHydrationFailures.delete(scope);
   await device?.hydrate(scope, manifest).catch(error => {
+    deviceHydrationFailures.add(scope);
     console.warn('Offline title snapshot could not be loaded:', error);
   });
 }
@@ -603,6 +631,103 @@ export function offlineEntryForBook(bookId) {
   return getOfflineManifest()[bookId] || null;
 }
 
+// Downloaded audio is addressed by chapter index, so it is only correct for
+// the chapter layout it was downloaded under. A rebuild, a re-segmentation or
+// a same-key text remap changes what an index names without touching the
+// download. `titleData.book` is the snapshot taken when the chapters were
+// fetched, and every writer that refreshes it either keeps the same layout or
+// drops the chapters it carried (reusableChapterEntries). The server's
+// `chapterLayoutKey` is `<structureKey>~<text cut>`; a record without the text
+// part (an older snapshot, or a book whose text identity is not recorded yet)
+// is compared by structure key alone.
+function chapterLayout(book) {
+  const structureKey = String(book?.chapterStructureKey || '');
+  const layoutKey = String(book?.chapterLayoutKey || '');
+  return {
+    structureKey,
+    textCut: structureKey && layoutKey.startsWith(`${structureKey}~`) ? layoutKey.slice(structureKey.length + 1) : ''
+  };
+}
+
+function chapterLayoutsDiffer(held, current) {
+  if (!held.structureKey || !current.structureKey) return false;
+  if (held.structureKey !== current.structureKey) return true;
+  return Boolean(held.textCut && current.textCut && held.textCut !== current.textCut);
+}
+
+function offlineLayoutsKey(scopeId = offlineScopeId()) {
+  return `${OFFLINE_LAYOUTS_KEY}:${scopeId}`;
+}
+
+// Library rows ask once per download, so the parsed map is kept per scope.
+// Another tab's later note is seen after a reload; playback itself compares
+// against the open book, not this map.
+let knownLayouts = { key: '', value: {} };
+
+function knownServerLayouts(scopeId = offlineScopeId()) {
+  const key = offlineLayoutsKey(scopeId);
+  if (knownLayouts.key !== key) {
+    const stored = readJSON(key, {});
+    knownLayouts = { key, value: stored && typeof stored === 'object' && !Array.isArray(stored) ? stored : {} };
+  }
+  return knownLayouts.value;
+}
+
+function knownServerLayout(bookId, scopeId = offlineScopeId()) {
+  const record = knownServerLayouts(scopeId)[String(bookId)];
+  return record && typeof record === 'object'
+    ? { structureKey: String(record.structureKey || ''), textCut: String(record.textCut || '') }
+    : null;
+}
+
+/**
+ * Record the chapter layout of a book record the server just returned. Only
+ * server responses may call this: an offline snapshot names its own layout.
+ */
+export function noteServerBookLayout(book, scopeId = offlineScopeId()) {
+  noteServerBookLayouts([book], scopeId);
+}
+
+// The library list carries every book's layout, so a re-cut book is marked
+// "Chapters changed" without being opened first. One write for the batch.
+export function noteServerBookLayouts(books, scopeId = offlineScopeId()) {
+  const known = knownServerLayouts(scopeId);
+  let next = null;
+  for (const book of Array.isArray(books) ? books : []) {
+    const id = String(book?.id || '');
+    const layout = chapterLayout(book);
+    if (!id || !layout.structureKey) continue;
+    const previous = (next || known)[id];
+    if (previous?.structureKey === layout.structureKey && String(previous?.textCut || '') === layout.textCut) continue;
+    next = { ...(next || known), [id]: layout };
+  }
+  if (next && writeJSON(offlineLayoutsKey(scopeId), next)) knownLayouts = { key: offlineLayoutsKey(scopeId), value: next };
+}
+
+/**
+ * Does this download hold audio for another chapter layout than `book` (or,
+ * without a book, the layout the server last reported)? Unknown is not stale.
+ */
+function offlineEntryLayoutStale(entry, book = null) {
+  const held = chapterLayout(entry?.titleData?.book);
+  if (!held.structureKey) return false;
+  const current = book ? chapterLayout(book) : knownServerLayout(entry.bookId || entry.titleData.book.id);
+  return Boolean(current) && chapterLayoutsDiffer(held, current);
+}
+
+// The layout the player's chapter indexes refer to: the open book when it is
+// this one (possibly an offline snapshot), else what the server last said.
+function playerLayoutBook(bookId) {
+  const open = deps.getCurrentBook?.();
+  return open && String(open.id) === String(bookId) ? open : null;
+}
+
+// Chapters an existing entry may carry into a new entry for `book`.
+function reusableChapterEntries(existing, book) {
+  if (!Array.isArray(existing?.chapterEntries)) return [];
+  return offlineEntryLayoutStale(existing, book) ? [] : existing.chapterEntries;
+}
+
 function validTitleData(entry) {
   const data = entry?.titleData;
   return Boolean(
@@ -652,14 +777,21 @@ function hasCachedChapter(entry) {
   return Array.isArray(entry?.chapterEntries) && entry.chapterEntries.some(Boolean);
 }
 
+// While online, a snapshot the server has since re-cut is not a fallback: it
+// would open the old chapter list beside server positions and audio for the
+// new one. Offline, the snapshot and its own audio still agree and play.
+function usableOfflineSnapshot(entry, online = globalThis.navigator?.onLine !== false) {
+  return isHydratableOfflineEntry(entry) && hasCachedChapter(entry) &&
+    !(online && offlineEntryLayoutStale(entry));
+}
+
 export function hasOfflineBookData(bookId) {
-  const entry = offlineEntryForBook(bookId);
-  return isHydratableOfflineEntry(entry) && hasCachedChapter(entry);
+  return usableOfflineSnapshot(offlineEntryForBook(bookId));
 }
 
 export function getOfflineBookData(bookId) {
   const entry = offlineEntryForBook(bookId);
-  if (!isHydratableOfflineEntry(entry) || !hasCachedChapter(entry)) return null;
+  if (!usableOfflineSnapshot(entry)) return null;
   const data = structuredClone(entry.titleData);
   if (data.book.hasCover) data.book.coverUrl = offlineTitleRequest(bookId).url;
   return data;
@@ -717,6 +849,16 @@ export function offlineStatusForBook(bookId, manifest = getOfflineManifest()) {
     ? entry.chapterEntries.filter(Boolean).length
     : 0;
   const totalChapters = Number(entry.chapters) || 0;
+  if (cachedChapters > 0 && offlineEntryLayoutStale(entry)) {
+    return {
+      kind: 'repair-needed',
+      label: 'Chapters changed · Update download',
+      downloaded: false,
+      layoutChanged: true,
+      cachedChapters,
+      totalChapters
+    };
+  }
   if (entry.mode === 'rolling') {
     return {
       kind: 'partial',
@@ -843,6 +985,7 @@ export function offlineStatusForBook(bookId, manifest = getOfflineManifest()) {
 
 export function isBookDownloadedForOffline(bookId, chapterIndex = 0) {
   const entry = offlineEntryForBook(bookId);
+  if (offlineEntryLayoutStale(entry, playerLayoutBook(bookId))) return false;
   const legacyReady = entry?.manifestVersion === 2 &&
     entry?.mode === 'full' &&
     entry?.state === 'ready' &&
@@ -884,7 +1027,7 @@ export async function isChapterAvailableOffline(bookId, chapterIndex = 0) {
     if (identity && canReuseChapter(expected, identity, expected.variantKey)) {
       expected.bodyVerificationVersion = OFFLINE_BODY_VERIFICATION_VERSION;
       saveOfflineManifest(manifest, scope);
-      await backfillContentIdentity(cache, request, cached, identity).catch(() => {});
+      await backfillContentIdentity(cache, request, cached.headers, identity).catch(() => {});
       return offlineScopeId() === scope;
     }
     await cache.delete(request).catch(() => {});
@@ -1132,6 +1275,11 @@ export async function localChapterSource(bookId, chapterIndex = 0) {
   if (suspectChapters.get(suspectKey(bookId, chapterIndex))?.distrusted) return unavailable;
   const entry = offlineEntryForBook(bookId);
   if (entry?.storageBackend !== 'idb' && !('caches' in globalThis)) return unavailable;
+  // Chapter N of the download is not chapter N of the open book. Stream it;
+  // the library row offers the re-download.
+  if (offlineEntryLayoutStale(entry, playerLayoutBook(bookId))) {
+    return { ...unavailable, reason: 'layout-changed' };
+  }
   if (!isBookDownloadedForOffline(bookId, chapterIndex)) {
     return { ...unavailable, reason: 'not-downloaded' };
   }
@@ -1302,16 +1450,61 @@ export function renderOfflineState({ audit = true } = {}) {
   if (audit) void scheduleOfflineManifestAudit();
 }
 
+// The deletion feed's revision is a counter on the server. A reply below this
+// device's cursor means the feed was reset (a restored or replaced data
+// directory); an `epoch` that differs from the stored one says the same even
+// when the new counter has already passed the cursor. Either way the whole
+// feed is read again from 0.
+function offlineDeletionEpochKey(scopeId = offlineScopeId()) {
+  return `${OFFLINE_DELETION_CURSOR_KEY}:epoch:${scopeId}`;
+}
+
+// Was this download made of the book the tombstone deleted? Both stamps on
+// the first path are server times: the import time in the download's title
+// snapshot and the deletion time. A download of a later re-import is kept.
+// Snapshots without an import time fall back to the download's own stamps,
+// which are written with serverNow().
+function downloadPredatesDeletion(entry, tombstone) {
+  const deletedAt = Date.parse(tombstone?.deletedAt);
+  if (!Number.isFinite(deletedAt)) return true;
+  const importedAt = Date.parse(entry?.titleData?.book?.addedAt);
+  if (Number.isFinite(importedAt)) return importedAt <= deletedAt;
+  const localChoiceAt = Math.max(
+    Date.parse(entry.downloadedAt) || 0,
+    entry.mode === 'full' ? (Date.parse(entry.downloadStartedAt) || 0) : 0
+  );
+  return localChoiceAt <= deletedAt;
+}
+
 export function reconcileDeletedOfflineBooks() {
   if (!navigator.onLine) return Promise.resolve(false);
   const scope = offlineScopeId();
   if (deletionReconciliations.has(scope)) return deletionReconciliations.get(scope);
   const reconciliation = (async () => {
-    const rawCursor = Number(localStorage.getItem(offlineDeletionCursorKey(scope)));
-    const cursor = Number.isSafeInteger(rawCursor) && rawCursor >= 0 ? rawCursor : 0;
-    const result = await apiSend('GET', `/api/offline/deletions?since=${cursor}`);
+    await offlineStoragePreparations.get(scope)?.catch(() => {});
     if (offlineScopeId() !== scope) return false;
-    const revision = Number(result?.revision);
+    // Without the device snapshot, block-backed downloads look absent. Leave
+    // the cursor where it is so the next pass decides them.
+    if (offlineDevice && offlineDeviceSnapshotScope !== scope && !deviceHydrationFailures.has(scope)) return false;
+    const cursorKey = offlineDeletionCursorKey(scope);
+    const epochKey = offlineDeletionEpochKey(scope);
+    const rawCursor = Number(localStorage.getItem(cursorKey));
+    const storedCursor = Number.isSafeInteger(rawCursor) && rawCursor >= 0 ? rawCursor : 0;
+    const storedEpoch = localStorage.getItem(epochKey) || '';
+    let cursor = storedCursor;
+    let result = await apiSend('GET', `/api/offline/deletions?since=${cursor}`);
+    if (offlineScopeId() !== scope) return false;
+    let revision = Number(result?.revision);
+    const epoch = typeof result?.epoch === 'string' ? result.epoch : '';
+    const feedReset = cursor > 0 && Number.isSafeInteger(revision) && (
+      revision < cursor || Boolean(epoch && storedEpoch && epoch !== storedEpoch)
+    );
+    if (feedReset) {
+      cursor = 0;
+      result = await apiSend('GET', '/api/offline/deletions?since=0');
+      if (offlineScopeId() !== scope) return false;
+      revision = Number(result?.revision);
+    }
     if (!Number.isSafeInteger(revision) || revision < cursor || !Array.isArray(result?.deletions)) {
       return false;
     }
@@ -1321,23 +1514,19 @@ export function reconcileDeletedOfflineBooks() {
       const id = String(tombstone?.bookId || '');
       const entry = id ? offlineEntryForBook(id) : null;
       if (!entry) continue;
-      const deletedAt = Date.parse(tombstone.deletedAt);
-      const localChoiceAt = Math.max(
-        Date.parse(entry.downloadedAt) || 0,
-        entry.mode === 'full' ? (Date.parse(entry.downloadStartedAt) || 0) : 0
-      );
-      // A title explicitly downloaded after the server deletion is a newer
-      // local choice and must not be removed by an older tombstone.
-      if (Number.isFinite(deletedAt) && localChoiceAt > deletedAt) {
-        continue;
-      }
+      // A title downloaded from a later import of the same id is a newer
+      // choice and must not be removed by an older tombstone.
+      if (!downloadPredatesDeletion(entry, tombstone)) continue;
       await removeOfflineBook(id, {
         removePlaybackState: true,
         render: false
       });
       changed = true;
     }
-    localStorage.setItem(offlineDeletionCursorKey(scope), String(revision));
+    if (offlineScopeId() !== scope) return changed;
+    localStorage.setItem(cursorKey, String(revision));
+    const nextEpoch = typeof result?.epoch === 'string' ? result.epoch : '';
+    if (nextEpoch) localStorage.setItem(epochKey, nextEpoch);
     if (changed) renderOfflineState();
     return changed;
   })().catch(error => {
@@ -1362,7 +1551,8 @@ function migrateCurrentOfflineEntry() {
     entry?.mode !== 'full' ||
     entry?.state !== 'ready' ||
     !Array.isArray(entry.chapterEntries) ||
-    entry.chapterEntries.length !== chapters.length
+    entry.chapterEntries.length !== chapters.length ||
+    offlineEntryLayoutStale(entry, book)
   ) {
     return false;
   }
@@ -1417,7 +1607,7 @@ export function downloadCurrentBook(options = {}) {
 
 function preparationEntry(book, chapters, existing = null) {
   const chapterCount = chapters.length;
-  const oldEntries = Array.isArray(existing?.chapterEntries) ? existing.chapterEntries : [];
+  const oldEntries = reusableChapterEntries(existing, book);
   return {
     ...existing,
     bookId: book.id,
@@ -2626,7 +2816,7 @@ export async function downloadBookForOffline(book, chapters, options = {}) {
     working.autoResume = false;
     working.progressPercent = 100;
     working.preparedChapters = chapters.length;
-    working.downloadedAt = new Date().toISOString();
+    working.downloadedAt = new Date(serverNow()).toISOString();
     working.probedSwVersion = routeCheck.swVersion || '';
     working.probedContractVersion = routeCheck.contractVersion || 0;
     working.state = routeCheck.ok ? 'ready' : 'verifying';
@@ -2723,7 +2913,7 @@ export async function ensureRollingOfflineWindow(book, chapters, chapterIndex, o
   if (device?.writerEnabled?.()) {
     await certifyOfflineWorkerController({ timeoutMs: 1500 }).catch(() => offlineWorkerControllerState());
     if (device.writerCapable?.()) {
-      const cachedChapters = (existing?.chapterEntries || [])
+      const cachedChapters = reusableChapterEntries(existing, book)
         .map((entry, index) => entry ? index : null)
         .filter(index => index !== null);
       const plan = planRollingOfflineWindow({
@@ -2738,7 +2928,7 @@ export async function ensureRollingOfflineWindow(book, chapters, chapterIndex, o
         chapters: chapters.length,
         chapterEntries: Array.from(
           { length: chapters.length },
-          (_, index) => existing?.chapterEntries?.[index] || null
+          (_, index) => reusableChapterEntries(existing, book)[index] || null
         ),
         titleData: offlineTitleData(book, chapters),
         manifestVersion: OFFLINE_MANIFEST_VERSION,
@@ -2763,7 +2953,7 @@ export async function ensureRollingOfflineWindow(book, chapters, chapterIndex, o
   const rollingCompletion = new Promise(resolve => { resolveRollingCompletion = resolve; });
   rollingCompletions.set(requestKey, rollingCompletion);
   const signal = rollingAbort.signal;
-  const oldEntries = Array.isArray(existing?.chapterEntries) ? existing.chapterEntries : [];
+  const oldEntries = reusableChapterEntries(existing, book);
   const working = {
     bookId: book.id,
     title: book.title,
@@ -2827,7 +3017,7 @@ export async function ensureRollingOfflineWindow(book, chapters, chapterIndex, o
       working.chapterEntries[index] = null;
     }
     working.bytes = working.chapterEntries.reduce((sum, entry) => sum + (Number(entry?.size) || 0), 0);
-    working.downloadedAt = new Date().toISOString();
+    working.downloadedAt = new Date(serverNow()).toISOString();
     persistWorkingEntry(book.id, working);
     renderOfflineManager();
   } catch (error) {
@@ -2996,7 +3186,7 @@ async function getChapterAudioStatus(bookId, chapterIndex, signal, tier = null) 
 
 function createWorkingEntry(book, chapters, existing, voiceLabel) {
   const chapterCount = chapters.length;
-  const canReuseExisting = offlineState(existing) !== 'stale';
+  const canReuseExisting = offlineState(existing) !== 'stale' && !offlineEntryLayoutStale(existing, book);
   const oldEntries = canReuseExisting && Array.isArray(existing?.chapterEntries)
     ? existing.chapterEntries
     : [];
@@ -3010,7 +3200,7 @@ function createWorkingEntry(book, chapters, existing, voiceLabel) {
     titleData: offlineTitleData(book, chapters),
     bytes: canReuseExisting ? (Number(existing?.bytes) || 0) : 0,
     downloadedAt: existing?.downloadedAt || null,
-    downloadStartedAt: new Date().toISOString(),
+    downloadStartedAt: new Date(serverNow()).toISOString(),
     progressPercent: 0,
     progressPhase: 'Starting',
     autoResume: true,
@@ -3211,11 +3401,55 @@ async function hashBytes(bytes) {
   return `sha256-${Array.from(digest, byte => byte.toString(16).padStart(2, '0')).join('')}`;
 }
 
+// Reads (consumes) the body when it has to be verified. The body is hashed as
+// a stream: never cloned, never buffered whole. A clone would tee the stream,
+// and the unread branch then holds every byte the hash reads.
 async function contentIdentity(response, { verifyBody = false } = {}) {
   const storedIdentity = contentIdentityFromHeaders(response.headers);
   if (storedIdentity && !verifyBody) return storedIdentity;
-  const bytes = new Uint8Array(await response.clone().arrayBuffer());
-  return contentIdentityForBytes(bytes, response.headers.get('ETag') || '');
+  return streamedContentIdentity(response, response.headers.get('ETag') || '');
+}
+
+const HASH_YIELD_BYTES = 4 * 1024 * 1024;
+
+function yieldToEventLoop() {
+  return new Promise(resolve => setTimeout(resolve, 0));
+}
+
+async function streamedContentIdentity(response, etag = '') {
+  const startedAt = globalThis.performance?.now?.() ?? Date.now();
+  if (!response.body?.getReader) {
+    // Engines without response streams; none of them is iOS.
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    return contentIdentityForBytes(bytes, etag);
+  }
+  const hash = createSha256();
+  const reader = response.body.getReader();
+  let size = 0;
+  let sinceYield = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const chunk = value instanceof Uint8Array ? value : new Uint8Array(value);
+      hash.update(chunk);
+      size += chunk.byteLength;
+      sinceYield += chunk.byteLength;
+      if (sinceYield >= HASH_YIELD_BYTES) {
+        // Let input, rendering and media callbacks run between slices.
+        sinceYield = 0;
+        await yieldToEventLoop();
+      }
+    }
+  } finally {
+    try { reader.releaseLock(); } catch {}
+  }
+  const contentHash = `sha256-${hash.digestHex()}`;
+  telemetryMark('offline:hash', {
+    mb: Math.round(size / 104857.6) / 10,
+    ms: Math.round((globalThis.performance?.now?.() ?? Date.now()) - startedAt)
+  });
+  return { size, contentHash, etag };
 }
 
 function contentIdentityFromHeaders(headers) {
@@ -3231,20 +3465,24 @@ function contentIdentityFromHeaders(headers) {
   };
 }
 
-async function backfillContentIdentity(cache, request, response, identity) {
-  const storedSize = Number(response.headers.get('Content-Length'));
-  const storedHash = response.headers.get(OFFLINE_CONTENT_HASH_HEADER) || '';
+// Takes the verified entry's headers only: its body was consumed by the hash.
+// A rewrite streams a fresh read of the stored entry back into the cache.
+async function backfillContentIdentity(cache, request, storedHeaders, identity) {
+  const storedSize = Number(storedHeaders.get('Content-Length'));
+  const storedHash = storedHeaders.get(OFFLINE_CONTENT_HASH_HEADER) || '';
   if (
     Number.isInteger(storedSize) &&
     storedSize > 0 &&
     /^sha256-[a-f0-9]{64}$/.test(storedHash)
   ) return;
-  const headers = new Headers(response.headers);
+  const fresh = await cache.match(request);
+  if (!fresh) return;
+  const headers = new Headers(fresh.headers);
   headers.set('Content-Length', String(identity.size));
   headers.set(OFFLINE_CONTENT_HASH_HEADER, identity.contentHash);
-  await cache.put(request, new Response(response.body, {
-    status: response.status,
-    statusText: response.statusText,
+  await cache.put(request, new Response(fresh.body, {
+    status: fresh.status,
+    statusText: fresh.statusText,
     headers
   }));
 }
@@ -3398,7 +3636,7 @@ async function cacheOfflineCover(book, signal) {
   return true;
 }
 
-export async function verifyOfflineEntry(cache, entry, scopeId = offlineScopeId()) {
+export async function verifyOfflineEntry(cache, entry, scopeId = offlineScopeId(), { onChapterVerified = null } = {}) {
   if (offlineState(entry) === 'incomplete' || !Array.isArray(entry?.chapterEntries)) return false;
   if (entry.mode === 'full' && !validTitleData(entry)) return false;
   if (entry.chapterEntries.length !== Number(entry.chapters)) return false;
@@ -3409,12 +3647,17 @@ export async function verifyOfflineEntry(cache, entry, scopeId = offlineScopeId(
     const request = offlineAudioRequest(entry.bookId, i, scopeId);
     const response = await cache.match(request);
     if (!response) return false;
-    const identity = await contentIdentity(response, {
-      verifyBody: expected.bodyVerificationVersion !== OFFLINE_BODY_VERIFICATION_VERSION
-    });
+    const needsBody = expected.bodyVerificationVersion !== OFFLINE_BODY_VERIFICATION_VERSION;
+    const identity = await contentIdentity(response, { verifyBody: needsBody });
     if (!canReuseChapter(expected, identity, expected.variantKey)) return false;
     expected.bodyVerificationVersion = OFFLINE_BODY_VERIFICATION_VERSION;
-    await backfillContentIdentity(cache, request, response, identity).catch(() => {});
+    await backfillContentIdentity(cache, request, response.headers, identity).catch(() => {});
+    // Record each verified chapter as it passes. A page killed halfway through
+    // a book then resumes where it stopped instead of re-reading every chapter
+    // on every launch.
+    if (needsBody) {
+      try { onChapterVerified?.(i); } catch {}
+    }
   }
   if (entry.titleData?.book?.hasCover) {
     const titleCache = await caches.open(offlineCacheName(OFFLINE_TITLE_CACHE, scopeId));
@@ -3469,7 +3712,7 @@ async function pruneUnavailableChapterEntries(
     if (response && (presenceOnly || canReuseChapter(expected, identity, expected.variantKey))) {
       if (!presenceOnly && expected.bodyVerificationVersion !== OFFLINE_BODY_VERIFICATION_VERSION) {
         expected.bodyVerificationVersion = OFFLINE_BODY_VERIFICATION_VERSION;
-        await backfillContentIdentity(cache, request, response, identity).catch(() => {});
+        await backfillContentIdentity(cache, request, response.headers, identity).catch(() => {});
         changed = true;
       }
       continue;
@@ -3490,8 +3733,38 @@ async function pruneUnavailableChapterEntries(
 
 function scheduleOfflineManifestAudit() {
   if (manifestAudit) return manifestAudit;
-  manifestAudit = auditOfflineManifest().catch(() => {}).finally(() => { manifestAudit = null; });
+  const sincePageStart = globalThis.performance?.now?.() ?? MANIFEST_AUDIT_SETTLE_MS;
+  const wait = Math.max(0, MANIFEST_AUDIT_SETTLE_MS - sincePageStart);
+  const settled = wait > 0 ? new Promise(resolve => setTimeout(resolve, wait)) : Promise.resolve();
+  manifestAudit = settled
+    .then(async () => {
+      manifestAuditRunning = true;
+      const startedAt = globalThis.performance?.now?.() ?? Date.now();
+      telemetryMark('offline:audit-start', { urgent: true });
+      try {
+        return await auditOfflineManifest();
+      } finally {
+        manifestAuditRunning = false;
+        telemetryMark('offline:audit-end', {
+          ms: Math.round((globalThis.performance?.now?.() ?? Date.now()) - startedAt),
+          urgent: true
+        });
+      }
+    })
+    .catch(() => {})
+    .finally(() => { manifestAudit = null; });
   return manifestAudit;
+}
+
+function persistChapterBodyVerification(scopeId, bookId, downloadedAt, index) {
+  const manifest = getOfflineManifest(scopeId);
+  const latest = manifest[bookId];
+  const chapter = latest?.chapterEntries?.[index];
+  if (!chapter || latest.downloadedAt !== downloadedAt) return;
+  if (chapter.bodyVerificationVersion === OFFLINE_BODY_VERIFICATION_VERSION) return;
+  latest.chapterEntries[index] = { ...chapter, bodyVerificationVersion: OFFLINE_BODY_VERIFICATION_VERSION };
+  saveOfflineManifest(manifest, scopeId);
+  telemetryMark('offline:verified', { book: String(bookId), ch: index, urgent: true });
 }
 
 // Cache storage can evict entries independently of localStorage. Audit ready
@@ -3520,9 +3793,20 @@ export async function auditOfflineManifest({ presenceOnly = false } = {}) {
     const needsBodyVerificationUpgrade = entry.chapterEntries.some(
       chapter => chapter?.bodyVerificationVersion !== OFFLINE_BODY_VERIFICATION_VERSION
     );
+    if (!presenceOnly && needsBodyVerificationUpgrade) {
+      telemetryMark('offline:verify-book', {
+        book: String(entry.bookId),
+        chapters: entry.chapterEntries.length,
+        pending: entry.chapterEntries.filter(chapter => chapter && chapter.bodyVerificationVersion !== OFFLINE_BODY_VERIFICATION_VERSION).length,
+        mb: Math.round((Number(entry.bytes) || 0) / 1048576),
+        urgent: true
+      });
+    }
     const valid = presenceOnly
       ? await verifyOfflineEntryPresence(cache, entry, scope)
-      : await verifyOfflineEntry(cache, entry, scope);
+      : await verifyOfflineEntry(cache, entry, scope, {
+          onChapterVerified: index => persistChapterBodyVerification(scope, entry.bookId, entry.downloadedAt, index)
+        });
     if (valid) {
       if (!presenceOnly && needsBodyVerificationUpgrade) {
         const latestManifest = getOfflineManifest(scope);

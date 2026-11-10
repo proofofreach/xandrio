@@ -3,19 +3,19 @@
 Production-readiness ledger, maintained by the `ship-readiness` skill.
 Item IDs refer to `~/.claude/skills/ship-readiness/references/checklist.md`.
 
-**Verdict:** READY, D8 blocked (scope: playback health aggregates only) · **Last run:** 2026-10-27 · **Event:** data
+**Verdict:** READY, D8 blocked (scope: playback health aggregates; admin device telemetry) · **Last run:** 2026-11-10 · **Event:** data
 
 ## Facts
 
 | Fact | Value | Source |
 |---|---|---|
 | Public URL | https://xandrio.xyz | docs/DEPLOYMENT_TOPOLOGY.md |
-| Stores personal data | Yes; this run adds listener playback-health aggregates | lib/playback-health.js |
+| Stores personal data | Yes; playback-health aggregates (2026-10-27); admin device telemetry (2026-11-10) | lib/playback-health.js, lib/client-telemetry.js |
 | Repo visibility | Private source, sanitized public mirror | `npm run sync:public` |
 
 ## Triggered tiers
 
-T1-data, scoped to `POST /api/playback-health` and `data/playback-health.json`. T0 and the other tiers were not run in this pass.
+T1-data, scoped to `POST /api/playback-health` and `data/playback-health.json` (2026-10-27), and `/api/admin/client-telemetry` with `data/client-telemetry.json` (2026-11-10). T0 and the other tiers were not run in these passes.
 
 ## Items
 
@@ -31,6 +31,14 @@ T1-data, scoped to `POST /api/playback-health` and `data/playback-health.json`. 
 | D8 | blocked | Encryption at rest for `/opt/xandrio/data` on the VPS is unconfirmed; applies to all of `data/`, not only this file | 2026-10-27 |
 | D9 | n/a | No imports | 2026-10-27 |
 | Abuse | pass | Route behind auth gate (not in `PUBLIC_API_PATHS`, lib/auth.js:35), CSRF middleware, `playback-health` rate-limit group 20/min/IP (lib/rate-limit.js) | 2026-10-27 |
+| T-D1 | pass | Telemetry inventory paragraph in docs/PRIVACY.md ("Device telemetry is recorded only…") | 2026-11-10 |
+| T-D2 | pass | Admin-only device diagnostics; 30-day/80-session expiry in `createClientTelemetryStore.record`; non-admin sign-in clears the device trail (`disable()` in public/js/admin-telemetry.mjs); no per-account delete route, data expires instead | 2026-11-10 |
+| T-D3 | pass | `GET /api/admin/client-telemetry/:id` returns the full session JSON; Settings → Diagnostics "Copy full telemetry" | 2026-11-10 |
+| T-D4 | pass | Test "sessions older than the retention window are removed on the next write" (test/test-client-telemetry.js) | 2026-11-10 |
+| T-D6 | n/a | No uploads; JSON body ≤ 60 KB client-side, fields/strings/events clamped in `normalizeSession` | 2026-11-10 |
+| T-D7 | pass | `startedAt` epoch ms, `receivedAt` ISO UTC; UI formats in local time | 2026-11-10 |
+| T-Abuse | pass | `requireAdmin` on all three routes (test "routes require an administrator"), CSRF middleware, `client-telemetry` rate-limit group 30/min (lib/rate-limit.js) | 2026-11-10 |
+| T-Covers | n/a | `<id>_cover_display.jpg` is a derived copy of an existing cover, removed with the book (lib/book-artifact-paths.js pattern) | 2026-11-10 |
 
 ## Accepted risks
 

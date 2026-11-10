@@ -1,7 +1,12 @@
+// A position names chapter coordinates of one layout. A server remap of
+// moved text keeps the structure key and stamps `textRemapId`, so a position
+// held on this device from before the remap must not win over the moved one.
 export function positionMatchesChapterStructure(position, book) {
   const expected = String(book?.chapterStructureKey || '');
   if (!expected) return true;
-  return String(position?.chapterStructureKey || '') === expected;
+  if (String(position?.chapterStructureKey || '') !== expected) return false;
+  const remapId = String(book?.textRemapId || '');
+  return !remapId || String(position?.textRemapId || '') === remapId;
 }
 
 function positionUpdatedAt(position) {

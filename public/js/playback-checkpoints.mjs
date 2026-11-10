@@ -62,7 +62,7 @@ function legacyCheckpointKey(bookId) {
 
 // Old checkpoints carry no owner. They are adopted only while nothing on the
 // device shows a second account; otherwise their owner is unknowable.
-function deviceHasOtherScope(scope) {
+export function deviceHasOtherScope(scope) {
   for (const key of storageKeys()) {
     for (const prefix of SCOPED_EVIDENCE_PREFIXES) {
       if (!key.startsWith(prefix)) continue;

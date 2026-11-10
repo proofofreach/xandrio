@@ -798,6 +798,7 @@ test('listSessions marks the current session and revoke signs out another device
 // ─── Admin account-management routes ───────────────────────────────────────
 
 const { registerAccountRoutes } = require('../lib/routes/accounts-routes');
+const { createCalibreAccessStore, accountCredentialsFrom } = require('../lib/calibre-integration');
 
 function routerStub() {
   const routes = {};
@@ -818,10 +819,61 @@ async function invoke(handlers, req) {
 
 async function adminRoutesFixture() {
   const fixture = await accountModeFixture();
+  const calibreAccess = createCalibreAccessStore({
+    filePath: 'calibre-connections.json',
+    jsonStore: fixture.jsonStore,
+    accountCredentials: accountCredentialsFrom(fixture.accounts)
+  });
   const app = routerStub();
-  registerAccountRoutes(app, { accounts: fixture.accounts, sessionStore: fixture.sessionStore, requireAdmin });
-  return { ...fixture, routes: { ...fixture.routes, ...app.routes }, adminRoutes: app.routes };
+  registerAccountRoutes(app, { accounts: fixture.accounts, sessionStore: fixture.sessionStore, calibreAccess, requireAdmin });
+  const routes = createAuthRoutes({ token: fixture.token, sessionTtlMs: 60_000, accounts: fixture.accounts,
+    sessionStore: fixture.sessionStore, calibreAccess });
+  return { ...fixture, calibreAccess, routes: { ...routes, ...app.routes }, adminRoutes: app.routes };
 }
+
+async function pairCalibre(calibreAccess, userId) {
+  const pairing = await calibreAccess.issuePairingCode({ userId });
+  return (await calibreAccess.claimPairingCode(pairing.code)).token;
+}
+
+// Calibre bearer tokens used to survive every one of these.
+test('password reset, password change, sign-out-others and disable revoke Calibre tokens', async () => {
+  const { adminRoutes, routes, calibreAccess, sessionStore, member } = await adminRoutesFixture();
+  const resetToken = await pairCalibre(calibreAccess, member.id);
+  const resetPending = await calibreAccess.issuePairingCode({ userId: member.id });
+  assert.strictEqual((await calibreAccess.resolveToken(resetToken))?.userId, member.id);
+  await invoke(adminRoutes['POST /api/accounts/:id/password'], {
+    user: { role: 'admin' }, params: { id: member.id }, body: { newPassword: 'fresh-password-1' }, headers: {}
+  });
+  assert.strictEqual(await calibreAccess.resolveToken(resetToken), null, 'admin reset revokes Calibre tokens');
+  assert.strictEqual(await calibreAccess.claimPairingCode(resetPending.code), null, 'admin reset kills pending pairing codes');
+
+  const changeToken = await pairCalibre(calibreAccess, member.id);
+  const current = await sessionStore.create(member.id, { credentialEpoch: 1 });
+  const changed = response();
+  await routes.changePassword({
+    user: { id: member.id, username: 'member', sessionToken: current.token },
+    body: { currentPassword: 'fresh-password-1', newPassword: 'fresh-password-2' }
+  }, changed);
+  assert.strictEqual(changed.statusCode, 204);
+  assert.strictEqual(await calibreAccess.resolveToken(changeToken), null, 'self password change revokes Calibre tokens');
+
+  const othersToken = await pairCalibre(calibreAccess, member.id);
+  assert.strictEqual((await calibreAccess.resolveToken(othersToken))?.userId, member.id);
+  const others = response();
+  await routes.revokeOtherSessions({ user: { id: member.id, sessionToken: current.token } }, others);
+  assert.strictEqual(others.statusCode, 204);
+  assert.strictEqual(await calibreAccess.resolveToken(othersToken), null, 'sign out other devices revokes Calibre tokens');
+
+  const disableToken = await pairCalibre(calibreAccess, member.id);
+  await invoke(adminRoutes['POST /api/accounts/:id/disabled'], {
+    user: { role: 'admin' }, params: { id: member.id }, body: { disabled: true }, headers: {}
+  });
+  await invoke(adminRoutes['POST /api/accounts/:id/disabled'], {
+    user: { role: 'admin' }, params: { id: member.id }, body: { disabled: false }, headers: {}
+  });
+  assert.strictEqual(await calibreAccess.resolveToken(disableToken), null, 'disable then re-enable does not revive Calibre tokens');
+});
 
 test('account routes are admin-gated', async () => {
   const { adminRoutes, member } = await adminRoutesFixture();
@@ -881,6 +933,13 @@ test('disable guards: not yourself, never the last admin', async () => {
   });
   assert.strictEqual(reEnable.body.success, true);
   assert.strictEqual((await accounts.findById(member.id)).disabled, false);
+  for (const value of ['false', 'true', 0, 1, null, undefined]) {
+    const loose = await invoke(adminRoutes['POST /api/accounts/:id/disabled'], {
+      user: { id: admin.id, role: 'admin' }, params: { id: member.id }, body: { disabled: value }, headers: {}
+    });
+    assert.strictEqual(loose.statusCode, 400, `disabled=${JSON.stringify(value)} is refused`);
+  }
+  assert.strictEqual((await accounts.findById(member.id)).disabled, false, 'a string "false" does not disable the account');
 });
 
 // ─── Credential races ──────────────────────────────────────────────────────

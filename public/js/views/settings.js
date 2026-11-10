@@ -5,6 +5,7 @@ import { getOfflineManifest, renderOfflineState, EXPECTED_OFFLINE_SW_VERSION } f
 import { loadLibrary } from './library.js';
 import { initVoices, loadVoices, stopVoiceSample } from './voices.js';
 import { formatSpeed } from '../util/time-left.mjs';
+import { useDefaultPlaybackSpeed } from './playback-speed.js';
 import { readText, writeText } from '../util/storage.js';
 import { escapeHTML, relativeTime } from '../util/format.js';
 import { confirmSheet } from '../ui/confirm.js';
@@ -1610,6 +1611,7 @@ export function initSettings(options = {}) {
       operatorDiagnosticsStatus.textContent = 'Checking…';
       operatorDiagnosticsStatus.className = 'settings-status';
     }
+    void loadDeviceTelemetry();
     try {
       const report = await apiGet(`/api/admin/diagnostics${refresh ? '?refresh=1' : ''}`);
       renderOperatorDiagnostics(report);
@@ -1632,6 +1634,107 @@ export function initSettings(options = {}) {
 
   operatorDiagnosticsRefresh?.addEventListener('click', () => {
     loadOperatorDiagnostics({ refresh: true });
+  });
+
+  // ---- Admin: device telemetry (lib/client-telemetry.js) ----
+
+  // Looked up on use: loadOperatorDiagnostics can run before this point of
+  // initialisation, and a const read there would throw.
+  function telemetryElements() {
+    return {
+      list: document.getElementById('device-telemetry-list'),
+      copy: document.getElementById('device-telemetry-copy'),
+      error: document.getElementById('device-telemetry-error')
+    };
+  }
+
+  function telemetrySeconds(ms) {
+    return Number.isFinite(ms) && ms > 0 ? `${(ms / 1000).toFixed(1)} s` : '–';
+  }
+
+  function telemetryExitLabel(session) {
+    if (session.exit) return { text: session.exit.startsWith('page-killed') ? 'Killed' : 'Crashed', className: 'settings-status-error' };
+    if (session.ended) return { text: 'Closed', className: 'settings-status-ok' };
+    return { text: 'Open', className: 'settings-status-warning' };
+  }
+
+  function renderDeviceTelemetry(sessions) {
+    const deviceTelemetryList = telemetryElements().list;
+    if (!deviceTelemetryList) return;
+    if (!sessions.length) {
+      deviceTelemetryList.innerHTML = '<p class="operator-diagnostic-clear">No device sessions recorded yet.</p>';
+      return;
+    }
+    deviceTelemetryList.innerHTML = sessions.slice(0, 12).map(session => {
+      const exit = telemetryExitLabel(session);
+      const started = new Date(session.startedAt);
+      const when = Number.isFinite(started.getTime())
+        ? started.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+        : 'Unknown time';
+      const details = [
+        `boot ${telemetrySeconds(session.bootMs)}`,
+        `worker ${telemetrySeconds(session.workerMs)}${session.workerReason ? ` (${session.workerReason})` : ''}`,
+        `library ${telemetrySeconds(session.libraryMs)}`,
+        `max stall ${telemetrySeconds(session.maxLagMs)}`,
+        `images ${Math.round(session.maxImageMegapixels || 0)} MP`,
+        `${session.errors || 0} errors`
+      ].join(' · ');
+      return `
+        <div class="operator-diagnostic-row operator-diagnostic-row-stacked">
+          <span>${escapeHTML(when)} · ${escapeHTML(session.platform || 'other')}${session.standalone ? ' app' : ''} · ${escapeHTML(session.build || '')}</span>
+          <span><span class="settings-status ${exit.className}">${escapeHTML(exit.text)}</span> ${escapeHTML(details)}</span>
+        </div>
+      `;
+    }).join('');
+  }
+
+  async function loadDeviceTelemetry() {
+    const { list: deviceTelemetryList, copy: deviceTelemetryCopy, error: deviceTelemetryError } = telemetryElements();
+    if (!deviceTelemetryList) return;
+    if (deviceTelemetryError) deviceTelemetryError.style.display = 'none';
+    try {
+      const report = await apiGet('/api/admin/client-telemetry');
+      renderDeviceTelemetry(Array.isArray(report.sessions) ? report.sessions : []);
+      if (deviceTelemetryCopy) deviceTelemetryCopy.disabled = false;
+    } catch (err) {
+      if (err.status === 403) return;
+      if (deviceTelemetryError) {
+        deviceTelemetryError.textContent = err.message || 'Failed to load device telemetry';
+        deviceTelemetryError.style.display = 'block';
+      }
+    }
+  }
+
+  telemetryElements().copy?.addEventListener('click', async () => {
+    const { copy: deviceTelemetryCopy, error: deviceTelemetryError } = telemetryElements();
+    deviceTelemetryCopy.disabled = true;
+    try {
+      const report = await apiGet('/api/admin/client-telemetry');
+      const sessions = await Promise.all((report.sessions || []).slice(0, 10).map(session => (
+        apiGet(`/api/admin/client-telemetry/${encodeURIComponent(session.id)}`).catch(() => session)
+      )));
+      const text = JSON.stringify({ generatedAt: new Date().toISOString(), server: report.server, sessions }, null, 2);
+      try {
+        await navigator.clipboard.writeText(text);
+        showToast('Device telemetry copied');
+      } catch {
+        // Clipboard access lapses after the requests on some browsers; save a file instead.
+        const url = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `xandrio-telemetry-${Date.now()}.json`;
+        link.click();
+        setTimeout(() => URL.revokeObjectURL(url), 10000);
+        showToast('Device telemetry saved');
+      }
+    } catch (err) {
+      if (deviceTelemetryError) {
+        deviceTelemetryError.textContent = err.message || 'Failed to load device telemetry';
+        deviceTelemetryError.style.display = 'block';
+      }
+    } finally {
+      deviceTelemetryCopy.disabled = false;
+    }
   });
 
   operatorDiagnosticsCopy?.addEventListener('click', async () => {
@@ -1815,6 +1918,7 @@ export function initSettings(options = {}) {
 
   defaultSpeedSelect?.addEventListener('change', () => {
     setClientSetting('defaultSpeed', defaultSpeedSelect.value ? Number(defaultSpeedSelect.value) : null);
+    useDefaultPlaybackSpeed();
     renderClientSettings();
   });
 

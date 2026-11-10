@@ -27,6 +27,7 @@ const code = [
   let scope = 'a';
   let reads = 0;
   let rowRefreshes = 0;
+  const notedLayouts = [];
   const manifests = {
     a: { 'book-0': { mode: 'full', state: 'ready', chapters: 1, chapterEntries: [{}] } },
     b: { 'book-1': { mode: 'full', state: 'ready', chapters: 1, chapterEntries: [{}] } }
@@ -40,6 +41,9 @@ const code = [
     querySelector() { return {}; }, setAttribute() {} };
   const noop = () => {};
   const context = {
+    // Administrator telemetry (js/admin-telemetry.mjs) is a no-op here.
+    telemetryMark() {},
+    telemetryNow: () => 0,
     console, navigator: { maxTouchPoints: 0, onLine: true },
     window: {}, CustomEvent: class { constructor(type, options) { this.type = type; this.detail = options?.detail; } },
     document: { body: { classList: { add() {} } }, activeElement: null,
@@ -52,6 +56,8 @@ const code = [
     canClaimLegacyOfflineStorage: () => false, offlineDeviceSnapshotScope: '', offlineDeviceSnapshot: {},
     offlineDownloadsSupported: () => true, offlineState: entry => entry.state,
     isCompletedOfflineEntry: entry => entry.state === 'ready', isHydratableOfflineEntry: () => false,
+    offlineEntryLayoutStale: () => false,
+    noteServerBookLayouts(list) { notedLayouts.push(list.length); },
     positionFor: () => null, bookProgressInfo: () => null, effectiveSpeedForBook: () => 1,
     getReferencePlaybackSpeed: () => 1, deviceState: status => status, narrationState: () => ({}),
     bookTimeLeft: () => null, livePositionFor: () => null, primaryState: () => null,
@@ -72,6 +78,7 @@ const code = [
   vm.runInContext(code + '\nthis.load = loadLibrary; this.refresh = refreshOfflineIndicators; this.chapterSnapshot = offlineChapterSnapshot; this.audioUpdate = onAudioActivity;', context);
   await context.load();
   assert.equal(reads, 1, '500 rendered rows share one manifest read');
+  assert.deepEqual(notedLayouts, [500], 'the network library records every book layout in one batch');
   assert.match(list.innerHTML, /data-book-id="book-0"[\s\S]*?data-downloaded="1"/);
   reads = 0;
   context.refresh();
@@ -113,6 +120,9 @@ const code = [
   const accountEntries = { a: { one: partial('one') }, b: { two: partial('two') } };
   let account = 'a';
   const availability = {
+    // Administrator telemetry (js/admin-telemetry.mjs) is a no-op here.
+    telemetryMark() {},
+    telemetryNow: () => 0,
     offlineScopeId: () => account, offlineManifestKey: id => id,
     readJSON: key => accountEntries[key] || {}, canClaimLegacyOfflineStorage: () => false,
     offlineDeviceSnapshotScope: '', offlineDeviceSnapshot: {}, OFFLINE_MANIFEST_VERSION: 3,

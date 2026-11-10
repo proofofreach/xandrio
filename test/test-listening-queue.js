@@ -7,7 +7,8 @@ const {
   advanceQueue,
   sanitizeBookPlaybackSettings,
   suggestNextSeriesBook,
-  removeBookFromAllQueues
+  removeBookFromAllQueues,
+  withQueueRevision
 } = require('../lib/listening-queue');
 
 const initial = normalizeUserQueue({ bookIds: ['a', 'a', '', 'b'], autoContinue: false });
@@ -20,7 +21,7 @@ assert.deepStrictEqual(removeFromQueue(initial, 'a').bookIds, ['b']);
 assert.deepStrictEqual(moveQueueItem({ bookIds: ['a', 'b', 'c'] }, 'c', 0).bookIds, ['c', 'a', 'b']);
 
 assert.deepStrictEqual(advanceQueue({ bookIds: ['a', 'b', 'c'], autoContinue: true }, 'a'), {
-  queue: { bookIds: ['b', 'c'], autoContinue: true, bookSettings: {} },
+  queue: { bookIds: ['b', 'c'], autoContinue: true, bookSettings: {}, revision: 0 },
   nextBookId: 'b'
 });
 
@@ -64,8 +65,14 @@ const queueStore = {
 };
 removeBookFromAllQueues(queueStore, 'remove');
 assert.deepStrictEqual(queueStore.users, {
-  one: { bookIds: ['keep'], autoContinue: true, bookSettings: {} },
-  two: { bookIds: [], autoContinue: true, bookSettings: {} }
+  one: { bookIds: ['keep'], autoContinue: true, bookSettings: {}, revision: 1 },
+  two: { bookIds: [], autoContinue: true, bookSettings: {}, revision: 1 }
 });
+
+// The revision counts list changes only, so a stale full-list write is
+// detectable while flag and settings writes leave it alone.
+assert.strictEqual(withQueueRevision({ bookIds: ['a'], revision: 4 }, { bookIds: ['a'], autoContinue: false }).revision, 4);
+assert.strictEqual(withQueueRevision({ bookIds: ['a', 'b'], revision: 4 }, { bookIds: ['b', 'a'] }).revision, 5);
+assert.strictEqual(normalizeUserQueue({ revision: -1 }).revision, 0);
 
 console.log('13 passed, 0 failed');

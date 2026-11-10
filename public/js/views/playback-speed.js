@@ -1,8 +1,8 @@
-import { getCurrentUserId } from '../api.js';
+import { getCurrentUserId, getOfflineStorageScopeId, canClaimLegacyOfflineStorage } from '../api.js';
 import { getDefaultSpeed, getSkipInterval, setClientSetting } from '../client-settings.js';
 import { announceToScreenReader, showToast } from '../ui/toast.js';
 import { registerSheet } from '../ui/sheets.js';
-import { readJSON, writeJSON } from '../util/storage.js';
+import { readAccountPreference, writeAccountPreference, removeAccountPreference } from '../account-preferences.mjs';
 import { onActivate } from '../ui/keys.js';
 import { getBookSpeedSetting } from '../features/listening-queue.js';
 import { effectiveSpeed, validSpeed, formatSpeed, formatDuration, bookTimeLeft } from '../util/time-left.mjs';
@@ -13,6 +13,17 @@ const PLAYBACK_SPEEDS = [0.8, 1.0, 1.25, 1.5, 2.0];
 const SPEED_MIN = 0.5;
 const SPEED_MAX = 3.0;
 const PLAYBACK_SPEED_KEY = 'xandrio_playback_speed';
+
+// The last speed chosen for all books on this device, kept per account.
+function readRememberedSpeed() {
+  return readAccountPreference(PLAYBACK_SPEED_KEY, getOfflineStorageScopeId(), {
+    claimLegacy: canClaimLegacyOfflineStorage()
+  });
+}
+
+function rememberSpeed(speed) {
+  writeAccountPreference(PLAYBACK_SPEED_KEY, getOfflineStorageScopeId(), speed);
+}
 
 let deps = {};
 let currentPlaybackSpeed = 1.0;
@@ -45,7 +56,7 @@ export function initPlaybackSpeed(options = {}) {
     if (event.detail?.key !== '*' && event.detail?.key !== 'defaultSpeed') return;
     // A background profile refresh may supply the default after a book opens.
     // Explicit user choices and book overrides retain ownership of live speed.
-    if (speedUsesDefault && savedBookSpeed() === null && readJSON(PLAYBACK_SPEED_KEY, null) === null) {
+    if (speedUsesDefault && savedBookSpeed() === null && readRememberedSpeed() === null) {
       loadPlaybackSpeed();
     }
   });
@@ -190,7 +201,7 @@ function persistSheetSpeed() {
     });
     return;
   }
-  writeJSON(PLAYBACK_SPEED_KEY, speed);
+  rememberSpeed(speed);
   setClientSetting('defaultSpeed', speed);
   if (savedBookSpeed() !== null) {
     void saveBookSetting('playbackSpeed', null, {
@@ -203,6 +214,14 @@ function persistSheetSpeed() {
   }
 }
 
+// Settings changed the default speed. The device's last chosen speed would
+// otherwise outrank it (getGlobalPlaybackSpeed), so a reset to 1.0× or a new
+// default would never reach a book without its own speed.
+export function useDefaultPlaybackSpeed() {
+  removeAccountPreference(PLAYBACK_SPEED_KEY, getOfflineStorageScopeId());
+  if (deps.getCurrentBook?.() && savedBookSpeed() === null) loadPlaybackSpeed();
+}
+
 export function getCurrentPlaybackSpeed() {
   return currentPlaybackSpeed;
 }
@@ -210,7 +229,7 @@ export function getCurrentPlaybackSpeed() {
 // The speed a book starts at when nothing book-specific is saved: the last
 // chosen speed, else the Settings default.
 export function getGlobalPlaybackSpeed() {
-  return effectiveSpeed(readJSON(PLAYBACK_SPEED_KEY, null), getDefaultSpeed());
+  return effectiveSpeed(readRememberedSpeed(), getDefaultSpeed());
 }
 
 // The one source for "time left at current effective speed". The open book
@@ -255,7 +274,7 @@ export function loadPlaybackSpeed(bookSpeed = null) {
     updateSpeedButton();
     return;
   }
-  const savedSpeed = readJSON(PLAYBACK_SPEED_KEY, null);
+  const savedSpeed = readRememberedSpeed();
   if (savedSpeed !== null) {
     const parsed = parseFloat(savedSpeed);
     currentPlaybackSpeed = (Number.isFinite(parsed) && parsed >= SPEED_MIN && parsed <= SPEED_MAX)
@@ -377,7 +396,7 @@ function setPlaybackSpeed(value, { remember = true } = {}) {
   currentPlaybackSpeed = Math.min(SPEED_MAX, Math.max(SPEED_MIN, Math.round(value * 100) / 100));
   applyPlaybackSpeed();
   updateSpeedButton();
-  if (remember) writeJSON(PLAYBACK_SPEED_KEY, currentPlaybackSpeed);
+  if (remember) rememberSpeed(currentPlaybackSpeed);
   announceToScreenReader(`Playback speed set to ${currentPlaybackSpeed} times normal`);
   updateSpeedSheetState();
 }

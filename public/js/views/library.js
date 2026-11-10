@@ -1,3 +1,4 @@
+import { telemetryMark, telemetryNow } from '../admin-telemetry.mjs';
 import { apiGet, apiSend, canClaimLegacyOfflineStorage, getCurrentUser, getOfflineStorageScopeId } from '../api.js';
 import { readPlaybackCheckpoint } from '../playback-checkpoints.mjs';
 import { escapeHTML, safeAttr, relativeTime, coverImageHTML, cssEscape, formatTime } from '../util/format.js';
@@ -18,6 +19,7 @@ import {
   enableOfflineReadyNotifications,
   getVerifiedOfflineLibraryBooks,
   getOfflineManifest,
+  noteServerBookLayouts,
   offlineDownloadsSupported,
   offlineStatusForBook,
   prepareAndDownloadBookForOffline,
@@ -673,6 +675,8 @@ export async function loadLibrary() {
     filterLibrary();
   }
   libraryList.setAttribute('aria-busy', 'true');
+  const loadStartedAt = telemetryNow();
+  telemetryMark('library:load', { generation, warm: hasRenderedBooks });
 
   try {
     // Verify local downloads concurrently, but do not make a successful online
@@ -691,6 +695,11 @@ export async function loadLibrary() {
       ]);
       data = libraryData;
       positions = posData.positions || {};
+      telemetryMark('library:fetched', {
+        ms: Math.round(telemetryNow() - loadStartedAt),
+        books: Array.isArray(data?.books) ? data.books.length : 0
+      });
+      noteServerBookLayouts(data.books);
     } catch (err) {
       if (generation !== libraryLoadGeneration) return;
       console.error('Failed to load library:', err);
@@ -755,6 +764,13 @@ export async function loadLibrary() {
     sortLibrary();
     filterLibrary();
     setupSwipeDelete();
+    telemetryMark('library:rendered', {
+      ms: Math.round(telemetryNow() - loadStartedAt),
+      books: data.books.length,
+      offline: offlineFallback,
+      cards: libraryList.childElementCount,
+      urgent: true
+    });
     if (!offlineFallback) void loadResumeChapterStructures(data.books, positions, generation);
   } finally {
     if (generation === libraryLoadGeneration) libraryList.setAttribute('aria-busy', 'false');

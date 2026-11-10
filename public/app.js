@@ -10,7 +10,7 @@ import { initCoverImages } from './js/ui/cover-images.js';
 import { initKeys, onActivate } from './js/ui/keys.js';
 import { registerSheet } from './js/ui/sheets.js';
 import { initBookmarks, renderBookmarksSection, addBookmarkAtCurrentPosition } from './js/features/bookmarks.js';
-import { initOffline, prepareOfflineStorage, renderOfflineState, queuePendingPosition, ensureRollingOfflineWindow, hasOfflineBookData, getOfflineBookData, shouldUseOfflineBookFallback, offlinePlaybackUrl, localChapterSource, markLocalChapterSuspect, classifyLocalChapter, OFFLINE_WORKER_SCRIPT_URL, certifyOfflineWorkerController, offlineWorkerControllerState, offlineWorkInProgress } from './js/features/offline.js';
+import { initOffline, prepareOfflineStorage, renderOfflineState, queuePendingPosition, ensureRollingOfflineWindow, hasOfflineBookData, getOfflineBookData, noteServerBookLayout, shouldUseOfflineBookFallback, offlinePlaybackUrl, localChapterSource, markLocalChapterSuspect, classifyLocalChapter, OFFLINE_WORKER_SCRIPT_URL, certifyOfflineWorkerController, offlineWorkerControllerState, offlineWorkInProgress } from './js/features/offline.js';
 import { initPronunciationRepair } from './js/features/pronunciations.js';
 import { initQueueStatus } from './js/features/queue-status.js';
 import { loadClientSettings, getSkipInterval, isSmartRewindEnabled, isRollingOfflineEnabled } from './js/client-settings.js';
@@ -20,7 +20,7 @@ import { initSearch } from './js/views/search.js';
 import { initSettings } from './js/views/settings.js';
 import { initStats } from './js/views/stats.js';
 import { initBookGuide, openBookGuide, refreshGuideState } from './js/views/book-guide.js';
-import { initSleepTimer, restoreSleepTimer, isSleepTimerChapterTarget, expireSleepTimer, closeSleepTimerModal, checkAutomaticSleepTimer } from './js/views/sleep-timer.js';
+import { initSleepTimer, restoreSleepTimer, isSleepTimerChapterTarget, followSleepTimerChapter, expireSleepTimer, closeSleepTimerModal, checkAutomaticSleepTimer } from './js/views/sleep-timer.js';
 import { loadVoices, refreshVoicePrepPanel, closeVoiceSheetDirect } from './js/views/voices.js';
 import { initPlaybackSpeed, getCurrentPlaybackSpeed, closeSpeedSheet, loadPlaybackSpeed, applyPlaybackSpeed, applySkipIntervalLabels, stepPlaybackSpeed } from './js/views/playback-speed.js';
 import { readJSON, writeJSON, readText } from './js/util/storage.js';
@@ -37,6 +37,7 @@ import { createClientStalenessMonitor } from './js/client-staleness.mjs';
 import { applyAppUpdate } from './js/sw-update.mjs';
 import { createPlaybackHealth, platformClass, sendPlaybackHealthReport } from './js/playback-health.mjs';
 import { startPageExitMonitor } from './js/page-exit-monitor.mjs';
+import { createAdminTelemetry, installTelemetryCollectors, sendAdminTelemetry, setActiveTelemetry, telemetryMark, telemetryNow } from './js/admin-telemetry.mjs';
 import { createPlayerStatus, describePlaybackFailure, isPlayerFailureState } from './js/player-status.mjs';
 
 // SVG Icon constants
@@ -303,6 +304,20 @@ const playbackHealth = createPlaybackHealth({
   ),
   send: report => sendPlaybackHealthReport(report, { apiBase: API_BASE })
 });
+
+// Administrator-only deep telemetry; see js/admin-telemetry.mjs. It records
+// from here, before the auth check, and persists only for a remembered admin.
+const adminTelemetry = createAdminTelemetry({
+  build: CLIENT_BUILD,
+  platform: platformClass(globalThis.navigator?.userAgent, globalThis.navigator?.maxTouchPoints),
+  standalone: Boolean(
+    globalThis.navigator?.standalone
+    || globalThis.window?.matchMedia?.('(display-mode: standalone)')?.matches
+  ),
+  send: body => sendAdminTelemetry(body, { apiBase: API_BASE })
+});
+setActiveTelemetry(adminTelemetry);
+try { installTelemetryCollectors(adminTelemetry); } catch {}
 function playbackAttemptNow() {
   return globalThis.performance?.now?.() ?? Date.now();
 }
@@ -397,6 +412,17 @@ function recordPlaybackEvent(detail = {}) {
     if (typeof mediaDetail[key] === 'boolean') entry[key] = mediaDetail[key];
   }
   playbackEventLedger = [...playbackEventLedger, entry].slice(-PLAYBACK_EVENT_LEDGER_LIMIT);
+  // Media progress events fire several times a second; the trail skips them.
+  if (!['timeupdate', 'playhead-advanced', 'progress'].includes(entry.type)) {
+    telemetryMark(`play:${entry.type}`, {
+      ch: entry.chapterIndex,
+      reason: entry.reason,
+      src: entry.sourceKind,
+      rs: entry.readyState,
+      err: entry.errorCode,
+      runway: entry.bufferRunway
+    });
+  }
   // Timeupdate fires every few hundred milliseconds. Keep those diagnostic
   // samples in memory so playback never synchronously writes storage in the
   // media event hot path; significant lifecycle events still survive reloads.
@@ -1168,6 +1194,7 @@ function initClientStaleness() {
 
 // Initialize when DOM is ready
 document.addEventListener('DOMContentLoaded', async () => {
+  telemetryMark('boot:dom');
   initCoverImages();
   console.log('Xandrio initialized');
   const deploymentPromise = initDeploymentGuard({
@@ -1190,6 +1217,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   });
   let authStatus = null;
+  const authStartedAt = telemetryNow();
   try {
     authStatus = await fetchAuthStatus({ timeoutMs: 3000 });
   } catch (err) {
@@ -1197,6 +1225,18 @@ document.addEventListener('DOMContentLoaded', async () => {
     // stay playable; API calls will surface their own errors.
     console.warn('Auth status unavailable:', err);
   }
+  // Without accounts (token or trusted-LAN mode) the one authenticated user is
+  // the administrator. The server enforces the role; a 403 turns recording off.
+  const telemetryAdmin = authStatus?.user?.role === 'admin'
+    || (authStatus?.authenticated && authStatus?.accountsConfigured === false);
+  if (telemetryAdmin) adminTelemetry.enable();
+  else if (authStatus?.authenticated && authStatus?.user) adminTelemetry.disable();
+  telemetryMark('boot:auth', {
+    ms: Math.round(telemetryNow() - authStartedAt),
+    ok: Boolean(authStatus),
+    previousExit: adminTelemetry.previousExit() || '',
+    urgent: true
+  });
   if (authStatus?.authenticationRequired && !authStatus.authenticated) {
     // Halt boot behind the gate; a successful sign-in reloads the app.
     serviceWorkerBootWindowOpen = false;
@@ -1208,14 +1248,22 @@ document.addEventListener('DOMContentLoaded', async () => {
   // profile alongside worker readiness without delaying the first route.
   void loadClientSettings();
   const deployment = await deploymentPromise;
+  telemetryMark('boot:deployment', { swAllowed: Boolean(deployment.serviceWorkerAllowed) });
 
   // Complete the bounded worker handoff before rendering library data or
   // installing any interactive handlers. This is the only interval in which a
   // controller-changing reload is permitted, so it must be genuinely idle.
+  const workerStartedAt = telemetryNow();
   const workerReadiness = deployment.serviceWorkerAllowed
     ? await registerServiceWorker()
     : { ready: false, reason: 'deployment-disallowed' };
   serviceWorkerBootWindowOpen = false;
+  telemetryMark('boot:worker', {
+    ms: Math.round(telemetryNow() - workerStartedAt),
+    ready: Boolean(workerReadiness.ready),
+    reason: workerReadiness.reason || '',
+    urgent: true
+  });
   if (workerReadiness.reason === 'reloading') return;
 
   initializeDOMElements();  // Initialize DOM elements first
@@ -1362,7 +1410,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
   initStats({ openBook });
   initQueueStatus();
+  const offlineStorageStartedAt = telemetryNow();
   await prepareOfflineStorage();
+  telemetryMark('boot:offline-storage', { ms: Math.round(telemetryNow() - offlineStorageStartedAt) });
   initOffline({
     getCurrentBook: () => currentBook,
     getChapters: () => chapters,
@@ -1447,6 +1497,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     search: () => document.getElementById('library-search-toggle')?.click(),
     help: () => openShortcutOverlay(),
   });
+  telemetryMark('boot:ready', { hash: String(location.hash || '').slice(0, 80), urgent: true });
 });
 
 
@@ -1466,6 +1517,16 @@ function waitForWorkerState(worker, acceptedStates, timeoutMs = 8000) {
   });
 }
 
+function workerScriptLabel(worker) {
+  if (!worker?.scriptURL) return '';
+  try {
+    const url = new URL(worker.scriptURL, window.location.href);
+    return `${url.pathname}${url.search}:${worker.state || ''}`;
+  } catch {
+    return '';
+  }
+}
+
 function isExpectedOfflineWorker(worker) {
   if (!worker?.scriptURL) return false;
   try {
@@ -1483,6 +1544,10 @@ function requestWaitingWorkerActivation(worker, timeoutMs = 2000) {
     const timer = window.setTimeout(() => resolve(false), timeoutMs);
     channel.port1.onmessage = event => {
       window.clearTimeout?.(timer);
+      telemetryMark('sw:activation-reply', {
+        requested: event.data?.activationRequested === true,
+        reason: String(event.data?.reason || '').slice(0, 40)
+      });
       resolve(event.data?.activationRequested === true);
     };
     try {
@@ -1515,7 +1580,18 @@ function settleBeforeDeadline(promise, deadlineAt, fallback = null) {
 async function prepareServiceWorkerForRouting() {
   if (!('serviceWorker' in navigator)) return { ready: false, reason: 'unsupported' };
   const deadlineAt = Date.now() + SERVICE_WORKER_BOOT_DEADLINE_MS;
+  const workerStep = (step, registration = null, extra = {}) => telemetryMark('sw:step', {
+    step,
+    left: Math.max(0, deadlineAt - Date.now()),
+    controller: workerScriptLabel(navigator.serviceWorker?.controller),
+    expected: OFFLINE_WORKER_SCRIPT_URL,
+    active: workerScriptLabel(registration?.active),
+    waiting: workerScriptLabel(registration?.waiting),
+    installing: workerScriptLabel(registration?.installing),
+    ...extra
+  });
   const initial = offlineWorkerControllerState();
+  workerStep('start', null, { compatible: Boolean(initial.compatible) });
   const current = initial.compatible
     ? initial
     : await certifyOfflineWorkerController({
@@ -1530,6 +1606,7 @@ async function prepareServiceWorkerForRouting() {
       navigator.serviceWorker.getRegistration?.(),
       Math.min(deadlineAt, Date.now() + 500)
     );
+    workerStep('warm-check', registration);
     if (!registration?.waiting && !registration?.installing) {
       window.sessionStorage?.removeItem?.(OFFLINE_WORKER_RELOAD_KEY);
       // A network update never extends an already certified warm launch.
@@ -1544,6 +1621,7 @@ async function prepareServiceWorkerForRouting() {
       deadlineAt
     );
   }
+  workerStep('registered', registration);
   if (!registration) return { ready: false, reason: 'registration-timeout' };
   // A waiting build already has its complete shell; don't put a fresh network
   // update in front of its safe activation handoff.
@@ -1570,6 +1648,7 @@ async function prepareServiceWorkerForRouting() {
       candidate,
       Math.min(2000, Math.max(50, deadlineAt - Date.now()))
     );
+    workerStep('activation', registration, { requested: activationRequested });
     if (activationRequested) {
       await waitForWorkerState(
         candidate,
@@ -1584,6 +1663,7 @@ async function prepareServiceWorkerForRouting() {
         const alreadyReloaded = window.sessionStorage?.getItem?.(OFFLINE_WORKER_RELOAD_KEY) === reloadKey;
         if (!alreadyReloaded && serviceWorkerBootWindowOpen) {
           window.sessionStorage?.setItem?.(OFFLINE_WORKER_RELOAD_KEY, reloadKey);
+          workerStep('reload-activated', registration, { urgent: true });
           window.location.reload();
           return { ready: false, reason: 'reloading' };
         }
@@ -1600,6 +1680,7 @@ async function prepareServiceWorkerForRouting() {
       timeoutMs: Math.min(1500, Math.max(50, deadlineAt - Date.now()))
     }).catch(() => offlineWorkerControllerState())
     : offlineWorkerControllerState();
+  workerStep('after-activation', registration, { compatible: Boolean(afterActivation.compatible) });
   if (afterActivation.compatible) {
     window.sessionStorage?.removeItem?.(OFFLINE_WORKER_RELOAD_KEY);
     return { ready: true, reason: '' };
@@ -1616,6 +1697,7 @@ async function prepareServiceWorkerForRouting() {
       === OFFLINE_WORKER_SCRIPT_URL;
     if (!alreadyReloaded && serviceWorkerBootWindowOpen) {
       window.sessionStorage?.setItem?.(OFFLINE_WORKER_RELOAD_KEY, OFFLINE_WORKER_SCRIPT_URL);
+      workerStep('reload-first-install', registration, { urgent: true });
       window.location.reload();
       return { ready: false, reason: 'reloading' };
     }
@@ -1873,6 +1955,7 @@ function setupEventListeners() {
 
 // View Management
 function showView(viewName, route = null) {
+  telemetryMark('view', { name: String(viewName || ''), id: route?.bookId ? String(route.bookId) : undefined });
   document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
   if (viewName !== 'player') closeTransientSheets();
 
@@ -2209,6 +2292,8 @@ async function resumeBook(bookId, { navigationReady = null } = {}) {
 async function openBook(bookId, { attempt = null } = {}) {
   cancelPendingBookOpen();
   const token = ++openBookToken;
+  const openStartedAt = telemetryNow();
+  telemetryMark('book:open', { id: String(bookId), token, urgent: true });
   bindPlaybackAttemptToOpen(attempt, token);
   const controller = new AbortController();
   openBookController = controller;
@@ -2266,6 +2351,8 @@ async function openBook(bookId, { attempt = null } = {}) {
     if (!nextBook || typeof nextBook !== 'object' || nextBook.id == null || !Array.isArray(nextChapters)) {
       throw new Error('Invalid book data');
     }
+    // Downloads and the online snapshot fallback compare against this.
+    if (!usedOfflineFallback) noteServerBookLayout(nextBook);
     recordPlaybackEvent({
       type: 'book-metadata-ready',
       bookId: String(bookId),
@@ -2490,6 +2577,12 @@ async function openBook(bookId, { attempt = null } = {}) {
     }
     return false;
   } finally {
+    telemetryMark('book:opened', {
+      id: String(bookId),
+      token,
+      current: token === openBookToken,
+      ms: Math.round(telemetryNow() - openStartedAt)
+    });
     controller.abort();
     if (openBookController === controller) openBookController = null;
     if (token === openBookToken) {
@@ -2529,7 +2622,7 @@ async function loadRestoredChapter(savedIndex, savedPosition) {
   }
   // Finite/local sources still need an ordinary seek. Continuous transports
   // opened at startOffsetSeconds map this saved chapter time to stream time 0.
-  await restorePlaybackPosition(chunkPlayer, currentChapter === index ? position : null);
+  await restorePlaybackPosition(chunkPlayer, currentChapter === index ? position : null, book);
   return loaded;
 }
 
@@ -2626,6 +2719,9 @@ async function loadChapterWithIntent(index, options) {
     chapterIndex: index,
     finished: currentBookFinished
   });
+  // An end-of-chapter timer moves to the chapter being loaded, before the
+  // engine reads the limit for it (getContinuousEndChapter).
+  followSleepTimerChapter(currentBook?.id, index);
   if (options.provisionalForward) playbackSession.markProvisionalForward(previousChapter, index);
   else if (options.commitImmediately) playbackSession.clearProvisionalForward();
   const chapter = chapters[index];
@@ -3197,7 +3293,13 @@ function buildPlaybackCheckpoint(options = {}) {
     playbackRate: getCurrentPlaybackSpeed()
   });
   if (!checkpoint || !currentBook?.chapterStructureKey) return checkpoint;
-  return { ...checkpoint, chapterStructureKey: currentBook.chapterStructureKey };
+  // The remap id travels with every checkpoint and queued write, so the open
+  // path and the position route can tell text that a remap has since moved.
+  return {
+    ...checkpoint,
+    chapterStructureKey: currentBook.chapterStructureKey,
+    ...(currentBook.textRemapId ? { textRemapId: currentBook.textRemapId } : {})
+  };
 }
 
 function checkpointPlayback(options = {}) {

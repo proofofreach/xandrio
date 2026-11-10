@@ -260,7 +260,7 @@ async function listen(app) {
     const bulkReached = deferred();
     queueGate = { reached: bulkReached, release: bulkRelease.promise };
     const bulkWrite = request('PUT', '/api/listening-queue', {
-      queue: { bookIds: [bulkBookId, 'kept'], autoContinue: true }
+      queue: { bookIds: [bulkBookId, 'kept'], autoContinue: true, revision: 0 }
     });
     await bulkReached.promise;
     let bulkDeleteCompletedBeforeRelease = false;

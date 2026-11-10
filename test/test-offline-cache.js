@@ -404,7 +404,7 @@ function installBrowser({
   source = source
     .replace(
       /^import \{[^\n]+\} from '\.\.\/api\.js';$/m,
-      "const API_BASE = window.location.origin; const apiSend = (...args) => globalThis.__offlineApiSend(...args); const canClaimLegacyOfflineStorage = () => globalThis.__canClaimLegacy !== false; const getOfflineStorageScopeId = () => globalThis.__offlineScope || 'default'; const syncHeaders = () => ({});"
+      "const API_BASE = window.location.origin; const apiSend = (...args) => globalThis.__offlineApiSend(...args); const canClaimLegacyOfflineStorage = () => globalThis.__canClaimLegacy !== false; const getOfflineStorageScopeId = () => globalThis.__offlineScope || 'default'; const serverNow = () => Date.now() - (globalThis.__serverClockOffsetMs || 0); const syncHeaders = () => ({});"
     )
     .replace("import { escapeHTML, formatDuration, relativeTime } from '../util/format.js';", "const escapeHTML = value => String(value); const relativeTime = () => ''; const formatDuration = () => '';")
     .replace("import { readJSON, writeJSON } from '../util/storage.js';", "const readJSON = (key, fallback = null) => { try { const value = localStorage.getItem(key); return value == null ? fallback : JSON.parse(value); } catch { return fallback; } }; const writeJSON = (key, value) => { try { localStorage.setItem(key, JSON.stringify(value)); return true; } catch { return false; } };")
@@ -419,7 +419,12 @@ function installBrowser({
       "const planRollingOfflineWindow = ({ currentChapter, chapterCount, cachedChapters = [] }) => { const first = Math.max(0, currentChapter - 1); const last = Math.min(chapterCount - 1, currentChapter + 2); const retain = Array.from({ length: Math.max(0, last - first + 1) }, (_, index) => first + index); const cached = new Set(cachedChapters); const kept = new Set(retain); return { retain, prepare: retain.filter(index => !cached.has(index)), evict: [...cached].filter(index => !kept.has(index)).sort((a, b) => a - b) }; };"
     )
     .replace("import('./offline-device.mjs')", 'globalThis.__offlineDeviceModule()')
-    .replace('function publishDeviceSnapshot(', 'export function publishDeviceSnapshot(');
+    .replace('function publishDeviceSnapshot(', 'export function publishDeviceSnapshot(')
+    // Any other relative import is a real module: resolve it to its file, since
+    // a data: URL has no base to resolve against.
+    .replace(/^(import [^\n]+ from ')(\.\.?\/[^']+)(';)$/gm, (_, head, specifier, tail) => (
+      `${head}${require('url').pathToFileURL(path.join(__dirname, '..', 'public', 'js', 'features', specifier)).href}${tail}`
+    ));
   const moduleUrl = `data:text/javascript;base64,${Buffer.from(source).toString('base64')}`;
   const offline = await import(moduleUrl);
   const book = { id: 'book-1', title: 'A Book' };
@@ -1120,6 +1125,98 @@ function installBrowser({
     assert(offline.offlineEntryForBook(book.id));
   });
 
+  function deletedTitleEntry(overrides = {}) {
+    return {
+      bookId: book.id,
+      title: book.title,
+      chapters: 1,
+      chapterEntries: [null],
+      titleData: { book: { ...book, ...(overrides.book || {}) }, chapters: [{}] },
+      downloadedAt: overrides.downloadedAt ?? null,
+      downloadStartedAt: overrides.downloadStartedAt ?? null,
+      manifestVersion: 3,
+      mode: 'full',
+      state: 'repairing'
+    };
+  }
+
+  await test('a deletion removes a download of the deleted import even when this device clock runs fast', async () => {
+    const storage = new Map();
+    installBrowser({
+      book, chapters: [{}], cache: makeCache(), storage,
+      // Stamped by a clock a day ahead: after the deletion by device time.
+      manifest: { [book.id]: deletedTitleEntry({
+        book: { addedAt: '2026-07-01T00:00:00.000Z' },
+        downloadedAt: '2026-07-26T12:00:00.000Z'
+      }) },
+      deletionResponse: { revision: 3, deletions: [{ bookId: book.id, revision: 3, deletedAt: '2026-07-25T12:00:00.000Z' }] }
+    });
+    assert.strictEqual(await offline.reconcileDeletedOfflineBooks(), true);
+    assert.strictEqual(offline.offlineEntryForBook(book.id), null, 'the server import time decides, not the device clock');
+  });
+
+  await test('a deletion keeps a download of a later re-import even when this device clock runs slow', async () => {
+    installBrowser({
+      book, chapters: [{}], cache: makeCache(),
+      manifest: { [book.id]: deletedTitleEntry({
+        book: { addedAt: '2026-07-26T00:00:00.000Z' },
+        downloadedAt: '2026-07-20T00:00:00.000Z'
+      }) },
+      deletionResponse: { revision: 4, deletions: [{ bookId: book.id, revision: 4, deletedAt: '2026-07-25T12:00:00.000Z' }] }
+    });
+    assert.strictEqual(await offline.reconcileDeletedOfflineBooks(), false);
+    assert(offline.offlineEntryForBook(book.id));
+  });
+
+  await test('a deletion feed that went back below the cursor is read again from the start', async () => {
+    const storage = new Map([['xandrio_offline_deletion_cursor:default', '40']]);
+    const requests = [];
+    installBrowser({
+      book, chapters: [{}], cache: makeCache(), storage,
+      manifest: { [book.id]: deletedTitleEntry({ book: { addedAt: '2026-07-01T00:00:00.000Z' } }) }
+    });
+    global.__offlineApiSend = async (method, requestPath) => {
+      requestPath.startsWith('/api/offline/deletions') && requests.push(requestPath);
+      return { revision: 2, deletions: requestPath.endsWith('since=0')
+        ? [{ bookId: book.id, revision: 2, deletedAt: '2026-07-25T12:00:00.000Z' }]
+        : [] };
+    };
+    assert.strictEqual(await offline.reconcileDeletedOfflineBooks(), true);
+    assert.deepStrictEqual(requests, ['/api/offline/deletions?since=40', '/api/offline/deletions?since=0']);
+    assert.strictEqual(offline.offlineEntryForBook(book.id), null, 'a deletion after the server reset is applied');
+    assert.strictEqual(storage.get('xandrio_offline_deletion_cursor:default'), '2');
+  });
+
+  await test('a deletion feed with a new epoch is read again from the start', async () => {
+    const storage = new Map([
+      ['xandrio_offline_deletion_cursor:default', '5'],
+      ['xandrio_offline_deletion_cursor:epoch:default', 'feed-a']
+    ]);
+    const requests = [];
+    installBrowser({
+      book, chapters: [{}], cache: makeCache(), storage,
+      manifest: { [book.id]: deletedTitleEntry({ book: { addedAt: '2026-07-01T00:00:00.000Z' } }) }
+    });
+    global.__offlineApiSend = async (method, requestPath) => {
+      requestPath.startsWith('/api/offline/deletions') && requests.push(requestPath);
+      return { revision: 9, epoch: 'feed-b', deletions: requestPath.endsWith('since=0')
+        ? [{ bookId: book.id, revision: 3, deletedAt: '2026-07-25T12:00:00.000Z' }]
+        : [] };
+    };
+    assert.strictEqual(await offline.reconcileDeletedOfflineBooks(), true);
+    assert.deepStrictEqual(requests, ['/api/offline/deletions?since=5', '/api/offline/deletions?since=0']);
+    assert.strictEqual(storage.get('xandrio_offline_deletion_cursor:default'), '9');
+    assert.strictEqual(storage.get('xandrio_offline_deletion_cursor:epoch:default'), 'feed-b');
+  });
+
+  await test('download stamps use the server clock', async () => {
+    const source = fs.readFileSync(path.join(__dirname, '..', 'public', 'js', 'features', 'offline.js'), 'utf8');
+    const deviceSource = fs.readFileSync(path.join(__dirname, '..', 'public', 'js', 'features', 'offline-device.mjs'), 'utf8');
+    assert(!/(downloadedAt|downloadStartedAt)\s*[:=]\s*new Date\(\)/.test(source), 'no download stamp reads the device clock');
+    assert(source.includes('stampNow: serverNow'));
+    assert(deviceSource.includes('downloadedAt: new Date(stampNow()).toISOString()'));
+  });
+
   await test('writes verified per-chapter identities before marking a book ready', async () => {
     const cache = makeCache();
     const env = installBrowser({ book, chapters, cache });
@@ -1252,6 +1349,48 @@ function installBrowser({
 
     assert.strictEqual(await offline.auditOfflineManifest(), true);
     assert.strictEqual(offline.getOfflineManifest()[book.id].state, 'incomplete');
+  });
+
+  await test('an audit killed partway through a book keeps the chapters it already verified', async () => {
+    const cache = makeCache();
+    const threeChapters = [{}, {}, {}];
+    const env = installBrowser({
+      book,
+      chapters: threeChapters,
+      cache,
+      variants: ['voice-a'],
+      serverContentHash: true
+    });
+    offline.initOffline(env.init);
+    assert.strictEqual(await offline.downloadCurrentBook(), true);
+
+    const legacyManifest = structuredClone(offline.getOfflineManifest());
+    for (const chapter of legacyManifest[book.id].chapterEntries) delete chapter.bodyVerificationVersion;
+    installBrowser({
+      book,
+      chapters: threeChapters,
+      cache,
+      variants: ['voice-a'],
+      manifest: legacyManifest
+    });
+    // The page dies while reading the third chapter: the read never returns.
+    const thirdKey = offlineAudioKey(book.id, 2);
+    const originalMatch = cache.match.bind(cache);
+    cache.match = async request => {
+      if (String(request?.url || request).includes(new URL(thirdKey, 'https://reader.test').pathname)) {
+        throw new Error('content process killed');
+      }
+      return originalMatch(request);
+    };
+    await assert.rejects(() => offline.auditOfflineManifest(), /content process killed/);
+    cache.match = originalMatch;
+    const after = offline.getOfflineManifest()[book.id];
+    assert.strictEqual(after.state, 'ready');
+    assert.deepStrictEqual(
+      after.chapterEntries.map(chapter => chapter.bodyVerificationVersion ?? null),
+      [1, 1, null],
+      'the next launch resumes at the third chapter instead of re-reading the book'
+    );
   });
 
   await test('playback rejects a damaged legacy download before serving it', async () => {
@@ -2420,6 +2559,79 @@ function installBrowser({
     }
   });
 
+  // --- Chapter layout -------------------------------------------------------
+  // Audio is addressed by chapter index. A rebuild or a same-key text remap
+  // changes what an index names without touching the download.
+
+  await test('a download made under an earlier chapter layout is not played for the current one', async () => {
+    const original = { ...book, chapterStructureKey: 'v1-key', chapterLayoutKey: 'v1-key~cut-a' };
+    let openBook = original;
+    const env = installBrowser({ book: original, chapters, cache: makeCache() });
+    offline.initOffline({ ...env.init, getCurrentBook: () => openBook });
+    assert.strictEqual(await offline.downloadCurrentBook(), true);
+    assert.strictEqual((await offline.localChapterSource(book.id, 0)).available, true);
+
+    // Same structure key, text moved between chapters.
+    openBook = { ...original, chapterLayoutKey: 'v1-key~cut-b' };
+    const remapped = await offline.localChapterSource(book.id, 0);
+    assert.strictEqual(remapped.available, false);
+    assert.strictEqual(remapped.reason, 'layout-changed');
+    assert.strictEqual(offline.isBookDownloadedForOffline(book.id, 0), false);
+
+    // A rebuilt structure.
+    openBook = { ...original, chapterStructureKey: 'v1-other', chapterLayoutKey: 'v1-other~cut-a' };
+    assert.strictEqual((await offline.localChapterSource(book.id, 0)).reason, 'layout-changed');
+
+    // A snapshot without the text part is compared by structure key alone.
+    openBook = { ...original, chapterLayoutKey: undefined };
+    assert.strictEqual((await offline.localChapterSource(book.id, 0)).available, true);
+  });
+
+  await test('a known newer layout marks the download for update and keeps the stale snapshot off the online fallback', async () => {
+    const original = { ...book, chapterStructureKey: 'v1-key', chapterLayoutKey: 'v1-key~cut-a' };
+    let openBook = original;
+    const env = installBrowser({ book: original, chapters, cache: makeCache() });
+    offline.initOffline({ ...env.init, getCurrentBook: () => openBook });
+    assert.strictEqual(await offline.downloadCurrentBook(), true);
+    assert.strictEqual(offline.offlineStatusForBook(book.id).downloaded, true);
+    assert.strictEqual(offline.hasOfflineBookData(book.id), true);
+
+    openBook = null;
+    offline.noteServerBookLayout({ ...original, chapterLayoutKey: 'v1-key~cut-b' });
+    const status = offline.offlineStatusForBook(book.id);
+    assert.strictEqual(status.downloaded, false);
+    assert.strictEqual(status.kind, 'repair-needed');
+    assert.strictEqual(status.layoutChanged, true);
+    assert.strictEqual(offline.hasOfflineBookData(book.id), false, 'online: wait for the server instead');
+    assert.strictEqual(offline.getOfflineBookData(book.id), null);
+
+    navigator.onLine = false;
+    try {
+      const snapshot = offline.getOfflineBookData(book.id);
+      assert.strictEqual(snapshot?.book.chapterLayoutKey, 'v1-key~cut-a', 'offline: the snapshot and its own audio still play');
+      openBook = snapshot.book;
+      assert.strictEqual((await offline.localChapterSource(book.id, 0)).available, true);
+    } finally {
+      navigator.onLine = true;
+    }
+  });
+
+  await test('re-downloading under the new layout makes the download playable again', async () => {
+    const original = { ...book, chapterStructureKey: 'v1-key', chapterLayoutKey: 'v1-key~cut-a' };
+    let openBook = original;
+    const env = installBrowser({ book: original, chapters, cache: makeCache() });
+    offline.initOffline({ ...env.init, getCurrentBook: () => openBook, getChapters: () => chapters });
+    assert.strictEqual(await offline.downloadCurrentBook(), true);
+
+    openBook = { ...original, chapterLayoutKey: 'v1-key~cut-b' };
+    offline.noteServerBookLayout(openBook);
+    assert.strictEqual(offline.offlineStatusForBook(book.id).layoutChanged, true);
+    assert.strictEqual(await offline.downloadCurrentBook(), true);
+    assert.strictEqual(offline.offlineEntryForBook(book.id).titleData.book.chapterLayoutKey, 'v1-key~cut-b');
+    assert.strictEqual(offline.offlineStatusForBook(book.id).downloaded, true);
+    assert.strictEqual((await offline.localChapterSource(book.id, 0)).available, true);
+  });
+
   await test('localChapterSource reports an uncached chapter as unavailable', async () => {
     const cache = makeCache();
     const env = installBrowser({ book, chapters, cache, manifest: {} });
@@ -3112,6 +3324,25 @@ function installBrowser({
       delete global.HTMLMediaElement;
       delete global.__offlineDeviceModule;
     }
+  });
+
+  await test('deletion sync waits for the device snapshot instead of skipping its titles for good', async () => {
+    // The coordinator from the previous test is loaded but has published no
+    // snapshot, so block-backed titles are not visible yet.
+    const storage = new Map();
+    installBrowser({
+      book, chapters: [{}], cache: makeCache(), storage,
+      manifest: { [book.id]: deletedTitleEntry({ book: { addedAt: '2026-07-01T00:00:00.000Z' } }) },
+      deletionResponse: { revision: 5, deletions: [{ bookId: book.id, revision: 5, deletedAt: '2026-07-25T12:00:00.000Z' }] }
+    });
+    offline.publishDeviceSnapshot({}, 'another-scope');
+    assert.strictEqual(await offline.reconcileDeletedOfflineBooks(), false);
+    assert(offline.offlineEntryForBook(book.id), 'nothing is decided without the snapshot');
+    assert.strictEqual(storage.get('xandrio_offline_deletion_cursor:default'), undefined, 'the cursor stays put');
+    offline.publishDeviceSnapshot({}, 'default');
+    assert.strictEqual(await offline.reconcileDeletedOfflineBooks(), true);
+    assert.strictEqual(offline.offlineEntryForBook(book.id), null);
+    assert.strictEqual(storage.get('xandrio_offline_deletion_cursor:default'), '5');
   });
 
   // ---- Progressive, atomic, resumable CacheStorage downloads ---------------

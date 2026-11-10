@@ -187,6 +187,23 @@ def _language_for_voice(voice: str) -> str:
     return "a"
 
 
+def _pipeline_language(language: str, voice: str) -> str:
+    """English text follows the voice's own accent.
+
+    A book's declared region (en-GB, en-US) must not put British phonemes in an
+    American voice or the reverse; only the voice decides the English accent.
+    Other languages keep the requested pipeline.
+    """
+    normalized = str(language or "en").lower().replace("_", "-")
+    lang_code = normalized if normalized in LANG_MAP.values() else LANG_MAP.get(
+        normalized, LANG_MAP.get(normalized.split("-")[0], "a")
+    )
+    voice_code = _language_for_voice(voice)
+    if lang_code in ("a", "b") and voice_code in ("a", "b"):
+        return voice_code
+    return lang_code
+
+
 def _encode_audio(audio: np.ndarray, audio_format: str) -> tuple[bytes, str]:
     normalized = (audio_format or "wav").lower()
     buf = io.BytesIO()
@@ -205,7 +222,7 @@ def _encode_audio(audio: np.ndarray, audio_format: str) -> tuple[bytes, str]:
 def _run_inference(text: str, voice: str, language: str, audio_format: str) -> tuple[bytes, str]:
     started = time.perf_counter()
     with _inference_lock:
-        pipeline = _get_pipeline(language)
+        pipeline = _get_pipeline(_pipeline_language(language, voice))
         chunks = []
         for _graphemes, _phonemes, audio in pipeline(text, voice=voice):
             chunks.append(np.asarray(audio, dtype=np.float32).squeeze())

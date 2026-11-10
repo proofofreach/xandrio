@@ -176,11 +176,10 @@ export function initListeningQueue(options = {}) {
       if (up) return moveItem(up.dataset.queueUp, -1);
       if (down) return moveItem(down.dataset.queueDown, 1);
       if (auto) {
+        // A flag-only update: the server keeps its own book list, so a list
+        // cached here before another device queued a book cannot replace it.
         await apiSend('PUT', '/api/listening-queue', {
-          queue: {
-            bookIds: state.queue.bookIds,
-            autoContinue: state.queue.autoContinue === false
-          }
+          queue: { autoContinue: state.queue.autoContinue === false }
         });
         await loadListeningQueue();
       }

@@ -448,6 +448,30 @@ Severity: H = data loss, wrong position or wasted compute for everyone; M = narr
 | 88 | runtime | Node, ffmpeg and ffprobe were never checked; trust-proxy misconfiguration was silent | L | — | fixed `4c775d9`, `4cee8b4` |
 | 89 | client | Device-local checkpoints were shared across accounts; stale clients could not be detected | M | — | fixed `fc7ba5d`, `5a71248` |
 | 90 | import | pdf-parse never ran: it shared a thread with the pdfjs 6 outline reader and failed its pdfjs 5 version check. Each parse now has its own worker, so the pdf-parse candidate competes again and can change the chapters of new PDF imports (owner approved, was O-I6) | M | — | fixed |
+| 91 | persistence | A corrupt positions, shelves, bookmarks, queues, users, client settings, settings, pronunciations, deletion log or cloned-voice file was read as defaults and then overwritten; a deleted one started empty. These are now registered critical stores: reads and writes throw, the bytes are kept, and `/ready` fails | H | — | fixed `93dbd04`, `f0a0606` |
+| 92 | persistence | One malformed `book-guide-jobs.json` entry made startup restore throw (boot loop). Malformed entries are skipped, logged and dropped on the next write | H | — | fixed `2be409e` |
+| 93 | deletion | The deletion revision went backwards after a log restore. Revisions start above a sidecar high-water mark; the feed carries an `epoch`, and the client rereads from 0 on a lower revision or a new epoch | M | — | fixed `859a20e`, `bd8094e`, `9d81920` |
+| 94 | deletion | A crash or failing step after the record commit left cache files, covers, xbooks and offline packages forever. Every step runs; a repeated DELETE finishes cleanup; a startup sweep removes files of committed deletions (readable catalog only) | H | — | fixed `99986a5` |
+| 95 | deletion | Narrator pin, pronunciation rules and chapter transitions outlived the book and were inherited on re-import; also removed when the catalog is readable and empty | M | — | fixed `99986a5` |
+| 96 | voices | Deleting a clone left books pinned to it; a same-name clone then narrated them. Delete and create clear the pins, and a pin to an unregistered voice is ignored | M | — | fixed `e9d6fba` |
+| 97 | sync | Profile migration moved only positions and the queue, and a shallow merge dropped the source queue. All per-user stores migrate with merges that keep both sides | M | — | fixed `ca37301` |
+| 98 | shelves | `addBookToShelf` wrote without the book lock or an existence check | L | — | fixed `d3a0800` |
+| 99 | source policy | An unknown, non-string or incomplete `source` (or an `upload`/`calibre` alternative) downloaded from Anna's while the record named another provider. The source is resolved once; gate, fetch and provenance use the same id; a bad primary source gets 400 | H | — | fixed `dff9331` |
+| 100 | auth | Calibre tokens and pairing codes survived a password reset or change and "sign out other devices". They are bound to `credentialEpoch`; sign-out-others and disable remove them | H | — | fixed `54b3f1c` |
+| 101 | voices | `?voiceId=` accepted any registered voice, ignoring `XANDRIO_VOICE_PROVIDERS` (see O-V1) | M | — | fixed `51f6e32` |
+| 102 | boundary | `disabled: "false"` disabled an account; bad `chapterIndexes` or a non-string search `query`/`language` returned 500. All now 400 | L | — | fixed `2a8657d` |
+| 103 | narration | `book.language` stayed raw (`en-US`, `EN`, `English`), so Edge ignored the chosen voice but labelled the cache with it, and Kokoro took the accent from the book. It is normalized at import, refresh and store read; mislabelled verified chunks fail their recipe fingerprint and regenerate | H | — | fixed `223ef2b` |
+| 104 | narration | All-caps headings were lowercased before detection, so they got no cue or pause | L | — | fixed `ab47dad` |
+| 105 | generation | The planner ignored engine text limits: `paragraph-v1` chunks under the synthesis floor failed permanently, and `hybrid-v1` chunks passed Chatterbox's output cap. Engines declare min/max text length and the planner fits them | M | — | fixed `09ca776` |
+| 106 | narration | Pronunciation rules matched raw text (`don't` missed `don’t`; `Zoe` matched inside NFD `Zoë`). Matching uses NFC with quotes folded | L | — | fixed `c044e0a` |
+| 107 | offline | A download played by chapter index after a rebuild or same-key text remap, and a slow server opened the old snapshot online. Local playback, Downloaded status and the online fallback require the snapshot's layout to match; the library list records every book's layout | H | — | fixed `2963f56`, `14deaf0`, `5c7b6c3` |
+| 108 | sync | A device checkpoint or queued write from before a same-key text remap won over the remapped position. Positions carry `textRemapId`; the route moves pre-remap writes, ignores older ones, and moves a write without an id (pre-v231 clients) only if it was recorded before the remap | M | — | fixed `2963f56`, `de0c394`, `516d27f` |
+| 109 | offline | The device clock decided whether a download outlived a deletion, and launch-time sync skipped IndexedDB titles while moving the cursor. Server import time is compared with deletion time, and sync waits for the device snapshot | M | — | fixed `9d81920` |
+| 110 | client | Resetting the default speed sent null, which the server dropped while answering success. Null removes a client setting; invalid values get 400 | M | — | fixed `76a6a0f` |
+| 111 | client | The Up Next auto-continue toggle sent a cached list and erased books queued elsewhere. Flag-only updates keep the list; whole-list writes need the current revision (409 when stale) | M | — | fixed `2ad0036` |
+| 112 | client | The end-of-chapter timer stayed on the chapter where it was set, so after a jump it showed "End of chapter" with no limit. It follows each chapter load; a saved timer is restored only for the same chapter within 12 h | M | — | fixed `2bc9f23` |
+| 113 | client | `xandrio_client_settings` and `xandrio_playback_speed` were shared by every account on a device. Both are kept per storage scope | M | — | fixed `3577b5f` |
+| 114 | client | A malformed `%` escape in a deep link threw on every route attempt; it now routes to the library | L | — | fixed `10667fa` |
 
 ### Open
 
@@ -459,6 +483,7 @@ Severity: H = data loss, wrong position or wasted compute for everyone; M = narr
 | O-I4 | A write under an unknown old structure key is still clamped into range, not rejected. A forged key with a huge index lands on the last chapter. |
 | O-I5 | The book egress proxy re-resolves hostnames, so the SSRF guard assumes a trusted proxy (documented in `29ad960`). |
 | O-S3 | Media elements send no `If-Range` (confirmed in Chromium; Safari not verified). A playing element can still splice a same-length rewrite of a fixed-path chapter. A different length is rejected. A full fix needs an artifact-pinned URL (a 302 to `?artifact=`, plus 412 on a mismatch) or a new path for each rewrite. Do not ship either without an iOS device test. Low risk: it needs a rewrite of the same length during one playback. |
+| O-V1 | A book's saved narrator stays in effect when `XANDRIO_VOICE_PROVIDERS` excludes its provider ("a book choice is intent"), so such a book still sends text to that provider. Row 101 closes only the `?voiceId=` path. Whether an allowlist should override a saved pin is an owner decision; doing so changes the voice, and regenerates the audio, of every affected book. |
 
 ### Rejected (guard found; do not re-investigate)
 

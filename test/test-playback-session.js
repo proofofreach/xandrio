@@ -331,6 +331,33 @@ function fakeAudio() {
     ]);
   });
 
+  await test('does not restore a stored position into a layout it was not saved under', async () => {
+    const calls = [];
+    const chunked = {
+      supportsChunkPositionRestore: true,
+      async seek(seconds) { calls.push(['seek', seconds]); },
+      async seekToChunk(chunkIndex, chunkTime) { calls.push(['seekToChunk', chunkIndex, chunkTime]); }
+    };
+    const book = { chapterStructureKey: 'key-1', textRemapId: 'remap-1' };
+    await restorePlaybackPosition(chunked, { chunkIndex: 7, chunkTime: 6, timestamp: 90, chapterStructureKey: 'key-1' }, book);
+    await restorePlaybackPosition(chunked, { chunkIndex: 7, chunkTime: 6, timestamp: 90, chapterStructureKey: 'key-0', textRemapId: 'remap-1' }, book);
+    assert.deepStrictEqual(calls, [], 'old chunk coordinates are not applied to moved text');
+    await restorePlaybackPosition(chunked, { chunkIndex: 2, chunkTime: 1, chapterStructureKey: 'key-1', textRemapId: 'remap-1' }, book);
+    await restorePlaybackPosition(chunked, { chunkIndex: 3, chunkTime: 0 }, book);
+    assert.deepStrictEqual(calls, [['seekToChunk', 2, 1], ['seekToChunk', 3, 0]],
+      'a matching stored position and a live handoff still restore');
+  });
+
+  await test('checkpoints and queued position writes carry the book text remap id', async () => {
+    const appSource = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
+    const builder = appSource.slice(appSource.indexOf('function buildPlaybackCheckpoint('), appSource.indexOf('function checkpointPlayback('));
+    assert(builder.includes('textRemapId: currentBook.textRemapId'), 'the checkpoint names the remap it was saved under');
+    assert(/function positionPayload\([^)]*\) \{\s+const checkpoint = buildPlaybackCheckpoint\(/.test(appSource),
+      'the server and offline-queue payload is built from the checkpoint');
+    assert(appSource.includes('restorePlaybackPosition(chunkPlayer, currentChapter === index ? position : null, book)'),
+      'a restored position is checked against the open book');
+  });
+
   await test('does not seek an iOS continuous stream that already opened at the saved offset', async () => {
     const calls = [];
     const continuous = {
@@ -376,6 +403,15 @@ function fakeAudio() {
       path.join(__dirname, '..', 'public', 'js', 'player-status.mjs')
     ).href);
     const appImports = {
+      // Administrator telemetry (js/admin-telemetry.mjs) is a no-op here.
+      telemetryMark() {},
+      telemetryNow: () => 0,
+      createAdminTelemetry: () => ({
+        mark() {}, flush: async () => false, enable() {}, disable() {}, previousExit: () => null
+      }),
+      installTelemetryCollectors() {},
+      setActiveTelemetry() {},
+      sendAdminTelemetry: async () => false,
       ...chapterPlayability,
       ...playerStatusModule,
       navigateChapterSelection,
@@ -420,6 +456,7 @@ function fakeAudio() {
       checkAutomaticSleepTimer: () => {},
       expireSleepTimer: reason => appImports.sleepExpiries.push(reason),
       isSleepTimerChapterTarget: () => appImports.sleepTarget,
+      followSleepTimerChapter: () => {},
       displayChapterTitle: () => 'Chapter',
       isIOSLike: () => false,
       needsReliablePlayback: () => false,

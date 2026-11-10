@@ -60,6 +60,9 @@ function createHarness({
   };
   const element = { textContent: '', innerHTML: '', value: '', hidden: false };
   const context = {
+    // Administrator telemetry (js/admin-telemetry.mjs) is a no-op here.
+    telemetryMark() {},
+    telemetryNow: () => 0,
     console: { error(...args) { events.errors.push(args); events.errStacks = events.errStacks || []; try { events.errStacks.push(args[1] && args[1].stack || String(args[1] || args[0])); } catch(e){} }, warn() {}, log() {} },
     navigator: { onLine: true },
     window: { addEventListener() {} },
@@ -73,6 +76,7 @@ function createHarness({
     shouldUseOfflineBookFallback: () => false,
     getOfflineBookData: () => null,
     hasOfflineBookData: () => false,
+    noteServerBookLayout() {},
     syncPlayerHash(bookId) { events.hashes.push(bookId); },
     prioritizeForegroundBook: async () => true,
     offlineUnavailableOnlineRetry: { clear() {} },
@@ -482,6 +486,9 @@ async function run() {
     const gate = new Promise(r => { releaseRestore = () => { gateReleased = true; r(); }; });
     const element2 = { textContent: '', innerHTML: '', value: '' };
     const ctx = {
+      // Administrator telemetry (js/admin-telemetry.mjs) is a no-op here.
+      telemetryMark() {},
+      telemetryNow: () => 0,
       console: { error() {}, warn() {}, log() {} },
       navigator: { onLine: true },
       window: { addEventListener() {} },
@@ -497,6 +504,7 @@ async function run() {
       getBookPlaybackSettings: async () => ({}),
       shouldUseOfflineBookFallback: () => false,
       getOfflineBookData: () => null,
+      noteServerBookLayout() {},
       syncPlayerHash(bookId, options) { events2.hashes.push({ bookId, replace: Boolean(options?.replace) }); },
       prioritizeForegroundBook: async () => true,
       offlineUnavailableOnlineRetry: { clear() {} },

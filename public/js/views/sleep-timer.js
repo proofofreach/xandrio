@@ -21,6 +21,10 @@ let extendTimerBtn = null;
 let timerModalController = null;
 let initScope = null;
 const AUTO_SLEEP_KEY = 'xandrio_auto_sleep_schedule';
+const CHAPTER_TARGET_KEY = 'xandrio_sleep_timer_chapter_target';
+// A saved end-of-chapter timer survives a reload mid-chapter. One armed this
+// long ago belongs to an earlier listening session, not to this launch.
+const CHAPTER_TARGET_MAX_AGE_MS = 12 * 60 * 60 * 1000;
 const AUTO_SLEEP_SKIP_KEY = 'xandrio_auto_sleep_skip';
 let autoSleepSchedule = normalizeAutoSleepSchedule(readJSON(AUTO_SLEEP_KEY, {}));
 let stopAutoSleepWatch = null;
@@ -89,7 +93,7 @@ function initAutomaticSleepSettings() {
 function notifyChapterTargetChange(reason) {
   if (typeof deps.onChapterTargetChange !== 'function') return;
   const target = sleepTimerMode === 'chapter' && sleepTimerChapterTarget
-    ? { ...sleepTimerChapterTarget }
+    ? { bookId: sleepTimerChapterTarget.bookId, chapterIndex: sleepTimerChapterTarget.chapterIndex }
     : null;
   Promise.resolve(deps.onChapterTargetChange(target, { reason })).catch(error => {
     console.warn('Sleep timer transport update failed:', error);
@@ -145,6 +149,20 @@ export function closeSleepTimerModal() {
   timerModalController?.close();
 }
 
+// "End of chapter" means the chapter being listened to. When the listener
+// moves to another chapter of the same book (a jump, a skip, a book seek), the
+// timer moves with it, so the transport limit and the label stay true. A
+// chapter stop expires the timer before the selection advances, so automatic
+// advance never reaches this with a timer armed.
+export function followSleepTimerChapter(bookId, chapterIndex) {
+  if (sleepTimerMode !== 'chapter' || !sleepTimerChapterTarget) return;
+  if (sleepTimerChapterTarget.bookId !== bookId || !Number.isInteger(chapterIndex)) return;
+  if (sleepTimerChapterTarget.chapterIndex === chapterIndex) return;
+  sleepTimerChapterTarget = { bookId, chapterIndex, armedAt: Date.now() };
+  writeJSON(CHAPTER_TARGET_KEY, sleepTimerChapterTarget);
+  notifyChapterTargetChange('retargeted');
+}
+
 export function isSleepTimerChapterTarget(bookId, chapterIndex) {
   return sleepTimerMode === 'chapter' &&
     sleepTimerChapterTarget &&
@@ -185,12 +203,13 @@ function setSleepTimerToChapterEnd() {
   sleepTimerEndTime = null;
   sleepTimerChapterTarget = {
     bookId: deps.getCurrentBook()?.id || null,
-    chapterIndex: deps.getCurrentChapter()
+    chapterIndex: deps.getCurrentChapter(),
+    armedAt: Date.now()
   };
 
   removeStorage('xandrio_sleep_timer_end');
   writeText('xandrio_sleep_timer_mode', 'chapter');
-  writeJSON('xandrio_sleep_timer_chapter_target', sleepTimerChapterTarget);
+  writeJSON(CHAPTER_TARGET_KEY, sleepTimerChapterTarget);
 
   if (timerBtnInline) {
     timerBtnInline.classList.add('active', 'timer-armed');
@@ -238,7 +257,7 @@ export function clearSleepTimer(reason = 'cancelled', notify = true) {
   sleepTimerChapterTarget = null;
   removeStorage('xandrio_sleep_timer_end');
   removeStorage('xandrio_sleep_timer_mode');
-  removeStorage('xandrio_sleep_timer_chapter_target');
+  removeStorage(CHAPTER_TARGET_KEY);
 
   if (timerBtnInline) {
     timerBtnInline.classList.remove('active', 'timer-armed');
@@ -361,8 +380,14 @@ export function expireSleepTimer(reason = 'time') {
 export function restoreSleepTimer() {
   const savedMode = readText('xandrio_sleep_timer_mode', '');
   if (savedMode === 'chapter') {
-    const target = readJSON('xandrio_sleep_timer_chapter_target', null);
-    if (target && target.bookId === deps.getCurrentBook()?.id && Number.isInteger(target.chapterIndex)) {
+    // Restore only the timer for the chapter that is opening, armed in this
+    // listening session. Anything else would show "End of chapter" while the
+    // transport has no end limit for the chapter that plays.
+    const target = readJSON(CHAPTER_TARGET_KEY, null);
+    const age = Date.now() - Number(target?.armedAt);
+    if (target && target.bookId === deps.getCurrentBook()?.id &&
+        Number.isInteger(target.chapterIndex) && target.chapterIndex === deps.getCurrentChapter() &&
+        age >= 0 && age <= CHAPTER_TARGET_MAX_AGE_MS) {
       clearSleepTimerHandles();
       sleepTimerMode = 'chapter';
       sleepTimerChapterTarget = target;
