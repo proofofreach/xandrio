@@ -458,7 +458,7 @@ Severity: H = data loss, wrong position or wasted compute for everyone; M = narr
 | 98 | shelves | `addBookToShelf` wrote without the book lock or an existence check | L | — | fixed `d3a0800` |
 | 99 | source policy | An unknown, non-string or incomplete `source` (or an `upload`/`calibre` alternative) downloaded from Anna's while the record named another provider. The source is resolved once; gate, fetch and provenance use the same id; a bad primary source gets 400 | H | — | fixed `dff9331` |
 | 100 | auth | Calibre tokens and pairing codes survived a password reset or change and "sign out other devices". They are bound to `credentialEpoch`; sign-out-others and disable remove them | H | — | fixed `54b3f1c` |
-| 101 | voices | `?voiceId=` accepted any registered voice, ignoring `XANDRIO_VOICE_PROVIDERS` (see O-V1) | M | — | fixed `51f6e32` |
+| 101 | voices | `?voiceId=` accepted any registered voice, ignoring `XANDRIO_VOICE_PROVIDERS` (see row 115) | M | — | fixed `51f6e32` |
 | 102 | boundary | `disabled: "false"` disabled an account; bad `chapterIndexes` or a non-string search `query`/`language` returned 500. All now 400 | L | — | fixed `2a8657d` |
 | 103 | narration | `book.language` stayed raw (`en-US`, `EN`, `English`), so Edge ignored the chosen voice but labelled the cache with it, and Kokoro took the accent from the book. It is normalized at import, refresh and store read; mislabelled verified chunks fail their recipe fingerprint and regenerate | H | — | fixed `223ef2b` |
 | 104 | narration | All-caps headings were lowercased before detection, so they got no cue or pause | L | — | fixed `ab47dad` |
@@ -472,6 +472,7 @@ Severity: H = data loss, wrong position or wasted compute for everyone; M = narr
 | 112 | client | The end-of-chapter timer stayed on the chapter where it was set, so after a jump it showed "End of chapter" with no limit. It follows each chapter load; a saved timer is restored only for the same chapter within 12 h | M | — | fixed `2bc9f23` |
 | 113 | client | `xandrio_client_settings` and `xandrio_playback_speed` were shared by every account on a device. Both are kept per storage scope | M | — | fixed `3577b5f` |
 | 114 | client | A malformed `%` escape in a deep link threw on every route attempt; it now routes to the library | L | — | fixed `10667fa` |
+| 115 | voices | A book's saved narrator, and the global voice, kept sending text to a provider `XANDRIO_VOICE_PROVIDERS` excludes (was O-V1). The allowlist now outranks saved choices: an excluded pin is ignored, so the book inherits the global narrator (and regenerates audio), and startup deletes such pins; an excluded global voice falls back like a disabled Nano voice | M | — | fixed |
 
 ### Open
 
@@ -483,7 +484,6 @@ Severity: H = data loss, wrong position or wasted compute for everyone; M = narr
 | O-I4 | A write under an unknown old structure key is still clamped into range, not rejected. A forged key with a huge index lands on the last chapter. |
 | O-I5 | The book egress proxy re-resolves hostnames, so the SSRF guard assumes a trusted proxy (documented in `29ad960`). |
 | O-S3 | Media elements send no `If-Range` (confirmed in Chromium; Safari not verified). A playing element can still splice a same-length rewrite of a fixed-path chapter. A different length is rejected. A full fix needs an artifact-pinned URL (a 302 to `?artifact=`, plus 412 on a mismatch) or a new path for each rewrite. Do not ship either without an iOS device test. Low risk: it needs a rewrite of the same length during one playback. |
-| O-V1 | A book's saved narrator stays in effect when `XANDRIO_VOICE_PROVIDERS` excludes its provider ("a book choice is intent"), so such a book still sends text to that provider. Row 101 closes only the `?voiceId=` path. Whether an allowlist should override a saved pin is an owner decision; doing so changes the voice, and regenerates the audio, of every affected book. |
 
 ### Rejected (guard found; do not re-investigate)
 
