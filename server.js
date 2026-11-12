@@ -1320,15 +1320,41 @@ let mossNanoModelsUnavailable = false;
 function mossNanoKnownUninstalled() {
   return mossNanoModelsUnavailable || narrationRuntime.mossNanoStatusHint() === 'models-uninstalled';
 }
+// Whether the operator's provider allowlist (XANDRIO_VOICE_PROVIDERS) admits
+// a registered voice. The allowlist outranks every saved choice: no book pin
+// or global selection may send text to an excluded provider.
+function voiceProviderAllowed(voiceId) {
+  return filterVoicesByProvider(registeredVoiceEntries().filter(entry => entry.id === voiceId),
+    ALLOWED_VOICE_PROVIDERS).length > 0;
+}
+
 // A book's narrator pin, or null when it names a voice that is no longer
-// registered (a deleted clone). Registered rather than available: a disabled
-// provider must not silently change a book's choice, but a voice that does not
-// exist cannot narrate, and a later clone that reuses its id is not the voice
-// the reader chose.
+// registered (a deleted clone) or whose provider the allowlist excludes; the
+// book then inherits the global narrator. A transiently disabled Nano worker
+// does not void the pin, but a voice that does not exist cannot narrate, and a
+// later clone that reuses its id is not the voice the reader chose.
 function bookNarrationPin(settings, bookId) {
   const saved = bookId ? settings.bookNarration?.[bookId] : null;
   if (!saved?.voiceId) return null;
-  return registeredVoiceEntries().some(entry => entry.id === saved.voiceId) ? saved : null;
+  return voiceProviderAllowed(saved.voiceId) ? saved : null;
+}
+
+// Startup sweep: delete every book pin whose provider the allowlist excludes,
+// so the stored settings match what playback serves.
+async function dropExcludedBookPins() {
+  if (!ALLOWED_VOICE_PROVIDERS) return 0;
+  let dropped = 0;
+  const settings = await updateJSON(SETTINGS_FILE, current => {
+    for (const [bookId, narration] of Object.entries(current.bookNarration || {})) {
+      const known = registeredVoiceEntries().some(entry => entry.id === narration?.voiceId);
+      if (!known || voiceProviderAllowed(narration.voiceId)) continue;
+      delete current.bookNarration[bookId];
+      dropped += 1;
+    }
+    return dropped ? current : jsonStore.SKIP_SAVE;
+  });
+  if (dropped) updateSettingsCache(settings);
+  return dropped;
 }
 
 function getBookNarration(bookId) {
@@ -1346,11 +1372,10 @@ function getBookNarration(bookId) {
 
 function getActiveVoice(bookId) {
   const settings = readSettingsSync();
-  // A book choice is intent. Disabled providers must not silently change it.
   const pin = bookNarrationPin(settings, bookId);
   if (pin) return pin.voiceId;
   const selected = settings.voice || DEFAULT_VOICE;
-  if (!mossNano.isMossNanoVoice(selected)) return selected;
+  if (!mossNano.isMossNanoVoice(selected) && voiceProviderAllowed(selected)) return selected;
   const uninstalled = mossNanoKnownUninstalled();
   const available = availableVoiceEntries().filter(v => !uninstalled || !mossNano.isMossNanoVoice(v.id));
   if (available.some(v => v.id === selected)) return selected;
@@ -2080,10 +2105,10 @@ function voiceForTier(tier, bookId) {
 
 // The voices a playback request may pin with `voiceId`: the operator's
 // provider allowlist, as for every other voice selection, plus the book's own
-// narration and its instant pair. The book's saved voice stays in effect when
-// its provider is disabled, and routes pin the voice they already serve, so
-// that one is accepted even when the allowlist excludes it. Checking against
-// the full registry let `?voiceId=` generate audio with a disabled provider.
+// narration and its instant pair. The book's voice already passed the
+// allowlist; it is added so routes may pin the voice they serve while the Nano
+// worker is disabled. Checking against the full registry let `?voiceId=`
+// generate audio with a disabled provider.
 function pinnableVoiceIds(bookVoiceId) {
   const ids = new Set(availableVoiceEntries().map(voice => voice.id));
   if (bookVoiceId) {
@@ -5602,6 +5627,9 @@ if (require.main === module) {
       });
       await generationJournal.acknowledgeBookMetadataResets([...affectedBooks]);
     }
+    // Before premium prep resumes, so no restored job keeps an excluded voice.
+    const droppedPins = await dropExcludedBookPins();
+    if (droppedPins) console.log(`Voice allowlist: dropped ${droppedPins} book narrator pin(s) to excluded providers`);
     if (mossNano.enabled()) {
       // External supervisors can expose an uninstalled worker too. Discover
       // that state before restoring durable work into the shared TTS lane.
@@ -5836,6 +5864,8 @@ module.exports.app = app;
 module.exports.__test = {
   buildPdfPageGroups: pdfExtractionTestHooks.buildPdfPageGroups,
   resolveNarrationContext,
+  dropExcludedBookPins,
+  getActiveVoice,
   createPairingCode,
   hashPairingCode,
   normalizePairingCode,
