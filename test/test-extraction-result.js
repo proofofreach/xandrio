@@ -126,6 +126,13 @@ assert.throws(() => createExtractionResult({
   });
   const shared = counted.fromLegacyChapters(chapters(), { sourceFormat: 'epub' });
   assert.strictEqual(plans, 3, 'fromLegacyChapters plans each chapter exactly once');
+  // The PDF status check and the importability check ask again for the same
+  // text; neither may re-plan it.
+  assert.strictEqual(counted.hasMeaningfulNarration(chapters()), true);
+  assert.strictEqual(counted.isExtractionImportable(counted.fromLegacyChapters(chapters(), { sourceFormat: 'epub' })), true);
+  assert.strictEqual(plans, 3, 'repeat assessments of the same text reuse the plan');
+  counted.hasMeaningfulNarration([chapter(`${meaningful} More.`)]);
+  assert.strictEqual(plans, 4, 'different text is planned');
   assert.deepStrictEqual(
     { narration: shared.narration, integrity: shared.textIntegrity, codes: shared.diagnostics.map(item => item.code) },
     { narration: reference.narration, integrity: reference.textIntegrity, codes: fromLegacyChapters(chapters(), { sourceFormat: 'epub' }).diagnostics.map(item => item.code) },
