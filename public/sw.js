@@ -1,7 +1,7 @@
 importScripts('/js/offline-range.js');
 importScripts('/js/offline-store.js');
 
-const CACHE_VERSION = 'xandrio-v236';
+const CACHE_VERSION = 'xandrio-v237';
 const OFFLINE_ROUTE_CONTRACT_VERSION = 2;
 const OFFLINE_AUDIO_CACHE = 'xandrio-offline-audio';
 const OFFLINE_TITLE_CACHE = 'xandrio-offline-titles';
@@ -23,7 +23,7 @@ const ASSET_VERSIONS = {
   '/find.css': 7,
   '/js/ios-focus-zoom.js': 6,
   '/js/lifecycle.js': 6,
-  '/app.js': 182
+  '/app.js': 183
 };
 const versionedAsset = (path) => `${path}?v=${ASSET_VERSIONS[path]}`;
 const APP_SHELL = [
