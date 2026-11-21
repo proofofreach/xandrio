@@ -18,7 +18,7 @@ async function test(name, callback) {
 
 const SKIP_SAVE = Symbol('skip');
 
-function harness({ book, cachedCover = null, fetched = null }) {
+function harness({ book, cachedCover = null, fetched = null, gateFree = true, rateLimited = false }) {
   const routes = new Map();
   const app = new Proxy({}, {
     get: (_target, method) => (path, ...handlers) => routes.set(`${String(method).toUpperCase()} ${path}`, handlers.at(-1))
@@ -42,8 +42,8 @@ function harness({ book, cachedCover = null, fetched = null }) {
     removeFileIfExists: async () => {},
     ensureBookCover: async () => { calls.ensure += 1; return fetched; },
     persistCanonicalCoverPath: async () => {},
-    coverRefreshGate: { tryAcquire: () => () => {} },
-    coverRefreshRateLimit: (_req, _res, next) => next(),
+    coverRefreshGate: { tryAcquire: () => (gateFree ? () => {} : null) },
+    coverRefreshRateLimit: (_req, res, next) => (rateLimited ? res.status(429).json({ error: 'Too many requests' }) : next()),
     sendServerError: (res, error) => res.status(500).json({ error: error.message })
   });
   const request = async () => {
@@ -76,6 +76,31 @@ function harness({ book, cachedCover = null, fetched = null }) {
     const response = await h.request();
     assert.equal(response.statusCode, 404);
     assert.equal(h.calls.ensure, 0, 'no network search within the recheck interval');
+  });
+
+  const cover = { buffer: Buffer.from('jpeg'), contentType: 'image/jpeg', dimensions: { width: 600, height: 900 } };
+
+  await test('a busy refresh gate still serves the cover already on disk', async () => {
+    const h = harness({ book: { title: 'T', author: 'A' }, cachedCover: cover, gateFree: false });
+    const response = await h.request();
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.body, cover.buffer);
+    assert.equal(h.calls.ensure, 0);
+  });
+
+  await test('a rate-limited viewer still gets the cover already on disk', async () => {
+    const h = harness({ book: { title: 'T', author: 'A' }, cachedCover: cover, rateLimited: true });
+    const response = await h.request();
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.body, cover.buffer);
+  });
+
+  await test('a due recheck runs behind the cached cover', async () => {
+    const h = harness({ book: { title: 'T', author: 'A' }, cachedCover: cover });
+    const response = await h.request();
+    assert.equal(response.statusCode, 200);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(h.calls.ensure, 1);
   });
 
   console.log(`\n${passed} passed, ${failed} failed`);
