@@ -24,6 +24,9 @@ const MAX_PENDING = 3;
 const MAX_BODY_BYTES = 60000;
 const PERSIST_DELAY_MS = 1000;
 const UPLOAD_INTERVAL_MS = 60000;
+// A crash-looping page lives only seconds, so the first upload cannot wait for
+// the periodic one.
+const BOOT_UPLOAD_DELAY_MS = 8000;
 const LAG_INTERVAL_MS = 500;
 const LAG_REPORT_MS = 150;
 const MEMORY_SAMPLE_MS = 5000;
@@ -101,6 +104,7 @@ export function createAdminTelemetry({
   };
   let persistTimer = null;
   let uploadedEvents = 0;
+  let confirmed = false;
 
   // The previous session is read before this one overwrites the slot. Its exit
   // class comes from the page-exit heartbeat, which is also still unread.
@@ -205,14 +209,21 @@ export function createAdminTelemetry({
     });
   }
 
+  // Called once per launch when the auth check confirms an administrator. A
+  // remembered administrator is already recording, but the sessions a crash
+  // left pending still have to go up: without this they stayed in storage.
   function enable() {
-    if (enabled === true) return;
-    enabled = true;
-    // Raw, not JSON: the launch-time read compares the plain string.
-    try { storage?.setItem(ENABLED_KEY, '1'); } catch {}
-    mark('telemetry:enabled');
+    if (confirmed && enabled === true) return;
+    confirmed = true;
+    if (enabled !== true) {
+      enabled = true;
+      // Raw, not JSON: the launch-time read compares the plain string.
+      try { storage?.setItem(ENABLED_KEY, '1'); } catch {}
+      mark('telemetry:enabled');
+    }
     persistNow();
     void uploadPending();
+    setTimeoutFn?.(() => { void flush('boot'); }, BOOT_UPLOAD_DELAY_MS);
   }
 
   // Not an administrator: forget everything this page recorded.
