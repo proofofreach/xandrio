@@ -113,6 +113,10 @@ test('preserves malformed ordinal suffixes instead of changing their meaning', (
 
 test('expands statutory sections, ranges, subsections, and jurisdictions', () => {
   assert.equal(
+    prepareTtsText('The Companies Act\n2006 applies.'),
+    'The Companies Act two thousand six applies.'
+  );
+  assert.equal(
     prepareTtsText('s 90 and s 138 of the Evidence Act 1995 (NSW).'),
     'section ninety and section one hundred thirty-eight of the Evidence Act nineteen ninety-five, New South Wales.'
   );

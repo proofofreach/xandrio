@@ -275,6 +275,42 @@ async function withServer(app, fn) {
     assert.strictEqual(storage.getItem('xandrio_admin_telemetry_pending'), null);
   });
 
+  await test('a remembered administrator uploads the crashed session once the auth check confirms it', async () => {
+    const now = Date.UTC(2026, 10, 21, 7, 13, 15);
+    const dead = { v: 1, id: 'dead-session-3', startedAt: now - 20000, ended: false, events: [{ t: 1, k: 'boot:script' }] };
+    const storage = memoryStorage({
+      xandrio_admin_telemetry_enabled: '1',
+      xandrio_admin_telemetry: JSON.stringify(dead),
+      xandrio_page_session: JSON.stringify({ beatAt: now - 2000, visible: true, offlineWork: false, ended: false })
+    });
+    const sent = [];
+    const timers = [];
+    const telemetry = telemetryModule.createAdminTelemetry({
+      storage,
+      wallNow: () => now,
+      send: async body => { sent.push(JSON.parse(body)); return true; },
+      setTimeoutFn: (fn, ms) => { timers.push({ fn, ms }); return timers.length; },
+      clearTimeoutFn: () => {}
+    });
+    telemetry.mark('boot:script', { urgent: true });
+    telemetry.enable();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepStrictEqual(sent.map(report => report.id), ['dead-session-3']);
+    assert.strictEqual(sent[0].exit, 'page-crash');
+    assert.strictEqual(storage.getItem('xandrio_admin_telemetry_pending'), null);
+    // The live session goes up seconds after boot, before a crash loop can kill it.
+    const boot = timers.find(timer => timer.ms === 8000);
+    assert.ok(boot, 'boot upload scheduled');
+    boot.fn();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.strictEqual(sent.length, 2);
+    assert.strictEqual(sent[1].id, telemetry.session().id);
+    // A second confirmation in the same page does not upload again.
+    telemetry.enable();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.strictEqual(sent.length, 2);
+  });
+
   await test('a failed upload keeps the dead session for a later launch', async () => {
     const storage = memoryStorage({
       xandrio_admin_telemetry_enabled: '1',

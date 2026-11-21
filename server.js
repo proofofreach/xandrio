@@ -2357,8 +2357,14 @@ async function ensureChapterAudioPrepared(bookId, chapterIndex, options = {}) {
     throwIfAborted();
     const record = jobs.get(key);
     if (assemble) record.assemble = true;
+    // The same variant can be reached through two worker families (the tier
+    // pools and the per-voice workers). Only the record's own worker holds the
+    // manifest plan, so a joiner claims there; a claim on its own worker found
+    // no manifest and was dropped, and the shared job stalled with no owner
+    // once the creator's claim was released.
+    const owner = record.tts || tts;
     return consumeChapterPreparation(record, options.signal, async () => {
-      await tts.claimChapter?.(bookId, chapterIndex, {
+      await owner.claimChapter?.(bookId, chapterIndex, {
         origin: generationOrigin,
         requestId: options.requestId || null,
         sessionId: options.sessionId || null
@@ -2367,10 +2373,10 @@ async function ensureChapterAudioPrepared(bookId, chapterIndex, options = {}) {
         chunkIndexes: playbackChunkIndexes
       });
       if (completeChapter || priority === 'download' || priority === 'lookahead') {
-        const existingManifest = tts.getChapterManifest(bookId, chapterIndex);
+        const existingManifest = owner.getChapterManifest(bookId, chapterIndex);
         existingManifest?.chunks?.forEach((chunk, index) => {
           if (chunk.status !== 'ready') {
-            tts.prioritizeChunk(bookId, chapterIndex, index, priority);
+            owner.prioritizeChunk(bookId, chapterIndex, index, priority);
           }
         });
       }
@@ -2384,7 +2390,7 @@ async function ensureChapterAudioPrepared(bookId, chapterIndex, options = {}) {
   }
 
   const controller = new AbortController();
-  const record = { controller, consumers: new Set(), settled: false, promise: null, assemble };
+  const record = { controller, consumers: new Set(), settled: false, promise: null, assemble, tts };
   jobs.set(key, record);
   const jobSignal = controller.signal;
   const throwIfJobAborted = () => {
@@ -2802,10 +2808,9 @@ const playbackPrefetch = createPlaybackPrefetchCoordinator({
     origin: request.origin,
     sessionId: request.sessionId,
     tier: request.tier,
-    tts: ttsForTier(request.tier).workerForVariant(request.variantKey, {
-      voice: request.voice,
-      chunkSize: request.chunkSize
-    }),
+    // The worker playback uses for this voice, so look-ahead and playback
+    // share one manifest plan for the chapter.
+    tts: fixedNarrationWorker(request.voice),
     voice: request.voice,
     signal: request.signal
   }),
