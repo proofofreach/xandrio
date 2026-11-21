@@ -32,7 +32,7 @@ const OFFLINE_CONTRACT_MARKER = 'x-xandrio-offline-contract';
  * with OFFLINE_ROUTE_CONTRACT_VERSION instead of tying downloads to a build id.
  * This value MUST equal CACHE_VERSION in public/sw.js.
  */
-export const EXPECTED_OFFLINE_SW_VERSION = 'xandrio-v236';
+export const EXPECTED_OFFLINE_SW_VERSION = 'xandrio-v237';
 export const MINIMUM_OFFLINE_ROUTE_CONTRACT = 1;
 const BLOCK_OFFLINE_ROUTE_CONTRACT = 2;
 // A chapter is only ever invalidated after this many playback failures whose
@@ -3790,8 +3790,11 @@ export async function auditOfflineManifest({ presenceOnly = false } = {}) {
       ) || changed;
       continue;
     }
+    // Empty-chapter slots are null and have no body to verify. Counting them
+    // kept the upgrade pending forever, so every launch re-ran the audit over
+    // every chapter of every downloaded book.
     const needsBodyVerificationUpgrade = entry.chapterEntries.some(
-      chapter => chapter?.bodyVerificationVersion !== OFFLINE_BODY_VERIFICATION_VERSION
+      chapter => chapter && chapter.bodyVerificationVersion !== OFFLINE_BODY_VERIFICATION_VERSION
     );
     if (!presenceOnly && needsBodyVerificationUpgrade) {
       telemetryMark('offline:verify-book', {

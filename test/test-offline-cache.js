@@ -1570,6 +1570,35 @@ function installBrowser({
     assert.strictEqual(await offline.verifyOfflineEntry(cache, entry), true);
   });
 
+  await test('an audit of a title with empty chapters settles instead of re-running every launch', async () => {
+    const cache = makeCache();
+    const structuralChapters = [
+      { title: 'Introduction', estimatedDuration: 60 },
+      { title: 'Part One', type: 'divider', empty: true, estimatedDuration: 0 },
+      { title: 'Chapter One', estimatedDuration: 600 }
+    ];
+    const env = installBrowser({
+      book,
+      chapters: structuralChapters,
+      cache,
+      variants: ['voice-a', null, 'voice-a'],
+      statusForChapter: chapterIndex => ({
+        ready: true,
+        readyChunks: 1,
+        totalChunks: 1,
+        variantKey: 'voice-a',
+        url: `/api/audio/${book.id}/${chapterIndex}`
+      })
+    });
+    offline.initOffline(env.init);
+    assert.strictEqual(await offline.downloadBookForOffline(book, structuralChapters, { confirmForeground: false }), true);
+    assert.strictEqual(offline.getOfflineManifest()[book.id].chapterEntries[1], null);
+    // Nothing is pending: the null slot has no body, so the audit changes nothing.
+    assert.strictEqual(await offline.auditOfflineManifest(), false);
+    assert.strictEqual(await offline.auditOfflineManifest(), false);
+    assert.strictEqual(offline.getOfflineManifest()[book.id].state, 'ready');
+  });
+
   await test('a prepared title transfers without browser-side chapter generation polling', async () => {
     const cache = makeCache();
     const longChapters = Array.from({ length: 46 }, (_, index) => ({
